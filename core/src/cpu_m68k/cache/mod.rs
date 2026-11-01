@@ -65,6 +65,20 @@ pub struct CacheAlias {
     pub laddr: Address,
 }
 
+/// A long word in a cache, and what its tag says about where it is
+#[derive(Clone, Copy, Debug)]
+pub struct CachedLong {
+    pub tag: CacheTag,
+    pub long: Long,
+}
+
+/// What a cache knows of the address of a long word
+#[derive(Clone, Copy, Debug)]
+pub enum CacheTag {
+    Physical(Address),
+    Logical { fc: u8, laddr: Address },
+}
+
 /// The on-chip caches of a CPU model
 ///
 /// Bus errors, from any of the cycles a cache model runs, are returned as
@@ -232,6 +246,14 @@ pub trait CpuCaches: Default {
 
     /// Replaces a byte in an entry from inspect_aliases(), for the host
     fn inspect_alias_write(&mut self, _alias: &CacheAlias, _val: Byte) {}
+
+    /// Returns the long words of the data cache for AccessKind::Data, or of
+    /// the instruction cache for AccessKind::Fetch, if accesses would look at
+    /// that cache, for the host. Instruction cache tags have the program
+    /// function code of their mode.
+    fn inspect_cached(&self, _cacr: RegisterCACR, _kind: AccessKind) -> Vec<CachedLong> {
+        Vec::new()
+    }
 
     /// Hardware reset
     fn reset(&mut self) {}

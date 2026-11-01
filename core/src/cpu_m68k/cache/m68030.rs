@@ -13,7 +13,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::{CacheAlias, CpuCaches, FETCH_HIT_TICKS};
+use crate::cpu_m68k::cache::{CacheAlias, CacheTag, CachedLong, CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
@@ -320,6 +320,31 @@ impl CpuCaches for Caches030 {
             &mut self.dcache
         };
         cache.write_byte(alias.laddr, val);
+    }
+
+    fn inspect_cached(&self, cacr: RegisterCACR, kind: AccessKind) -> Vec<CachedLong> {
+        let (cache, fc_or) = match kind {
+            AccessKind::Data if cacr.ed() => (&self.dcache, 0),
+            // The instruction cache only tags FC2
+            AccessKind::Fetch if cacr.e() => (&self.icache, 0b010),
+            _ => return Vec::new(),
+        };
+        let mut longs = Vec::new();
+        for line in 0..LINES {
+            let tag = cache.tags[line];
+            for entry in 0..4 {
+                if cache.valid[line] & (1 << entry) != 0 {
+                    longs.push(CachedLong {
+                        tag: CacheTag::Logical {
+                            fc: (tag & 0b111) as u8 | fc_or,
+                            laddr: (tag & 0xFFFF_FF00) | ((line as Address) << 4) | (entry << 2),
+                        },
+                        long: cache.data[line][entry as usize],
+                    });
+                }
+            }
+        }
+        longs
     }
 
     fn reset(&mut self) {

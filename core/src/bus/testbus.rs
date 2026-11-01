@@ -2,7 +2,7 @@ use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
 use super::access::CpuBus;
-use super::{Address, Bus, InspectableBus, IrqSource};
+use super::{Address, Bus, InspectRun, InspectableBus, IrqSource};
 use crate::bus::access::{BusAccess, BusResponse};
 use crate::tickable::{Tickable, Ticks};
 
@@ -58,6 +58,8 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     pub fault_ranges: Vec<RangeInclusive<Address>>,
     /// Optional pass/fail test device at 0x100000..=0x10FFFF (test-only).
     pub test_device: Option<TestDevice>,
+    /// What InspectableBus::inspect_generation() returns
+    pub inspect_generation: u32,
 }
 
 impl<TA, TD, C> Testbus<TA, TD, C>
@@ -79,6 +81,7 @@ where
             port_widths: vec![],
             fault_ranges: vec![],
             test_device: None,
+            inspect_generation: 0,
         }
     }
 
@@ -224,6 +227,31 @@ impl<C> InspectableBus<Address, u8> for Testbus<Address, u8, C> {
         }
         self.mem.insert(addr, val);
         Some(())
+    }
+
+    fn inspect_read_bulk(&mut self, addr: Address, out: &mut [u8]) -> InspectRun {
+        // Faults are per byte: a run goes on while it finds the same
+        let readable = self.inspect_read(addr).is_some();
+        let mut n = 0;
+        while n < out.len() {
+            let byte = self.inspect_read(addr.wrapping_add(n as Address));
+            if byte.is_some() != readable {
+                break;
+            }
+            if let Some(byte) = byte {
+                out[n] = byte;
+            }
+            n += 1;
+        }
+        if readable {
+            InspectRun::Data(n)
+        } else {
+            InspectRun::Hole(n)
+        }
+    }
+
+    fn inspect_generation(&self) -> u32 {
+        self.inspect_generation
     }
 }
 

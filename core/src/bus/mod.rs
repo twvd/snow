@@ -48,6 +48,49 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
 pub trait InspectableBus<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     fn inspect_read(&mut self, addr: TA) -> Option<TD>;
     fn inspect_write(&mut self, addr: TA, val: TD) -> Option<()>;
+    /// Reads from `addr` on into `out` as far as one run goes: see InspectRun.
+    /// This sees what inspect_read() does, but faster for large ranges.
+    fn inspect_read_bulk(&mut self, addr: TA, out: &mut [TD]) -> InspectRun;
+    /// Changes when the map of the physical addresses changes, or when
+    /// anything but the CPU changes memory
+    fn inspect_generation(&self) -> u32;
+}
+
+/// What InspectableBus::inspect_read_bulk() found at an address
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InspectRun {
+    /// This many bytes could be read, and are in the output
+    Data(usize),
+    /// This many bytes can't be read: nothing went to the output
+    Hole(usize),
+}
+
+/// inspect_read_bulk() through inspect_read(), a byte at a time. What can be
+/// read must be constant over blocks of `granule` bytes, a power of two, so
+/// that a hole can be skipped as a whole.
+pub fn inspect_read_bytes<TBus>(
+    bus: &mut TBus,
+    addr: Address,
+    out: &mut [u8],
+    granule: Address,
+) -> InspectRun
+where
+    TBus: InspectableBus<Address, u8>,
+{
+    let max = out.len().min((granule - (addr & (granule - 1))) as usize);
+    let mut n = 0;
+    while n < max {
+        let Some(byte) = bus.inspect_read(addr.wrapping_add(n as Address)) else {
+            break;
+        };
+        out[n] = byte;
+        n += 1;
+    }
+    if n > 0 {
+        InspectRun::Data(n)
+    } else {
+        InspectRun::Hole(max)
+    }
 }
 
 pub trait IrqSource {

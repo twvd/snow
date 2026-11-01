@@ -7,7 +7,9 @@ use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::native_clock::{C16M_PER_VIA, DeviceCycle, NativeClock, WaitTicks};
-use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::bus::{
+    Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
+};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -556,6 +558,15 @@ where
         }
     }
 
+    /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
+    fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
+        if addr >= 0x00F0_0000 {
+            return None;
+        }
+        (self.region(addr) == Region::Ram && (addr as usize) < self.ram.len())
+            .then_some(addr as usize)
+    }
+
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
         if self.mouse_mode == MouseMode::Disabled {
@@ -867,6 +878,23 @@ where
             return None;
         }
         self.write_byte(self.region(addr), addr, val)
+    }
+
+    fn inspect_read_bulk(&mut self, addr: Address, out: &mut [Byte]) -> InspectRun {
+        const BLOCK: Address = 1 << MAP_BLOCK_SHIFT;
+        if let Some(idx) = self.inspect_ram_offset(addr) {
+            let max = out
+                .len()
+                .min((BLOCK - (addr & (BLOCK - 1))) as usize)
+                .min(self.ram.len() - idx);
+            out[..max].copy_from_slice(&self.ram[idx..idx + max]);
+            return InspectRun::Data(max);
+        }
+        inspect_read_bytes(self, addr, out, BLOCK)
+    }
+
+    fn inspect_generation(&self) -> u32 {
+        u32::from(self.overlay)
     }
 }
 

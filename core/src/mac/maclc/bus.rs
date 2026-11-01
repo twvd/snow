@@ -9,7 +9,9 @@ use crate::bus::access::{
     Bus68020, BusAccess, BusResponse, CpuBus, bus_access_byte, bus_access_long, bus_access_word,
 };
 use crate::bus::native_clock::{DeviceCycle, NativeClock};
-use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::bus::{
+    Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
+};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -836,6 +838,15 @@ where
         }
     }
 
+    /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
+    fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
+        match self.decode(addr)? {
+            Region::Ram(_) if self.overlay => None,
+            Region::Ram(addr) => self.ram_index(addr),
+            _ => None,
+        }
+    }
+
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
         if self.mouse_mode != MouseMode::Absolute {
@@ -1169,7 +1180,7 @@ where
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         match self.decode(addr)? {
             Region::Ram(_) if self.overlay => self.read_rom(addr),
-            Region::Ram(addr) => Some(self.read_ram_byte(addr)),
+            Region::Ram(addr) => self.ram_index(addr).map(|idx| self.ram[idx]),
             Region::Rom => self.read_rom(addr),
             _ => None,
         }
@@ -1181,6 +1192,25 @@ where
             Region::Rom => Some(()),
             _ => None,
         }
+    }
+
+    fn inspect_read_bulk(&mut self, addr: Address, out: &mut [Byte]) -> InspectRun {
+        // The banks of RAM are at least this size, and so are the regions
+        const BLOCK: Address = 1 << 16;
+        let max = out.len().min((BLOCK - (addr & (BLOCK - 1))) as usize);
+        if let Some(idx) = self.inspect_ram_offset(addr) {
+            let last = addr.wrapping_add(max as Address - 1);
+            // The block may not be contiguous in RAM, or may end with the RAM
+            if self.inspect_ram_offset(last) == Some(idx + max - 1) {
+                out[..max].copy_from_slice(&self.ram[idx..idx + max]);
+                return InspectRun::Data(max);
+            }
+        }
+        inspect_read_bytes(self, addr, out, BLOCK)
+    }
+
+    fn inspect_generation(&self) -> u32 {
+        u32::from(self.overlay) | (u32::from(self.pseudovia.exp().0) << 1)
     }
 }
 

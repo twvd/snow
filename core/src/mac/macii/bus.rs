@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use super::via2::Via2;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
 use crate::bus::native_clock::{C16M_PER_VIA, DeviceCycle, NativeClock, WaitTicks};
-use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::bus::{
+    Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
+};
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -712,6 +714,14 @@ where
         self.mouse_mode = mode;
     }
 
+    /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
+    fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
+        let idx = addr as usize & self.ram_mask;
+        (MAP[usize::from(self.overlay)][(addr >> 24) as usize] == Region::Ram
+            && idx < self.ram.len())
+        .then_some(idx)
+    }
+
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
         if self.mouse_mode != MouseMode::Absolute {
@@ -1079,6 +1089,24 @@ where
             Region::Rom => Some(()),
             _ => None,
         }
+    }
+
+    fn inspect_read_bulk(&mut self, addr: Address, out: &mut [Byte]) -> InspectRun {
+        const BLOCK: Address = 1 << 24;
+        if let Some(idx) = self.inspect_ram_offset(addr) {
+            let max = out
+                .len()
+                .min((BLOCK - (addr & (BLOCK - 1))) as usize)
+                .min(self.ram.len() - idx)
+                .min(self.ram_mask + 1 - idx);
+            out[..max].copy_from_slice(&self.ram[idx..idx + max]);
+            return InspectRun::Data(max);
+        }
+        inspect_read_bytes(self, addr, out, BLOCK)
+    }
+
+    fn inspect_generation(&self) -> u32 {
+        u32::from(self.overlay)
     }
 }
 

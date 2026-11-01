@@ -1,9 +1,9 @@
 //! M68k CPU - Bus access functionality
 
-use crate::bus::{Address, Bus, InspectableBus, IrqSource};
+use crate::bus::{Address, Bus, InspectRun, InspectableBus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
-use crate::cpu_m68k::cache::CpuCaches;
+use crate::cpu_m68k::cache::{CacheTag, CpuCaches};
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
@@ -18,6 +18,7 @@ use crate::types::Word;
 use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 
 // M68k UM 3.8
 pub const FC_UNUSED: u8 = 0;
@@ -26,6 +27,19 @@ pub const FC_USER_PROGRAM: u8 = 2;
 pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
+
+/// How the host looks at memory
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InspectView {
+    /// Physical addresses, as a data read that hits physical tags would see
+    Physical,
+    /// Logical addresses in the data space of the current mode, as a data
+    /// read would see them
+    Virtual,
+    /// Logical addresses in the program space of the current mode, as an
+    /// instruction fetch would see them
+    Program,
+}
 
 /// What a CPU access is for
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +204,77 @@ where
             }
         }
         Some(())
+    }
+
+    /// Reads from `addr` on into `out` for the host as far as one run goes,
+    /// which is at most to the end of a page for logical addresses. See
+    /// inspect_read(), with the same absence of any trace; but a long word that
+    /// is only in a cache tagged with logical addresses, in a page that has
+    /// lost its translation, is a part of a hole here.
+    pub fn inspect_read_bulk(
+        &mut self,
+        addr: Address,
+        view: InspectView,
+        out: &mut [Byte],
+    ) -> InspectRun
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let addr = addr & ADDRESS_MASK;
+        let (fc, kind) = match view {
+            InspectView::Physical => (None, AccessKind::Data),
+            InspectView::Virtual => (Some(self.fc_data()), AccessKind::Data),
+            InspectView::Program => (Some(self.fc_program()), AccessKind::Fetch),
+        };
+        let (paddr, out) = if let Some(fc) = fc {
+            let page_mask = self.pmmu_page_mask();
+            let len = out
+                .len()
+                .min(((addr & !page_mask) + page_mask - addr) as usize + 1);
+            let Some(paddr) = self.inspect_translate(fc, addr, false) else {
+                return InspectRun::Hole(len);
+            };
+            (paddr, &mut out[..len])
+        } else {
+            (addr, out)
+        };
+        let len = match self.bus.inspect_read_bulk(paddr, out) {
+            InspectRun::Data(len) => len,
+            hole => return hole,
+        };
+
+        for cached in self.caches.inspect_cached(self.regs.cacr, kind) {
+            // Where the long word is, in the terms of the run
+            let long_at = match cached.tag {
+                CacheTag::Physical(long_paddr) => long_paddr.wrapping_sub(paddr),
+                CacheTag::Logical { fc: long_fc, laddr } => {
+                    if let Some(fc) = fc {
+                        // Only what this space would hit
+                        let same = if kind == AccessKind::Fetch {
+                            long_fc & 0b100 == fc & 0b100
+                        } else {
+                            long_fc == fc
+                        };
+                        if !same {
+                            continue;
+                        }
+                        laddr.wrapping_sub(addr)
+                    } else {
+                        let Some(long_paddr) = self.inspect_translate(long_fc, laddr, false) else {
+                            continue;
+                        };
+                        long_paddr.wrapping_sub(paddr)
+                    }
+                }
+            };
+            for (i, byte) in cached.long.to_be_bytes().into_iter().enumerate() {
+                let at = long_at.wrapping_add(i as Address) as usize;
+                if at < len {
+                    out[at] = byte;
+                }
+            }
+        }
+        InspectRun::Data(len)
     }
 
     /// Checks if an access needs to fail and raise bus error on alignment errors

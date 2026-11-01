@@ -14,7 +14,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::{BusTransaction, FaultInfo};
-use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
+use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CacheTag, CachedLong, CpuCaches};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
@@ -452,6 +452,31 @@ impl CpuCaches for Caches040 {
                 cache.update(set, way, entry, shift, 1, val.into());
             }
         }
+    }
+
+    fn inspect_cached(&self, cacr: RegisterCACR, kind: AccessKind) -> Vec<CachedLong> {
+        let cache = match kind {
+            AccessKind::Data if cacr.de() => &self.dcache,
+            AccessKind::Fetch if cacr.ie() => &self.icache,
+            _ => return Vec::new(),
+        };
+        let mut longs = Vec::new();
+        for set in 0..SETS {
+            for way in 0..WAYS {
+                let tag = cache.tags[set][way];
+                if tag == INVALID {
+                    continue;
+                }
+                let addr = Cache040::line_addr(set, tag);
+                for (entry, &long) in cache.data[set][way].iter().enumerate() {
+                    longs.push(CachedLong {
+                        tag: CacheTag::Physical(addr.wrapping_add(4 * entry as Address)),
+                        long,
+                    });
+                }
+            }
+        }
+        longs
     }
 
     fn reset(&mut self) {

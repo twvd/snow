@@ -1,9 +1,10 @@
 //! Tests for the accesses of the host to memory: they must leave no trace in
 //! the CPU, the caches or the page tables
 
-use crate::bus::Address;
 use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
+use crate::bus::{Address, InspectRun};
+use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
 use crate::cpu_m68k::regs::Register;
 use crate::cpu_m68k::{
@@ -630,4 +631,135 @@ fn write_040_ignores_write_protection_and_sets_no_bits() {
         read_long!(cpu, desc),
         MAPPED_TO | RESIDENT | COPYBACK | (1 << 2)
     );
+}
+
+#[test]
+fn bulk_040_physical_shows_dirty_data_and_stops_at_holes() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    write_long!(cpu, MAPPED_TO + 4, 0xAABB_CCDD);
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+    cpu.bus
+        .fault_ranges
+        .push(MAPPED_TO + 0x10..=MAPPED_TO + 0x13);
+
+    let mut out = [0; 0x20];
+    assert_no_trace!(cpu, {
+        let run = cpu.inspect_read_bulk(MAPPED_TO, InspectView::Physical, &mut out);
+        assert_eq!(run, InspectRun::Data(0x10));
+    });
+    assert_eq!(out[..8], [0x55, 0x66, 0x77, 0x88, 0xAA, 0xBB, 0xCC, 0xDD]);
+    assert_eq!(
+        cpu.inspect_read_bulk(MAPPED_TO + 0x10, InspectView::Physical, &mut out),
+        InspectRun::Hole(4)
+    );
+    // Starting in the middle of a long word in the cache
+    assert_eq!(
+        cpu.inspect_read_bulk(MAPPED_TO + 2, InspectView::Physical, &mut out[..4]),
+        InspectRun::Data(4)
+    );
+    assert_eq!(out[..4], [0x77, 0x88, 0xAA, 0xBB]);
+}
+
+#[test]
+fn bulk_040_virtual_ends_at_the_page() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    cpu.write_ticks::<Long>(MAPPED + 0xFFC, 0x5566_7788)
+        .unwrap();
+    cpu.bus.mem.insert(MAPPED + 0x1000, 0x99);
+
+    let mut out = [0; 0x20];
+    assert_no_trace!(cpu, {
+        assert_eq!(
+            cpu.inspect_read_bulk(MAPPED + 0xFFC, InspectView::Virtual, &mut out),
+            InspectRun::Data(4)
+        );
+        assert_eq!(out[..4], [0x55, 0x66, 0x77, 0x88]);
+        assert_eq!(
+            cpu.inspect_read_bulk(MAPPED + 0x1000, InspectView::Virtual, &mut out),
+            InspectRun::Data(0x20)
+        );
+        assert_eq!(out[0], 0x99);
+        // No translation: to the end of the page, at most
+        assert_eq!(
+            cpu.inspect_read_bulk(0x0004_0FF0, InspectView::Virtual, &mut out),
+            InspectRun::Hole(0x10)
+        );
+    });
+}
+
+#[test]
+fn bulk_040_program_sees_the_instruction_cache() {
+    let mut cpu = cpu040();
+    cpu.regs
+        .write(Register::CACR, CACR_040_DATA | CACR_040_INSTR);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    // Changed behind the cache
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+
+    let mut out = [0; 4];
+    cpu.inspect_read_bulk(MAPPED, InspectView::Program, &mut out);
+    assert_eq!(out, [0x11, 0x22, 0x33, 0x44]);
+    cpu.inspect_read_bulk(MAPPED, InspectView::Virtual, &mut out);
+    assert_eq!(out, [0x55, 0x66, 0x77, 0x88]);
+}
+
+#[test]
+fn bulk_030_finds_entries_by_view() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    write_long!(cpu, MAPPED_TO + 0x100, 0xAABB_CCDD);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    // Behind the back of the caches
+    write_long!(cpu, MAPPED_TO, 0x5566_7788);
+
+    let mut out = [0; 8];
+    assert_no_trace!(cpu, {
+        assert_eq!(
+            cpu.inspect_read_bulk(MAPPED_TO, InspectView::Physical, &mut out),
+            InspectRun::Data(8)
+        );
+        assert_eq!(out[..4], [0x11, 0x22, 0x33, 0x44]);
+        cpu.inspect_read_bulk(MAPPED, InspectView::Virtual, &mut out);
+        assert_eq!(out[..4], [0x11, 0x22, 0x33, 0x44]);
+        cpu.inspect_read_bulk(MAPPED, InspectView::Program, &mut out);
+        assert_eq!(out[..4], [0x11, 0x22, 0x33, 0x44]);
+        // Same line, another page: memory
+        cpu.inspect_read_bulk(MAPPED_TO + 0x100, InspectView::Physical, &mut out);
+        assert_eq!(out[..4], [0xAA, 0xBB, 0xCC, 0xDD]);
+    });
+
+    // Another space misses, as a read would
+    cpu.regs.sr.set_supervisor(false);
+    cpu.inspect_read_bulk(MAPPED, InspectView::Virtual, &mut out);
+    assert_eq!(out[..4], [0x55, 0x66, 0x77, 0x88]);
+    // Disabled caches aren't looked at
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.write(Register::CACR, 0_u32);
+    cpu.inspect_read_bulk(MAPPED_TO, InspectView::Physical, &mut out);
+    assert_eq!(out[..4], [0x55, 0x66, 0x77, 0x88]);
+}
+
+#[test]
+fn bulk_no_caches_goes_to_the_bus() {
+    let mut cpu =
+        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    cpu.bus.mem.insert(0x1234, 0x56);
+    let mut out = [0; 2];
+    for view in [
+        InspectView::Physical,
+        InspectView::Virtual,
+        InspectView::Program,
+    ] {
+        assert_eq!(
+            cpu.inspect_read_bulk(0x1234, view, &mut out),
+            InspectRun::Data(2)
+        );
+        assert_eq!(out[0], 0x56);
+    }
 }

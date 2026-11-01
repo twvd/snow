@@ -6,7 +6,9 @@ use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
-use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::bus::{
+    Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
+};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -1016,6 +1018,27 @@ where
             Region::RamOverlay => self.ram_write_overlay(addr, 1, val),
             _ => None,
         }
+    }
+
+    fn inspect_read_bulk(&mut self, addr: Address, out: &mut [Byte]) -> InspectRun {
+        const BLOCK: Address = 1 << MAP_BLOCK_SHIFT;
+        if addr < 0x80_0000
+            && self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize]
+                == Region::Ram
+        {
+            let idx = addr as usize & self.ram_mask;
+            let max = out
+                .len()
+                .min((BLOCK - (addr & (BLOCK - 1))) as usize)
+                .min(self.ram.len() - idx);
+            out[..max].copy_from_slice(&self.ram[idx..idx + max]);
+            return InspectRun::Data(max);
+        }
+        inspect_read_bytes(self, addr, out, BLOCK)
+    }
+
+    fn inspect_generation(&self) -> u32 {
+        u32::from(self.overlay)
     }
 }
 

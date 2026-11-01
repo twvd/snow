@@ -11,7 +11,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::{CacheAlias, CpuCaches, FETCH_HIT_TICKS};
+use crate::cpu_m68k::cache::{CacheAlias, CacheTag, CachedLong, CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
@@ -174,6 +174,26 @@ impl CpuCaches for Caches020 {
         let mut bytes = long.to_be_bytes();
         bytes[alias.laddr as usize % 4] = val;
         *long = Long::from_be_bytes(bytes);
+    }
+
+    fn inspect_cached(&self, cacr: RegisterCACR, kind: AccessKind) -> Vec<CachedLong> {
+        if kind != AccessKind::Fetch || !cacr.e() {
+            return Vec::new();
+        }
+        let mut longs = Vec::new();
+        for (index, (&tag, &long)) in self.tags.iter().zip(&self.data).enumerate() {
+            if tag != INVALID {
+                longs.push(CachedLong {
+                    tag: CacheTag::Logical {
+                        // The cache only tags FC2
+                        fc: ((tag & 1) as u8) << 2 | 0b010,
+                        laddr: (tag & 0xFFFF_FF00) | ((index as Address) << 2),
+                    },
+                    long,
+                });
+            }
+        }
+        longs
     }
 
     fn reset(&mut self) {
