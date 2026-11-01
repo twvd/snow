@@ -46,16 +46,14 @@ pub fn add16_dec(acc: u16, d: u16, carry: bool) -> AluResult {
 
 /// 16-bit add (binary mode)
 pub fn add16(acc: u16, d: u16, carry: bool) -> AluResult {
-    let c = if carry { 1 } else { 0 };
-
-    let result: u32 = acc as u32 + d as u32 + c;
+    let (result, c) = acc.carrying_add(d, carry);
 
     AluResult {
-        result: result as u16,
-        z: result as u16 == 0,
+        result,
+        z: result == 0,
         n: result & 0x8000 != 0,
-        v: !(acc ^ d) & (acc ^ result as u16) & 0x8000 != 0,
-        c: result > u16::MAX.into(),
+        v: !(acc ^ d) & (acc ^ result) & 0x8000 != 0,
+        c,
     }
 }
 
@@ -64,16 +62,15 @@ pub fn add8(acc: u16, d: u16, carry: bool) -> AluResult {
     assert!(acc <= u8::MAX.into());
     assert!(d <= u8::MAX.into());
 
-    let c = if carry { 1 } else { 0 };
-
-    let result: u16 = acc + d + c;
+    let (result, c) = (acc as u8).carrying_add(d as u8, carry);
+    let result = result as u16;
 
     AluResult {
-        result: result & 0xFF,
-        z: result as u8 == 0,
+        result,
+        z: result == 0,
         n: result & 0x80 != 0,
         v: !(acc ^ d) & (acc ^ result) & 0x80 != 0,
-        c: result > u8::MAX.into(),
+        c,
     }
 }
 
@@ -105,35 +102,14 @@ pub fn add8_dec(acc: u16, d: u16, carry: bool) -> AluResult {
 
 /// 16-bit subtract (binary mode)
 pub fn sub16(acc: u16, d: u16, carry: bool) -> AluResult {
-    let c = if carry { 1 } else { 0 };
-
-    let result: i32 = acc as i32 + (!d) as i32 + c;
-
-    AluResult {
-        result: result as u16,
-        z: result as u16 == 0,
-        n: result & 0x8000 != 0,
-        v: !(acc ^ !d) & (acc ^ result as u16) & 0x8000 != 0,
-        c: result > u16::MAX.into(),
-    }
+    add16(acc, !d, carry)
 }
 
 /// 8-bit subtract (binary mode)
 pub fn sub8(acc: u16, d: u16, carry: bool) -> AluResult {
-    assert!(acc <= u8::MAX.into());
     assert!(d <= u8::MAX.into());
 
-    let c = if carry { 1 } else { 0 };
-
-    let result = acc.wrapping_add(!d & 0xFF).wrapping_add(c);
-
-    AluResult {
-        result: result & 0xFF,
-        z: result as u8 == 0,
-        n: result & 0x80 != 0,
-        v: !(acc ^ !d) & (acc ^ result) & 0x80 != 0,
-        c: result > u8::MAX.into(),
-    }
+    add8(acc, !d & 0xFF, carry)
 }
 
 /// 8-bit subtract (decimal mode)

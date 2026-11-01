@@ -1484,17 +1484,17 @@ where
     }
 
     /// Increment/decrement (register variant)
-    fn op_incdec_reg(&mut self, reg: Register, data: i32, width_flag: Flag) -> Result<()> {
+    fn op_incdec_reg(&mut self, reg: Register, data: i8, width_flag: Flag) -> Result<()> {
         let val = self.regs.read(reg);
         if self.width8(width_flag) {
             // 8-bit
-            let result = (((val & 0xFF) as i32 + data) & 0xFF) as u16;
+            let result = (val as u8).wrapping_add_signed(data) as u16;
             self.regs.write(reg, val & 0xFF00 | result);
             self.regs
                 .write_flags(&[(Flag::Z, result == 0), (Flag::N, result & 0x80 != 0)]);
         } else {
             // 16-bit
-            let result = (val as i32 + data) as u16;
+            let result = val.wrapping_add_signed(data.into());
             self.regs.write(reg, result);
             self.regs
                 .write_flags(&[(Flag::Z, result == 0), (Flag::N, result & 0x8000 != 0)]);
@@ -1504,7 +1504,7 @@ where
     }
 
     /// Increment/decrement (memory variant)
-    fn op_incdec(&mut self, instr: &Instruction, data: i32) -> Result<()> {
+    fn op_incdec(&mut self, instr: &Instruction, data: i8) -> Result<()> {
         let (val, addr) = self.fetch_data(instr, true, false, Rmw::IncDec, Flag::M)?;
 
         // Calculation cycle: the NMOS 6502 re-writes the original
@@ -1521,13 +1521,13 @@ where
 
         if self.width8(Flag::M) {
             // 8-bit
-            let result = (((val & 0xFF) as i32 + data) & 0xFF) as u8;
+            let result = (val as u8).wrapping_add_signed(data);
             self.write_tick(addr, result);
             self.regs
                 .write_flags(&[(Flag::Z, result == 0), (Flag::N, result & 0x80 != 0)]);
         } else {
             // 16-bit
-            let result = (val as i32 + data) as u16;
+            let result = val.wrapping_add_signed(data.into());
             self.write16_tick_a_desc(instr, addr, result);
             self.regs
                 .write_flags(&[(Flag::Z, result == 0), (Flag::N, result & 0x8000 != 0)]);
