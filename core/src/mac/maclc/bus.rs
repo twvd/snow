@@ -18,7 +18,6 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::egret::Egret;
-use crate::mac::macii::bus::RAM_DIRTY_PAGESIZE;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc};
 use crate::mac::scsi::controller::ScsiController;
@@ -33,7 +32,6 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
-use bit_set::BitSet;
 use log::*;
 use serde::{Deserialize, Serialize};
 
@@ -125,9 +123,6 @@ pub struct MacLCBus<TRenderer: Renderer> {
 
     /// Size of the RAM soldered on the logic board, the rest is in SIMMs
     ram_soldered: usize,
-
-    /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
-    pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
     egret: Egret,
@@ -250,7 +245,6 @@ where
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
             ram_soldered,
-            ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             egret,
             scc_ready: 0,
@@ -288,10 +282,6 @@ where
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.video.renderer = Some(renderer);
         self.sound.after_deserialize();
-
-        // Mark all RAM pages as dirty after deserialization to update memory display
-        self.ram_dirty
-            .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {
@@ -400,7 +390,6 @@ where
 
     fn write_ram_byte(&mut self, addr: Address, val: Byte) {
         if let Some(idx) = self.ram_index(addr) {
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
             self.ram[idx] = val;
         }
     }
@@ -678,9 +667,6 @@ where
         if let Some(idx) = self.ram_range(addr, len) {
             self.ram[idx..idx + len as usize]
                 .copy_from_slice(&val.to_be_bytes()[4 - len as usize..]);
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-            self.ram_dirty
-                .insert((idx + len as usize - 1) / RAM_DIRTY_PAGESIZE);
             return Some(());
         }
         for a in addr..addr + len {
@@ -986,8 +972,6 @@ where
             // Clear RAM
             self.ram.fill(0);
             self.disable_memtest();
-            self.ram_dirty
-                .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
 
         self.scc = Scc::new(RTXC_FREQUENCY);

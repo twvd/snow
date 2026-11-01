@@ -29,13 +29,9 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
-use bit_set::BitSet;
 use log::*;
 use num_traits::ToBytes;
 use serde::{Deserialize, Serialize};
-
-/// Size of a RAM page in MacBus::ram_dirty
-pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 /// Wait states of the static RAM
 const RAM_WAITS: Ticks = 1;
@@ -93,9 +89,6 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
-
-    /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
-    pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
     /// Counts clock ticks at native frequency for the power manager, which
@@ -186,7 +179,6 @@ where
             rom,
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
-            ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(),
             pmgr_clock: NativeClock::new(BUS_FREQUENCY),
             video: Video::new(renderer),
@@ -222,10 +214,6 @@ where
     pub fn after_deserialize(&mut self, _renderer: TRenderer) {
         self.map = build_map(self.model);
         self.asc.after_deserialize();
-
-        // Mark all RAM pages as dirty after deserialization to update memory display
-        self.ram_dirty
-            .extend(0..(self.ram.len() / crate::mac::compact::bus::RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {
@@ -258,8 +246,6 @@ where
         let bytes = val.to_be_bytes();
         for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
-            self.ram_dirty
-                .insert((addr + i) / crate::mac::macii::bus::RAM_DIRTY_PAGESIZE);
         }
     }
 
@@ -473,7 +459,6 @@ where
         let bytes = &(val as u16).to_be_bytes()[2 - len as usize..];
         if let Some(ram) = self.ram.get_mut(idx..idx + bytes.len()) {
             ram.copy_from_slice(bytes);
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
         }
         Some(())
     }
@@ -490,7 +475,6 @@ where
     fn normal_ram_write(&mut self, addr: Address, val: Byte) -> Option<()> {
         if addr < self.ram.len() as u32 {
             let idx = addr as usize;
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
             Some(self.ram[idx] = val)
         } else {
             Some(())

@@ -30,7 +30,6 @@ use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
 
 use anyhow::Result;
-use bit_set::BitSet;
 use log::*;
 use num_traits::ToBytes;
 use serde::{Deserialize, Serialize};
@@ -38,9 +37,6 @@ use serde::{Deserialize, Serialize};
 /// Frequency of the bus of the real hardware, without overclocking: the
 /// CPU clock, C8M (7.8336 MHz), which a bus cycle is counted in
 const BUS_FREQUENCY: Ticks = 7_833_600;
-
-/// Size of a RAM page in MacBus::ram_dirty
-pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 /// Size of the blocks of the address map
 const MAP_BLOCK_SHIFT: u32 = 17;
@@ -77,9 +73,6 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
-
-    /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
-    pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
     pub(crate) scc: Scc,
@@ -190,7 +183,6 @@ where
             rom: Vec::from(rom),
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
-            ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
@@ -244,10 +236,6 @@ where
         self.video.renderer = Some(renderer);
         // Make sure we have at least the last frame available
         self.video.render().unwrap();
-
-        // Mark all RAM pages as dirty after deserialization to update memory display
-        self.ram_dirty
-            .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {
@@ -295,7 +283,6 @@ where
         let bytes = val.to_be_bytes();
         for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
-            self.ram_dirty.insert((addr + i) / RAM_DIRTY_PAGESIZE);
         }
     }
 
@@ -333,7 +320,6 @@ where
             }
         }
 
-        self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
         self.ram[idx..idx + bytes.len()].copy_from_slice(bytes);
         Some(())
     }
@@ -341,7 +327,6 @@ where
     fn ram_write_overlay(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
         for a in addr..addr + len {
             let idx = ((a as usize) - 0x60_0000) & self.ram_mask;
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
             self.ram[idx] = (val >> (8 * (addr + len - 1 - a))) as Byte;
         }
         Some(())
@@ -794,9 +779,6 @@ where
             self.ram.fill(0);
 
             self.disable_memtest();
-
-            self.ram_dirty
-                .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
 
         // Keep the RTC and ADB for PRAM and event channels

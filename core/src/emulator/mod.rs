@@ -27,7 +27,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
-use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
+use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::bus::MacLCBus;
 use crate::mac::portable::bus::MacPortableBus;
@@ -45,7 +45,6 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
 use anyhow::{Context, Result, bail};
-use bit_set::BitSet;
 use log::*;
 use std::fmt;
 
@@ -297,8 +296,6 @@ dispatch! {
         fn scsi(&self) -> &ScsiController { bus.scsi }
         fn scc(&self) -> &Scc { bus.scc }
         fn cpu_regs(&self) -> &RegisterFile { regs }
-        fn ram(&self) -> &[u8] { bus.ram }
-        fn ram_dirty(&self) -> &BitSet { bus.ram_dirty }
     }
 
     mutable_refs {
@@ -306,8 +303,6 @@ dispatch! {
         fn scsi_mut(&mut self) -> &mut ScsiController { bus.scsi }
         fn scc_mut(&mut self) -> &mut Scc { bus.scc }
         fn cpu_regs_mut(&mut self) -> &mut RegisterFile { regs }
-        fn ram_mut(&mut self) -> &mut [u8] { bus.ram }
-        fn ram_dirty_mut(&mut self) -> &mut BitSet { bus.ram_dirty }
     }
 
     immutable_calls {
@@ -345,7 +340,6 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
-        fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
         fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
@@ -853,17 +847,6 @@ impl Emulator {
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
             })))?;
-
-        // Memory contents
-        for page in self.config.ram_dirty() {
-            let r = (page * RAM_DIRTY_PAGESIZE)..((page + 1) * RAM_DIRTY_PAGESIZE);
-            self.event_sender.send(EmulatorEvent::Memory((
-                r.start as Address,
-                self.config.ram()[r].to_vec(),
-                self.config.ram().len(),
-            )))?;
-        }
-        self.config.ram_dirty_mut().clear();
 
         // Memory notifiers. A stopped machine gets all of them looked at, so that
         // whatever happened without a notice, such as changes in the page tables
@@ -1536,18 +1519,6 @@ impl Tickable for Emulator {
                         } else {
                             self.config.cpu_set_breakpoint(bp);
                             info!("Breakpoint set: {:X?}", bp);
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::BusInspectWrite(start, data) => {
-                        for (i, d) in data.into_iter().enumerate() {
-                            let addr = start.wrapping_add(i as Address);
-                            if self.config.bus_inspect_write(addr, d).is_none() {
-                                self.user_error(&format!(
-                                    "Could not write to address {:08X}",
-                                    addr
-                                ));
-                            }
                         }
                         self.status_update()?;
                     }

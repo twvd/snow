@@ -177,7 +177,6 @@ fn main() -> Result<()> {
         }
         while let Ok(event) = event_recv.try_recv() {
             match event {
-                EmulatorEvent::Memory(_) => (),
                 EmulatorEvent::Status(s) => {
                     info!("Event: Status: {:?}", s);
                     if !s.running && s.cycles > 100 {

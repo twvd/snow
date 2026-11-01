@@ -613,7 +613,6 @@ impl EmulatorState {
                         self.memory_notifications.push_back((id, addr, data));
                     }
                 }
-                EmulatorEvent::Memory(_) => (),
                 EmulatorEvent::MemorySearchResult(result) => {
                     self.memory_search_result = Some(result);
                 }

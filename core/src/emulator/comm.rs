@@ -78,7 +78,6 @@ pub enum EmulatorCommand {
     StepOut,
     StepOver,
     ToggleBreakpoint(Breakpoint),
-    BusInspectWrite(Address, Vec<u8>),
     /// Writes memory, at physical addresses if `phys`, else logical ones
     InspectWrite {
         addr: Address,
@@ -236,7 +235,6 @@ pub enum EmulatorEvent {
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
     ScsiMediaEjected(usize),
-    Memory((Address, Vec<u8>, usize)),
     /// What a notifier's range holds, when it has changed. None for what can't
     /// be read.
     MemoryNotify {

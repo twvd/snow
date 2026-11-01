@@ -34,7 +34,6 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
-use bit_set::BitSet;
 use log::*;
 use num_traits::ToBytes;
 use serde::{Deserialize, Serialize};
@@ -52,9 +51,6 @@ const NUBUS_WAITS: Ticks = 4;
 
 /// Time the SCC needs between accesses (2.2us)
 const SCC_RECOVERY: Ticks = BUS_FREQUENCY * 22 / 10_000_000;
-
-/// Size of a RAM page in MacBus::ram_dirty
-pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 struct RamConfig {
     size: usize,
@@ -120,9 +116,6 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
-
-    /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
-    pub(crate) ram_dirty: BitSet,
 
     pub(crate) via1: Via,
     pub(crate) via2: Via2,
@@ -270,7 +263,6 @@ where
             rom: Vec::from(rom),
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
-            ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
             via2: Via2::new(model),
             scc_ready: 0,
@@ -320,10 +312,6 @@ where
         }
 
         self.asc.after_deserialize();
-
-        // Mark all RAM pages as dirty after deserialization to update memory display
-        self.ram_dirty
-            .extend(0..(self.ram.len() / crate::mac::compact::bus::RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {
@@ -359,7 +347,6 @@ where
         let bytes = val.to_be_bytes();
         for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
-            self.ram_dirty.insert((addr + i) / RAM_DIRTY_PAGESIZE);
         }
     }
 
@@ -412,14 +399,12 @@ where
         let idx = addr as usize & self.ram_mask;
         if let Some(ram) = self.ram.get_mut(idx..idx + len as usize) {
             ram.copy_from_slice(&val.to_be_bytes()[4 - len as usize..]);
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
             return Some(());
         }
         for a in addr..addr + len {
             let idx = a as usize & self.ram_mask;
             // Ignore silently to avoid a lot of spam during memory tests
             if idx < self.ram.len() {
-                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                 self.ram[idx] = (val >> (8 * (addr + len - 1 - a))) as Byte;
             }
         }
@@ -869,9 +854,6 @@ where
             self.ram.fill(0);
 
             self.disable_memtest();
-
-            self.ram_dirty
-                .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
 
         // Keep the RTC and ADB for PRAM and event channels
