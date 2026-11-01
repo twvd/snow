@@ -3,8 +3,9 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
+use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg, TrTranslationReg};
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::tickable::Ticks;
 use crate::types::Word;
 
 type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
@@ -75,4 +76,81 @@ fn test_pload_replaces_atc_entry() {
     cpu.step().unwrap();
     assert_eq!(cpu.pmmu_translate(FC, 0x5000, false).unwrap(), 0x9000);
     assert_ne!(read_long(&cpu, page_desc(0x5000)) & (1 << 3), 0);
+}
+
+/// PTESTR #5,(A0),#`level`,A1
+/// PTESTR at `level`, of FC, with A1 for levels 1 to 7 (level 0 takes no
+/// address register on the 68030, M68000PRM 6-63)
+fn ptest_extword(level: u8) -> Word {
+    let an = if level > 0 { 1 << 8 | 1 << 5 } else { 0 };
+    0x8000 | Word::from(level) << 10 | 1 << 9 | an | 0x10 | Word::from(FC)
+}
+
+/// Runs a PTEST at `level` of $5000, with the page descriptor `desc`, and
+/// returns the CPU and the clocks it took
+fn ptest(level: u8, desc: u32) -> (TestCpu, Ticks) {
+    let mut cpu = testcpu(&[0xF010, ptest_extword(level)]);
+    cpu.regs.write_a::<Address>(0, 0x5000);
+    write_long(&mut cpu, page_desc(0x5000), desc);
+    let start = cpu.cycles;
+    cpu.step().unwrap();
+    let cycles = cpu.cycles - start;
+    (cpu, cycles)
+}
+
+#[test]
+fn test_ptest_levels() {
+    // Level 7 goes down to the page descriptor through the two tables
+    let (cpu, full) = ptest(7, 0x5000 | 0b01);
+    assert!(!cpu.regs.pmmu.psr.invalid());
+    assert_eq!(cpu.regs.pmmu.psr.level_number(), 2);
+    assert_eq!(cpu.regs.read_a::<Address>(1), page_desc(0x5000));
+
+    // Level 1 stops at the descriptor of table A, one read earlier
+    let (cpu, one) = ptest(1, 0x5000 | 0b01);
+    assert!(!cpu.regs.pmmu.psr.invalid());
+    assert_eq!(cpu.regs.pmmu.psr.level_number(), 1);
+    assert_eq!(cpu.regs.read_a::<Address>(1), TABLE_A);
+    assert!(one < full);
+
+    // Level 0 only looks in the ATC, which does not have the page yet
+    let (mut cpu, zero) = ptest(0, 0x5000 | 0b01);
+    assert!(cpu.regs.pmmu.psr.invalid());
+    assert_eq!(cpu.regs.pmmu.psr.level_number(), 0);
+    assert!(zero < one);
+
+    // Once the ATC has it, with the M bit
+    write_long(&mut cpu, page_desc(0x5000), 0x5000 | 1 << 4 | 0b01);
+    cpu.pmmu_translate(FC, 0x5000, false).unwrap();
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    assert!(!cpu.regs.pmmu.psr.invalid());
+    assert!(cpu.regs.pmmu.psr.modified());
+}
+
+#[test]
+fn test_ptest_status() {
+    // An invalid page descriptor, which A1 still points to
+    let (cpu, _) = ptest(7, 0);
+    assert!(cpu.regs.pmmu.psr.invalid());
+    assert_eq!(cpu.regs.pmmu.psr.level_number(), 2);
+    assert_eq!(cpu.regs.read_a::<Address>(1), page_desc(0x5000));
+
+    // PTESTR also reports write protection, and the M bit
+    let (cpu, _) = ptest(7, 0x5000 | 1 << 4 | 1 << 2 | 0b01);
+    assert!(!cpu.regs.pmmu.psr.invalid());
+    assert!(cpu.regs.pmmu.psr.write_protected());
+    assert!(cpu.regs.pmmu.psr.modified());
+}
+
+#[test]
+fn test_ptest_transparent() {
+    // TT0 maps the first 16 MB for any function code, read or write
+    let mut cpu = testcpu(&[0xF010, ptest_extword(0)]);
+    cpu.regs.pmmu.tt[0] = TrTranslationReg(0x0000_8107);
+    cpu.regs.write_a::<Address>(0, 0x5000);
+    cpu.step().unwrap();
+    assert!(cpu.regs.pmmu.psr.transparent());
+    assert!(!cpu.regs.pmmu.psr.invalid());
 }
