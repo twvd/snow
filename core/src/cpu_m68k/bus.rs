@@ -197,6 +197,9 @@ where
         if !self.caches.inspect_phys_dirty(self.regs.cacr, paddr) {
             self.bus.inspect_write(paddr, val)?;
         }
+        if self.watch_active {
+            self.watch_write(paddr, 1);
+        }
         self.caches.inspect_phys_write(paddr, val);
         for alias in self.caches.inspect_aliases(paddr).into_iter().flatten() {
             if self.inspect_translate(alias.fc, alias.laddr, false) == Some(paddr) {
@@ -329,6 +332,69 @@ where
     ) -> Result<T> {
         // FC unused for physical addressing
         self.read_ticks_generic::<T>(AccessKind::Physical, FC_UNUSED, o_paddr)
+    }
+
+    /// Notes a write of `len` bytes at physical address `paddr` if the host
+    /// watches any of them
+    #[cold]
+    #[inline(never)]
+    fn watch_write(&mut self, paddr: Address, len: u32) {
+        let last = paddr.wrapping_add(len - 1);
+        if self
+            .watch_ranges
+            .iter()
+            .any(|&(first_w, last_w)| paddr <= last_w && first_w <= last)
+        {
+            self.watch_hit = true;
+        }
+    }
+
+    /// Tells the CPU which ranges the host watches, each an address, a length
+    /// and how to look at it. Logical ranges are watched where they translate
+    /// to now: call this again when mmu_generation() or the mode change.
+    pub fn inspect_watch(&mut self, ranges: &[(Address, u32, InspectView)])
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        self.watch_ranges.clear();
+        for &(addr, len, view) in ranges {
+            if len == 0 {
+                continue;
+            }
+            let fc = match view {
+                InspectView::Physical => {
+                    let addr = addr & ADDRESS_MASK;
+                    self.watch_ranges.push((addr, addr.wrapping_add(len - 1)));
+                    continue;
+                }
+                InspectView::Virtual => self.fc_data(),
+                InspectView::Program => self.fc_program(),
+            };
+            let page_mask = self.pmmu_page_mask();
+            let mut done = 0;
+            while done < len {
+                let vaddr = addr.wrapping_add(done) & ADDRESS_MASK;
+                let part = (len - done).min(page_mask - (vaddr & page_mask) + 1);
+                if let Some(paddr) = self.inspect_translate(fc, vaddr, false) {
+                    self.watch_ranges
+                        .push((paddr, paddr.wrapping_add(part - 1)));
+                }
+                done += part;
+            }
+        }
+        self.watch_active = !self.watch_ranges.is_empty();
+    }
+
+    /// Returns whether anything may have changed in the watched ranges since
+    /// the last time this was called
+    pub fn inspect_take_watch_hit(&mut self) -> bool {
+        std::mem::take(&mut self.watch_hit)
+    }
+
+    /// Changes whenever translations may have changed: ATC flushes, MMU
+    /// register writes, reset
+    pub fn mmu_generation(&self) -> u32 {
+        self.mmu_generation
     }
 
     /// Triggers data access breakpoints
@@ -482,6 +548,10 @@ where
             .caches
             .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)?;
 
+        if self.watch_active && acc.wdata.is_some() {
+            self.watch_write(paddr, len);
+        }
+
         // Data breakpoints, on the physical address of the access. They
         // are about data: instruction fetches don't trigger them.
         if !self.breakpoints.is_empty() && acc.kind != AccessKind::Fetch {
@@ -530,6 +600,10 @@ where
             wline,
         )?;
         self.advance_cycles(ticks)?;
+
+        if self.watch_active && wline.is_some() {
+            self.watch_write(paddr, 16);
+        }
 
         // Data breakpoints, on the physical address of the access
         if !self.breakpoints.is_empty() {
@@ -754,7 +828,11 @@ where
         size: u32,
         value: Long,
     ) -> bool {
-        if kind == AccessKind::Physical || !PMMU || !self.breakpoints.is_empty() {
+        if kind == AccessKind::Physical
+            || !PMMU
+            || !self.breakpoints.is_empty()
+            || self.watch_active
+        {
             return false;
         }
         let Some(tr) = self.last_translation_find(LAST_TRANSLATION_WRITE, fc, laddr) else {

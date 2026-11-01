@@ -549,6 +549,22 @@ pub struct CpuM68k<
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 
+    /// The host watches physical address ranges: CPU writes check `watch_ranges`
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) watch_active: bool,
+
+    /// Physical address ranges the host watches, first and last address
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) watch_ranges: Vec<(Address, Address)>,
+
+    /// Something may have changed in a watched range
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) watch_hit: bool,
+
+    /// Changes whenever translations may have changed
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) mmu_generation: u32,
+
     /// M68040: data writes of the current instruction may fault into a
     /// write-back slot instead of aborting the instruction
     #[serde(skip)]
@@ -617,6 +633,10 @@ where
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
+            watch_active: false,
+            watch_ranges: Vec::new(),
+            watch_hit: false,
+            mmu_generation: 0,
             wb040_defer: false,
             wb040: None,
             in_nmi: false,
@@ -4433,6 +4453,8 @@ where
         let paddr = self.regs.read_a::<Address>(instr.get_op2());
         account_040_time!(self, timing040::cinv_cpush(push, (instr.data >> 3) & 0b11));
         let mut ticks = 0;
+        // Dropping dirty data changes what memory looks like
+        self.watch_hit |= self.watch_active;
         self.caches.invalidate(
             &mut bus_transaction!(self, &mut ticks),
             caches,
@@ -4510,6 +4532,7 @@ where
                     _ => unreachable!(),
                 };
                 // The caches run the cache operations and say what stays
+                self.watch_hit |= self.watch_active;
                 let val = self.caches.write_cacr(val, self.regs.caar);
                 self.regs.write(destreg, val & mask);
             } else {

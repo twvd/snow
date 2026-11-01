@@ -763,3 +763,90 @@ fn bulk_no_caches_goes_to_the_bus() {
         assert_eq!(out[0], 0x56);
     }
 }
+
+#[test]
+fn watch_copyback_hit_and_aliases() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    // Nothing watched
+    cpu.write_ticks::<Long>(MAPPED, 1).unwrap();
+    assert!(!cpu.inspect_take_watch_hit());
+
+    // A copyback hit never reaches the bus
+    cpu.inspect_watch(&[(MAPPED_TO, 4, InspectView::Physical)]);
+    cpu.write_ticks::<Long>(MAPPED, 2).unwrap();
+    assert!(cpu.inspect_take_watch_hit());
+    assert!(!cpu.inspect_take_watch_hit());
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0);
+
+    // Next to the range, then overlapping it
+    cpu.write_ticks::<Long>(MAPPED + 4, 3).unwrap();
+    assert!(!cpu.inspect_take_watch_hit());
+    cpu.write_ticks::<u16>(MAPPED + 2, 4).unwrap();
+    assert!(cpu.inspect_take_watch_hit());
+
+    // Watching by logical address catches a write through another mapping
+    cpu.inspect_watch(&[(MAPPED, 4, InspectView::Virtual)]);
+    write_long!(cpu, PAGE_040 + 0x20 * 4, MAPPED_TO | RESIDENT);
+    cpu.write_ticks::<Long>(0x20000, 5).unwrap();
+    assert!(cpu.inspect_take_watch_hit());
+
+    // Host writes too
+    assert_eq!(cpu.inspect_write(MAPPED, 6, false), Some(()));
+    assert!(cpu.inspect_take_watch_hit());
+
+    cpu.inspect_watch(&[]);
+    assert_eq!(cpu.inspect_write(MAPPED, 6, false), Some(()));
+    assert!(!cpu.inspect_take_watch_hit());
+}
+
+#[test]
+fn watch_030_write_and_generation() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    let generation = cpu.mmu_generation();
+    cpu.inspect_watch(&[(MAPPED, 8, InspectView::Virtual)]);
+    cpu.write_ticks::<Long>(MAPPED + 4, 1).unwrap();
+    assert!(cpu.inspect_take_watch_hit());
+    cpu.write_ticks::<Long>(MAPPED + 8, 1).unwrap();
+    assert!(!cpu.inspect_take_watch_hit());
+    // Reads don't count, nor do searching tables or the U bit elsewhere
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0);
+    assert!(!cpu.inspect_take_watch_hit());
+    assert_eq!(cpu.mmu_generation(), generation);
+
+    cpu.pmmu_cache_invalidate();
+    assert_ne!(cpu.mmu_generation(), generation);
+}
+
+#[test]
+fn watch_unmapped_range_watches_nothing() {
+    let mut cpu = cpu030();
+    cpu.inspect_watch(&[(0x20000, 0x10, InspectView::Virtual)]);
+    assert!(cpu.watch_ranges.is_empty());
+    assert!(!cpu.watch_active);
+}
+
+#[test]
+fn watch_spans_pages() {
+    let mut cpu = cpu030();
+    cpu.inspect_watch(&[(MAPPED - 2, 4, InspectView::Virtual)]);
+    assert_eq!(
+        cpu.watch_ranges,
+        [(MAPPED - 2, MAPPED - 1), (MAPPED_TO, MAPPED_TO + 1)]
+    );
+}
+
+#[test]
+fn watch_cache_invalidate_counts() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    cpu.inspect_watch(&[(MAPPED_TO, 4, InspectView::Physical)]);
+    // CINVA for both caches
+    cpu.bus.mem.insert(0x1000, 0xF4);
+    cpu.bus.mem.insert(0x1001, 0xD8);
+    cpu.set_pc(0x1000).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    assert!(cpu.inspect_take_watch_hit());
+}

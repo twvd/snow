@@ -231,6 +231,7 @@ where
     /// Forgets the last translations, after anything that may change
     /// translations: ATC flushes, MMU register writes, reset
     pub(in crate::cpu_m68k) fn pmmu_translation_changed(&mut self) {
+        self.mmu_generation = self.mmu_generation.wrapping_add(1);
         self.last_translation = last_translations_none();
     }
 
