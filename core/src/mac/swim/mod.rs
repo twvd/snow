@@ -4,6 +4,7 @@
 //! Integrated Wozniak Machine, Integrated Sander Machine.
 
 pub mod chain;
+pub mod dcd;
 pub mod device;
 pub mod drive;
 pub mod ism;
@@ -15,6 +16,7 @@ use std::collections::VecDeque;
 
 use anyhow::{Context, Result, bail};
 use chain::Chain;
+use dcd::DcdDevice;
 use ism::{IsmError, IsmSetup, IsmStatus};
 use rand::Rng;
 
@@ -68,6 +70,9 @@ impl WeakBitRng {
         z & (1 << 63) != 0
     }
 }
+
+/// Most HD20s the .Sony driver takes on the daisy chain (drives 3 to 6)
+pub const MAX_DCDS: usize = 4;
 
 enum FluxTransitionTime {
     /// 1
@@ -221,6 +226,13 @@ pub struct Swim {
     #[serde(skip)]
     spinning: Option<bool>,
 
+    /// HD20s (Directly Connected Disks) on the external drive port, in daisy chain order
+    pub(crate) dcds: Vec<DcdDevice>,
+    /// Position along the external daisy chain (LSTRB pulses since !ENBL2 went active)
+    dcd_chain_pos: usize,
+    /// Clocks the byte in the write shifter has been shifting out towards the DCD
+    dcd_wr_ticks: Ticks,
+
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
 }
@@ -331,6 +343,10 @@ impl Swim {
                 ism_write_shreg_cnt: 0,
                 ism_write_prev_bit: false,
             },
+
+            dcds: Vec::new(),
+            dcd_chain_pos: 0,
+            dcd_wr_ticks: 0,
 
             enable: false,
             enable_hold: 0,
@@ -578,6 +594,54 @@ impl Swim {
         }
     }
 
+    /// Attaches an HD20 (Directly Connected Disk) to the end of the daisy chain on the
+    /// external drive port, in front of the external floppy drive (if any).
+    /// Returns its position in the chain.
+    pub fn attach_dcd(&mut self, dcd: DcdDevice) -> Result<usize> {
+        if self.dcds.len() >= MAX_DCDS {
+            bail!("At most {} HD20s can be attached", MAX_DCDS);
+        }
+        self.dcds.push(dcd);
+        self.dcd_chain_pos = 0;
+        Ok(self.dcds.len() - 1)
+    }
+
+    /// Detaches the HD20 at the given chain position. The ones behind it move up.
+    pub fn detach_dcd(&mut self, idx: usize) -> Result<DcdDevice> {
+        if idx >= self.dcds.len() {
+            bail!("No HD20 at position {}", idx);
+        }
+        self.dcd_chain_pos = 0;
+        Ok(self.dcds.remove(idx))
+    }
+
+    /// The DCD answering on the drive port right now, if any: DCDs only answer on the
+    /// external enable, the one at the current chain position.
+    fn selected_dcd(&self) -> Option<&DcdDevice> {
+        if self.mode == SwimMode::Iwm && self.extdrive && self.enable {
+            self.dcds.get(self.dcd_chain_pos)
+        } else {
+            None
+        }
+    }
+
+    fn selected_dcd_mut(&mut self) -> Option<&mut DcdDevice> {
+        if self.mode == SwimMode::Iwm && self.extdrive && self.enable {
+            self.dcds.get_mut(self.dcd_chain_pos)
+        } else {
+            None
+        }
+    }
+
+    fn dcd_selected(&self) -> bool {
+        self.selected_dcd().is_some()
+    }
+
+    /// CA2:CA1:CA0 as the 3-bit state a DCD sees (it ignores SEL)
+    fn dcd_state(&self) -> u8 {
+        (u8::from(self.ca2) << 2) | (u8::from(self.ca1) << 1) | u8::from(self.ca0)
+    }
+
     /// Converts the four register selection I/Os to a u8 value which can be used
     /// to convert to an enum value.
     fn get_selected_drive_reg_u8(&self) -> u8 {
@@ -666,6 +730,10 @@ impl Tickable for Swim {
             // connector, with no access
             self.update_lines();
         }
+        if self.dcd_selected() {
+            self.dcd_tick(ticks);
+            return Ok(ticks);
+        }
 
         // Whether a disk spins only changes when the controller or the emulator calls its
         // device: one that doesn't isn't asked again until then
@@ -718,10 +786,11 @@ impl Debuggable for Swim {
         use crate::debuggable::*;
         use crate::{
             dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group,
-            dbgprop_header, dbgprop_string, dbgprop_udec, dbgprop_word, dbgprop_word_bin,
+            dbgprop_header, dbgprop_nest, dbgprop_string, dbgprop_udec, dbgprop_word,
+            dbgprop_word_bin,
         };
 
-        vec![
+        let mut result = vec![
             dbgprop_enum!("Mode", self.mode),
             dbgprop_udec!("ISM switch counter", self.chip.ism_switch_ctr),
             dbgprop_group!(
@@ -791,7 +860,14 @@ impl Debuggable for Swim {
                     dbgprop_word!("CRC", self.chip.ism_crc),
                 ]
             ),
-        ]
+        ];
+        if !self.dcds.is_empty() {
+            result.push(dbgprop_udec!("HD20 chain position", self.dcd_chain_pos));
+        }
+        for (i, dcd) in self.dcds.iter().enumerate() {
+            result.push(dbgprop_nest!(format!("HD20 #{}", i + 1), dcd));
+        }
+        result
     }
 }
 
