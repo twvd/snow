@@ -132,21 +132,18 @@ pub struct RestartRegisterFile {
     pub msp: Address,
 }
 
-impl From<&RegisterFile> for RestartRegisterFile {
-    fn from(value: &RegisterFile) -> Self {
-        Self {
-            d: value.d,
-            a: value.a,
-            usp: value.usp,
-            isp: value.isp,
-            sr: value.sr,
-            pc: value.pc,
-            msp: value.msp,
-        }
-    }
-}
-
 impl RestartRegisterFile {
+    /// Saves the registers of `reg`, in place
+    pub fn save(&mut self, reg: &RegisterFile) {
+        self.d = reg.d;
+        self.a = reg.a;
+        self.usp = reg.usp;
+        self.isp = reg.isp;
+        self.sr = reg.sr;
+        self.pc = reg.pc;
+        self.msp = reg.msp;
+    }
+
     pub fn restore(self, reg: &mut RegisterFile) {
         reg.d = self.d;
         reg.a = self.a;
