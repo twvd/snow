@@ -219,6 +219,8 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     /// the ROM sets on a bank whose size isn't a power of two. All memory has
     /// a single mode here, and the timing doesn't follow the configuration.
     memcjr_regs: [u16; MEMCJR_REGS],
+    /// Row of the VRAM that was accessed last
+    vram_row: Address,
     /// Offset in `ram` of each block of the RAM space, as the banks decode it
     ram_map: Vec<u32>,
 
@@ -310,6 +312,7 @@ where
             primetime_regs: vec![0; PRIMETIME_REGS_SIZE],
             memcjr_holding: 0,
             memcjr_regs: MEMCJR_RESET,
+            vram_row: 0,
             ram_map: vec![RAM_BLOCK_NONE; RAM_BLOCKS],
             sound: V8Sound::new(V8Variant::PrimeTime),
             sound_clock: 0,
@@ -986,6 +989,23 @@ where
     }
 }
 
+impl<TRenderer> Lc475Bus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    /// Further wait states of an access to the VRAM which opens another row.
+    /// A row is 1 KB. Each of the two banks really has its own, and the screen
+    /// refresh transfers close them too.
+    fn vram_row_waits(&mut self, addr: Address) -> Ticks {
+        let row = (addr & 0xFF_FFFF) >> 10;
+        if std::mem::replace(&mut self.vram_row, row) == row {
+            0
+        } else {
+            3
+        }
+    }
+}
+
 impl<TRenderer> Bus<Address, Byte> for Lc475Bus<TRenderer>
 where
     TRenderer: Renderer,
@@ -1007,6 +1027,9 @@ where
         let memory = Self::memory_waits(region, acc.addr, acc.write);
         let waits = match memory {
             Some((_, next)) if acc.burst && acc.addr & 0xF != 0 => next,
+            Some((first, _)) if matches!(region, Region::Video) => {
+                first + self.vram_row_waits(acc.addr)
+            }
             Some((first, _)) => first,
             None => 0,
         };
@@ -1057,6 +1080,7 @@ where
         self.primetime_regs.fill(0);
         self.memcjr_holding = 0;
         self.memcjr_regs = MEMCJR_RESET;
+        self.vram_row = 0;
         self.ram_map_update();
 
         self.mouse_ready = false;
