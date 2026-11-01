@@ -99,6 +99,23 @@ pub trait CpuCaches: Default {
         None
     }
 
+    /// Runs a read of `size` bytes (within a long word) at physical address
+    /// `paddr` from caches tagged with physical addresses, if it hits: as
+    /// access() would, with `fetch` for an instruction fetch. Returns None
+    /// when the access has to run with access().
+    #[inline(always)]
+    fn phys_read_hit(
+        &mut self,
+        _cacr: RegisterCACR,
+        _fetch: bool,
+        _fc: u8,
+        _paddr: Address,
+        _size: u32,
+        _history: &mut HistoryEntryInstruction,
+    ) -> Option<(Long, u32)> {
+        None
+    }
+
     /// MOVEC to CACR: runs the cache operations the value asks for (clear,
     /// clear entry) and returns the value to keep in CACR
     fn write_cacr(&mut self, val: Long, _caar: Address) -> Long {
