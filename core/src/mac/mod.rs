@@ -489,6 +489,41 @@ impl Display for NubusDeviceKind {
     }
 }
 
+/// Card in the PDS slot of the Macintosh LC family
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::IntoStaticStr,
+)]
+pub enum PdsCardKind {
+    /// Empty slot
+    #[default]
+    None,
+    /// Apple IIe Card
+    AppleIIe,
+}
+
+impl Display for PdsCardKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::None => "None",
+                Self::AppleIIe => "Apple IIe Card",
+            }
+        )
+    }
+}
+
 /// Configuration for a single NuBus slot: which card, in which slot, with which
 /// declaration ROM.
 pub struct NubusCardConfig<'a> {

@@ -39,6 +39,10 @@ pub(super) const SWIM_INTERVAL: Ticks = 13;
 /// Start of the window of the video RAM
 const VRAM_BASE: Address = 0xF4_0000;
 
+/// Start of the PDS slot $E window (the Macintosh LC processor-direct
+/// slot, in 24-bit address space — LC developer note)
+pub(super) const PDS_BASE: Address = 0xE0_0000;
+
 /// Monitors which the V8 supports
 pub const MONITORS: &[MacMonitor] = &[MacMonitor::RGB12, MacMonitor::HiRes14];
 
@@ -47,20 +51,28 @@ pub const VRAM_SIZES: &[usize] = &[256 * 1024, 512 * 1024];
 
 /// Finds what an address selects.
 ///
-/// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
-/// which is not implemented, and is ignored in the 24-bit address map
-/// (`fc3` clear in data register B).
+/// The V8 decodes A31 and A23-A0. A31 selects the expansion slot in the
+/// 32-bit map: the PDS card in slot $E (A23-A20 = $E), aliased in the
+/// 16 MB standard slot space ($FE00 0000-$FEFF FFFF). In the 24-bit
+/// address map (`fc3` clear in data register B), A31 is ignored and the
+/// card answers at $E0 0000-$EF FFFF and at its pseudo-slot I/O window
+/// $FC 0000-$FF FFFF (where the IIe Startup INIT's $50FC 0000 base
+/// lands).
 pub(super) fn decode(addr: Address, fc3: bool) -> Option<Region> {
     if fc3 && addr & (1 << 31) != 0 {
-        return None;
+        return (addr & 0x0F00_0000 == 0x0E00_0000).then_some(Region::IieCard(addr & 0x00FF_FFFF));
     }
 
     let addr = addr & 0x00FF_FFFF;
     match addr {
         0x00_0000..=0x9F_FFFF => Some(Region::Ram(addr)),
         0xA0_0000..=0xAF_FFFF => Some(Region::Rom),
+        0xE0_0000..=0xEF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
         0xF0_0000..=0xF3_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
         0xF4_0000..=0xFB_FFFF => Some(Region::Vram((addr - VRAM_BASE) as usize)),
+        // Pseudo-slot I/O window of the PDS card, above the video RAM
+        // window
+        0xFC_0000..=0xFF_FFFF => Some(Region::IieCard(addr - 0xFC_0000 + 0x10_0000)),
         _ => None,
     }
 }
@@ -117,12 +129,28 @@ pub(super) fn frame_period(monitor: MacMonitor) -> Ticks {
 
 /// Video mode set in the expansion and monitor parameters registers
 pub(super) fn video_mode(monitor: MacMonitor, exp: RegisterExp, monp: RegisterMonP) -> Mode {
-    Mode {
-        width: monitor.width(),
-        height: monitor.height(),
-        depth: monp.depth(),
-        row_bytes: if exp.vram_256k() { 512 } else { 1024 },
-        direct_palette: true,
+    if exp.a2mode() {
+        // The Apple IIe card's mode: 560x384, scanned from VRAM (the
+        // Mac side renders the IIe screen with QuickDraw; the card has
+        // no video of its own).  The driver programs the V8 depth
+        // field one higher than the Ariel's while A2 mode is on, so
+        // the real pixel depth is the field minus one ([INF]; verify
+        // in the LC ROM's V8 driver).
+        Mode {
+            width: 560,
+            height: 384,
+            depth: monp.depth().saturating_sub(1),
+            row_bytes: if exp.vram_256k() { 512 } else { 1024 },
+            direct_palette: true,
+        }
+    } else {
+        Mode {
+            width: monitor.width(),
+            height: monitor.height(),
+            depth: monp.depth(),
+            row_bytes: if exp.vram_256k() { 512 } else { 1024 },
+            direct_palette: true,
+        }
     }
 }
 
@@ -231,5 +259,30 @@ mod tests {
         let frames = |monitor| 15_667_200 / frame_period(monitor);
         assert_eq!(frames(MacMonitor::RGB12), 60);
         assert_eq!(frames(MacMonitor::HiRes14), 66);
+    }
+
+    #[test]
+    fn pds_slot_space() {
+        assert!(matches!(decode(0xE0_0000, false), Some(Region::IieCard(0))));
+        assert!(matches!(
+            decode(0xEF_FFFF, false),
+            Some(Region::IieCard(0xF_FFFF))
+        ));
+        assert!(decode(0xDF_FFFF, false).is_none());
+        // 32-bit slot aliases: slot $E, but not slot $F
+        assert!(matches!(
+            decode(0xFEFF_FFFF, true),
+            Some(Region::IieCard(0xFF_FFFF))
+        ));
+        assert!(decode(0xFFFF_FFFC, true).is_none());
+        // Pseudo-slot I/O window of the card
+        assert!(matches!(
+            decode(0xFC_0000, false),
+            Some(Region::IieCard(0x10_0000))
+        ));
+        assert!(matches!(
+            decode(0x50FC_0000, false),
+            Some(Region::IieCard(0x10_0000))
+        ));
     }
 }

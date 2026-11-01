@@ -5,6 +5,7 @@ use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
+use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -23,10 +24,10 @@ use snow_core::bus::Address;
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
-use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::{MacModel, PdsCardKind};
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
@@ -205,6 +206,21 @@ pub struct SnowGui {
     cdrom_files_dialog: SnowFileDialog,
     cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
+    iie_disk_dialog: SnowFileDialog,
+    /// The Apple IIe Card's joystick input (None without the card)
+    iie_joystick: Option<Joystick>,
+    /// The Apple IIe joystick mapping window is open
+    joy_mapping_open: bool,
+    /// The binding being assigned in the mapping window: the next key or
+    /// controller button pressed goes there
+    joy_capture: Option<(JoyInput, usize)>,
+    /// The IIe 5.25" drive the image picker loads into.
+    iie_disk_dialog_drive: usize,
+    /// The last-loaded IIe 5.25" image paths (for the menu labels).
+    iie_disk_image: [Option<String>; 2],
+    iie_unidisk_dialog: SnowFileDialog,
+    /// The last-loaded IIe UniDisk 3.5 image path (for the menu label).
+    iie_unidisk_image: Option<String>,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -430,7 +446,23 @@ impl SnowGui {
                 .default_save_extension("Applesauce MOOF")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy),
+                .storage(settings.fd_floppy.clone()),
+            iie_disk_image: [None, None],
+            iie_joystick: None,
+            joy_mapping_open: false,
+            joy_capture: None,
+            iie_disk_dialog_drive: 0,
+            iie_disk_dialog: SnowFileDialog::new()
+                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_floppy.clone()),
+            iie_unidisk_image: None,
+            iie_unidisk_dialog: SnowFileDialog::new()
+                .add_filter("Apple II 3.5\" disks", &["po", "2mg"])
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_floppy.clone()),
             record_dialog: SnowFileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
@@ -814,6 +846,25 @@ impl SnowGui {
                         self.emu.progkey();
                     }
 
+                    if let Some(joy) = &mut self.iie_joystick
+                        && joy.emulation()
+                    {
+                        ui.separator();
+                        let mut on = joy.keys_on();
+                        if ui
+                            .checkbox(&mut on, "Apple IIe joystick keys (Scroll Lock)")
+                            .on_hover_text(joy.help())
+                            .changed()
+                        {
+                            joy.set_keys_on(on);
+                        }
+                    }
+                    if self.iie_joystick.is_some()
+                        && ui.button("Apple IIe joystick mapping...").clicked()
+                    {
+                        self.joy_mapping_open = true;
+                    }
+
                     ui.separator();
                     ui.menu_button("Mouse emulation", |ui| {
                         let current = self.emu.mouse_mode();
@@ -893,6 +944,67 @@ impl SnowGui {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
+                    if self.emu.iie_has_unidisk() || self.emu.iie_drives_525() > 0 {
+                        ui.separator();
+                    }
+                    if self.emu.iie_has_unidisk() {
+                        ui.menu_button(
+                            format!(
+                                "Apple IIe UniDisk 3.5: {}",
+                                self.iie_unidisk_image
+                                    .as_deref()
+                                    .and_then(|p| std::path::Path::new(p).file_name())
+                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Load image...").clicked() {
+                                    self.iie_unidisk_dialog
+                                        .pick_file(self.settings.native_file_dialogs);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.iie_unidisk_image.is_some(),
+                                        egui::Button::new("Eject"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.emu.eject_iie_unidisk();
+                                    self.iie_unidisk_image = None;
+                                }
+                            },
+                        );
+                    }
+                    for drive in 0..self.emu.iie_drives_525() {
+                        ui.menu_button(
+                            format!(
+                                "Apple IIe 5.25\" drive {}: {}",
+                                drive + 1,
+                                self.iie_disk_image[drive]
+                                    .as_deref()
+                                    .and_then(|p| std::path::Path::new(p).file_name())
+                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Load image...").clicked() {
+                                    self.iie_disk_dialog_drive = drive;
+                                    self.iie_disk_dialog
+                                        .pick_file(self.settings.native_file_dialogs);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.iie_disk_image[drive].is_some(),
+                                        egui::Button::new("Eject"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.emu.eject_iie_disk(drive);
+                                    self.iie_disk_image[drive] = None;
+                                }
+                            },
+                        );
+                    }
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
                     let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
@@ -2155,6 +2267,20 @@ impl SnowGui {
                     self.toggle_ff();
                 }
 
+                if let Some(joy) = &mut self.iie_joystick
+                    && joy.emulation()
+                    && ui
+                        .add(egui::Button::selectable(
+                            joy.keys_on(),
+                            egui_material_icons::icons::ICON_SPORTS_ESPORTS,
+                        ))
+                        .on_hover_text(joy.help())
+                        .clicked()
+                {
+                    let on = !joy.keys_on();
+                    joy.set_keys_on(on);
+                }
+
                 if ui
                     .add_enabled(
                         !self.emu.is_running(),
@@ -2528,7 +2654,23 @@ impl SnowGui {
                         },
                     ..
                 } => {
+                    if let Some((input, slot)) = self.joy_capture
+                        && state.is_pressed()
+                    {
+                        if kc != egui_winit::winit::keyboard::KeyCode::Escape {
+                            self.assign_joy_binding(input, slot, JoyBinding::Key(kc));
+                        }
+                        self.joy_capture = None;
+                        continue;
+                    }
+
                     if ctx.wants_keyboard_input() {
+                        continue;
+                    }
+
+                    if let Some(joy) = &mut self.iie_joystick
+                        && joy.key(kc, state.is_pressed())
+                    {
                         continue;
                     }
 
@@ -2654,6 +2796,12 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
+        self.iie_joystick = (args.pds_card == PdsCardKind::AppleIIe).then(|| {
+            let mut joy = Joystick::new(args.iie_joystick_emulation);
+            joy.set_bindings(self.joy_bindings());
+            joy
+        });
+
         // Re-synchronize the cached fast-forward states
         self.ff_on = args.start_fastforward;
         self.dynamic_ff_input_time = None;
@@ -2696,6 +2844,10 @@ impl SnowGui {
 
         // Re-initialize stuff from newly loaded workspace
         self.load_windows = true;
+        let bindings = self.joy_bindings();
+        if let Some(joy) = &mut self.iie_joystick {
+            joy.set_bindings(bindings);
+        }
         self.framebuffer.scale = self.workspace.viewport_scale;
         self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         self.framebuffer.shader_enabled = self.workspace.shader_enabled;
@@ -2761,6 +2913,7 @@ impl SnowGui {
     }
 
     fn save_workspace(&mut self, path: &Path) {
+        self.workspace.iie_joystick_bindings = Some(self.joy_bindings());
         self.workspace.viewport_scale = self.framebuffer.scale;
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
@@ -2772,6 +2925,88 @@ impl SnowGui {
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
+        }
+    }
+
+    /// The Apple IIe joystick bindings: the workspace's, else the
+    /// settings' (a new workspace takes the latest)
+    fn joy_bindings(&self) -> JoyBindings {
+        self.workspace
+            .iie_joystick_bindings
+            .unwrap_or(self.settings.iie_joystick_bindings)
+    }
+
+    /// Sets the joystick bindings in the settings (saved) and in the
+    /// workspace, and passes them on to the joystick
+    fn set_joy_bindings(&mut self, bindings: JoyBindings) {
+        self.settings.iie_joystick_bindings = bindings;
+        self.settings.save();
+        self.workspace.iie_joystick_bindings = Some(bindings);
+        if let Some(joy) = &mut self.iie_joystick {
+            joy.set_bindings(bindings);
+        }
+    }
+
+    /// Binds `binding` to a joystick input
+    fn assign_joy_binding(&mut self, input: JoyInput, slot: usize, binding: JoyBinding) {
+        let mut bindings = self.joy_bindings();
+        assign(&mut bindings, input, slot, binding);
+        self.set_joy_bindings(bindings);
+    }
+
+    /// The Apple IIe joystick mapping window: up to three keys or
+    /// controller buttons per joystick input
+    fn draw_joy_mapping(&mut self, ctx: &egui::Context) {
+        let mut open = self.joy_mapping_open;
+        let mut bindings = self.joy_bindings();
+        let mut changed = false;
+        egui::Window::new("Apple IIe joystick mapping")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Click a choice, then press a key or a controller button \
+                     (Esc cancels). Right-click clears a choice. Any of the choices \
+                     of an input works; a key or button is used once.",
+                );
+                ui.separator();
+                egui::Grid::new("joy_mapping_grid").show(ui, |ui| {
+                    for input in JoyInput::iter() {
+                        ui.label(input.to_string());
+                        for (slot, binding) in bindings[input as usize].iter_mut().enumerate() {
+                            let text = if self.joy_capture == Some((input, slot)) {
+                                "Press a key or button...".to_string()
+                            } else {
+                                binding.map_or("-".to_string(), |b| b.to_string())
+                            };
+                            let resp =
+                                ui.add(egui::Button::new(text).min_size([130.0, 0.0].into()));
+                            if resp.clicked() {
+                                self.joy_capture = Some((input, slot));
+                            }
+                            if resp.secondary_clicked() {
+                                *binding = None;
+                                self.joy_capture = None;
+                                changed = true;
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                if ui.button("Reset to defaults").clicked() {
+                    bindings = default_bindings();
+                    self.joy_capture = None;
+                    changed = true;
+                }
+            });
+        self.joy_mapping_open = open;
+        if !open {
+            self.joy_capture = None;
+        }
+        if changed {
+            self.set_joy_bindings(bindings);
         }
     }
 
@@ -3268,6 +3503,18 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        if self.emu.is_initialized()
+            && let Some(joy) = &mut self.iie_joystick
+            && let Some(port) = joy.poll()
+        {
+            self.emu.set_iie_game_port(port);
+        }
+        if let Some(joy) = &mut self.iie_joystick
+            && let Some(button) = joy.take_pressed_button()
+            && let Some((input, slot)) = self.joy_capture.take()
+        {
+            self.assign_joy_binding(input, slot, JoyBinding::Pad(button));
+        }
         self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
 
@@ -3367,6 +3614,8 @@ impl eframe::App for SnowGui {
             });
         self.error_dialog_open &= error_open;
         self.ui_active &= !self.error_dialog_open;
+
+        self.draw_joy_mapping(ctx);
 
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);
@@ -3593,6 +3842,23 @@ impl eframe::App for SnowGui {
             self.settings.save();
         }
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Apple IIe 5.25" disk image picker
+        self.iie_disk_dialog.update(ctx, frame);
+        if let Some(path) = self.iie_disk_dialog.take_picked() {
+            let drive = self.iie_disk_dialog_drive;
+            self.iie_disk_image[drive] = Some(path.to_string_lossy().to_string());
+            self.emu.load_iie_disk(drive, &path);
+        }
+        self.ui_active &= *self.iie_disk_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Apple IIe UniDisk 3.5 image picker
+        self.iie_unidisk_dialog.update(ctx, frame);
+        if let Some(path) = self.iie_unidisk_dialog.take_picked() {
+            self.iie_unidisk_image = Some(path.to_string_lossy().to_string());
+            self.emu.load_iie_unidisk(&path);
+        }
+        self.ui_active &= *self.iie_unidisk_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);

@@ -1,6 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::pds_iie::{DECL_ROM, IieCardSettings, PdsIIeCard, iie_debug};
 use super::pseudovia::PseudoVia;
 use super::via::Via;
 use super::video::{self, Video};
@@ -56,6 +57,9 @@ pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
+/// Swing of the Apple IIe Card's speaker in the sound output, full scale = 1
+const IIE_SPEAKER_GAIN: f32 = 0.5;
+
 /// Gate array of the logic board, with what only one of them has
 #[derive(Serialize, Deserialize)]
 enum GateArray {
@@ -105,6 +109,8 @@ pub(super) enum Region {
     Io(Address),
     /// Video RAM, with the offset in its window
     Vram(usize),
+    /// PDS slot $E card, with the offset in the slot window
+    IieCard(Address),
     /// CPU ID register of the Sonora, with the number of the byte
     CpuId(usize),
 }
@@ -153,6 +159,9 @@ pub struct MacLCBus<TRenderer: Renderer> {
     sound: V8Sound,
     sound_clock: Ticks,
 
+    /// Apple IIe Card in the PDS slot, when installed
+    iie_card: Option<PdsIIeCard>,
+
     overlay: bool,
 
     /// Emulation speed setting
@@ -196,6 +205,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
@@ -204,6 +214,7 @@ where
         ram_size: Option<usize>,
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
+        iie_card: Option<IieCardSettings>,
     ) -> Self {
         const MB: usize = 1024 * 1024;
 
@@ -278,6 +289,8 @@ where
             sound: V8Sound::new(sound_kind),
             sound_clock: 0,
 
+            iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
+
             overlay: true,
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(bus_frequency),
@@ -305,6 +318,17 @@ where
 
     pub fn model(&self) -> MacModel {
         self.model
+    }
+
+    /// Sets the Egret's J17 "security" jumper (installed locks out the
+    /// Apple IIe Card's Option Panel configuration panels).
+    pub fn set_security_jumper(&mut self, installed: bool) {
+        self.egret.set_security_jumper(installed);
+    }
+
+    /// The Apple IIe card in the PDS slot, if installed.
+    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+        self.iie_card.as_mut()
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -503,6 +527,82 @@ where
         }
     }
 
+    /// Reads from the Apple IIe Card.  `offset` is the offset in the
+    /// card's own address space.  The card decodes only A19-A0 [INF], so
+    /// every 1 MB of its space holds the register block at the bottom and
+    /// the declaration ROM at the top (`$FFC00`-`$FFFFF`, on the odd bytes
+    /// = byte lanes 1 and 3).  The LC III's 24-bit MMU table needs this:
+    /// it maps the 24-bit `$E0 0000` to `$FE00 0000`, and `$FC 0000` (the
+    /// IIe app's `$50FC 0000` base) to `$FEE0 0000`, and the app reaches
+    /// the same registers through both.  Everything else, and everything
+    /// when no card is installed, reads open bus.
+    ///
+    /// The card is a 16-bit port: the register block gets one access per
+    /// bus cycle (the Slinky transfers once per cycle), and even bytes
+    /// of the declaration ROM area read open bus.
+    fn iie_read(&mut self, offset: Address, len: u32) -> Option<u32> {
+        // The declaration ROM: an 8-bit ROM on the odd bytes of the
+        // 16-bit port (byte lanes 1+3); even bytes read open bus.
+        if (0xF_FC00..=0xF_FFFF).contains(&(offset & 0xF_FFFF)) {
+            return Some((0..len).fold(0u32, |v, i| {
+                let off = offset.wrapping_add(i);
+                let b = if off & 1 != 0 {
+                    let n = ((0xF_FFFF - (off & 0xF_FFFF)) / 2) as usize;
+                    self.iie_card.as_ref().map_or(Self::OPENBUS, |_| {
+                        DECL_ROM.get(n).copied().unwrap_or(Self::OPENBUS)
+                    })
+                } else {
+                    Self::OPENBUS
+                };
+                iie_debug!("IIe Card read {:06X} -> {:02X}", off, b);
+                v << 8 | u32::from(b)
+            }));
+        }
+
+        // The register block, at the bottom of every 1 MB.
+        if offset & 0xF_FFFF < 0x1_0000
+            && let Some(card) = self.iie_card.as_mut()
+        {
+            let v = card
+                .host_read((offset & 0xFFFF) as u16, len)
+                .unwrap_or_else(|| Self::iie_open_bus(len));
+            #[cfg(feature = "iie-debug")]
+            for i in 0..len {
+                let off = offset.wrapping_add(i);
+                let b = ((v >> (8 * (len - 1 - i))) & 0xFF) as u8;
+                log::debug!("IIe Card read {:06X} -> {:02X}", off, b);
+            }
+            return Some(v);
+        }
+        iie_debug!("IIe Card read {:06X} -> open bus", offset);
+        Some(Self::iie_open_bus(len))
+    }
+
+    /// Open bus for a `len`-byte read of the card.
+    fn iie_open_bus(len: u32) -> u32 {
+        (0..len).fold(0, |v, _| v << 8 | u32::from(Self::OPENBUS))
+    }
+
+    /// Writes to the Apple IIe Card register block (see [`Self::iie_read`]
+    /// for the address windows).  Bytes outside the block are ignored,
+    /// as are all writes when no card is installed.
+    fn iie_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
+        if offset & 0xF_FFFF < 0x1_0000 {
+            if let Some(card) = self.iie_card.as_mut() {
+                card.host_write((offset & 0xFFFF) as u16, len, val);
+            }
+            #[cfg(feature = "iie-debug")]
+            for i in 0..len {
+                let off = offset.wrapping_add(i);
+                let b = (val >> (8 * (len - 1 - i))) as u8;
+                log::debug!("IIe Card write {:06X} <- {:02X}", off, b);
+            }
+        } else {
+            iie_debug!("IIe Card write {:06X} ignored", offset);
+        }
+        Some(())
+    }
+
     /// Width in bytes and wait states of the port answering a region.
     ///
     /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
@@ -525,6 +625,9 @@ where
             (GateArray::Sonora { .. }, Region::Vram(_)) if write => (2, sonora::VRAM_WRITE_WAITS),
             (GateArray::Sonora { .. }, Region::Vram(_)) => (2, sonora::VRAM_READ_WAITS),
             (_, Region::CpuId(_)) => (4, IO_WAITS),
+            // The Apple IIe Card is a 16-bit port (its declaration ROM
+            // sits on the odd bytes, byte lanes 1+3).
+            (_, Region::IieCard(_)) => (2, IO_WAITS),
         }
     }
 
@@ -977,6 +1080,12 @@ where
                 },
                 Self::ignore_write,
             ),
+            Some(region @ Region::IieCard(offset)) => self.cycle(
+                acc,
+                self.port(&region, acc.write),
+                move |s, _, len| s.iie_read(offset, len),
+                move |s, _, len, val| s.iie_write(offset, len, val),
+            ),
             None => BusResponse::BusError,
         };
 
@@ -1008,6 +1117,11 @@ where
         self.sound.reset();
         self.overlay = true;
         self.mouse_ready = false;
+        // The card is an independent computer: only a hard reset (power
+        // on) resets it.  The host reloads the firmware after.
+        if hard && let Some(card) = &mut self.iie_card {
+            card.reset(true);
+        }
         Ok(false)
     }
 }
@@ -1069,6 +1183,13 @@ where
             }
         }
 
+        // The Apple IIe Card runs in its own clock domain, ticked at C16M.
+        let bus_frequency = self.bus_frequency();
+        if let Some(card) = &mut self.iie_card {
+            let ticks = native_ticks * C16M_FREQUENCY / bus_frequency;
+            card.tick(ticks, ())?;
+        }
+
         // Host frame pacing
         self.vblank_clock += native_ticks;
         while self.vblank_clock >= self.bus_frequency() / 60 {
@@ -1127,7 +1248,14 @@ where
         while self.sound_clock >= self.sound.sample_period() * self.bus_frequency() {
             self.sound_clock -= self.sound.sample_period() * self.bus_frequency();
 
-            self.sound.tick(self.speed == EmulatorSpeed::Accurate)?;
+            // The Apple IIe Card's speaker is mixed in after the DFAC. The
+            // level is a guess; the sound filter takes its DC out.
+            let speaker = self
+                .iie_card
+                .as_mut()
+                .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
+            self.sound
+                .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }
         self.pseudovia.set_asc_irq(self.sound.irq());
 
@@ -1189,6 +1317,7 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_group;
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
@@ -1200,6 +1329,10 @@ where
             dbgprop_nest!("Gate array registers", self.pseudovia),
             dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
+            match &self.iie_card {
+                Some(card) => dbgprop_nest!("Apple IIe Card", card),
+                None => dbgprop_group!("Apple IIe Card (absent)", Vec::new()),
+            },
         ]
     }
 }
@@ -1217,6 +1350,7 @@ mod tests {
             &vec![0; 512 * 1024],
             NullRenderer::new(0, 0).unwrap(),
             MouseMode::Disabled,
+            None,
             None,
             None,
             None,
@@ -1242,5 +1376,100 @@ mod tests {
         // Overclocked
         assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 0), 1);
         assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 20), 0);
+    }
+
+    /// The Apple IIe Card register block answers from its windows in
+    /// PDS slot $E space and the pseudo-slot I/O space, and bytes
+    /// outside it read open bus.
+    #[test]
+    fn iie_card_register_block_in_slot_space() {
+        let mut bus = MacLCBus::new(
+            MacModel::LC,
+            &vec![0; 512 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            Some(IieCardSettings::default()),
+        );
+
+        let ack = |data| BusResponse::Ack {
+            width: 2, // the card is a 16-bit port
+            data,
+            waits: IO_WAITS,
+        };
+
+        // Pseudo-slot I/O window ($50FC 0000 in the 32-bit map): the
+        // trap-code register reads 0 when not trapped.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0000, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0));
+
+        // Keyboard register through the same window: write $18 high
+        // byte, read it back (key | strobe).
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFC_0018, 1, 0x41, 0))
+            .unwrap();
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // The same register block at the bottom of the 24-bit slot
+        // window ($E0 0000).
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE0_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // Outside the register block reads open bus.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0100, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE8_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+    }
+
+    /// The LC III's 24-bit MMU table maps the 24-bit $E0 0000 to
+    /// $FE00 0000 and $FC 0000 (the IIe app's $50FC 0000 base) to
+    /// $FEE0 0000: both reach the register block, and the declaration
+    /// ROM sits at the top of each 1 MB.
+    #[test]
+    fn iie_card_lciii_slot_aliases() {
+        let mut bus = MacLCBus::new(
+            MacModel::LCIII,
+            &vec![0; 1024 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            Some(IieCardSettings::default()),
+        );
+        fn read(bus: &mut MacLCBus<NullRenderer>, addr: Address) -> u32 {
+            match bus.access(BusAccess::<Bus68020>::read(addr, 1, 0)).unwrap() {
+                BusResponse::Ack { data, .. } => data,
+                r => panic!("{addr:08X}: {r:?}"),
+            }
+        }
+
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFE00_0018, 1, 0x41, 0))
+            .unwrap();
+        for base in [0xFE00_0000, 0xFEE0_0000, 0xEEE0_0000] {
+            assert_eq!(read(&mut bus, base + 0x18), 0xC1, "registers at {base:08X}");
+        }
+        // The declaration ROM's last byte (byte lane 3), at the top of
+        // each 1 MB.
+        let top = read(&mut bus, 0xFEFF_FFFF);
+        assert_eq!(read(&mut bus, 0xFE0F_FFFF), top);
+        assert_eq!(read(&mut bus, 0xFEEF_FFFF), top);
+        // $50FC 0000 is not the PDS on the LC III.
+        assert_ne!(read(&mut bus, 0x50FC_0018), 0xC1);
     }
 }
