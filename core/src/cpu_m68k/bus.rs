@@ -1,6 +1,6 @@
 //! M68k CPU - Bus access functionality
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
 use crate::cpu_m68k::cache::CpuCaches;
@@ -14,8 +14,8 @@ use crate::cpu_m68k::{
     CpuM68kType, CpuSized, M68000, M68020, M68040, TORDER_HIGHLOW, TORDER_LOWHIGH,
 };
 use crate::tickable::Ticks;
-use crate::types::Long;
 use crate::types::Word;
+use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -100,6 +100,96 @@ where
         } else {
             FC_UNUSED
         }
+    }
+
+    /// Reads a big-endian word for the host: see inspect_read()
+    pub fn inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let hi = self.inspect_read(addr, phys)?;
+        let lo = self.inspect_read(addr.wrapping_add(1), phys)?;
+        Some(u16::from_be_bytes([hi, lo]))
+    }
+
+    /// Writes a big-endian word for the host: see inspect_write()
+    pub fn inspect_write_word(&mut self, addr: Address, val: u16, phys: bool) -> Option<()>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let [hi, lo] = val.to_be_bytes();
+        self.inspect_write(addr, hi, phys)?;
+        self.inspect_write(addr.wrapping_add(1), lo, phys)
+    }
+
+    /// Reads a byte of memory for the host, as a data read of the CPU would
+    /// find it: from the caches if they hold it, else from the bus, at the
+    /// physical address `addr` if `phys`, else at this logical address in the
+    /// data space of the current mode. This leaves no trace: the caches and
+    /// the ATC stay as they are, and it takes no CPU time. Returns None if
+    /// there is no translation, or nothing to read at the address.
+    pub fn inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let addr = addr & ADDRESS_MASK;
+        let cacr = self.regs.cacr;
+        let paddr = if phys {
+            let [data, _] = self.caches.inspect_aliases(addr);
+            if let Some(alias) = data
+                && let Some(byte) =
+                    self.caches
+                        .inspect_logical_read(cacr, alias.kind, alias.fc, alias.laddr)
+                && self.inspect_translate(alias.fc, alias.laddr, false) == Some(addr)
+            {
+                return Some(byte);
+            }
+            addr
+        } else {
+            let fc = self.fc_data();
+            if let Some(byte) = self
+                .caches
+                .inspect_logical_read(cacr, AccessKind::Data, fc, addr)
+            {
+                return Some(byte);
+            }
+            self.inspect_translate(fc, addr, false)?
+        };
+        if let Some(byte) = self.caches.inspect_phys_read(cacr, paddr) {
+            return Some(byte);
+        }
+        self.bus.inspect_read(paddr)
+    }
+
+    /// Writes a byte of memory for the host, at the physical address `addr` if
+    /// `phys`, else at this logical address in the data space of the current
+    /// mode, ignoring protection. Memory is written, and the copies in the
+    /// caches get the new value, but for data that memory doesn't have yet:
+    /// that only changes in the data cache, and gets to memory with the rest
+    /// of it. This leaves no other trace: lines stay as clean or dirty as they
+    /// are, no line is loaded, written back or invalidated, the ATC and the
+    /// page tables stay as they are, and it takes no CPU time. Returns None if
+    /// there is no translation, or the address can't be written.
+    pub fn inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let addr = addr & ADDRESS_MASK;
+        let paddr = if phys {
+            addr
+        } else {
+            self.inspect_translate(self.fc_data(), addr, true)?
+        };
+        if !self.caches.inspect_phys_dirty(self.regs.cacr, paddr) {
+            self.bus.inspect_write(paddr, val)?;
+        }
+        self.caches.inspect_phys_write(paddr, val);
+        for alias in self.caches.inspect_aliases(paddr).into_iter().flatten() {
+            if self.inspect_translate(alias.fc, alias.laddr, false) == Some(paddr) {
+                self.caches.inspect_alias_write(&alias, val);
+            }
+        }
+        Some(())
     }
 
     /// Checks if an access needs to fail and raise bus error on alignment errors

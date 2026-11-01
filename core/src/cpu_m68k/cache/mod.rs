@@ -54,6 +54,17 @@ pub enum CacheScope {
     All,
 }
 
+/// An entry of a cache tagged with logical addresses, as a physical address
+/// may be in it: see CpuCaches::inspect_aliases()
+#[derive(Clone, Copy, Debug)]
+pub struct CacheAlias {
+    /// AccessKind::Data for the data cache, AccessKind::Fetch for the
+    /// instruction cache
+    pub kind: AccessKind,
+    pub fc: u8,
+    pub laddr: Address,
+}
+
 /// The on-chip caches of a CPU model
 ///
 /// Bus errors, from any of the cycles a cache model runs, are returned as
@@ -179,6 +190,48 @@ pub trait CpuCaches: Default {
     fn inspect_phys_read(&self, _cacr: RegisterCACR, _paddr: Address) -> Option<Byte> {
         None
     }
+
+    /// Returns whether the byte at physical address `paddr` is in data of a
+    /// cache that a data read would hit and that memory doesn't have yet.
+    fn inspect_phys_dirty(&self, _cacr: RegisterCACR, _paddr: Address) -> bool {
+        false
+    }
+
+    /// Replaces the byte at physical address `paddr` in the caches tagged
+    /// with physical addresses that hold it, for the host. This only changes
+    /// the data: a line stays as clean or dirty as it is, enabled or not.
+    fn inspect_phys_write(&mut self, _paddr: Address, _val: Byte) {}
+
+    /// Returns the byte at logical address `laddr` if caches tagged with
+    /// logical addresses would serve a read of it, as read_hit() would, for
+    /// the host. This changes nothing in the caches and takes no CPU time.
+    fn inspect_logical_read(
+        &self,
+        _cacr: RegisterCACR,
+        _kind: AccessKind,
+        _fc: u8,
+        _laddr: Address,
+    ) -> Option<Byte> {
+        None
+    }
+
+    // A cache tagged with logical addresses can't be searched by physical address.
+    // But pages are at least 256 bytes, so the low address bits that select an entry
+    // are the same in both, and a physical address can only be in one entry per cache.
+    // inspect_aliases() returns those entries, and the CPU, as the caches can't reach
+    // the MMU, translates the address each holds to see if it really is that physical
+    // address, before reading it or replacing a byte with inspect_alias_write().
+    /// Returns the valid entries of caches tagged with logical addresses, if
+    /// any, that may hold physical address `paddr`: its low address bits
+    /// select the entry, as pages are at least 256 bytes, and only translating
+    /// the address the entry holds can tell whether it is for `paddr`. The
+    /// data cache comes first.
+    fn inspect_aliases(&self, _paddr: Address) -> [Option<CacheAlias>; 2] {
+        [None, None]
+    }
+
+    /// Replaces a byte in an entry from inspect_aliases(), for the host
+    fn inspect_alias_write(&mut self, _alias: &CacheAlias, _val: Byte) {}
 
     /// Hardware reset
     fn reset(&mut self) {}

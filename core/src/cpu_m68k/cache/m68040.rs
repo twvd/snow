@@ -32,7 +32,7 @@ const INVALID: u32 = u32::MAX;
 const FC_CPU_SPACE: u8 = 7;
 
 /// One of the two caches
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Cache040 {
     /// Physical address bits A31-A10 of each line of each set, or INVALID
     #[serde(with = "BigArray")]
@@ -125,7 +125,7 @@ impl Cache040 {
 }
 
 /// The 68040 instruction and data caches
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Caches040 {
     icache: Cache040,
     dcache: Cache040,
@@ -434,6 +434,24 @@ impl CpuCaches for Caches040 {
         let way = self.dcache.find(paddr)?;
         let long = self.dcache.data[Cache040::set(paddr)][way][Cache040::entry(paddr)];
         Some(long.to_be_bytes()[paddr as usize % 4])
+    }
+
+    fn inspect_phys_dirty(&self, cacr: RegisterCACR, paddr: Address) -> bool {
+        cacr.de()
+            && self.dcache.find(paddr).is_some_and(|way| {
+                self.dcache.dirty[Cache040::set(paddr)][way] & (1 << Cache040::entry(paddr)) != 0
+            })
+    }
+
+    fn inspect_phys_write(&mut self, paddr: Address, val: Byte) {
+        let set = Cache040::set(paddr);
+        let entry = Cache040::entry(paddr);
+        let shift = 8 * (3 - paddr % 4);
+        for cache in [&mut self.dcache, &mut self.icache] {
+            if let Some(way) = cache.find(paddr) {
+                cache.update(set, way, entry, shift, 1, val.into());
+            }
+        }
     }
 
     fn reset(&mut self) {

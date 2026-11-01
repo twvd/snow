@@ -11,12 +11,12 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::{CpuCaches, FETCH_HIT_TICKS};
+use crate::cpu_m68k::cache::{CacheAlias, CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of entries
 const ENTRIES: usize = 64;
@@ -25,7 +25,7 @@ const ENTRIES: usize = 64;
 const INVALID: u32 = u32::MAX;
 
 /// The 68020 instruction cache
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caches020 {
     /// Address bits A31-A8 and FC2 in bit 0, or INVALID
     #[serde(with = "BigArray")]
@@ -138,6 +138,42 @@ impl CpuCaches for Caches020 {
             self.tags[Self::index(caar)] = INVALID;
         }
         val.with_c(false).with_ce(false).0
+    }
+
+    fn inspect_logical_read(
+        &self,
+        cacr: RegisterCACR,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+    ) -> Option<Byte> {
+        if kind != AccessKind::Fetch || !cacr.e() {
+            return None;
+        }
+        let index = Self::index(laddr);
+        (self.tags[index] == Self::tag(laddr, fc))
+            .then(|| self.data[index].to_be_bytes()[laddr as usize % 4])
+    }
+
+    fn inspect_aliases(&self, paddr: Address) -> [Option<CacheAlias>; 2] {
+        let tag = self.tags[Self::index(paddr)];
+        if tag == INVALID {
+            return [None, None];
+        }
+        let alias = CacheAlias {
+            kind: AccessKind::Fetch,
+            // The cache only tags FC2
+            fc: ((tag & 1) as u8) << 2 | 0b010,
+            laddr: (tag & 0xFFFF_FF00) | (paddr & 0xFF),
+        };
+        [None, Some(alias)]
+    }
+
+    fn inspect_alias_write(&mut self, alias: &CacheAlias, val: Byte) {
+        let long = &mut self.data[Self::index(alias.laddr)];
+        let mut bytes = long.to_be_bytes();
+        bytes[alias.laddr as usize % 4] = val;
+        *long = Long::from_be_bytes(bytes);
     }
 
     fn reset(&mut self) {

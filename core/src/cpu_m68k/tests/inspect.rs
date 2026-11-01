@@ -2,11 +2,14 @@
 //! the CPU, the caches or the page tables
 
 use crate::bus::Address;
-use crate::bus::access::Bus68020;
+use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
 use crate::cpu_m68k::regs::Register;
-use crate::cpu_m68k::{CpuM68030, CpuM68040Fpu, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68000, CpuM68020, CpuM68030, CpuM68040Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+    M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
+};
 use crate::types::Long;
 
 const FC_SUPER_DATA: u8 = 5;
@@ -244,5 +247,387 @@ fn translate_040_reads_tables_from_the_data_cache() {
     assert_eq!(
         cpu.inspect_translate(FC_SUPER_DATA, 0x7000, false),
         Some(0xC000)
+    );
+}
+
+/// CACR: enable both 68030 caches
+const CACR_030: Long = 0x0101;
+/// CACR: enable the 68040 data cache
+const CACR_040_DATA: Long = 0x8000_0000;
+/// CACR: enable the 68040 instruction cache
+const CACR_040_INSTR: Long = 0x0000_8000;
+
+/// Asserts that running $body changes nothing in $cpu
+macro_rules! assert_no_trace {
+    ($cpu:expr, $body:block) => {{
+        let caches = $cpu.caches.clone();
+        let mem = $cpu.bus.mem.clone();
+        let atc = $cpu.pmmu_atc.clone();
+        let cycles = $cpu.cycles;
+        $body;
+        assert!($cpu.caches == caches);
+        assert!($cpu.bus.mem == mem);
+        assert!($cpu.pmmu_atc == atc);
+        assert_eq!($cpu.cycles, cycles);
+    }};
+}
+
+#[test]
+fn no_caches_goes_to_the_bus() {
+    let mut cpu =
+        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    cpu.bus.mem.insert(0x1234, 0x56);
+    assert_eq!(cpu.inspect_read(0x1234, true), Some(0x56));
+    assert_eq!(cpu.inspect_read(0x1234, false), Some(0x56));
+    // Upper address bits don't make it out of the 68000
+    assert_eq!(cpu.inspect_read(0xFF00_1234, true), Some(0x56));
+    assert_eq!(cpu.inspect_write(0x1235, 0x78, false), Some(()));
+    assert_eq!(cpu.bus.mem[&0x1235], 0x78);
+
+    cpu.bus.fault_ranges.push(0x2000..=0x2FFF);
+    assert_eq!(cpu.inspect_read(0x2000, true), None);
+    assert_eq!(cpu.inspect_write(0x2000, 0, true), None);
+}
+
+#[test]
+fn read_030_virtual_physical_and_misses() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    write_long!(cpu, MAPPED_TO + 0x100, 0xAABB_CCDD);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    // Something behind the back of the cache
+    write_long!(cpu, MAPPED_TO, 0x5566_7788);
+
+    assert_no_trace!(cpu, {
+        // Hit, as the CPU would see it
+        assert_eq!(cpu.inspect_read(MAPPED + 1, false), Some(0x22));
+        assert_eq!(cpu.inspect_read(MAPPED_TO + 1, true), Some(0x22));
+        // The next long word was not loaded
+        assert_eq!(cpu.inspect_read(MAPPED + 4, false), Some(0));
+        // Same line, another page: the entry is not for this address
+        assert_eq!(cpu.inspect_read(MAPPED_TO + 0x100, true), Some(0xAA));
+        assert_eq!(cpu.inspect_read(MAPPED + 0x100, false), Some(0xAA));
+        // No translation
+        assert_eq!(cpu.inspect_read(0x20000, false), None);
+        // A physical address that isn't the page: memory
+        assert_eq!(cpu.inspect_read(MAPPED, true), Some(0));
+    });
+
+    // A disabled cache isn't looked at
+    cpu.regs.write(Register::CACR, 0_u32);
+    assert_eq!(cpu.inspect_read(MAPPED_TO, true), Some(0x55));
+    assert_eq!(cpu.inspect_read(MAPPED, false), Some(0x55));
+}
+
+#[test]
+fn read_030_virtual_needs_the_tag_of_the_space() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    cpu.regs.sr.set_supervisor(false);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    write_long!(cpu, MAPPED_TO, 0x5566_7788);
+
+    assert_eq!(cpu.inspect_read(MAPPED, false), Some(0x11));
+    // The supervisor would miss, and read memory
+    cpu.regs.sr.set_supervisor(true);
+    assert_eq!(cpu.inspect_read(MAPPED, false), Some(0x55));
+    // A physical read finds the entry in whichever space it is
+    assert_eq!(cpu.inspect_read(MAPPED_TO, true), Some(0x11));
+}
+
+#[test]
+fn write_030_updates_memory_and_entries() {
+    for phys in [true, false] {
+        let mut cpu = cpu030();
+        cpu.regs.write(Register::CACR, CACR_030);
+        write_long!(cpu, MAPPED_TO, 0x1122_3344);
+        write_long!(cpu, MAPPED_TO + 0x100, 0xAABB_CCDD);
+        assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+        assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x1122_3344);
+
+        let addr = if phys { MAPPED_TO } else { MAPPED };
+        let tables = read_long!(cpu, TABLE_B + (MAPPED >> 12) * 4);
+        let atc = cpu.pmmu_atc.clone();
+        let cycles = cpu.cycles;
+        assert_eq!(cpu.inspect_write(addr + 1, 0x99, phys), Some(()));
+        assert_eq!(cpu.cycles, cycles);
+        assert!(cpu.pmmu_atc == atc);
+        assert_eq!(read_long!(cpu, MAPPED_TO), 0x1199_3344);
+        assert_eq!(read_long!(cpu, TABLE_B + (MAPPED >> 12) * 4), tables);
+
+        // Both entries hit, with the new value, without a bus cycle
+        cpu.bus.reset_trace();
+        assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1199_3344);
+        assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x1199_3344);
+        assert!(cpu.bus.get_trace().is_empty());
+
+        // Same entries, another page: they are left alone
+        let addr = if phys { MAPPED_TO } else { MAPPED } + 0x100;
+        let caches = cpu.caches.clone();
+        assert_eq!(cpu.inspect_write(addr, 0x77, phys), Some(()));
+        assert!(cpu.caches == caches);
+        assert_eq!(read_long!(cpu, MAPPED_TO + 0x100), 0x77BB_CCDD);
+    }
+}
+
+#[test]
+fn write_030_reaches_the_entry_of_another_space() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    cpu.regs.sr.set_supervisor(false);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+
+    // From the supervisor view, to an entry tagged with user data
+    cpu.regs.sr.set_supervisor(true);
+    assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), Some(()));
+    cpu.regs.sr.set_supervisor(false);
+    cpu.bus.reset_trace();
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x9922_3344);
+    assert!(cpu.bus.get_trace().is_empty());
+}
+
+#[test]
+fn write_030_refused_by_memory_leaves_entries_alone() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    cpu.bus.fault_ranges.push(MAPPED_TO..=MAPPED_TO + 0xFFF);
+
+    assert_no_trace!(cpu, {
+        assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), None);
+    });
+    assert_eq!(cpu.inspect_write(0x20000, 0x99, false), None);
+}
+
+#[test]
+fn write_030_disabled_cache_still_updates() {
+    let mut cpu = cpu030();
+    cpu.regs.write(Register::CACR, CACR_030);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+
+    cpu.regs.write(Register::CACR, 0_u32);
+    assert_eq!(cpu.inspect_write(MAPPED_TO, 0x99, true), Some(()));
+    cpu.regs.write(Register::CACR, CACR_030);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x9922_3344);
+}
+
+#[test]
+fn words_are_big_endian() {
+    let mut cpu = cpu030();
+    assert_eq!(cpu.inspect_write_word(MAPPED, 0x1234, false), Some(()));
+    assert_eq!(cpu.bus.mem[&MAPPED_TO], 0x12);
+    assert_eq!(cpu.bus.mem[&(MAPPED_TO + 1)], 0x34);
+    assert_eq!(cpu.inspect_read_word(MAPPED_TO, true), Some(0x1234));
+    // No translation
+    assert_eq!(cpu.inspect_read_word(0x20000, false), None);
+    assert_eq!(cpu.inspect_write_word(0x20000, 0, false), None);
+}
+
+#[test]
+fn caches_020() {
+    let mut cpu =
+        CpuM68020::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.write(Register::CACR, 1_u32);
+    write_long!(cpu, 0x2000, 0x1122_3344);
+    assert_eq!(cpu.read_ticks_program::<Long>(0x2000).unwrap(), 0x1122_3344);
+    write_long!(cpu, 0x2000, 0x5566_7788);
+
+    // The cache only holds instructions, and this is a view of data
+    assert_no_trace!(cpu, {
+        assert_eq!(cpu.inspect_read(0x2000, false), Some(0x55));
+        assert_eq!(cpu.inspect_read(0x2000, true), Some(0x55));
+    });
+
+    // Same entry, another address: left alone
+    let caches = cpu.caches.clone();
+    assert_eq!(cpu.inspect_write(0x2100, 0x99, true), Some(()));
+    assert!(cpu.caches == caches);
+
+    assert_eq!(cpu.inspect_write(0x2000, 0x99, true), Some(()));
+    assert_eq!(cpu.bus.mem[&0x2000], 0x99);
+    cpu.bus.reset_trace();
+    assert_eq!(cpu.read_ticks_program::<Long>(0x2000).unwrap(), 0x9922_3344);
+    assert!(cpu.bus.get_trace().is_empty());
+}
+
+/// CPUSHA for both caches
+const CPUSHA: [u8; 2] = [0xF4, 0xF8];
+
+/// Runs CPUSHA, from a page that isn't in the way of the tests
+fn cpusha(cpu: &mut Cpu040) {
+    cpu.bus.mem.insert(0x1000, CPUSHA[0]);
+    cpu.bus.mem.insert(0x1001, CPUSHA[1]);
+    cpu.set_pc(0x1000).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+}
+
+#[test]
+fn read_040_dirty_data_and_misses() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    write_long!(cpu, MAPPED_TO + 0x100, 0xAABB_CCDD);
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0x1122_3344);
+
+    assert_no_trace!(cpu, {
+        assert_eq!(cpu.inspect_read(MAPPED + 1, false), Some(0x66));
+        assert_eq!(cpu.inspect_read(MAPPED_TO + 1, true), Some(0x66));
+        // A miss loads nothing
+        assert_eq!(cpu.inspect_read(MAPPED_TO + 0x100, true), Some(0xAA));
+        assert_eq!(cpu.inspect_read(MAPPED + 0x100, false), Some(0xAA));
+        assert_eq!(cpu.inspect_read(0x0004_0000, false), None);
+    });
+
+    // A disabled data cache isn't looked at
+    cpu.regs.write(Register::CACR, 0_u32);
+    assert_eq!(cpu.inspect_read(MAPPED_TO, true), Some(0x11));
+}
+
+#[test]
+fn write_040_dirty_long_stays_in_the_cache() {
+    for phys in [true, false] {
+        let mut cpu = cpu040();
+        cpu.regs.write(Register::CACR, CACR_040_DATA);
+        write_long!(cpu, MAPPED_TO, 0x1122_3344);
+        cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+
+        let addr = if phys { MAPPED_TO } else { MAPPED };
+        let tables = cpu.bus.mem.clone();
+        let cycles = cpu.cycles;
+        assert_eq!(cpu.inspect_write(addr + 1, 0x99, phys), Some(()));
+        assert_eq!(cpu.cycles, cycles);
+        assert!(cpu.bus.mem == tables);
+
+        cpu.bus.reset_trace();
+        assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x5599_7788);
+        assert!(cpu.bus.get_trace().is_empty());
+
+        // The value gets to memory with the push of the line
+        cpusha(&mut cpu);
+        assert_eq!(read_long!(cpu, MAPPED_TO), 0x5599_7788);
+    }
+}
+
+#[test]
+fn write_040_dirty_long_needs_no_memory() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+
+    cpu.bus.fault_ranges.push(MAPPED_TO..=MAPPED_TO + 0xFFF);
+    assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), Some(()));
+    cpu.bus.reset_trace();
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x9966_7788);
+}
+
+#[test]
+fn write_040_clean_long_goes_to_memory_and_stays_clean() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+
+    assert_eq!(cpu.inspect_write(MAPPED_TO + 1, 0x99, true), Some(()));
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0x1199_3344);
+    cpu.bus.reset_trace();
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1199_3344);
+    assert!(cpu.bus.get_trace().is_empty());
+
+    // Not dirty: a push doesn't write over this
+    write_long!(cpu, MAPPED_TO, 0xDEAD_BEEF);
+    cpusha(&mut cpu);
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0xDEAD_BEEF);
+}
+
+#[test]
+fn write_040_clean_long_next_to_a_dirty_one() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO + 4, 0x1122_3344);
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+
+    // The push of a lone dirty long word doesn't carry its neighbours
+    assert_eq!(cpu.inspect_write(MAPPED_TO + 4, 0x99, true), Some(()));
+    assert_eq!(read_long!(cpu, MAPPED_TO + 4), 0x9922_3344);
+    cpusha(&mut cpu);
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0x5566_7788);
+    assert_eq!(read_long!(cpu, MAPPED_TO + 4), 0x9922_3344);
+}
+
+#[test]
+fn write_040_clean_copy_stays_if_memory_refuses() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x1122_3344);
+    cpu.bus.fault_ranges.push(MAPPED_TO..=MAPPED_TO + 0xFFF);
+
+    assert_no_trace!(cpu, {
+        assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), None);
+    });
+}
+
+#[test]
+fn write_040_miss_loads_nothing() {
+    let mut cpu = cpu040();
+    cpu.regs
+        .write(Register::CACR, CACR_040_DATA | CACR_040_INSTR);
+    let caches = cpu.caches.clone();
+    let cycles = cpu.cycles;
+    assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), Some(()));
+    assert!(cpu.caches == caches);
+    assert_eq!(cpu.cycles, cycles);
+    assert_eq!(cpu.bus.mem[&MAPPED_TO], 0x99);
+}
+
+#[test]
+fn write_040_updates_the_instruction_cache() {
+    let mut cpu = cpu040();
+    cpu.regs
+        .write(Register::CACR, CACR_040_DATA | CACR_040_INSTR);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x1122_3344);
+
+    assert_eq!(cpu.inspect_write(MAPPED_TO, 0x99, true), Some(()));
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0x9922_3344);
+    cpu.bus.reset_trace();
+    assert_eq!(cpu.read_ticks_program::<Long>(MAPPED).unwrap(), 0x9922_3344);
+    assert!(cpu.bus.get_trace().is_empty());
+}
+
+#[test]
+fn write_040_disabled_data_cache_writes_both() {
+    let mut cpu = cpu040();
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    write_long!(cpu, MAPPED_TO, 0x1122_3344);
+    cpu.write_ticks::<Long>(MAPPED, 0x5566_7788).unwrap();
+
+    // The CPU would read memory now, and push the line later
+    cpu.regs.write(Register::CACR, 0_u32);
+    assert_eq!(cpu.inspect_write(MAPPED_TO, 0x99, true), Some(()));
+    assert_eq!(read_long!(cpu, MAPPED_TO), 0x9922_3344);
+    assert_eq!(cpu.inspect_read(MAPPED_TO, true), Some(0x99));
+    cpu.regs.write(Register::CACR, CACR_040_DATA);
+    assert_eq!(cpu.read_ticks::<Long>(MAPPED).unwrap(), 0x9966_7788);
+}
+
+#[test]
+fn write_040_ignores_write_protection_and_sets_no_bits() {
+    let mut cpu = cpu040();
+    let desc = PAGE_040 + (MAPPED >> 12) * 4;
+    write_long!(cpu, desc, MAPPED_TO | RESIDENT | COPYBACK | (1 << 2));
+    assert_eq!(cpu.inspect_write(MAPPED, 0x99, false), Some(()));
+    assert_eq!(cpu.bus.mem[&MAPPED_TO], 0x99);
+    assert_eq!(
+        read_long!(cpu, desc),
+        MAPPED_TO | RESIDENT | COPYBACK | (1 << 2)
     );
 }

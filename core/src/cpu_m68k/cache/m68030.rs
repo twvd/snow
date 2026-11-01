@@ -13,12 +13,12 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::{CpuCaches, FETCH_HIT_TICKS};
+use crate::cpu_m68k::cache::{CacheAlias, CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of lines
 const LINES: usize = 16;
@@ -30,7 +30,7 @@ const FC_CPU_SPACE: u8 = 7;
 const DATA_HIT_TICKS: Ticks = 1;
 
 /// One of the two caches
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Cache030 {
     /// Address bits A31-A8 and the function code in bits 2-0
     tags: [u32; LINES],
@@ -89,6 +89,30 @@ impl Cache030 {
         }
     }
 
+    /// The byte at `addr` in the long word entry that holds it
+    fn byte(&self, addr: Address) -> Byte {
+        self.data[Self::line(addr)][Self::entry(addr)].to_be_bytes()[addr as usize % 4]
+    }
+
+    /// The logical address, with its function code, of the long word entry
+    /// that may hold physical address `paddr`, if that entry is valid
+    fn alias(&self, paddr: Address) -> Option<(u8, Address)> {
+        let line = Self::line(paddr);
+        if self.valid[line] & (1 << Self::entry(paddr)) == 0 {
+            return None;
+        }
+        let tag = self.tags[line];
+        Some(((tag & 0b111) as u8, (tag & 0xFFFF_FF00) | (paddr & 0xFF)))
+    }
+
+    /// Replaces the byte at `addr` in the long word entry that holds it
+    fn write_byte(&mut self, addr: Address, val: Byte) {
+        let long = &mut self.data[Self::line(addr)][Self::entry(addr)];
+        let mut bytes = long.to_be_bytes();
+        bytes[addr as usize % 4] = val;
+        *long = Long::from_be_bytes(bytes);
+    }
+
     /// Invalidates the long word entry of `addr`
     fn invalidate_entry(&mut self, addr: Address) {
         self.valid[Self::line(addr)] &= !(1 << Self::entry(addr));
@@ -101,7 +125,7 @@ impl Cache030 {
 }
 
 /// The 68030 instruction and data caches
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Caches030 {
     icache: Cache030,
     dcache: Cache030,
@@ -259,6 +283,43 @@ impl CpuCaches for Caches030 {
             .with_cd(false)
             .with_ced(false)
             .0
+    }
+
+    fn inspect_logical_read(
+        &self,
+        cacr: RegisterCACR,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+    ) -> Option<Byte> {
+        let (cache, tag) = match kind {
+            AccessKind::Fetch if cacr.e() => (&self.icache, Cache030::tag(laddr, fc & 0b100)),
+            AccessKind::Data if cacr.ed() && fc != FC_CPU_SPACE => {
+                (&self.dcache, Cache030::tag(laddr, fc))
+            }
+            _ => return None,
+        };
+        cache.hit(tag, laddr).then(|| cache.byte(laddr))
+    }
+
+    fn inspect_aliases(&self, paddr: Address) -> [Option<CacheAlias>; 2] {
+        let alias = |kind, (fc, laddr)| CacheAlias { kind, fc, laddr };
+        [
+            self.dcache.alias(paddr).map(|a| alias(AccessKind::Data, a)),
+            // The instruction cache only tags FC2
+            self.icache
+                .alias(paddr)
+                .map(|(fc, laddr)| alias(AccessKind::Fetch, (fc | 0b010, laddr))),
+        ]
+    }
+
+    fn inspect_alias_write(&mut self, alias: &CacheAlias, val: Byte) {
+        let cache = if alias.kind == AccessKind::Fetch {
+            &mut self.icache
+        } else {
+            &mut self.dcache
+        };
+        cache.write_byte(alias.laddr, val);
     }
 
     fn reset(&mut self) {
