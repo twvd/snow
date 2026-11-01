@@ -12,6 +12,7 @@ use log::*;
 use num_traits::cast::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use snow_core::bus::Address;
+use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
@@ -123,6 +124,8 @@ pub struct EmulatorInitArgs {
 
 /// Id of the memory notifier of the disassembly
 pub const NOTIFIER_DISASSEMBLY: u32 = 0;
+/// Id of the memory notifier of the memory viewer
+pub const NOTIFIER_MEMORY: u32 = 1;
 /// First id of the memory notifiers of the watchpoints
 pub const NOTIFIER_WATCHPOINTS: u32 = 2;
 
@@ -142,11 +145,12 @@ pub struct EmulatorState {
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
-    ram_update: VecDeque<(Address, Vec<u8>, usize)>,
     /// Memory notifiers as the emulator has them, or will when there is one
     memory_notifiers: HashMap<u32, MemoryNotifierRange>,
     /// Received memory notifications: id, address, contents
     memory_notifications: VecDeque<(u32, Address, Vec<Option<u8>>)>,
+    /// The answer to the last memory search
+    memory_search_result: Option<Option<Address>>,
     /// The answer to the last read of the guest's clipboard
     scrap_text: Option<Option<String>>,
     record_input_path: Option<PathBuf>,
@@ -600,9 +604,6 @@ impl EmulatorState {
                         .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
                 }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
-                EmulatorEvent::Memory(update) => {
-                    self.ram_update.push_back(update);
-                }
                 EmulatorEvent::MemoryNotify { id, addr, data } => {
                     if id == NOTIFIER_DISASSEMBLY {
                         let mut code = data.into_iter().map_while(|b| b);
@@ -611,6 +612,10 @@ impl EmulatorState {
                     } else {
                         self.memory_notifications.push_back((id, addr, data));
                     }
+                }
+                EmulatorEvent::Memory(_) => (),
+                EmulatorEvent::MemorySearchResult(result) => {
+                    self.memory_search_result = Some(result);
                 }
                 EmulatorEvent::ScrapText(text) => self.scrap_text = Some(text),
                 EmulatorEvent::RecordedInput(i) => {
@@ -1112,10 +1117,6 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>, usize)> {
-        self.ram_update.pop_front()
-    }
-
     /// Sets, or with None removes, a memory notifier. This only does something
     /// if that changes it.
     pub fn set_memory_notifier(&mut self, id: u32, range: Option<MemoryNotifierRange>) {
@@ -1166,13 +1167,43 @@ impl EmulatorState {
         self.scrap_text.take()
     }
 
-    pub fn write_bus(&self, addr: Address, value: u8) {
+    /// Asks to look for bytes from an address on, see take_memory_search_result()
+    pub fn memory_search(&self, needle: Vec<u8>, start: Address, view: InspectView) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
         sender
-            .send(EmulatorCommand::BusInspectWrite(addr, vec![value]))
+            .send(EmulatorCommand::MemorySearch {
+                start,
+                needle,
+                view,
+            })
             .unwrap();
+    }
+
+    /// The answer to memory_search() when it has arrived, with the address if found
+    pub fn take_memory_search_result(&mut self) -> Option<Option<Address>> {
+        self.memory_search_result.take()
+    }
+
+    /// Asks to write a range of memory to a file
+    pub fn memory_export(&self, path: PathBuf, start: Address, len: usize, view: InspectView) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::MemoryExport {
+                path,
+                start,
+                len,
+                view,
+            })
+            .unwrap();
+    }
+
+    /// The size of the RAM, as a default for what to export
+    pub fn get_ram_size(&self) -> usize {
+        self.status.as_ref().map_or(0, |s| s.ram_size)
     }
 
     pub fn get_cycles(&self) -> Ticks {

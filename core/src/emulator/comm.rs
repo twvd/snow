@@ -91,6 +91,20 @@ pub enum EmulatorCommand {
     /// Reads the text of the guest's clipboard: answered by
     /// [`EmulatorEvent::ScrapText`]
     ReadScrapText,
+    /// Looks for bytes from an address on: answered by
+    /// [`EmulatorEvent::MemorySearchResult`]
+    MemorySearch {
+        start: Address,
+        needle: Vec<u8>,
+        view: InspectView,
+    },
+    /// Writes a range of memory to a file, with zeros for what can't be read
+    MemoryExport {
+        path: PathBuf,
+        start: Address,
+        len: usize,
+        view: InspectView,
+    },
     KeyEvent(KeyEvent),
     ReleaseAllInputs,
     CpuSetPC(u32),
@@ -150,6 +164,8 @@ pub struct EmulatorStatus {
     pub model: MacModel,
     pub has_pmmu: bool,
     pub speed: EmulatorSpeed,
+    /// Size of the RAM
+    pub ram_size: usize,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],
 }
@@ -228,6 +244,7 @@ pub enum EmulatorEvent {
         addr: Address,
         data: Vec<Option<u8>>,
     },
+    MemorySearchResult(Option<Address>),
     /// The text of the guest's clipboard, if it has any
     ScrapText(Option<String>),
     RecordedInput(InputRecording),

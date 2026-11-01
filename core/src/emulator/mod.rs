@@ -193,6 +193,9 @@ const ADDR_CRSRNEW: Address = 0x08CE;
 /// mostly happens stopped, where each step or stop looks at them regardless.
 const MEMORY_NOTIFY_INTERVAL: Duration = Duration::from_millis(200);
 
+/// Size of the blocks that large accesses to memory run in
+const MEMORY_BLOCK: usize = 1024 * 1024;
+
 /// A range of memory the frontend wants to be told about
 struct MemoryNotifier {
     range: MemoryNotifierRange,
@@ -225,6 +228,43 @@ fn read_memory_range(
         }
     }
     data
+}
+
+/// Looks for `needle` from `start` up to `last` included, with `read`. A match
+/// doesn't span a hole.
+fn search_memory(
+    start: Address,
+    last: Address,
+    needle: &[u8],
+    mut read: impl FnMut(Address, &mut [u8]) -> InspectRun,
+) -> Option<Address> {
+    if needle.is_empty() || needle.len() > MEMORY_BLOCK {
+        return None;
+    }
+    let mut buf = vec![0; MEMORY_BLOCK + needle.len()];
+    // What is kept in the buffer of the bytes before `at`
+    let mut kept = 0;
+    let mut at = u64::from(start);
+    while at <= u64::from(last) {
+        let room = (u64::from(last) - at + 1).min(MEMORY_BLOCK as u64) as usize;
+        match read(at as Address, &mut buf[kept..kept + room]) {
+            InspectRun::Hole(n) => {
+                kept = 0;
+                at += n as u64;
+            }
+            InspectRun::Data(n) => {
+                let window = &buf[..kept + n];
+                if let Some(pos) = window.windows(needle.len()).position(|w| w == needle) {
+                    return Some((at - kept as u64 + pos as u64) as Address);
+                }
+                let keep = (needle.len() - 1).min(window.len());
+                buf.copy_within(kept + n - keep..kept + n, 0);
+                kept = keep;
+                at += n as u64;
+            }
+        }
+    }
+    None
 }
 
 /// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
@@ -275,6 +315,8 @@ dispatch! {
         fn cpu_has_pmmu(&self) -> bool { has_pmmu() }
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
+        fn cpu_address_mask(&self) -> Address { address_mask() }
+        fn ram_size(&self) -> usize { bus.ram.len() }
         fn cpu_mmu_generation(&self) -> u32 { mmu_generation() }
         fn bus_inspect_generation(&self) -> u32 { bus.inspect_generation() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
@@ -808,6 +850,7 @@ impl Emulator {
                         })
                 }),
                 speed: self.config.speed(),
+                ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
             })))?;
 
@@ -937,6 +980,38 @@ impl Emulator {
         if self.config.cpu_inspect_take_watch_hit() || map_changed {
             self.memory_notifiers_send(false)?;
         }
+        Ok(())
+    }
+
+    /// Writes a range of memory to a file
+    fn memory_export(
+        &mut self,
+        path: &Path,
+        start: Address,
+        len: usize,
+        view: InspectView,
+    ) -> Result<()> {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let mut buf = vec![0; MEMORY_BLOCK];
+        let mut done = 0;
+        while done < len {
+            let at = start.wrapping_add(done as Address);
+            let room = (len - done).min(MEMORY_BLOCK);
+            match self
+                .config
+                .cpu_inspect_read_bulk(at, view, &mut buf[..room])
+            {
+                InspectRun::Data(n) => {
+                    std::io::Write::write_all(&mut f, &buf[..n])?;
+                    done += n;
+                }
+                InspectRun::Hole(n) => {
+                    std::io::Write::write_all(&mut f, &vec![0; n])?;
+                    done += n;
+                }
+            }
+        }
+        std::io::Write::flush(&mut f)?;
         Ok(())
     }
 
@@ -1510,6 +1585,29 @@ impl Tickable for Emulator {
                         });
                         self.event_sender.send(EmulatorEvent::ScrapText(text))?;
                     }
+                    EmulatorCommand::MemorySearch {
+                        start,
+                        needle,
+                        view,
+                    } => {
+                        let last = self.config.cpu_address_mask();
+                        let config = &mut self.config;
+                        let result = search_memory(start, last, &needle, |at, out| {
+                            config.cpu_inspect_read_bulk(at, view, out)
+                        });
+                        self.event_sender
+                            .send(EmulatorEvent::MemorySearchResult(result))?;
+                    }
+                    EmulatorCommand::MemoryExport {
+                        path,
+                        start,
+                        len,
+                        view,
+                    } => {
+                        if let Err(e) = self.memory_export(&path, start, len, view) {
+                            self.user_error(&format!("Error exporting memory to file: {}", e));
+                        }
+                    }
                     EmulatorCommand::KeyEvent(e) => {
                         if let Some(r) = self.record_input.as_mut() {
                             r.push((cycles, cmd));
@@ -1847,7 +1945,7 @@ impl Tickable for Emulator {
 
 #[cfg(test)]
 mod tests {
-    use super::{InspectRun, read_memory_range};
+    use super::{InspectRun, read_memory_range, search_memory};
 
     /// Memory with holes at the addresses in `holes`, in runs of at most 16
     /// bytes, holding the low byte of the address in units of 16 bytes
@@ -1881,5 +1979,31 @@ mod tests {
                 Some(1)
             ]
         );
+    }
+
+    #[test]
+    fn search_finds_across_runs() {
+        let read = |at: u32, out: &mut [u8]| test_read(at, out, 0x100..0x110);
+        // Across the runs of 16 bytes
+        assert_eq!(search_memory(0, 0xFFF, &[0, 1], read), Some(15));
+        // From a start past the first one
+        assert_eq!(search_memory(16, 0xFFF, &[1, 2], read), Some(31));
+        // Not across a hole: $0F then $11
+        assert_eq!(search_memory(0, 0xFFF, &[0xF, 0x11], read), None);
+        // Up to the last address only
+        assert_eq!(search_memory(0, 0x1F, &[1, 2], read), None);
+        assert_eq!(search_memory(0, 0x20, &[1, 2], read), Some(31));
+        assert_eq!(search_memory(0, 0xFFF, &[], read), None);
+    }
+
+    #[test]
+    fn search_stops_at_the_end_of_the_address_space() {
+        let read = |at: u32, out: &mut [u8]| {
+            InspectRun::Hole(
+                out.len()
+                    .min((u64::from(u32::MAX) - u64::from(at) + 1) as usize),
+            )
+        };
+        assert_eq!(search_memory(0xFFFF_FF00, u32::MAX, &[1], read), None);
     }
 }

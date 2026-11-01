@@ -4,7 +4,7 @@ use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_WATCHPOINTS};
+use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -2907,6 +2907,10 @@ impl SnowGui {
                 follow_pc: true,
             }),
         );
+        self.emu.set_memory_notifier(
+            NOTIFIER_MEMORY,
+            (visible && self.workspace.memory_open).then(|| self.memory.range()),
+        );
         let watchpoints_open = visible && self.workspace.watchpoints_open;
         for (id, range) in self.watchpoints.ranges() {
             self.emu
@@ -3001,7 +3005,7 @@ impl SnowGui {
             }
             UniformAction::AddressMemoryViewer(addr) => {
                 self.workspace.memory_open = true;
-                self.memory.go_to_address(addr);
+                self.memory.go_to_logical_address(addr);
             }
             UniformAction::ShowError(s) => {
                 self.show_error(&s);
@@ -3372,14 +3376,16 @@ impl eframe::App for SnowGui {
                         .kind(ToastKind::Error),
                 });
             }
-            while let Some((addr, data, size)) = self.emu.take_mem_update() {
-                self.memory.update_memory(addr, &data, size);
+            if let Some(Some(addr)) = self.emu.take_memory_search_result() {
+                self.memory.go_to_address(addr);
             }
             if let Some(scrap_text) = self.emu.take_scrap_text() {
                 self.finish_copy_from_emulator(scrap_text);
             }
             while let Some((id, addr, data)) = self.emu.take_memory_notification() {
-                if id >= NOTIFIER_WATCHPOINTS {
+                if id == NOTIFIER_MEMORY {
+                    self.memory.update_memory(addr, data);
+                } else if id >= NOTIFIER_WATCHPOINTS {
                     self.watchpoints
                         .update_memory(id, addr, &data, self.emu.get_cycles());
                 }
@@ -4029,10 +4035,18 @@ impl eframe::App for SnowGui {
                     .resizable([true, true])
                     .open(&mut self.workspace.memory_open)
                     .show(ctx, |ui| {
-                        self.memory.draw(ui, frame, &self.settings);
+                        self.memory
+                            .draw(ui, frame, &self.settings, self.emu.get_ram_size());
                     });
-                if let Some((addr, value)) = self.memory.take_edited() {
-                    self.emu.write_bus(addr, value);
+                if let Some((addr, value, physical)) = self.memory.take_edited() {
+                    self.emu.write_memory(addr, vec![value], physical);
+                }
+                if let Some((needle, start, view)) = self.memory.take_search_request() {
+                    self.emu.memory_search(needle, start, view);
+                }
+                if let Some(export) = self.memory.take_export_request() {
+                    self.emu
+                        .memory_export(export.path, export.start, export.len, export.view);
                 }
 
                 persistent_window_s!(self, "Watchpoints", [800.0, 300.0])

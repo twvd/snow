@@ -647,6 +647,11 @@ where
         CPU_TYPE
     }
 
+    /// Address bits that make it out of this CPU
+    pub const fn address_mask(&self) -> Address {
+        ADDRESS_MASK
+    }
+
     /// Returns true if this CPU has a (paged) memory management unit.
     pub const fn has_pmmu(&self) -> bool {
         PMMU
