@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::TrackType;
 
 use super::stream::FloppyStream;
-use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimChip, SwimMode};
+use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimChip, SwimMode, dcd};
 use crate::bus::Address;
 use crate::tickable::Ticks;
 use crate::types::Byte;
@@ -98,6 +98,8 @@ impl Swim {
 
     /// A memory-mapped I/O address was accessed
     pub(super) fn iwm_access(&mut self, offset: Address) {
+        let was_ext_enabled = self.extdrive && self.enable;
+
         match (offset >> 9) & 0x0F {
             0 => self.ca0 = false,
             1 => self.ca0 = true,
@@ -106,6 +108,13 @@ impl Swim {
             4 => self.ca2 = false,
             5 => self.ca2 = true,
             6 => self.lstrb = false,
+            7 if self.dcd_selected() => {
+                // A DCD passes the enable on down the chain when CA3 rises
+                if !self.lstrb {
+                    self.dcd_chain_pos += 1;
+                }
+                self.lstrb = true;
+            }
             7 => {
                 // The drive latches its control register on the rising edge of LSTRB,
                 // so touching LSTRBH while it is already high does nothing.
@@ -148,6 +157,15 @@ impl Swim {
             15 => self.q7 = true,
             _ => (),
         }
+
+        if was_ext_enabled && !(self.extdrive && self.enable) {
+            // Dropping !ENBL2 takes the chain back to its first device
+            self.dcd_chain_pos = 0;
+        }
+        let state = self.dcd_state();
+        if let Some(dcd) = self.selected_dcd_mut() {
+            dcd.set_state(state);
+        }
     }
 
     /// Read on the bus
@@ -167,7 +185,11 @@ impl Swim {
             }
             (true, false) => {
                 // Read status register
-                let sense = self.sense();
+                let sense = if let Some(dcd) = self.selected_dcd() {
+                    dcd.sense(self.dcd_state())
+                } else {
+                    self.sense()
+                };
                 self.chip.iwm_status.set_sense(sense);
                 self.chip
                     .iwm_status
@@ -188,6 +210,11 @@ impl Swim {
                     .set_underrun(!(self.chip.write_pos == 0 && self.chip.write_buffer.is_none()));
                 result.set_ready(self.chip.write_buffer.is_none());
                 result.0
+            }
+            (true, true) if self.dcd_selected() => {
+                // The .Sony DCD code touches Q6H with a read while in write mode;
+                // the value is thrown away
+                0
             }
             _ => {
                 warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
@@ -247,6 +274,37 @@ impl Swim {
             device.set_pwm(pulse);
         }
         Ok(())
+    }
+
+    /// Moves bytes between the IWM and an HD20 (Directly Connected Disk).
+    /// The link runs at the floppy bit rate but carries plain bytes: no weak bits, no
+    /// track to rotate.
+    pub(super) fn dcd_tick(&mut self, ticks: Ticks) {
+        let ticks_per_byte = dcd::ticks_per_byte(self.base_frequency);
+        let Some(dcd) = self.dcds.get_mut(self.dcd_chain_pos) else {
+            return;
+        };
+
+        // Writing: a byte takes 8 bit cells to shift out, then the device has it
+        if self.chip.write_pos != 0 {
+            self.dcd_wr_ticks += ticks;
+            if self.dcd_wr_ticks >= ticks_per_byte {
+                dcd.write_byte(self.chip.write_shift);
+                self.chip.write_pos = 0;
+            }
+        }
+        if self.chip.write_pos == 0
+            && let Some(v) = self.chip.write_buffer.take()
+        {
+            self.chip.write_shift = v;
+            self.chip.write_pos = 8;
+            self.dcd_wr_ticks = 0;
+        }
+
+        // Reading
+        if let Some(v) = dcd.tick(ticks, ticks_per_byte) {
+            self.chip.datareg = v;
+        }
     }
 }
 
