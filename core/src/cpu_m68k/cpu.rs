@@ -764,7 +764,7 @@ where
         self.step_ea_load = None;
 
         if CPU_TYPE >= M68020 {
-            self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
+            self.restart_regs.get_or_insert_default().save(&self.regs);
         }
 
         // Flag exceptions before executing the instruction to act on them later
