@@ -258,15 +258,16 @@ where
         }
     }
 
-    /// Looks an address up in the ATC
+    /// Looks an address up in the ATC. Its tables are only allocated once
+    /// translation is enabled: before that, nothing is in it.
     #[inline(always)]
     pub(in crate::cpu_m68k) fn pmmu_atc_lookup(
         &self,
         atc: usize,
         key: usize,
     ) -> Option<PmmuAtcEntry> {
-        match self.pmmu_atc[atc][key] {
-            Some(e) if e.generation == self.pmmu_atc_generation => Some(e),
+        match self.pmmu_atc[atc].get(key) {
+            Some(&Some(e)) if e.generation == self.pmmu_atc_generation => Some(e),
             _ => None,
         }
     }
