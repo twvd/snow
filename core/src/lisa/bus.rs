@@ -3,6 +3,7 @@
 //! The physical I/O space addresses are in the Lisa Hardware Manual, figure 2-6,
 //! where programs see them at $FCxxxx through the map the boot ROM sets up.
 
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -552,6 +553,16 @@ where
     /// The floppy that left the drive
     pub fn disk_take_ejected(&mut self) -> Option<LisaDisk> {
         self.fdc.take_ejected()
+    }
+
+    /// Keeps parameter memory in a file from now on
+    pub fn persist_parameter_memory(&mut self, path: &Path) -> Result<()> {
+        self.fdc.persist_parameter_memory(path)
+    }
+
+    /// Writes parameter memory to its file if the guest changed it
+    pub fn save_parameter_memory(&mut self) -> Result<()> {
+        self.fdc.save_parameter_memory()
     }
 
     fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {

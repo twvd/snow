@@ -41,6 +41,7 @@ const IMSK: usize = 0x2C;
 const OKTOGO: usize = 0x2E;
 const IST: usize = 0x2F;
 const PARAMETER_MEMORY: usize = 0xC0;
+const PARAMETER_MEMORY_SIZE: usize = 0x40;
 const TAG: usize = 0x1F4;
 const DATA: usize = 0x200;
 
@@ -282,6 +283,12 @@ pub struct FdcSim {
     /// A disk came out
     /// Out of the drive, for the emulator to write back
     ejected: Option<LisaDisk>,
+    /// File the parameter memory is kept in. A save state doesn't bring it back, like
+    /// the PRAM file of the Macs.
+    #[serde(skip)]
+    parameter_memory_path: Option<PathBuf>,
+    #[serde(skip)]
+    parameter_memory_changed: bool,
 }
 
 impl FdcSim {
@@ -300,6 +307,8 @@ impl FdcSim {
             timing_loop_done_at: None,
             disk: None,
             ejected: None,
+            parameter_memory_path: None,
+            parameter_memory_changed: false,
         };
         fdc.reset();
         fdc
@@ -307,9 +316,10 @@ impl FdcSim {
 
     /// Cold start of the controller. Only parameter memory stays.
     pub fn reset(&mut self) {
-        let parameter_memory = self.ram[PARAMETER_MEMORY..=0xFF].to_vec();
+        let range = PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE;
+        let parameter_memory = self.ram[range.clone()].to_vec();
         self.ram.fill(0);
-        self.ram[PARAMETER_MEMORY..=0xFF].copy_from_slice(&parameter_memory);
+        self.ram[range].copy_from_slice(&parameter_memory);
         self.ram[CONSTANTS..CONSTANTS + CONSTANTS_2_5.len()].copy_from_slice(&CONSTANTS_2_5);
         self.ram[CONSTANTS + CONSTANT_ROM_ID] = self.rom_id;
         self.ram[NOSIDES] = if self.double_sided { 2 } else { 1 };
@@ -327,6 +337,41 @@ impl FdcSim {
         self.parked = false;
     }
 
+    /// Keeps parameter memory in a file from now on. A file that doesn't exist or is
+    /// empty is a run down battery. One of another size is refused and left as it is:
+    /// it is likely the PRAM file of a Mac.
+    pub fn persist_parameter_memory(&mut self, path: &Path) -> Result<()> {
+        let saved = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        match saved.len() {
+            0 => self.parameter_memory_changed = true,
+            PARAMETER_MEMORY_SIZE => {
+                self.ram[PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE]
+                    .copy_from_slice(&saved);
+            }
+            n => bail!("{} bytes, not {}", n, PARAMETER_MEMORY_SIZE),
+        }
+        self.parameter_memory_path = Some(path.to_path_buf());
+        Ok(())
+    }
+
+    /// Writes parameter memory to its file if the guest changed it
+    pub fn save_parameter_memory(&mut self) -> Result<()> {
+        if !std::mem::take(&mut self.parameter_memory_changed) {
+            return Ok(());
+        }
+        if let Some(path) = &self.parameter_memory_path {
+            std::fs::write(
+                path,
+                &self.ram[PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE],
+            )?;
+        }
+        Ok(())
+    }
+
     /// RAM at the 68000 side
     pub fn ram_read(&self, n: usize) -> u8 {
         self.ram[n & (RAM_SIZE - 1)]
@@ -334,6 +379,11 @@ impl FdcSim {
 
     pub fn ram_write(&mut self, n: usize, val: u8) {
         let n = n & (RAM_SIZE - 1);
+        if (PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE).contains(&n)
+            && self.ram[n] != val
+        {
+            self.parameter_memory_changed = true;
+        }
         self.ram[n] = val;
         if n == GOBYTE {
             if self.parked {
@@ -712,6 +762,47 @@ mod tests {
         image.extend(data);
         image.extend(tags);
         LisaDisk::from_image(&image, "test", false).unwrap()
+    }
+
+    #[test]
+    fn parameter_memory_file() {
+        let dir = std::env::temp_dir().join(format!("snow-lisa-pm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lisa.pram");
+        let _ = std::fs::remove_file(&path);
+
+        // No file: run down battery, written out as such
+        let mut fdc = ready();
+        fdc.persist_parameter_memory(&path).unwrap();
+        fdc.save_parameter_memory().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            vec![0xFF; PARAMETER_MEMORY_SIZE]
+        );
+
+        // Only parameter memory counts as a change, and survives the next start
+        std::fs::remove_file(&path).unwrap();
+        fdc.ram_write(COMMAND, 0x12);
+        fdc.ram_write(PARAMETER_MEMORY, 0xFF);
+        fdc.save_parameter_memory().unwrap();
+        assert!(!path.exists());
+        fdc.ram_write(PARAMETER_MEMORY + 1, 0x34);
+        fdc.save_parameter_memory().unwrap();
+
+        let mut fdc = ready();
+        fdc.persist_parameter_memory(&path).unwrap();
+        assert_eq!(fdc.ram_read(PARAMETER_MEMORY + 1), 0x34);
+        assert_eq!(fdc.ram_read(PARAMETER_MEMORY), 0xFF);
+
+        // A Mac's PRAM file stays as it is
+        std::fs::write(&path, vec![0x55; 256]).unwrap();
+        let mut fdc = ready();
+        assert!(fdc.persist_parameter_memory(&path).is_err());
+        fdc.ram_write(PARAMETER_MEMORY, 0);
+        fdc.save_parameter_memory().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0x55; 256]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn ready() -> FdcSim {
