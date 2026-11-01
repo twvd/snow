@@ -25,6 +25,7 @@ mod no_fpu;
 mod odd_fetch;
 mod opcode_scan;
 mod pack;
+mod pmmu_68030;
 mod pmmu_atc;
 mod privilege_violation;
 mod privilege_violation_68020;
