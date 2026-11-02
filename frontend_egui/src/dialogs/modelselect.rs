@@ -690,6 +690,8 @@ impl ModelSelectionDialog {
                             }
                         });
                     ui.end_row();
+
+                    self.pds_slot_row(ui);
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");

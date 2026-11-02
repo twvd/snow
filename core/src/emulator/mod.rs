@@ -690,6 +690,7 @@ impl Emulator {
                     mouse_mode,
                     ram_size,
                     vram_size,
+                    iie_card,
                 );
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
@@ -1491,6 +1492,7 @@ impl Tickable for Emulator {
                                     EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
                                     EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
                                     EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                                     _ => None,
                                 };
                                 match card {
@@ -1521,6 +1523,7 @@ impl Tickable for Emulator {
                             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                             _ => None,
                         };
                         if let Some(card) = card {
@@ -1532,6 +1535,7 @@ impl Tickable for Emulator {
                             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                             _ => None,
                         };
                         if let Some(card) = card {
@@ -1562,6 +1566,7 @@ impl Tickable for Emulator {
                                     EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
                                     EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
                                     EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                                     _ => None,
                                 };
                                 match card {
@@ -1592,6 +1597,7 @@ impl Tickable for Emulator {
                             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
                             EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                             _ => None,
                         };
                         if let Some(card) = card {
