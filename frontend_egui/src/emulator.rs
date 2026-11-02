@@ -322,6 +322,7 @@ impl EmulatorState {
             args.vram_size,
             shared_dir,
             self.iie_card,
+            0x9,
         )?;
 
         let cmd = emulator.create_cmd_sender();

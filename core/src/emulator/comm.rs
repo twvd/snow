@@ -11,6 +11,7 @@ use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::emulator::MouseMode;
+use crate::emulator::devices::{DeviceConfig, SlotAddr};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie::GamePort;
@@ -33,6 +34,10 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
+    /// Hands a device its settings, creating it if its slot is empty
+    AddDevice(DeviceConfig),
+    /// Takes a device out of its slot
+    RemoveDevice(SlotAddr),
     /// Inserts a floppy image, passing the image as boxed object.
     /// Parameters: drive id, image, write-protect
     InsertFloppy(usize, String, bool),
