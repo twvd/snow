@@ -1143,3 +1143,19 @@ fn transcendental_values() {
         assert_eq!((h, m), (high, man), "opmode {opmode:02X}");
     }
 }
+
+/// BSUN accrues into AIOP (MC68881UM 2.3.4). Motorola's ftest has this for FScc, FDBcc and
+/// FTRAPcc.
+#[test]
+fn bsun_accrues_iop() {
+    // FSGT D0, with the NAN condition code set and an IEEE nonaware predicate
+    let mut cpu = testcpu(&[0xF240, 0x0012]);
+    cpu.regs.fpu.fpsr.0 = 1 << 24;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpsr.0 & 0xFFFF, (1 << 15) | AIOP);
+    // A predicate that's aware of NANs doesn't
+    let mut cpu = testcpu(&[0xF240, 0x0002]);
+    cpu.regs.fpu.fpsr.0 = 1 << 24;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpsr.0 & 0xFFFF, 0);
+}

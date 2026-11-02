@@ -531,6 +531,13 @@ where
         Ok(result)
     }
 
+    /// The BSUN bit of a conditional instruction, which also goes in AIOP (MC68881UM 2.3.4)
+    pub(in crate::cpu_m68k) fn fpu_set_bsun(&mut self, bsun: bool) {
+        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+    }
+
     /// The condition codes of a result (MC68881UM 4.5.5.1)
     pub(in crate::cpu_m68k) fn fpu_condition_codes(&mut self, result: &BitsExtReal) {
         self.regs.fpu.fpsr.set_fpcc_nan(result.is_nan());

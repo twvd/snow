@@ -92,7 +92,7 @@ where
         advance_cycles!(self, all: if L { 12 } else { 14 })?;
 
         let (test, bsun) = self.fcc(instr.get_fcc())?;
-        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        self.fpu_set_bsun(bsun);
         if test {
             // Branch taken
             self.history_current.branch_taken = Some(true);
@@ -116,7 +116,7 @@ where
     pub(in crate::cpu_m68k) fn op_fscc(&mut self, instr: &Instruction) -> Result<()> {
         let cc = usize::from(self.fetch()? & 0b111111);
         let (test, bsun) = self.fcc(cc)?;
-        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        self.fpu_set_bsun(bsun);
 
         // Idle cycles (MC68881/MC68882UM Table 8-7: 18 for Dn, 20 for memory and
         // 22 for (An)+ and -(An), 1 less if the condition is false)
@@ -143,7 +143,7 @@ where
     ) -> Result<()> {
         let cc = usize::from(self.fetch_pump()? & 0b111111);
         let (test, bsun) = self.fcc(cc)?;
-        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        self.fpu_set_bsun(bsun);
 
         // Consume the immediate operand from the prefetch queue and refill.
         // After this, regs.pc points to the instruction following FTRAPcc, which
@@ -177,7 +177,7 @@ where
         advance_cycles!(self, all: 14)?;
 
         let (test, bsun) = self.fcc(cc)?;
-        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        self.fpu_set_bsun(bsun);
         account_040_time!(
             self,
             if test {
