@@ -3,7 +3,7 @@ use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
-use crate::emulator::{EmulatorInitArgs, ScsiTargets};
+use crate::emulator::EmulatorInitArgs;
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -19,11 +19,12 @@ use crate::widgets::registers::RegistersWidget;
 use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
-use crate::workspace::{FramebufferMode, Workspace};
+use crate::workspace::{FramebufferMode, Workspace, card_entries};
 use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
+use snow_core::emulator::devices::{DeviceConfig, RefusedDevice, bus_id, device_configs};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
@@ -583,8 +584,7 @@ impl SnowGui {
                 app.load_rom_from_path(
                     path,
                     None,
-                    None,
-                    None,
+                    vec![],
                     None,
                     &EmulatorInitArgs::default(),
                     None,
@@ -1887,7 +1887,6 @@ impl SnowGui {
                             }
 
                             if new_link_type != link_type {
-                                self.workspace.set_ethernet_link_type(new_link_type.clone());
                                 self.emu.set_eth_link(id, new_link_type);
                             }
 
@@ -2042,7 +2041,7 @@ impl SnowGui {
         }
     }
 
-    fn draw_serial_bridge_menu(&mut self, ui: &mut egui::Ui, ch: SccCh) {
+    fn draw_serial_bridge_menu(&self, ui: &mut egui::Ui, ch: SccCh) {
         let is_enabled = self.emu.is_serial_bridge_enabled(ch);
         let emu_ready = self.emu.is_initialized();
 
@@ -2056,7 +2055,6 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.disable_serial_bridge(ch);
-                self.workspace.serial_bridges[ch as usize] = None;
             }
         } else {
             // Bridge is inactive - show enable options
@@ -2068,7 +2066,6 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.enable_serial_bridge(ch, SerialBridgeConfig::Pty);
-                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::Pty);
             }
 
             let port = match ch {
@@ -2085,7 +2082,6 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
-                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::Tcp(port));
             }
 
             if ui
@@ -2095,7 +2091,6 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::LocalTalk);
-                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::LocalTalk);
             }
         }
     }
@@ -2807,9 +2802,8 @@ impl SnowGui {
     fn load_rom_from_path(
         &mut self,
         path: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        scsi_targets: Option<ScsiTargets>,
+        devices: Vec<DeviceConfig>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -2828,11 +2822,12 @@ impl SnowGui {
                 .ok()
         });
 
+        self.workspace.devices.clone_from(&devices);
+        self.workspace.kept_devices.clear();
         match self.emu.init_from_rom(
             path,
-            display_rom_path,
             extension_rom_path,
-            scsi_targets,
+            devices,
             pram_path,
             args,
             model,
@@ -2843,6 +2838,7 @@ impl SnowGui {
                 self.framebuffer
                     .load_shader_defaults(self.emu.get_model().unwrap());
                 self.framebuffer.connect_receiver(p.frame_receiver);
+                self.report_refused_devices(p.refused);
             }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
@@ -2860,18 +2856,36 @@ impl SnowGui {
         // Save to last used ROMs
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
-            if let Some(dr_path) = display_rom_path {
+            if let Some(dr_path) = self.workspace.get_display_card_rom_path() {
                 self.settings
-                    .set_last_card_rom(video_rom_card(model, args.video_card), dr_path);
+                    .set_last_card_rom(video_rom_card(model, args.video_card), &dr_path);
             }
         }
 
         self.workspace.set_rom_path(path);
-        self.workspace.set_display_card_rom_path(display_rom_path);
         self.workspace.set_extension_rom_path(extension_rom_path);
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
         self.workspace.model = model;
+    }
+
+    /// What a machine couldn't use stays in the workspace, and the user gets told once
+    fn report_refused_devices(&mut self, refused: Vec<RefusedDevice>) {
+        if refused.is_empty() {
+            return;
+        }
+        let mut text = String::from("Some devices could not be used:");
+        for r in refused {
+            log::warn!("{}: {}", r.config.label(), r.reason);
+            text.push_str(&format!("\n{}: {}", r.config.label(), r.reason));
+            self.workspace.kept_devices.push(r.config);
+        }
+        self.toasts.add(
+            Toast::new()
+                .text(text)
+                .kind(ToastKind::Warning)
+                .options(ToastOptions::default().duration_in_seconds(10.0)),
+        );
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -2883,7 +2897,11 @@ impl SnowGui {
                     self.settings.add_recent_workspace(path);
                     self.model_dialog_prefill_pending = true;
                 }
-                Err(e) => self.show_error(&format!("Failed to load workspace\n\n{:?}", e)),
+                Err(e) => {
+                    // The machine that's running has nothing to do with this
+                    self.show_error(&format!("Failed to load workspace\n\n{:?}", e));
+                    return;
+                }
             }
         } else {
             // Clean workspace
@@ -2903,52 +2921,27 @@ impl SnowGui {
         self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         self.framebuffer.shader_enabled = self.workspace.shader_enabled;
         if let Some(rompath) = self.workspace.get_rom_path() {
-            let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
-            let scsi_targets = self.workspace.scsi_targets();
             let pram_path = self.workspace.get_pram_path();
             let init_args = self.workspace.init_args.clone();
             let model = self.workspace.model;
 
+            // Bridges given on the command line take precedence over the workspace
+            let mut devices = self.workspace.devices.clone();
+            for (idx, slot) in ["A", "B"].into_iter().enumerate() {
+                if self.pending_serial_bridges[idx].is_some() {
+                    devices.retain(|d| d.bus != bus_id::SERIAL || d.slot != slot);
+                }
+            }
+
             self.load_rom_from_path(
                 &rompath,
-                display_rom_path.as_deref(),
                 extension_rom_path.as_deref(),
-                Some(scsi_targets),
+                devices,
                 pram_path.as_deref(),
                 &init_args,
                 model,
             );
-
-            if let Some(floppy_path) = self.workspace.get_floppy_images().first().cloned()
-                && floppy_path.exists()
-                && !self.request_load_floppy_firstfree(&floppy_path)
-            {
-                self.show_error(&format!(
-                    "Cannot load floppy image: no free drive for {:?}",
-                    floppy_path
-                ));
-            }
-
-            #[cfg(feature = "ethernet")]
-            if let Some(scsi) = self.emu.get_scsi_targets()
-                && let Some((id, _)) = scsi
-                    .iter()
-                    .enumerate()
-                    .find(|(_, t)| t.target_type == Some(ScsiTargetType::Ethernet))
-            {
-                self.emu
-                    .set_eth_link(id, self.workspace.get_ethernet_link_type());
-            }
-
-            // Bridges given on the command line take precedence over the workspace
-            for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
-                if self.pending_serial_bridges[idx].is_none()
-                    && let Some(config) = self.workspace.serial_bridges[idx].clone()
-                {
-                    let _ = self.emu.enable_serial_bridge(ch, config);
-                }
-            }
         } else {
             self.emu.deinit();
             self.ff_on = false;
@@ -2969,10 +2962,9 @@ impl SnowGui {
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
         self.workspace.shader_configs = self.framebuffer.export_config();
-        if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
-            for (i, d) in targets.iter().enumerate() {
-                self.workspace.set_scsi_target(i, d.clone());
-            }
+        if self.emu.is_initialized() && !self.emu.restored_from_state() {
+            self.workspace
+                .set_live_devices(device_configs(self.emu.buses()));
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
@@ -3292,11 +3284,22 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
+        let mut devices = card_entries(
+            Some(result.model),
+            result.display_rom_path.as_deref(),
+            &result.init_args,
+        );
+        // What's plugged in stays plugged in, and what couldn't be used gets another chance
+        devices.extend(
+            device_configs(self.emu.buses())
+                .into_iter()
+                .filter(|d| d.known_model().is_some_and(|m| !m.fixed())),
+        );
+        devices.extend(self.workspace.kept_devices.iter().cloned());
         self.load_rom_from_path(
             &result.main_rom_path,
-            result.display_rom_path.as_deref(),
             result.extension_rom_path.as_deref(),
-            self.emu.get_scsi_targets(),
+            devices,
             result.pram_path.as_deref(),
             &result.init_args,
             Some(result.model),
@@ -3512,8 +3515,7 @@ impl SnowGui {
                 self.load_rom_from_path(
                     path,
                     None,
-                    None,
-                    None,
+                    vec![],
                     None,
                     &EmulatorInitArgs::default(),
                     None,

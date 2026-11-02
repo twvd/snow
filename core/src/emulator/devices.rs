@@ -414,6 +414,16 @@ impl DeviceConfig {
         DeviceModel::from_key(self.model.as_deref()?)
     }
 
+    /// The model, or the one this Mac has in the slot if the entry names none
+    pub fn model_on(&self, mac: MacModel) -> Option<DeviceModel> {
+        if self.model.is_some() {
+            return self.known_model();
+        }
+        let buses = mac.buses();
+        let bus = buses.iter().find(|b| b.id == self.bus)?;
+        bus.slots.iter().find(|s| s.id == self.slot)?.default_model
+    }
+
     /// The settings as what a model expects
     pub fn parse<S: DeserializeOwned>(&self) -> Result<S> {
         serde_json::from_value(Value::Object(self.settings.clone())).map_err(|e| {
