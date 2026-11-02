@@ -1064,3 +1064,55 @@ fn packed_output_values() {
     assert_eq!(raw, [0x0932_4001, 0, 0]);
     assert_eq!(status, OPERR | INEX2 | AIOP | AINEX);
 }
+
+/// The constants, rounded by the mode and precision of FPCR, which sets INEX2 if they are
+/// not exact (MC68881UM FMOVECR). The values are from the tables of the M68040 FPSP.
+#[test]
+fn fmovecr_constants() {
+    let run = |offset: Word, fpcr: Long| {
+        // FMOVECR #offset,FP0
+        let mut cpu = testcpu(&[0xF200, 0x5C00 | offset]);
+        cpu.regs.fpu.fpcr.0 = fpcr;
+        cpu.step().unwrap();
+        result(&cpu)
+    };
+    // Pi by the rounding mode
+    assert_eq!(run(0x00, 0), (0x4000, 0xC90F_DAA2_2168_C235, INEX2 | AINEX));
+    assert_eq!(
+        run(0x00, 1 << 4),
+        (0x4000, 0xC90F_DAA2_2168_C234, INEX2 | AINEX)
+    );
+    assert_eq!(
+        run(0x00, 2 << 4),
+        (0x4000, 0xC90F_DAA2_2168_C234, INEX2 | AINEX)
+    );
+    assert_eq!(
+        run(0x00, 3 << 4),
+        (0x4000, 0xC90F_DAA2_2168_C235, INEX2 | AINEX)
+    );
+    // In single precision
+    assert_eq!(
+        run(0x00, 1 << 6),
+        (0x4000, 0xC90F_DB00_0000_0000, INEX2 | AINEX)
+    );
+    // Not the nearest values
+    assert_eq!(run(0x0B, 0), (0x3FFD, 0x9A20_9A84_FBCF_F798, INEX2 | AINEX));
+    assert_eq!(run(0x0C, 0), (0x4000, 0xADF8_5458_A2BB_4A9A, INEX2 | AINEX));
+    assert_eq!(
+        run(0x0C, 3 << 4),
+        (0x4000, 0xADF8_5458_A2BB_4A9B, INEX2 | AINEX)
+    );
+    // Exact ones
+    assert_eq!(run(0x0F, 0), (0, 0, 0));
+    assert_eq!(run(0x32, 0), (0x3FFF, J, 0));
+    assert_eq!(run(0x37, 0), (0x4034, 0x8E1B_C9BF_0400_0000, 0));
+    // From here on they don't fit
+    assert_eq!(run(0x38, 0), (0x4069, 0x9DC5_ADA8_2B70_B59E, INEX2 | AINEX));
+    // The exponent stays out of the range of the rounding precision
+    assert_eq!(
+        run(0x39, 1 << 6),
+        (0x40D3, 0xC278_1F00_0000_0000, INEX2 | AINEX)
+    );
+    // Reserved
+    assert_eq!(run(0x01, 0), (0, 0, 0));
+}
