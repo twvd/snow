@@ -1,4 +1,5 @@
 pub mod comm;
+pub mod devices;
 
 #[cfg(feature = "savestates")]
 pub mod save;
