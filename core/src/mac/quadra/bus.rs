@@ -20,7 +20,7 @@ use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -221,7 +221,20 @@ where
         bus.via1.adb.add_device(AdbMouse::new());
         bus.via1.adb.add_device(AdbKeyboard::new());
 
+        bus.disable_memtest();
+
         bus
+    }
+
+    /// Makes the ROM skip its memory test
+    ///
+    /// This ROM does not look for the warm start signature at $CFC but in the
+    /// long just below the memory table that it builds at the top of the RAM.
+    /// The offset was measured by running the ROM with every RAM size.
+    fn disable_memtest(&mut self) {
+        let index = self.ram.len() - 0x30;
+        info!("Skipping memory test");
+        self.ram[index..index + 4].copy_from_slice(&WARM_START_SIGNATURE.1.to_be_bytes());
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
@@ -751,6 +764,7 @@ where
         if hard {
             // Clear RAM
             self.ram.fill(0);
+            self.disable_memtest();
         }
 
         // Keep the RTC and ADB for PRAM and event channels
