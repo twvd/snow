@@ -16,6 +16,7 @@ use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
@@ -326,8 +327,8 @@ where
         match extword.subop() {
             0b000 => {
                 // Data reg to data reg, with ALU
-                let src = self.regs.fpu.fp[extword.src_spec() as usize].clone();
-                let dest = self.regs.fpu.fp[extword.dst_reg()].clone();
+                let src = self.regs.fpu.fp[extword.src_spec() as usize];
+                let dest = self.regs.fpu.fp[extword.dst_reg()];
                 let opmode = extword.opmode();
 
                 if FPU_TYPE == FPU_M68040 && !opmode::implemented_040(opmode) {
@@ -379,30 +380,30 @@ where
                     0b000 => {
                         // Long
                         (
-                            Float::from_i64(
+                            BitsExtReal::from(&Float::from_i64(
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64,
-                            ),
+                            )),
                             FpuOperand::Int,
                         )
                     }
                     0b110 => {
                         // Byte
                         (
-                            Float::from_i64(
+                            BitsExtReal::from(&Float::from_i64(
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Byte>(instr, instr.get_op2())? as i8 as i64,
-                            ),
+                            )),
                             FpuOperand::Int,
                         )
                     }
                     0b100 => {
                         // Word
                         (
-                            Float::from_i64(
+                            BitsExtReal::from(&Float::from_i64(
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i64,
-                            ),
+                            )),
                             FpuOperand::Int,
                         )
                     }
@@ -455,11 +456,10 @@ where
                     0b111 if FPU_TYPE == FPU_M68040 => {
                         // FMOVECR is not in the hardware of the MC68040
                         // (MC68040UM table 9-10)
-                        let zero = Float::zero(SEMANTICS_EXTENDED, false);
                         return self.fpu_unimp040(
                             extword,
-                            Unimp040::operand(&zero),
-                            Unimp040::operand(&self.regs.fpu.fp[fpx].clone()),
+                            Unimp040::operand(&BitsExtReal::zero(false)),
+                            Unimp040::operand(&self.regs.fpu.fp[fpx]),
                             false,
                         );
                     }
@@ -472,7 +472,7 @@ where
                                 .powi(n)
                                 .cast(SEMANTICS_EXTENDED)
                         };
-                        self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
+                        let value = match extword.movecr_offset() {
                             0x00 => Float::pi(SEMANTICS_EXTENDED),
                             0x0B => Float::from_u64(SEMANTICS_EXTENDED, 2).log10(),
                             0x0C => Float::e(SEMANTICS_EXTENDED),
@@ -500,7 +500,7 @@ where
                         };
 
                         // No ALU operation
-                        let value = self.regs.fpu.fp[fpx].clone();
+                        self.regs.fpu.fp[fpx] = BitsExtReal::from(&value);
                         self.fpu_condition_codes(&value);
                         self.advance_cycles(Self::fpu_timings().movecr())?;
                         return Ok(());
@@ -523,7 +523,7 @@ where
                     }
                 };
 
-                let dest = self.regs.fpu.fp[fpx].clone();
+                let dest = self.regs.fpu.fp[fpx];
                 if unimp040 {
                     return self.fpu_unimp040(
                         extword,
@@ -596,7 +596,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(cycles)?;
-                        self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
+                        self.write_fpu_extended(ea, self.regs.fpu.fp[fpx])?;
                     }
                     0b101 => {
                         // Double-precision real
@@ -611,7 +611,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(cycles)?;
-                        self.write_fpu_double(ea, &self.regs.fpu.fp[fpx].clone())?;
+                        self.write_fpu_double(ea, self.regs.fpu.fp[fpx])?;
                     }
                     0b001 => {
                         // Single precision real
@@ -626,7 +626,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(cycles)?;
-                        self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
+                        self.write_fpu_single(ea, self.regs.fpu.fp[fpx])?;
                     }
                     0b011 => {
                         // Packed decimal real with static K-factor
@@ -641,11 +641,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(cycles)?;
-                        self.write_fpu_packed(
-                            ea,
-                            &self.regs.fpu.fp[fpx].clone(),
-                            extword.k_factor(),
-                        )?;
+                        self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], extword.k_factor())?;
                     }
                     0b111 => {
                         // Packed decimal real with dynamic K-factor
@@ -664,7 +660,7 @@ where
                             .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
                             as i8;
                         self.advance_cycles(cycles)?;
-                        self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
+                        self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], k)?;
                     }
                     _ => {
                         bail!(CpuError::IllegalInstruction);
@@ -721,8 +717,8 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(cycles)?;
-                        self.regs
-                            .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
+                        let value = Float::from(self.regs.fpu.fp[fpx]);
+                        self.regs.write_d(dn, value.as_f32().to_bits());
                     }
                     _ => {
                         bail!(CpuError::IllegalInstruction);
@@ -850,15 +846,15 @@ where
                 continue;
             }
 
-            let fp_value = self.regs.fpu.fp[fp_reg].clone();
+            let fp_value = self.regs.fpu.fp[fp_reg];
 
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                 // Predecrement: decrement address before write
                 addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
-                self.write_fpu_extended(addr, &fp_value)?;
+                self.write_fpu_extended(addr, fp_value)?;
             } else {
                 // Other modes: write then increment
-                self.write_fpu_extended(addr, &fp_value)?;
+                self.write_fpu_extended(addr, fp_value)?;
                 addr = addr.wrapping_add(12);
             }
 

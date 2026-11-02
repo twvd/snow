@@ -4,6 +4,7 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 use arpfloat::Float;
@@ -35,8 +36,8 @@ fn read_long(cpu: &TestCpu, addr: Address) -> Long {
     (b(addr) << 24) | (b(addr + 1) << 16) | (b(addr + 2) << 8) | b(addr + 3)
 }
 
-fn fp(v: f64) -> Float {
-    Float::from_f64(v).cast(SEMANTICS_EXTENDED)
+fn fp(v: f64) -> BitsExtReal {
+    BitsExtReal::from(&Float::from_f64(v).cast(SEMANTICS_EXTENDED))
 }
 
 /// FOP FPs,FPd
@@ -178,8 +179,8 @@ fn fcmp_and_ftst_keep_the_registers() {
 
 #[test]
 fn fcmp_special_values() {
-    let inf = |s| Float::inf(SEMANTICS_EXTENDED, s);
-    let zero = |s| Float::zero(SEMANTICS_EXTENDED, s);
+    let inf = BitsExtReal::inf;
+    let zero = BitsExtReal::zero;
     // src, dest, N, Z, NAN
     for (i, (src, dest, n, z, nan)) in [
         (inf(false), inf(false), false, true, false),
@@ -221,7 +222,10 @@ fn undefined_precision_does_not_stop() {
 fn exception_status_of_arithmetic() {
     // src, dest, opmode, DZ, OPERR, OVFL, INEX2
     // About 1e3000, its square overflows
-    let big = (0..9).fold(fp(1e300), |v, _| v * fp(1e300));
+    let big = (0..9).fold(Float::from_f64(1e300).cast(SEMANTICS_EXTENDED), |v, _| {
+        v * Float::from_f64(1e300).cast(SEMANTICS_EXTENDED)
+    });
+    let big = BitsExtReal::from(&big);
     for (i, (src, dest, opmode, dz, operr, ovfl, inex2)) in [
         (fp(0.0), fp(1.0), 0x20, true, false, false, false),
         (fp(0.0), fp(0.0), 0x20, false, true, false, false),
@@ -232,7 +236,7 @@ fn exception_status_of_arithmetic() {
         (fp(2.0), fp(0.0), 0x04, false, false, false, true),
         (fp(0.5), fp(0.25), 0x22, false, false, false, false),
         (fp(1.0), fp(2f64.powi(-70)), 0x22, false, false, false, true),
-        (big.clone(), big, 0x23, false, false, true, true),
+        (big, big, 0x23, false, false, true, true),
     ]
     .into_iter()
     .enumerate()
@@ -357,9 +361,9 @@ fn fgetman_keeps_the_sign() {
         assert_eq!(cpu.regs.fpu.fp[1].as_f64(), want, "{v}");
     }
     let mut cpu = testcpu(&fop(0, 1, 0x1F));
-    cpu.regs.fpu.fp[0] = Float::zero(SEMANTICS_EXTENDED, true);
+    cpu.regs.fpu.fp[0] = BitsExtReal::zero(true);
     cpu.step().unwrap();
-    assert!(cpu.regs.fpu.fp[1].is_zero() && cpu.regs.fpu.fp[1].is_negative());
+    assert!(cpu.regs.fpu.fp[1].is_zero() && cpu.regs.fpu.fp[1].s());
 }
 
 #[test]
@@ -376,7 +380,7 @@ fn fgetexp_of_zero_is_zero() {
 fn fgetexp_fgetman_of_infinity_are_operr() {
     for opmode in [0x1E, 0x1F] {
         let mut cpu = testcpu(&fop(0, 1, opmode));
-        cpu.regs.fpu.fp[0] = Float::inf(SEMANTICS_EXTENDED, false);
+        cpu.regs.fpu.fp[0] = BitsExtReal::inf(false);
         cpu.step().unwrap();
         assert!(cpu.regs.fpu.fp[1].is_nan());
         assert!(cpu.regs.fpu.fpsr.exs().operr());
@@ -482,5 +486,37 @@ fn transcendental_functions_in_every_rounding_mode() {
         cpu.step().unwrap();
         assert!(!cpu.regs.fpu.fp[0].is_nan());
         assert!(!cpu.regs.fpu.fp[2].is_nan());
+    }
+}
+
+#[test]
+fn binary_real_sources_become_extended_exactly() {
+    // MC68881UM tables 3-1 to 3-3: (raw single, sign and exponent, mantissa)
+    for (raw, high, man) in [
+        (0x3F80_0000, 0x3FFF_0000, 0x8000_0000_0000_0000),
+        (0xBFC0_0000, 0xBFFF_0000, 0xC000_0000_0000_0000),
+        // Denormalized in single precision, normalized in extended precision
+        (0x0000_0001, 0x3F6A_0000, 0x8000_0000_0000_0000),
+        (0x007F_FFFF, 0x3F80_0000, 0xFFFF_FE00_0000_0000),
+        (0x7F80_0000, 0x7FFF_0000, 0),
+        // Signaling and non-signaling NANs stay what they are
+        (0x7FA0_0001, 0x7FFF_0000, 0xA000_0100_0000_0000),
+        (0xFFC0_0000, 0xFFFF_0000, 0xC000_0000_0000_0000),
+    ] {
+        let bits = BitsExtReal::from_single(raw);
+        assert_eq!((bits.high(), bits.raw_mantissa()), (high, man), "{raw:08X}");
+    }
+    for (raw, high, man) in [
+        (0x3FF0_0000_0000_0000, 0x3FFF_0000, 0x8000_0000_0000_0000),
+        (0x0000_0000_0000_0001, 0x3BCD_0000, 0x8000_0000_0000_0000),
+        (0xFFF0_0000_0000_0000, 0xFFFF_0000, 0),
+        (0x7FF4_0000_0000_0000, 0x7FFF_0000, 0xA000_0000_0000_0000),
+    ] {
+        let bits = BitsExtReal::from_double(raw);
+        assert_eq!(
+            (bits.high(), bits.raw_mantissa()),
+            (high, man),
+            "{raw:016X}"
+        );
     }
 }

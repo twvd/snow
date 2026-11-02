@@ -2,13 +2,12 @@ use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
-use arrayvec::ArrayVec;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::{CpuM68kType, cpu::CpuM68k};
-use crate::types::{Long, Word};
+use crate::types::Long;
 
 use super::SEMANTICS_EXTENDED;
 
@@ -19,54 +18,6 @@ pub const SINGLE_SIZE: usize = 4;
 pub const DOUBLE_SIZE: usize = 8;
 pub const EXTENDED_SIZE: usize = 12;
 pub const PACKED_SIZE: usize = 12;
-
-/// Serde adapter for arpfloat::Float (as M68881 extended precision float format)
-pub mod float_as_ext_real {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S>(value: &Float, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let bits_ext_real: BitsExtReal = value.into();
-        bits_ext_real.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Float, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bits_ext_real = BitsExtReal::deserialize(deserializer)?;
-        Ok(bits_ext_real.into())
-    }
-}
-
-/// Serde adapter for [arpfloat::Float; N] (as M68881 extended precision float format)
-pub mod float_array_as_ext_real {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-    use serde_big_array::BigArray;
-
-    pub fn serialize<S, const N: usize>(
-        value: &[Float; N],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let bits_array: [BitsExtReal; N] = core::array::from_fn(|i| (&value[i]).into());
-        bits_array.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[Float; N], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bits_array: [BitsExtReal; N] = <[BitsExtReal; N]>::deserialize(deserializer)?;
-        Ok(core::array::from_fn(|i| bits_array[i].into()))
-    }
-}
 
 bitfield! {
     /// Raw (storage) bit representation of the extended-precision real format
@@ -98,42 +49,93 @@ bitfield! {
 }
 
 impl BitsExtReal {
+    /// A NAN as the FPU creates it, with a mantissa of all ones (MC68881UM table
+    /// 3-3)
     pub fn nan(s: bool) -> Self {
-        // PRM 1.6.5
         Self::default()
-            .with_e(u64::MAX)
-            .with_f(u64::MAX)
+            .with_e(EXPONENT_MAX)
+            .with_raw_mantissa(u64::MAX)
             .with_s(s)
-            .with_i(true)
     }
 
+    /// Any value of the integer bit, which is a don't care (MC68881UM table 3-3)
     pub fn is_nan(&self) -> bool {
-        // PRM 1.6.5
         self.e() == EXPONENT_MAX && self.f() != 0
     }
 
-    pub fn inf(s: bool) -> Self {
-        // PRM 1.6.4
-        Self::default()
-            .with_e(u64::MAX)
-            .with_f(0)
-            .with_s(s)
-            .with_i(true)
+    /// A NAN with its SNAN bit, the most significant of the fraction, clear
+    /// (MC68881UM table 3-3)
+    pub fn is_snan(&self) -> bool {
+        self.is_nan() && self.f() & (1 << 62) == 0
     }
 
+    /// An infinity as the FPU creates it, with a mantissa of zero (MC68881UM 6.1.7)
+    pub fn inf(s: bool) -> Self {
+        Self::default().with_e(EXPONENT_MAX).with_s(s)
+    }
+
+    /// Any value of the integer bit, which is a don't care (MC68881UM table 3-3)
     pub fn is_inf(&self) -> bool {
-        // PRM 1.6.4
         self.e() == EXPONENT_MAX && self.f() == 0
     }
 
     pub fn zero(s: bool) -> Self {
-        // PRM 1.6.3
-        Self::default().with_e(0).with_f(0).with_s(s)
+        Self::default().with_s(s)
     }
 
+    /// A mantissa of 0 with any exponent is a zero: the FPU takes unnormalized numbers
+    /// as normalized numbers, denormalized numbers or zero (MC68881UM 3.2.2)
     pub fn is_zero(&self) -> bool {
-        // PRM 1.6.3
-        self.e() == 0 && self.f() == 0
+        self.e() != EXPONENT_MAX && self.raw_mantissa() == 0
+    }
+
+    /// The value as a host double, for showing it
+    pub fn as_f64(&self) -> f64 {
+        Float::from(*self).as_f64()
+    }
+
+    /// The bits of a single precision real, exactly (MC68881UM table 3-1)
+    pub fn from_single(raw: Long) -> Self {
+        let s = raw & (1 << 31) != 0;
+        let e = u64::from((raw >> 23) & 0xFF);
+        let f = u64::from(raw & 0x7F_FFFF);
+        Self::from_binary_real(s, e, f, 23, 0xFF, 127)
+    }
+
+    /// The bits of a double precision real, exactly (MC68881UM table 3-2)
+    pub fn from_double(raw: u64) -> Self {
+        let s = raw & (1 << 63) != 0;
+        let e = (raw >> 52) & 0x7FF;
+        let f = raw & ((1 << 52) - 1);
+        Self::from_binary_real(s, e, f, 52, 0x7FF, 1023)
+    }
+
+    fn from_binary_real(s: bool, e: u64, f: u64, f_bits: u32, e_max: u64, bias: i64) -> Self {
+        let bits = Self::default().with_s(s);
+        // Left-aligned below the integer bit
+        let fraction = f << (63 - f_bits);
+        if e == e_max {
+            // The bits of a NAN stay as they are, the SNAN bit among them
+            return if f == 0 {
+                Self::inf(s)
+            } else {
+                bits.with_e(EXPONENT_MAX).with_i(true).with_f(fraction)
+            };
+        }
+        if e == 0 {
+            if f == 0 {
+                return bits;
+            }
+            // Denormalized numbers of these formats are at the exponent of their
+            // smallest normalized number, and all normalized in extended precision
+            let shift = fraction.leading_zeros();
+            return bits
+                .with_e((1 - bias + EXPONENT_BIAS as i64 - i64::from(shift)) as u64)
+                .with_raw_mantissa(fraction << shift);
+        }
+        bits.with_e((e as i64 - bias + EXPONENT_BIAS as i64) as u64)
+            .with_i(true)
+            .with_f(fraction)
     }
 }
 
@@ -236,11 +238,6 @@ impl From<BitsExtReal> for Float {
             };
             let raw_mantissa = value.raw_mantissa();
 
-            if raw_mantissa == 0 {
-                // Pseudo-zero (non-zero exponent but zero mantissa)
-                return Self::zero(SEMANTICS_EXTENDED, value.s());
-            }
-
             // Normalize the mantissa if needed (handles unnormals where i=0)
             let leading_zeros = raw_mantissa.leading_zeros() as i64;
             let normalized_mantissa = raw_mantissa << leading_zeros;
@@ -268,80 +265,66 @@ where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
+    /// The bits of an extended precision real as they are in memory: the unused
+    /// ones are a don't care on input (MC68881UM table 3-3), and go
+    fn bits_ext_real(high: Long, mid: Long, low: Long) -> BitsExtReal {
+        BitsExtReal::default()
+            .with_low(low)
+            .with_mid(mid)
+            .with_high(high & 0xFFFF_0000)
+    }
+
     /// Read FPU extended precision value from memory
-    pub(in crate::cpu_m68k) fn read_fpu_extended(&mut self, addr: Address) -> Result<Float> {
-        // Extended precision format: 96 bits (12 bytes)
-        // Read as 3 longs: sign/exponent (16 bits) + mantissa (64 bits)
+    pub(in crate::cpu_m68k) fn read_fpu_extended(&mut self, addr: Address) -> Result<BitsExtReal> {
         let high = self.read_ticks::<Long>(addr)?;
         let mid = self.read_ticks::<Long>(addr.wrapping_add(4))?;
         let low = self.read_ticks::<Long>(addr.wrapping_add(8))?;
-        let bits = BitsExtReal::default()
-            .with_low(low)
-            .with_mid(mid)
-            .with_high(high);
-
-        Ok(bits.into())
+        Ok(Self::bits_ext_real(high, mid, low))
     }
 
     /// Read FPU extended precision value immediate
-    pub(in crate::cpu_m68k) fn read_fpu_extended_imm(&mut self) -> Result<Float> {
-        // Extended precision format: 96 bits (12 bytes)
-        // Read as 3 longs: sign/exponent (16 bits) + mantissa (64 bits)
+    pub(in crate::cpu_m68k) fn read_fpu_extended_imm(&mut self) -> Result<BitsExtReal> {
         let high = self.fetch_immediate::<Long>()?;
         let mid = self.fetch_immediate::<Long>()?;
         let low = self.fetch_immediate::<Long>()?;
-        let bits = BitsExtReal::default()
-            .with_low(low)
-            .with_mid(mid)
-            .with_high(high);
-
-        Ok(bits.into())
+        Ok(Self::bits_ext_real(high, mid, low))
     }
 
     /// Write FPU extended precision value to memory
     pub(in crate::cpu_m68k) fn write_fpu_extended(
         &mut self,
         addr: Address,
-        value: &Float,
+        value: BitsExtReal,
     ) -> Result<()> {
-        let bits = BitsExtReal::from(value);
-
-        // Write as 3 longs
-        self.write_ticks(addr, bits.high())?;
-        self.write_ticks(addr.wrapping_add(4), bits.mid())?;
-        self.write_ticks(addr.wrapping_add(8), bits.low())?;
+        self.write_ticks(addr, value.high())?;
+        self.write_ticks(addr.wrapping_add(4), value.mid())?;
+        self.write_ticks(addr.wrapping_add(8), value.low())?;
 
         Ok(())
     }
 
     /// Read FPU double precision value from memory
-    pub(in crate::cpu_m68k) fn read_fpu_double(&mut self, addr: Address) -> Result<Float> {
-        let mut v = ArrayVec::<u8, 8>::new();
-
-        for i in 0..8 {
-            v.push(self.read_ticks(addr.wrapping_add(i))?);
-        }
-        Ok(Float::from_f64(f64::from_be_bytes(v.as_slice().try_into()?)).cast(SEMANTICS_EXTENDED))
+    pub(in crate::cpu_m68k) fn read_fpu_double(&mut self, addr: Address) -> Result<BitsExtReal> {
+        let high = u64::from(self.read_ticks::<Long>(addr)?);
+        let low = u64::from(self.read_ticks::<Long>(addr.wrapping_add(4))?);
+        Ok(BitsExtReal::from_double((high << 32) | low))
     }
 
     /// Read FPU double precision value immediate
-    pub(in crate::cpu_m68k) fn read_fpu_double_imm(&mut self) -> Result<Float> {
-        let mut v = ArrayVec::<u8, 8>::new();
-
-        for _ in 0..4 {
-            let word = self.fetch_immediate::<Word>()?;
-            v.try_extend_from_slice(&word.to_be_bytes())?;
-        }
-        Ok(Float::from_f64(f64::from_be_bytes(v.as_slice().try_into()?)).cast(SEMANTICS_EXTENDED))
+    pub(in crate::cpu_m68k) fn read_fpu_double_imm(&mut self) -> Result<BitsExtReal> {
+        let high = u64::from(self.fetch_immediate::<Long>()?);
+        let low = u64::from(self.fetch_immediate::<Long>()?);
+        Ok(BitsExtReal::from_double((high << 32) | low))
     }
 
     /// Write FPU double precision value to memory
     pub(in crate::cpu_m68k) fn write_fpu_double(
         &mut self,
         addr: Address,
-        value: &Float,
+        value: BitsExtReal,
     ) -> Result<()> {
-        for (i, b) in value.as_f64().to_be_bytes().into_iter().enumerate() {
+        let value = Float::from(value).as_f64();
+        for (i, b) in value.to_be_bytes().into_iter().enumerate() {
             self.write_ticks(addr.wrapping_add(i as Address), b)?;
         }
 
@@ -349,30 +332,27 @@ where
     }
 
     /// Read FPU single precision value from memory
-    pub(in crate::cpu_m68k) fn read_fpu_single(&mut self, addr: Address) -> Result<Float> {
-        let raw = self.read_ticks::<Long>(addr)?;
-        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
+    pub(in crate::cpu_m68k) fn read_fpu_single(&mut self, addr: Address) -> Result<BitsExtReal> {
+        Ok(BitsExtReal::from_single(self.read_ticks::<Long>(addr)?))
     }
 
     /// Read FPU single precision value from data register
-    pub(in crate::cpu_m68k) fn read_fpu_single_dn(&self, dn: usize) -> Result<Float> {
-        let raw = self.regs.read_d(dn);
-        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
+    pub(in crate::cpu_m68k) fn read_fpu_single_dn(&self, dn: usize) -> Result<BitsExtReal> {
+        Ok(BitsExtReal::from_single(self.regs.read_d(dn)))
     }
 
     /// Read FPU single precision value immediate
-    pub(in crate::cpu_m68k) fn read_fpu_single_imm(&mut self) -> Result<Float> {
-        let raw = self.fetch_immediate::<Long>()?;
-        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
+    pub(in crate::cpu_m68k) fn read_fpu_single_imm(&mut self) -> Result<BitsExtReal> {
+        Ok(BitsExtReal::from_single(self.fetch_immediate::<Long>()?))
     }
 
     /// Write FPU single precision value to memory
     pub(in crate::cpu_m68k) fn write_fpu_single(
         &mut self,
         addr: Address,
-        value: &Float,
+        value: BitsExtReal,
     ) -> Result<()> {
-        self.write_ticks::<Long>(addr, value.as_f32().to_bits())
+        self.write_ticks::<Long>(addr, Float::from(value).as_f32().to_bits())
     }
 
     /// Parse BCD packed decimal format into Float with full precision
@@ -601,35 +581,35 @@ where
     }
 
     /// Read FPU packed BCD real from memory
-    pub(in crate::cpu_m68k) fn read_fpu_packed(&mut self, addr: Address) -> Result<Float> {
+    pub(in crate::cpu_m68k) fn read_fpu_packed(&mut self, addr: Address) -> Result<BitsExtReal> {
         // Packed BCD format: 96 bits (12 bytes)
         // Read as 3 longs
         let dw1 = self.read_ticks::<Long>(addr)?;
         let dw2 = self.read_ticks::<Long>(addr.wrapping_add(4))?;
         let dw3 = self.read_ticks::<Long>(addr.wrapping_add(8))?;
 
-        Self::parse_packed_bcd(dw1, dw2, dw3)
+        Ok(BitsExtReal::from(&Self::parse_packed_bcd(dw1, dw2, dw3)?))
     }
 
     /// Read FPU packed BCD real immediate
-    pub(in crate::cpu_m68k) fn read_fpu_packed_imm(&mut self) -> Result<Float> {
+    pub(in crate::cpu_m68k) fn read_fpu_packed_imm(&mut self) -> Result<BitsExtReal> {
         // Packed BCD format: 96 bits (12 bytes)
         // Read as 3 longs
         let dw1 = self.fetch_immediate::<Long>()?;
         let dw2 = self.fetch_immediate::<Long>()?;
         let dw3 = self.fetch_immediate::<Long>()?;
 
-        Self::parse_packed_bcd(dw1, dw2, dw3)
+        Ok(BitsExtReal::from(&Self::parse_packed_bcd(dw1, dw2, dw3)?))
     }
 
     /// Write FPU packed BCD real to memory
     pub(in crate::cpu_m68k) fn write_fpu_packed(
         &mut self,
         addr: Address,
-        value: &Float,
+        value: BitsExtReal,
         k: i8,
     ) -> Result<()> {
-        let (dw1, dw2, dw3) = Self::format_packed(value, k);
+        let (dw1, dw2, dw3) = Self::format_packed(&Float::from(value), k);
 
         self.write_ticks::<Long>(addr, dw1)?;
         self.write_ticks::<Long>(addr.wrapping_add(4), dw2)?;
@@ -698,7 +678,7 @@ mod tests {
             }
             // Canary for writes too far
             cpu.write_ticks::<Long>(12, 0xDEADBEEF_u32).unwrap();
-            cpu.write_fpu_extended(0, &v).unwrap();
+            cpu.write_fpu_extended(0, BitsExtReal::from(&v)).unwrap();
 
             // Addresses should have been written to
             for a in 0..12 {
@@ -708,7 +688,7 @@ mod tests {
             assert_eq!(cpu.read_ticks::<Long>(12).unwrap(), 0xDEADBEEF_u32);
 
             // Check reading back actual value
-            let read = cpu.read_fpu_extended(0).unwrap();
+            let read = Float::from(cpu.read_fpu_extended(0).unwrap());
             eprintln!("Read back: {}, {:?}", &read, &read);
             fully_equal(&read, &v);
             assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
@@ -741,7 +721,7 @@ mod tests {
             }
             // Canary for writes too far
             cpu.write_ticks::<Long>(8, 0xDEADBEEF_u32).unwrap();
-            cpu.write_fpu_double(0, &v).unwrap();
+            cpu.write_fpu_double(0, BitsExtReal::from(&v)).unwrap();
 
             // Addresses should have been written to
             for a in 0..8 {
@@ -751,7 +731,7 @@ mod tests {
             assert_eq!(cpu.read_ticks::<Long>(8).unwrap(), 0xDEADBEEF_u32);
 
             // Check reading back actual value
-            let read = cpu.read_fpu_double(0).unwrap();
+            let read = Float::from(cpu.read_fpu_double(0).unwrap());
             eprintln!("Read back: {}, {:?}", &read, &read);
             kinda_equal(&read, &v);
             assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
@@ -784,7 +764,7 @@ mod tests {
             }
             // Canary for writes too far
             cpu.write_ticks::<Long>(4, 0xDEADBEEF_u32).unwrap();
-            cpu.write_fpu_single(0, &v).unwrap();
+            cpu.write_fpu_single(0, BitsExtReal::from(&v)).unwrap();
 
             // Addresses should have been written to
             for a in 0..4 {
@@ -794,7 +774,7 @@ mod tests {
             assert_eq!(cpu.read_ticks::<Long>(4).unwrap(), 0xDEADBEEF_u32);
 
             // Check reading back actual value
-            let read = cpu.read_fpu_single(0).unwrap();
+            let read = Float::from(cpu.read_fpu_single(0).unwrap());
             eprintln!("Read back: {}, {:?}", &read, &read);
             kinda_equal(&read, &v);
             assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
@@ -1084,8 +1064,8 @@ mod tests {
         );
         assert_eq!(
             pos_inf_bits.i(),
-            true,
-            "Positive infinity should have integer bit set"
+            false,
+            "Positive infinity should have a mantissa of zero"
         );
         assert_eq!(
             pos_inf_bits.f(),
@@ -1106,8 +1086,8 @@ mod tests {
         );
         assert_eq!(
             neg_inf_bits.i(),
-            true,
-            "Negative infinity should have integer bit set"
+            false,
+            "Negative infinity should have a mantissa of zero"
         );
         assert_eq!(
             neg_inf_bits.f(),
@@ -1332,8 +1312,9 @@ mod tests {
             );
 
             // Store to memory and read back
-            cpu.write_fpu_extended(0, &original).unwrap();
-            let recovered = cpu.read_fpu_extended(0).unwrap();
+            cpu.write_fpu_extended(0, BitsExtReal::from(&original))
+                .unwrap();
+            let recovered = Float::from(cpu.read_fpu_extended(0).unwrap());
 
             // Verify exponent bias is preserved
             assert_eq!(
