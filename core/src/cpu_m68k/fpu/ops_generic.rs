@@ -13,13 +13,14 @@ use crate::cpu_m68k::cpu::{
     VECTOR_PRIVILEGE_VIOLATION,
 };
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
+use crate::cpu_m68k::fpu::arith::Range;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
-use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
+use crate::cpu_m68k::{CpuM68kType, CpuSized, FPU_M68040, FPU_M68881, FPU_M68882};
 use crate::tickable::Ticks;
 use crate::types::{Byte, Long, Word};
 
@@ -542,209 +543,104 @@ where
                 };
                 self.fpu_arith_cycles(extword, operand, less)?;
             }
-            0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
-                // Register to EA
-                let fpx = extword.src_reg();
-                self.regs.fpu.fpsr.exs_mut().set_operr(false);
-                let cycles = Self::fpu_timings().store(extword.dest_fmt());
-                match extword.dest_fmt() {
-                    0b000 => {
-                        // Long
-                        let ea = self.calc_ea_addr::<Long>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
-
-                        self.advance_cycles(cycles)?;
-                        self.write_ticks(ea, out as Long)?;
-                    }
-                    0b100 => {
-                        // Word
-                        let ea = self.calc_ea_addr::<Word>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
-
-                        self.advance_cycles(cycles)?;
-                        self.write_ticks(ea, out as Word)?;
-                    }
-                    0b110 => {
-                        // Byte
-                        let ea = self.calc_ea_addr::<Byte>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
-
-                        self.advance_cycles(cycles)?;
-                        self.write_ticks(ea, out as Byte)?;
-                    }
-                    0b010 => {
-                        // Extended-precision real
-                        let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        self.advance_cycles(cycles)?;
-                        self.write_fpu_extended(ea, self.regs.fpu.fp[fpx])?;
-                    }
-                    0b101 => {
-                        // Double-precision real
-                        let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        self.advance_cycles(cycles)?;
-                        self.write_fpu_double(ea, self.regs.fpu.fp[fpx])?;
-                    }
-                    0b001 => {
-                        // Single precision real
-                        let ea = self.calc_ea_addr_sz::<SINGLE_SIZE>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        self.advance_cycles(cycles)?;
-                        self.write_fpu_single(ea, self.regs.fpu.fp[fpx])?;
-                    }
-                    0b011 => {
-                        // Packed decimal real with static K-factor
-                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        self.advance_cycles(cycles)?;
-                        self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], extword.k_factor())?;
-                    }
-                    0b111 => {
-                        // Packed decimal real with dynamic K-factor
-                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
-                            instr,
-                            instr.get_addr_mode()?,
-                            instr.get_op2(),
-                        )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        let k = self
-                            .regs
-                            .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
-                            as i8;
-                        self.advance_cycles(cycles)?;
-                        self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], k)?;
-                    }
-                    _ => {
-                        bail!(CpuError::IllegalInstruction);
-                    }
-                }
-
-                // Flags
-                self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-                self.regs
-                    .fpu
-                    .fpsr
-                    .exs_mut()
-                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-
-                // Condition codes unaffected
-            }
-            0b011 if instr.get_addr_mode()? == AddressingMode::DataRegister => {
-                // Register to Dn
-                let fpx = extword.src_reg();
-                let dn = instr.get_op2();
-                self.regs.fpu.fpsr.exs_mut().set_operr(false);
-                let timings = Self::fpu_timings();
-                let cycles = timings
-                    .store(extword.dest_fmt())
-                    .saturating_sub(timings.dn_dst());
-                match extword.dest_fmt() {
-                    0b000 => {
-                        // Long
-                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
-
-                        self.advance_cycles(cycles)?;
-                        self.regs.write_d(dn, out as Long);
-                    }
-                    0b100 => {
-                        // Word
-                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
-
-                        self.advance_cycles(cycles)?;
-                        self.regs.write_d(dn, out as Word);
-                    }
-                    0b110 => {
-                        // Byte
-                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
-
-                        self.advance_cycles(cycles)?;
-                        self.regs.write_d(dn, out as Byte);
-                    }
-                    0b001 => {
-                        // Single precision real
-                        // TODO flags?
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-
-                        self.advance_cycles(cycles)?;
-                        let value = Float::from(self.regs.fpu.fp[fpx]);
-                        self.regs.write_d(dn, value.as_f32().to_bits());
-                    }
-                    _ => {
-                        bail!(CpuError::IllegalInstruction);
-                    }
-                }
-
-                // Flags
-                self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-                self.regs
-                    .fpu
-                    .fpsr
-                    .exs_mut()
-                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-
-                // Condition codes unaffected
-            }
-            0b110 | 0b111 => {
-                // FMOVEM - Multiple register move
-                self.op_fmovem(instr, extword)?;
-            }
+            0b011 => self.op_fmove_out(instr, extword)?,
+            0b110 | 0b111 => self.op_fmovem(instr, extword)?,
             _ => {
                 bail!(CpuError::IllegalInstruction);
             }
         }
 
+        Ok(())
+    }
+
+    /// FMOVE FPn to memory or a data register, rounded to the size of the destination
+    /// format (MC68881UM FMOVE). The condition codes are not affected.
+    fn op_fmove_out(&mut self, instr: &Instruction, extword: FmoveExtWord) -> Result<()> {
+        let fpx = extword.src_reg();
+        let in_dn = instr.get_addr_mode()? == AddressingMode::DataRegister;
+        let timings = Self::fpu_timings();
+        let less = if in_dn { timings.dn_dst() } else { 0 };
+        let cycles = timings.store(extword.dest_fmt()).saturating_sub(less);
+        self.regs.fpu.fpsr.exs_mut().0 = 0;
+
+        match extword.dest_fmt() {
+            0b000 => {
+                let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into(), 32);
+                self.fpu_store(instr, in_dn, cycles, out as Long)?;
+            }
+            0b100 => {
+                let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into(), 16);
+                self.fpu_store(instr, in_dn, cycles, out as Word)?;
+            }
+            0b110 => {
+                let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into(), 8);
+                self.fpu_store(instr, in_dn, cycles, out as Byte)?;
+            }
+            0b001 => {
+                let out = self.fpu_to_real(fpx, Range::SINGLE).to_single();
+                self.fpu_store(instr, in_dn, cycles, out)?;
+            }
+            0b101 if !in_dn => {
+                let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
+                    instr,
+                    instr.get_addr_mode()?,
+                    instr.get_op2(),
+                )?;
+                let out = self.fpu_to_real(fpx, Range::DOUBLE);
+                self.advance_cycles(cycles)?;
+                self.write_fpu_double(ea, out)?;
+            }
+            0b010 if !in_dn => {
+                let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
+                    instr,
+                    instr.get_addr_mode()?,
+                    instr.get_op2(),
+                )?;
+                let out = self.fpu_to_real(fpx, Range::EXTENDED);
+                self.advance_cycles(cycles)?;
+                self.write_fpu_extended(ea, out)?;
+            }
+            0b011 | 0b111 if !in_dn => {
+                let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                    instr,
+                    instr.get_addr_mode()?,
+                    instr.get_op2(),
+                )?;
+                let k = if extword.dest_fmt() == 0b011 {
+                    extword.k_factor()
+                } else {
+                    self.regs
+                        .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
+                        as i8
+                };
+                self.advance_cycles(cycles)?;
+                self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], k)?;
+            }
+            _ => bail!(CpuError::IllegalInstruction),
+        }
+
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+        Ok(())
+    }
+
+    /// The end of an FMOVE to memory or a data register of `value`, with the time it
+    /// takes, its effective address coming before all that
+    fn fpu_store<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        in_dn: bool,
+        cycles: Ticks,
+        value: T,
+    ) -> Result<()> {
+        if in_dn {
+            self.advance_cycles(cycles)?;
+            self.regs.write_d(instr.get_op2(), value);
+        } else {
+            let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+            self.advance_cycles(cycles)?;
+            self.write_ticks(ea, value)?;
+        }
         Ok(())
     }
 

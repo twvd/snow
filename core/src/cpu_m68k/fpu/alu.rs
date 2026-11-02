@@ -83,18 +83,20 @@ where
             .cast(SEMANTICS_EXTENDED)
     }
 
-    /// FMOVE of FPn to an integer between `min` and `max`: rounds with the
-    /// rounding mode of FPCR. Inexact sets INEX2. Not fitting sets OPERR and gives
-    /// the largest integer of that sign (MC68881UM 6.1.3).
-    pub(in crate::cpu_m68k) fn fpu_to_integer(&mut self, fpx: usize, min: i64, max: i64) -> i64 {
+    /// FMOVE of FPn to an integer between `min` and `max` of `size` bits: rounds with the
+    /// rounding mode of FPCR. Inexact sets INEX2. Not fitting sets OPERR and gives the
+    /// largest integer of that sign, and a NAN gives the top bits of its mantissa, with
+    /// the SNAN bit set (MC68881UM 6.1.2, 6.1.3).
+    pub(in crate::cpu_m68k) fn fpu_to_integer(
+        &mut self,
+        fpx: usize,
+        min: i64,
+        max: i64,
+        size: u32,
+    ) -> i64 {
         let value = self.regs.fpu.fp[fpx];
-        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
-
         let limit = if value.s() { min } else { max };
-        let out = match arith::kind(&value) {
+        match arith::kind(&value) {
             arith::Kind::Zero => 0,
             arith::Kind::Num(a) => {
                 let (whole, inexact) = arith::round_to_integer(a, self.fpu_rounding_mode());
@@ -114,14 +116,35 @@ where
                     limit
                 }
             }
-            _ => {
+            arith::Kind::Inf => {
                 self.regs.fpu.fpsr.exs_mut().set_operr(true);
                 limit
             }
-        };
-        let excs = self.regs.fpu.fpsr;
-        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
-        out
+            arith::Kind::Nan => {
+                // MC68881UM 6.1.2 for a signaling one, 6.1.3 for the others
+                let snan = value.is_snan();
+                self.regs.fpu.fpsr.exs_mut().set_snan(snan);
+                self.regs.fpu.fpsr.exs_mut().set_operr(!snan);
+                let bits = value.raw_mantissa() | (1 << 62);
+                (bits >> (64 - size)) as i64
+            }
+        }
+    }
+
+    /// FMOVE of FPn to the binary real format of `to`: rounded to it, with what that sets
+    /// in FPSR (MC68881UM FMOVE). A signaling NAN sets SNAN and has its SNAN bit set
+    /// (MC68881UM 6.1.2). Nothing is an operand error here (MC68881UM 6.1.3).
+    pub(in crate::cpu_m68k) fn fpu_to_real(&mut self, fpx: usize, to: Range) -> BitsExtReal {
+        let value = self.regs.fpu.fp[fpx];
+        match arith::kind(&value) {
+            arith::Kind::Nan => {
+                self.regs.fpu.fpsr.exs_mut().set_snan(value.is_snan());
+                value.with_f(value.f() | (1 << 62))
+            }
+            arith::Kind::Num(a) => self.fpu_finish(Value::Round(a), to),
+            arith::Kind::Inf => BitsExtReal::inf(value.s()),
+            arith::Kind::Zero => BitsExtReal::zero(value.s()),
+        }
     }
 
     /// The source of a function that can't handle the special values: the table of

@@ -788,3 +788,113 @@ fn fscale_out_of_range() {
     let cpu = run_fop(FSCALE, BitsExtReal::inf(true), ext(0x3FFF, J), 0);
     assert_eq!(result(&cpu), (0xFFFF, 0, 0));
 }
+
+/// Runs FMOVE FP1,(A0) of format `fmt` with FP1 = `src`, and gives the status
+fn run_fmove_out(fmt: Word, src: BitsExtReal, fpcr: Long) -> TestCpu {
+    let mut cpu = testcpu(&[0xF210, 0x6000 | (fmt << 10) | (1 << 7)]);
+    cpu.regs.fpu.fpcr.0 = fpcr;
+    cpu.regs.fpu.fpsr.0 = 0xF00_0000;
+    cpu.regs.fpu.fp[1] = src;
+    cpu.step().unwrap();
+    // The condition codes are not affected (MC68881UM FMOVE)
+    assert_eq!(cpu.regs.fpu.fpsr.0 & 0xF00_0000, 0xF00_0000);
+    cpu
+}
+
+const FMT_L: Word = 0b000;
+const FMT_S: Word = 0b001;
+const FMT_X: Word = 0b010;
+const FMT_W: Word = 0b100;
+const FMT_D: Word = 0b101;
+const AIOP: Long = 1 << 7;
+const AOVFL: Long = 1 << 6;
+const AUNFL: Long = 1 << 5;
+const AINEX: Long = 1 << 3;
+const SNAN: Long = 1 << 14;
+const OPERR: Long = 1 << 13;
+
+/// Rounds to the size of the destination format, with the rounding mode of FPCR, which
+/// overflows and underflows by that format (MC68881UM FMOVE, 6.1.4, 6.1.5)
+#[test]
+fn fmove_to_single_and_double() {
+    let status = |cpu: &TestCpu| cpu.regs.fpu.fpsr.0 & 0xFFFF;
+    // (value, FPCR, single, status)
+    for (high, man, fpcr, want, st) in [
+        (0x3FFF, J, 0, 0x3F80_0000, 0),
+        (0xBFFF, 0xC000_0000_0000_0000, 0, 0xBFC0_0000, 0),
+        // Pi: inexact, and up or down by the mode
+        (0x4000, 0xC90F_DAA2_2168_C235, 0, 0x4049_0FDB, INEX2 | AINEX),
+        (
+            0x4000,
+            0xC90F_DAA2_2168_C235,
+            1 << 4,
+            0x4049_0FDA,
+            INEX2 | AINEX,
+        ),
+        // Infinity, and largest number by the mode
+        (0x7000, J, 0, 0x7F80_0000, OVFL | AOVFL | AINEX),
+        (0x7000, J, 1 << 4, 0x7F7F_FFFF, OVFL | AOVFL | AINEX),
+        // Smallest denormalized number, exact
+        (0x3F6A, J, 0, 0x0000_0001, UNFL),
+        // Too small: zero or the smallest denormalized number by the mode
+        (0x0001, J, 0, 0x0000_0000, UNFL | INEX2 | AUNFL | AINEX),
+        (0x0001, J, 3 << 4, 0x0000_0001, UNFL | INEX2 | AUNFL | AINEX),
+    ] {
+        let cpu = run_fmove_out(FMT_S, ext(high, man), fpcr);
+        let what = format!("{high:04X} {man:016X} {fpcr:02X}");
+        assert_eq!(read_long(&cpu, 0x3000), want, "{what}");
+        assert_eq!(status(&cpu) & 0xFF00, st & 0xFF00, "{what}");
+        assert_eq!(status(&cpu) & 0xF8, st & 0xF8, "{what}");
+    }
+    let cpu = run_fmove_out(FMT_D, ext(0x4000, 0xC90F_DAA2_2168_C235), 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0x4009_21FB);
+    assert_eq!(read_long(&cpu, 0x3004), 0x5444_2D18);
+    assert_eq!(status(&cpu), INEX2 | AINEX);
+    // Smallest denormalized double
+    let cpu = run_fmove_out(FMT_D, ext(0x3BCD, J), 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0);
+    assert_eq!(read_long(&cpu, 0x3004), 1);
+    assert_eq!(status(&cpu), UNFL);
+}
+
+/// A signaling NAN sets SNAN, and the result is non-signaling with no other bits
+/// changed, though truncated (MC68881UM 6.1.2). To an integer format that gives the
+/// top bits, and it's an operand error for a non-signaling NAN and for an infinity
+/// (MC68881UM 6.1.3).
+#[test]
+fn fmove_out_nans_and_infinities() {
+    let status = |cpu: &TestCpu| cpu.regs.fpu.fpsr.0 & 0xFFFF;
+    let snan = ext(0xFFFF, 0xA000_0001_0000_0000);
+    let qnan = ext(0x7FFF, 0xD555_5555_5555_5555);
+
+    let cpu = run_fmove_out(FMT_S, snan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xFFE0_0000);
+    assert_eq!(status(&cpu), SNAN | AIOP);
+    let cpu = run_fmove_out(FMT_D, snan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xFFFC_0000);
+    assert_eq!(read_long(&cpu, 0x3004), 0x0020_0000);
+    assert_eq!(status(&cpu), SNAN | AIOP);
+    let cpu = run_fmove_out(FMT_X, snan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xFFFF_0000);
+    assert_eq!(read_long(&cpu, 0x3004), 0xE000_0001);
+    assert_eq!(status(&cpu), SNAN | AIOP);
+    let cpu = run_fmove_out(FMT_S, qnan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0x7FD5_5555);
+    assert_eq!(status(&cpu), 0);
+
+    let cpu = run_fmove_out(FMT_L, snan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xE000_0001);
+    assert_eq!(status(&cpu), SNAN | AIOP);
+    let cpu = run_fmove_out(FMT_L, qnan, 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xD555_5555);
+    assert_eq!(status(&cpu), OPERR | AIOP);
+    let cpu = run_fmove_out(FMT_W, qnan, 0);
+    assert_eq!(read_long(&cpu, 0x3000) >> 16, 0xD555);
+
+    let cpu = run_fmove_out(FMT_L, BitsExtReal::inf(true), 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0x8000_0000);
+    assert_eq!(status(&cpu), OPERR | AIOP);
+    let cpu = run_fmove_out(FMT_S, BitsExtReal::inf(true), 0);
+    assert_eq!(read_long(&cpu, 0x3000), 0xFF80_0000);
+    assert_eq!(status(&cpu), 0);
+}

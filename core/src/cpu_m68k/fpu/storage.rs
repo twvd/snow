@@ -110,6 +110,44 @@ impl BitsExtReal {
         Self::from_binary_real(s, e, f, 52, 0x7FF, 1023)
     }
 
+    /// As a single precision real, for a value already rounded to that format: the
+    /// bits of a NAN that fit stay as they are (MC68881UM table 3-1, 6.1.2)
+    pub fn to_single(self) -> Long {
+        self.to_binary_real(23, 0xFF, 127) as Long
+    }
+
+    /// As a double precision real, for a value already rounded to that format: the
+    /// bits of a NAN that fit stay as they are (MC68881UM table 3-2, 6.1.2)
+    pub fn to_double(self) -> u64 {
+        self.to_binary_real(52, 0x7FF, 1023)
+    }
+
+    fn to_binary_real(self, f_bits: u32, e_max: u64, bias: i64) -> u64 {
+        let sign = u64::from(self.s()) << (f_bits + e_max.count_ones());
+        if self.is_nan() {
+            return sign | (e_max << f_bits) | (self.f() >> (63 - f_bits));
+        }
+        if self.is_inf() {
+            return sign | (e_max << f_bits);
+        }
+        if self.is_zero() {
+            return sign;
+        }
+        let man = self.raw_mantissa();
+        let exp = self.e() as i64 - EXPONENT_BIAS as i64 - i64::from(man.leading_zeros());
+        let man = man << man.leading_zeros();
+        if exp + bias <= 0 {
+            // Denormalized: the weight of the smallest normalized number, 0.f
+            let shift = (63 - f_bits) as i64 + 1 - (exp + bias);
+            return if shift > 63 {
+                sign
+            } else {
+                sign | (man >> shift)
+            };
+        }
+        sign | (((exp + bias) as u64) << f_bits) | ((man << 1) >> (64 - f_bits))
+    }
+
     fn from_binary_real(s: bool, e: u64, f: u64, f_bits: u32, e_max: u64, bias: i64) -> Self {
         let bits = Self::default().with_s(s);
         // Left-aligned below the integer bit
@@ -300,10 +338,9 @@ where
         addr: Address,
         value: BitsExtReal,
     ) -> Result<()> {
-        let value = Float::from(value).as_f64();
-        for (i, b) in value.to_be_bytes().into_iter().enumerate() {
-            self.write_ticks(addr.wrapping_add(i as Address), b)?;
-        }
+        let value = value.to_double();
+        self.write_ticks(addr, (value >> 32) as Long)?;
+        self.write_ticks(addr.wrapping_add(4), value as Long)?;
 
         Ok(())
     }
@@ -321,15 +358,6 @@ where
     /// Read FPU single precision value immediate
     pub(in crate::cpu_m68k) fn read_fpu_single_imm(&mut self) -> Result<BitsExtReal> {
         Ok(BitsExtReal::from_single(self.fetch_immediate::<Long>()?))
-    }
-
-    /// Write FPU single precision value to memory
-    pub(in crate::cpu_m68k) fn write_fpu_single(
-        &mut self,
-        addr: Address,
-        value: BitsExtReal,
-    ) -> Result<()> {
-        self.write_ticks::<Long>(addr, Float::from(value).as_f32().to_bits())
     }
 
     /// Parse BCD packed decimal format into Float with full precision
@@ -741,7 +769,8 @@ mod tests {
             }
             // Canary for writes too far
             cpu.write_ticks::<Long>(4, 0xDEADBEEF_u32).unwrap();
-            cpu.write_fpu_single(0, BitsExtReal::from(&v)).unwrap();
+            cpu.write_ticks::<Long>(0, BitsExtReal::from(&v).to_single())
+                .unwrap();
 
             // Addresses should have been written to
             for a in 0..4 {
