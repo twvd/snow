@@ -502,6 +502,10 @@ where
             _ => (entry >> 16) & 0xFF,
         };
         self.pal_idx += 1;
+        if self.pal_idx == 3 {
+            self.pal_idx = 0;
+            self.pal_address = self.pal_address.wrapping_add(1);
+        }
         component as u8
     }
 }
@@ -847,5 +851,58 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DAFB video controller")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::renderer::NullRenderer;
+
+    const PAL_ADDRESS: Address = 0x80_0203;
+    const PAL_DATA: Address = 0x80_0213;
+    const PBCTRL: Address = 0x80_0223;
+
+    fn dafb(kind: DafbKind) -> Dafb<NullRenderer> {
+        let renderer = NullRenderer::new(0, 0).unwrap();
+        Dafb::new(renderer, MacMonitor::RGB12, kind, 512 * 1024)
+    }
+
+    #[test]
+    fn palette_read_moves_to_the_next_entry() {
+        for kind in [DafbKind::Dafb, DafbKind::MemcJr] {
+            let mut dafb = dafb(kind);
+            dafb.write(PAL_ADDRESS, 0xFF).unwrap();
+            for val in 1..=6 {
+                dafb.write(PAL_DATA, val).unwrap();
+            }
+            assert_eq!(dafb.pal_address, 1);
+
+            dafb.write(PAL_ADDRESS, 0xFF).unwrap();
+            for val in 1..=6 {
+                assert_eq!(dafb.read(PAL_DATA), Some(val));
+            }
+            assert_eq!(dafb.pal_address, 1);
+            assert_eq!(dafb.pal_idx, 0);
+        }
+    }
+
+    /// On the Antelope, reads through the palette reach the address that selects
+    /// its second register, as writes do
+    #[test]
+    fn palette_read_selects_the_antelope_register() {
+        let mut dafb = dafb(DafbKind::MemcJr);
+        dafb.write(PAL_ADDRESS, 1).unwrap();
+        dafb.write(PBCTRL, 0x06).unwrap();
+        dafb.write(PBCTRL, 0xA0).unwrap();
+        dafb.write(PAL_ADDRESS, 0).unwrap();
+        assert_eq!(dafb.read(PBCTRL), Some(0x06));
+        for _ in 0..3 {
+            dafb.read(PAL_DATA).unwrap();
+        }
+        assert_eq!(
+            dafb.read(PBCTRL),
+            Some(0xA0 | Dafb::<NullRenderer>::ANTELOPE_VERSION)
+        );
     }
 }
