@@ -1747,7 +1747,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SetFloppyRpmAdjustment(addr, adjustment) => {
                         let drive = self.floppy_drive(addr)?;
-                        self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;
+                        let drv = &mut self.config.swim_mut().drives[drive];
+                        drv.rpm_adjustment = adjustment;
+                        drv.update_ticks_per_bit();
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetSetLink(addr, link) => {

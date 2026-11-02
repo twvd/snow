@@ -280,6 +280,7 @@ impl Swim {
                     399,
                 );
                 drv.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
+                drv.update_ticks_per_bit();
                 drv.pwm_avg_sum = 0;
                 drv.pwm_avg_count = 0;
             }
@@ -485,6 +486,29 @@ mod tests {
     const CA2H: Address = 5 << 9;
     const DISABLE: Address = 8 << 9;
     const ENABLE: Address = 9 << 9;
+
+    #[test]
+    fn bit_rate_follows_the_pwm_speed() {
+        let mut swim = Swim::new(&[DriveType::GCR400K], false, 8_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac400K, ""))
+            .unwrap();
+
+        // No drive command in between: these only change the PWM duty cycle
+        let mut ticks_per_bit = |pwm| {
+            for _ in 0..100 {
+                swim.push_pwm(pwm).unwrap();
+            }
+            swim.drives[0].get_ticks_per_bit()
+        };
+        let fast = ticks_per_bit(0x2B);
+        let slow = ticks_per_bit(0x3E);
+        assert!(
+            slow > fast,
+            "{} ticks at the slow speed, {} at the fast",
+            slow,
+            fast
+        );
+    }
 
     #[test]
     fn lstrb_writes_on_rising_edge_only() {
