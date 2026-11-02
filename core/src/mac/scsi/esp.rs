@@ -14,13 +14,10 @@ use crate::mac::scsi::scsi_cmd_len;
 use crate::tickable::{Tickable, Ticks};
 use crate::{dbgprop_bool, dbgprop_byte, dbgprop_udec};
 
-/// Logs a case the model gets wrong or doesn't implement, with the `debug_esp`
-/// feature. Without it this compiles to nothing.
+/// Warns of a case the model gets wrong or doesn't implement
 macro_rules! esp_check {
     ($($arg:tt)*) => {
-        if cfg!(feature = "debug_esp") {
-            log::error!("ESP CHECK: {}", format_args!($($arg)*));
-        }
+        log::warn!("ESP CHECK: {}", format_args!($($arg)*))
     };
 }
 pub(crate) use esp_check;

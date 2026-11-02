@@ -27,8 +27,6 @@ printer = ["dep:image"]
 mmap = ["dep:fs2", "dep:memmap2"]
 # Enables save state saving and loading
 savestates = ["dep:binrw", "dep:postcard", "dep:zstd"]
-# Logs what the 53C96 and pseudo-DMA models get wrong or do not implement
-debug_esp = []
 
 [lints]
 workspace = true

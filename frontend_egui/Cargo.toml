@@ -17,7 +17,6 @@ ethernet_nat_mactcp_helpers = ["ethernet_nat", "snow_core/ethernet_nat_mactcp_he
 ethernet_raw = ["ethernet", "snow_core/ethernet_raw", "dep:pnet"]
 ethernet_tap = ["ethernet", "snow_core/ethernet_tap", "dep:pnet"]
 printer = ["snow_core/printer"]
-debug_esp = ["snow_core/debug_esp"]
 audio_sdl2 = ["dep:sdl2"]
 sdl2-bundled = ["sdl2/bundled"]
 sdl2-pkgconfig = ["sdl2/use-pkgconfig"]
