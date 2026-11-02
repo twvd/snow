@@ -28,6 +28,7 @@ use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::tickable::Ticks;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
@@ -196,6 +197,8 @@ pub struct SnowGui {
     breakpoints: BreakpointsWidget,
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
+    /// Cycle counter where the machine last stopped, to tell it stopped elsewhere
+    last_stop_cycles: Ticks,
     instruction_history: InstructionHistoryWidget,
     systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
@@ -398,6 +401,7 @@ impl SnowGui {
             breakpoints: BreakpointsWidget::default(),
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
+            last_stop_cycles: 0,
             instruction_history: InstructionHistoryWidget::default(),
             systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
@@ -3375,6 +3379,16 @@ impl eframe::App for SnowGui {
                         .text(msg)
                         .kind(ToastKind::Error),
                 });
+            }
+            if self.emu.is_initialized() {
+                let running = self.emu.is_running();
+                let cycles = self.emu.get_cycles();
+                let new_stop = !running && cycles != self.last_stop_cycles;
+                if !running {
+                    self.last_stop_cycles = cycles;
+                }
+                self.memory.set_machine_state(running, new_stop);
+                self.watchpoints.set_machine_state(running, new_stop);
             }
             if let Some(Some(addr)) = self.emu.take_memory_search_result() {
                 self.memory.go_to_address(addr);

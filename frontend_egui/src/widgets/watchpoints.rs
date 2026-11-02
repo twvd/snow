@@ -88,6 +88,8 @@ pub struct Watchpoint {
     last_change_cycles: Ticks,
     /// Time of last change
     last_change_time: Instant,
+    /// The value changed since the last stop
+    changed_since_stop: bool,
 }
 
 impl Watchpoint {
@@ -108,6 +110,7 @@ impl Watchpoint {
             previous_value: "Unknown".to_string(),
             last_change_cycles: 0,
             last_change_time: Instant::now(),
+            changed_since_stop: false,
         }
     }
 
@@ -212,6 +215,8 @@ struct EditingState {
 /// Widget for managing and displaying watchpoints
 pub struct WatchpointsWidget {
     watchpoints: Vec<Watchpoint>,
+    /// The machine is running
+    running: bool,
     /// Id of the next watchpoint
     next_id: u32,
     /// Ids of removed watchpoints, for the emulator to forget
@@ -233,6 +238,7 @@ impl Default for WatchpointsWidget {
     fn default() -> Self {
         Self {
             watchpoints: vec![],
+            running: false,
             next_id: NOTIFIER_WATCHPOINTS,
             removed: vec![],
             address_input: "".to_string(),
@@ -291,8 +297,24 @@ impl WatchpointsWidget {
             .iter_mut()
             .find(|w| w.id == id && w.address == addr)
         {
-            watchpoint.update(memory, current_cycles);
+            let known = watchpoint.current_value != "Unknown";
+            if watchpoint.update(memory, current_cycles) && known {
+                watchpoint.changed_since_stop = true;
+            }
         }
+    }
+
+    /// Tells the state of the machine, before any memory data that goes with it:
+    /// `new_stop` when it stopped somewhere else than the last time. A step from
+    /// a stop, or running again, starts over; a stop after running shows all that
+    /// changed in the run.
+    pub fn set_machine_state(&mut self, running: bool, new_stop: bool) {
+        if !self.running && (running || new_stop) {
+            for watchpoint in &mut self.watchpoints {
+                watchpoint.changed_since_stop = false;
+            }
+        }
+        self.running = running;
     }
 
     /// Remove a watchpoint at the given index
@@ -741,7 +763,12 @@ impl WatchpointsWidget {
                                 }
 
                                 let value_text = egui::RichText::new(&watchpoint.current_value);
-                                let value_text = if time_since_change < Duration::from_secs(1) {
+                                let changed = if self.running {
+                                    time_since_change < Duration::from_secs(1)
+                                } else {
+                                    watchpoint.changed_since_stop
+                                };
+                                let value_text = if changed {
                                     value_text.color(egui::Color32::YELLOW)
                                 } else {
                                     value_text

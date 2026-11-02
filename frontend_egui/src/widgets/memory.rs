@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use eframe::egui::Ui;
-use eframe::egui::ahash::HashMap;
+use eframe::egui::ahash::{HashMap, HashSet};
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::emulator::comm::MemoryNotifierRange;
@@ -59,8 +59,12 @@ pub struct MemoryViewerWidget {
     highlight: Vec<u8>,
     /// Search to run: what to look for, from where
     search_request: Option<(Vec<u8>, Address)>,
-    /// Changed addresses for highlighting
+    /// The machine is running
+    running: bool,
+    /// Addresses changed recently, to highlight while running
     changes: HashMap<usize, Instant>,
+    /// Addresses changed since the last stop, to highlight while stopped
+    changes_since_stop: HashSet<usize>,
     /// File export dialog
     export_dialog: SnowFileDialog,
     /// Address to export from
@@ -87,7 +91,9 @@ impl Default for MemoryViewerWidget {
             hexsearch_input: String::new(),
             highlight: Vec::new(),
             search_request: None,
+            running: false,
             changes: HashMap::default(),
+            changes_since_stop: HashSet::default(),
             export_dialog: SnowFileDialog::new()
                 .add_save_extension("Binary file", "bin")
                 .default_save_extension("Binary file")
@@ -132,11 +138,32 @@ impl MemoryViewerWidget {
         for (i, &byte) in data.iter().enumerate() {
             if self.has_byte(addr + i) && self.byte(addr + i) != byte {
                 self.changes.insert(addr + i, expires);
+                self.changes_since_stop.insert(addr + i);
             }
         }
 
         self.data = data;
         self.data_addr = addr;
+    }
+
+    /// Tells the state of the machine, before any memory data that goes with it:
+    /// `new_stop` when it stopped somewhere else than the last time. A step from
+    /// a stop, or running again, starts over; a stop after running shows all that
+    /// changed in the run.
+    pub fn set_machine_state(&mut self, running: bool, new_stop: bool) {
+        if !self.running && (running || new_stop) {
+            self.changes_since_stop.clear();
+        }
+        self.running = running;
+    }
+
+    /// Whether to highlight a byte as changed
+    fn is_changed(&self, addr: usize) -> bool {
+        if self.running {
+            self.changes.contains_key(&addr)
+        } else {
+            self.changes_since_stop.contains(&addr)
+        }
     }
 
     /// Whether the data covers an address
@@ -176,6 +203,7 @@ impl MemoryViewerWidget {
             self.physical = physical;
             self.data.clear();
             self.changes.clear();
+            self.changes_since_stop.clear();
         }
     }
 
@@ -496,7 +524,7 @@ impl MemoryViewerWidget {
             }
 
             // Regular byte display with click to edit
-            let changed_recently = self.changes.contains_key(&i);
+            let changed = self.is_changed(i);
             let Some(byte) = self.byte(i) else {
                 // Nothing to read here
                 ui.add(egui::Label::new(
@@ -513,16 +541,14 @@ impl MemoryViewerWidget {
                 .family(egui::FontFamily::Monospace)
                 .size(10.0);
             if highlighted {
-                if changed_recently {
-                    text = text
-                        .background_color(egui::Color32::YELLOW)
-                        .color(egui::Color32::BLACK);
-                } else {
-                    text = text
-                        .background_color(egui::Color32::WHITE)
-                        .color(egui::Color32::BLACK);
-                }
-            } else if changed_recently {
+                text = text
+                    .background_color(if changed {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::WHITE
+                    })
+                    .color(egui::Color32::BLACK);
+            } else if changed {
                 text = text.color(egui::Color32::YELLOW);
             } else if byte == 0 {
                 text = text.color(egui::Color32::DARK_GRAY);
@@ -549,7 +575,7 @@ impl MemoryViewerWidget {
             let highlighted = *hl_left > 0;
             *hl_left = hl_left.saturating_sub(1);
 
-            let changed_recently = self.changes.contains_key(&i);
+            let changed = self.is_changed(i);
 
             let Some(byte) = self.byte(i) else {
                 ui.label(
@@ -571,16 +597,14 @@ impl MemoryViewerWidget {
                 .family(egui::FontFamily::Monospace)
                 .size(10.0);
             if highlighted {
-                if changed_recently {
-                    text = text
-                        .background_color(egui::Color32::YELLOW)
-                        .color(egui::Color32::BLACK);
-                } else {
-                    text = text
-                        .background_color(egui::Color32::WHITE)
-                        .color(egui::Color32::BLACK);
-                }
-            } else if changed_recently {
+                text = text
+                    .background_color(if changed {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::WHITE
+                    })
+                    .color(egui::Color32::BLACK);
+            } else if changed {
                 text = text.color(egui::Color32::YELLOW);
             } else if byte == 0 {
                 text = text.color(egui::Color32::DARK_GRAY);
@@ -593,5 +617,66 @@ impl MemoryViewerWidget {
 
     pub fn take_edited(&mut self) -> Option<(Address, u8, bool)> {
         self.edited.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stopped viewer that has data, after a step that changed a byte
+    fn stopped_after_a_step() -> MemoryViewerWidget {
+        let mut w = MemoryViewerWidget::default();
+        w.set_machine_state(false, true);
+        w.update_memory(0x100, vec![Some(1), Some(2), None]);
+        w.set_machine_state(false, true);
+        w.update_memory(0x100, vec![Some(9), Some(2), Some(3)]);
+        w
+    }
+
+    #[test]
+    fn a_step_marks_what_it_changed() {
+        let w = stopped_after_a_step();
+        assert!(w.is_changed(0x100));
+        assert!(!w.is_changed(0x101));
+        // A hole that became readable is a change as well
+        assert!(w.is_changed(0x102));
+    }
+
+    #[test]
+    fn marks_stay_until_the_next_step() {
+        let mut w = stopped_after_a_step();
+        // Same stop: scrolling, other updates
+        w.set_machine_state(false, false);
+        w.update_memory(0x108, vec![Some(7)]);
+        assert!(w.is_changed(0x100));
+        // A step that changes nothing
+        w.set_machine_state(false, true);
+        assert!(!w.is_changed(0x100));
+    }
+
+    #[test]
+    fn a_stop_shows_all_that_changed_in_the_run() {
+        let mut w = stopped_after_a_step();
+        // What the last step changed fades as any other change
+        w.set_machine_state(true, false);
+        w.changes.clear();
+        assert!(!w.is_changed(0x100));
+        w.update_memory(0x100, vec![Some(8), Some(2)]);
+        assert!(w.is_changed(0x100));
+        // This one was only seen in the run, and has faded by the stop
+        w.changes.clear();
+        w.update_memory(0x100, vec![Some(8), Some(4)]);
+        w.set_machine_state(false, true);
+        assert!(w.is_changed(0x100));
+        assert!(w.is_changed(0x101));
+    }
+
+    #[test]
+    fn first_data_for_an_address_is_no_change() {
+        let mut w = MemoryViewerWidget::default();
+        w.set_machine_state(false, true);
+        w.update_memory(0x100, vec![Some(1)]);
+        assert!(!w.is_changed(0x100));
     }
 }
