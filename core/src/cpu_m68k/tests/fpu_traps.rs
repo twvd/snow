@@ -321,3 +321,31 @@ fn bsun_before_the_predicate() {
     cpu.step().unwrap();
     assert_eq!(cpu.regs.pc, CODE + 4);
 }
+
+/// FRESTORE reads the whole frame from an address that stays where it is: (d16,An) here
+/// (MC68881UM FRESTORE). A frame read from the wrong place loses the pending exception.
+#[test]
+fn frestore_not_postincrement() {
+    // FSAVE (16,A0)
+    const FSAVE_D16: [Word; 2] = [0xF328, 16];
+    // FRESTORE (16,A0)
+    const FRESTORE_D16: [Word; 2] = [0xF368, 16];
+    let code = [&FDIV[..], &FSAVE_D16, &FRESTORE_D16, &FNOP].concat();
+    let mut cpu = cpu82(&code);
+    cpu.regs.fpu.fpcr.0 = EN_DZ;
+    cpu.regs.fpu.fp[0] = ONE;
+    cpu.regs.fpu.fp[1] = ZERO;
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, CODE + 12, "no extension word fetched twice");
+    assert_eq!(cpu.regs.isp, STACK);
+    assert_eq!(cpu.regs.a[0], DATA);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(long(&cpu.bus.mem, cpu.regs.isp + 2), CODE + 12);
+    assert_eq!(
+        long(&cpu.bus.mem, cpu.regs.isp + 6) >> 16,
+        Long::from(VEC_DZ)
+    );
+}
