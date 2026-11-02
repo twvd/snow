@@ -625,8 +625,7 @@ impl Esp {
             Ok(CmdOutcome::DataOut(_)) => self.set_phase(PHASE_DATA_OUT),
             Err(e) => {
                 error!("SCSI command error: {:#}", e);
-                self.intr |= INTR_DC;
-                self.raise_irq();
+                self.target_gone();
                 return;
             }
         }
@@ -656,10 +655,19 @@ impl Esp {
             Ok(_) => self.set_phase(PHASE_STATUS),
             Err(e) => {
                 error!("SCSI command error: {:#}", e);
-                self.intr |= INTR_DC;
+                self.target_gone();
+                return;
             }
         }
         self.intr |= INTR_BS;
+        self.raise_irq();
+    }
+
+    /// The target has left the bus: the chip is back in the disconnected state,
+    /// where it takes selections again, and reports it (data sheet p.17, p.30).
+    fn target_gone(&mut self) {
+        self.disconnect();
+        self.intr |= INTR_DC;
         self.raise_irq();
     }
 
@@ -1059,6 +1067,46 @@ mod tests {
         // One interrupt, and no data read yet
         assert!(!esp.get_irq());
         assert_eq!(esp.fifo_len(), 0);
+    }
+
+    /// Checks that a command the target can't run ends in a disconnect, and that
+    /// the next selection runs
+    fn check_failed_command(esp: &mut Esp, image: Arc<Mutex<Vec<u8>>>) {
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_DC);
+        assert_eq!(esp.fifo_len(), 0);
+        esp.bus_mut()
+            .attach_disk_image_at(Box::new(MemDisk(image)), 0)
+            .unwrap();
+        // TEST UNIT READY
+        select(esp, &[0x00, 0, 0, 0, 0, 0]);
+        assert_eq!(phase(esp), PHASE_STATUS);
+    }
+
+    #[test]
+    fn failed_command_disconnects() {
+        let (mut esp, image) = esp_with_disk();
+        command(&mut esp, 0x41);
+        esp.read(REG_INTR).unwrap();
+        esp.bus_mut().targets[0] = None;
+        for b in [0x00, 0, 0, 0, 0, 0] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        command(&mut esp, 0x10);
+        check_failed_command(&mut esp, image);
+    }
+
+    #[test]
+    fn failed_command_after_data_out_disconnects() {
+        let (mut esp, image) = esp_with_disk();
+        // MODE SELECT(6) of 12 bytes
+        select(&mut esp, &[0x15, 0, 0, 0, 12, 0]);
+        assert_eq!(phase(&mut esp), PHASE_DATA_OUT);
+        esp.bus_mut().targets[0] = None;
+        for _ in 0..12 {
+            esp.write(REG_FIFO, 0).unwrap();
+        }
+        command(&mut esp, 0x10);
+        check_failed_command(&mut esp, image);
     }
 
     #[test]
