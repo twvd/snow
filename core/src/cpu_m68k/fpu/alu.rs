@@ -1,12 +1,15 @@
 use crate::cpu_m68k::cache::CpuCaches;
-use crate::cpu_m68k::{FPU_M68040, FpuM68kType};
+use crate::cpu_m68k::{FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
 use anyhow::{Result, bail};
 use arpfloat::{Float, RoundingMode};
 
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::cpu::{CpuError, CpuM68k};
+use crate::cpu_m68k::cpu::{
+    CpuError, CpuM68k, ExceptionGroup, VECTOR_FP_BSUN, VECTOR_FP_DZ, VECTOR_FP_INEX,
+    VECTOR_FP_OPERR, VECTOR_FP_OVFL, VECTOR_FP_SNAN, VECTOR_FP_UNFL,
+};
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
@@ -300,6 +303,13 @@ where
                 fpsr.exs_mut().set_inex2(inex2 || rounded.inexact);
                 fpsr.exs_mut().set_ovfl(ovfl || rounded.overflow);
                 fpsr.exs_mut().set_unfl(unfl || rounded.underflow);
+                if rounded.overflow || rounded.underflow {
+                    self.regs.fpu.exc_operand = arith::wrapped_operand(
+                        unpacked,
+                        self.fpu_rounding_mode(),
+                        rounded.overflow,
+                    );
+                }
                 rounded.bits
             }
         }
@@ -321,9 +331,12 @@ where
         };
         let rm = self.fpu_rounding_mode();
 
-        // Each arithmetic instruction starts its exception status anew
+        // Each arithmetic instruction starts its exception status anew, and EXC PEND with
+        // it (MC68881UM 6.4.2.2)
         self.regs.fpu.fpsr.exs_mut().0 = 0;
+        self.regs.fpu.exc_pending = false;
 
+        let mut cos_register = None;
         let dyadic = opmode::is_dyadic(opmode);
         let result = if source.is_nan() || (dyadic && dest.is_nan()) {
             // Of two NANs the destination's is the result, and a signaling one
@@ -340,10 +353,16 @@ where
                 self.fpu_condition_codes(&quiet);
                 let excs = self.regs.fpu.fpsr;
                 self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
-                return Ok(*dest);
+                return Ok(if FPU_TYPE == FPU_M68040 {
+                    *dest
+                } else {
+                    self.fpu_trap_result(*dest, source, dest, None)
+                });
             }
             if matches!(opmode, opmode::FSINCOS..=opmode::FSINCOS_LAST) {
-                self.regs.fpu.fp[usize::from(opmode & 0b111)] = quiet;
+                let register = usize::from(opmode & 0b111);
+                cos_register = Some((register, self.regs.fpu.fp[register]));
+                self.regs.fpu.fp[register] = quiet;
             }
             if matches!(opmode, opmode::FMOD | opmode::FREM) {
                 self.regs.fpu.fpsr.set_quotient(0);
@@ -488,6 +507,8 @@ where
                     _ => unreachable!("NANs are handled before"),
                 },
                 opmode::FSINCOS..=opmode::FSINCOS_LAST => {
+                    let register = usize::from(opmode & 0b111);
+                    cos_register = Some((register, self.regs.fpu.fp[register]));
                     // M6888x UM: "If FPc and FPs specify the same floating-point data
                     // register, the sine result is stored in the register, and the
                     // cosine result is discarded."
@@ -528,7 +549,105 @@ where
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
 
-        Ok(result)
+        if FPU_TYPE == FPU_M68040 {
+            return Ok(result);
+        }
+        Ok(self.fpu_trap_result(result, source, dest, cos_register))
+    }
+
+    /// The type of exception that's enabled and has happened, the highest priority one
+    /// (MC68881UM 6.1.9), from FPSR and FPCR (MC68881UM 6.4.2.2)
+    pub(in crate::cpu_m68k) fn fpu_trap_vector(&self) -> Option<Address> {
+        let fpsr = self.regs.fpu.fpsr.0;
+        let active = (fpsr >> 8) & (self.regs.fpu.fpcr.0 >> 8) & 0xFF;
+        [
+            (1 << 7, VECTOR_FP_BSUN),
+            (1 << 6, VECTOR_FP_SNAN),
+            (1 << 5, VECTOR_FP_OPERR),
+            (1 << 4, VECTOR_FP_OVFL),
+            (1 << 3, VECTOR_FP_UNFL),
+            (1 << 2, VECTOR_FP_DZ),
+            (3, VECTOR_FP_INEX),
+        ]
+        .into_iter()
+        .find_map(|(bits, vector)| (active & bits != 0).then_some(vector))
+    }
+
+    /// What's written to the destination given the enabled exceptions, which make an
+    /// exception pending. With SNAN, OPERR and DZ the destination is not modified, with
+    /// the source as the exceptional operand; OVFL, UNFL and INEX store as if disabled
+    /// (MC68881UM 6.1.2 to 6.1.8).
+    fn fpu_trap_result(
+        &mut self,
+        result: BitsExtReal,
+        source: &BitsExtReal,
+        dest: &BitsExtReal,
+        cos_register: Option<(usize, BitsExtReal)>,
+    ) -> BitsExtReal {
+        let vector = self.fpu_trap_vector();
+        self.regs.fpu.exc_pending = vector.is_some();
+        match vector {
+            Some(VECTOR_FP_SNAN | VECTOR_FP_OPERR | VECTOR_FP_DZ) => {
+                self.regs.fpu.exc_operand = *source;
+                if let Some((register, old)) = cos_register {
+                    self.regs.fpu.fp[register] = old;
+                }
+                *dest
+            }
+            _ => result,
+        }
+    }
+
+    /// Reports a pending exception at the start of a floating-point instruction, which
+    /// runs again after the handler: a pre-instruction exception (MC68881UM 6.1, 6.1.13).
+    /// The acknowledge clears it on the MC68881, and on the MC68882 it stays until the
+    /// handler's FRESTORE clears it (MC68881UM 6.1.13, 6.4.2.2). Returns true if taken.
+    pub(in crate::cpu_m68k) fn fpu_take_pending(&mut self) -> Result<bool> {
+        if !self.regs.fpu.exc_pending {
+            return Ok(false);
+        }
+        let Some(vector) = self.fpu_trap_vector() else {
+            return Ok(false);
+        };
+        if FPU_TYPE == FPU_M68881 {
+            self.regs.fpu.exc_pending = false;
+        }
+        if let Some(regs) = self.restart_regs.take() {
+            regs.restore(&mut self.regs);
+        }
+        self.raise_exception(ExceptionGroup::Group2, vector, None)?;
+        Ok(true)
+    }
+
+    /// The BSUN of a conditional instruction: reported before the predicate is evaluated,
+    /// and the instruction runs again after the handler (MC68881UM 6.1.1). Returns true if
+    /// taken.
+    pub(in crate::cpu_m68k) fn fpu_bsun_trap(&mut self, bsun: bool) -> Result<bool> {
+        if !bsun || FPU_TYPE == FPU_M68040 || !self.regs.fpu.fpcr.exc().bsun() {
+            return Ok(false);
+        }
+        if let Some(regs) = self.restart_regs.take() {
+            regs.restore(&mut self.regs);
+        }
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_FP_BSUN, None)?;
+        Ok(true)
+    }
+
+    /// FMOVE to memory or a data register reports an exception right after the store, in
+    /// the middle of the instruction, with the effective address (MC68881UM 6.1). The
+    /// operand on overflow, underflow or a signaling NAN is what was to be stored
+    /// (MC68881UM 6.1.2, 6.1.4, 6.1.5).
+    pub(in crate::cpu_m68k) fn fpu_store_trap(&mut self, ea: Option<Address>) -> Result<()> {
+        let Some(vector) = self.fpu_trap_vector() else {
+            return Ok(());
+        };
+        if FPU_TYPE == FPU_M68040 {
+            return Ok(());
+        }
+        self.regs.fpu.exc_pending = FPU_TYPE == FPU_M68882;
+        self.prefetch_pump()?;
+        self.step_fpu_mid = Some(ea.unwrap_or(0));
+        self.raise_exception(ExceptionGroup::Group2, vector, None)
     }
 
     /// The BSUN bit of a conditional instruction, which also goes in AIOP (MC68881UM 2.3.4)

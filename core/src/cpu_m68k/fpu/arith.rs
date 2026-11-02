@@ -244,6 +244,29 @@ pub fn round(value: Unpacked, rm: RoundingMode, to: Range) -> Rounded {
     }
 }
 
+/// The exceptional operand of an overflow or underflow to a data register.
+///
+/// The result in extended precision, with an exponent that wraps by -$6000 or +$6000, and 0
+/// if it's out of the 17 bits of the intermediate result (MC68881UM 6.1.4, 6.1.5).
+pub fn wrapped_operand(value: Unpacked, rm: RoundingMode, overflow: bool) -> BitsExtReal {
+    let guard = value.man & (1 << 63) != 0;
+    let rest = value.man & ((1 << 63) - 1) != 0 || value.sticky;
+    let kept = value.man >> 64;
+    let kept = kept + u128::from(round_up(rm, value.neg, kept & 1 != 0, guard, rest));
+    let carry = i32::from(kept >> 64 != 0);
+    let man = (kept >> carry) as u64;
+    let exp = value.exp + carry;
+    let e = if !(-0x1_0000..0x1_0000).contains(&exp) {
+        0
+    } else {
+        let bias = if overflow { -0x6000 } else { 0x6000 };
+        ((exp + BIAS + bias) & 0x7FFF) as u64
+    };
+    BitsExtReal::zero(value.neg)
+        .with_e(e)
+        .with_raw_mantissa(man)
+}
+
 /// `d` + `s`, or `d` - `s` (MC68881UM FADD, FSUB)
 pub fn add(d: &BitsExtReal, s: &BitsExtReal, subtract: bool, rm: RoundingMode) -> Value {
     let sneg = s.s() != subtract;

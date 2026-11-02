@@ -91,8 +91,14 @@ where
         // Idle cycles (MC68881/MC68882UM Table 8-7: 20 taken, 18 not taken)
         advance_cycles!(self, all: if L { 12 } else { 14 })?;
 
+        if self.fpu_take_pending()? {
+            return Ok(());
+        }
         let (test, bsun) = self.fcc(instr.get_fcc())?;
         self.fpu_set_bsun(bsun);
+        if self.fpu_bsun_trap(bsun)? {
+            return Ok(());
+        }
         if test {
             // Branch taken
             self.history_current.branch_taken = Some(true);
@@ -115,8 +121,14 @@ where
     /// FScc.b
     pub(in crate::cpu_m68k) fn op_fscc(&mut self, instr: &Instruction) -> Result<()> {
         let cc = usize::from(self.fetch()? & 0b111111);
+        if self.fpu_take_pending()? {
+            return Ok(());
+        }
         let (test, bsun) = self.fcc(cc)?;
         self.fpu_set_bsun(bsun);
+        if self.fpu_bsun_trap(bsun)? {
+            return Ok(());
+        }
 
         // Idle cycles (MC68881/MC68882UM Table 8-7: 18 for Dn, 20 for memory and
         // 22 for (An)+ and -(An), 1 less if the condition is false)
@@ -142,8 +154,14 @@ where
         _instr: &Instruction,
     ) -> Result<()> {
         let cc = usize::from(self.fetch_pump()? & 0b111111);
+        if self.fpu_take_pending()? {
+            return Ok(());
+        }
         let (test, bsun) = self.fcc(cc)?;
         self.fpu_set_bsun(bsun);
+        if self.fpu_bsun_trap(bsun)? {
+            return Ok(());
+        }
 
         // Consume the immediate operand from the prefetch queue and refill.
         // After this, regs.pc points to the instruction following FTRAPcc, which
@@ -176,8 +194,14 @@ where
         // the branch taken, 24 when the count expires)
         advance_cycles!(self, all: 14)?;
 
+        if self.fpu_take_pending()? {
+            return Ok(());
+        }
         let (test, bsun) = self.fcc(cc)?;
         self.fpu_set_bsun(bsun);
+        if self.fpu_bsun_trap(bsun)? {
+            return Ok(());
+        }
         account_040_time!(
             self,
             if test {

@@ -310,6 +310,20 @@ pub const VECTOR_LINEA: Address = 0x000028;
 pub const VECTOR_LINEF: Address = 0x00002C;
 /// Format error exception vector
 pub const VECTOR_FORMAT_ERROR: Address = 0x000038;
+/// Floating-point branch or set on unordered condition vector
+pub const VECTOR_FP_BSUN: Address = 0x0000C0;
+/// Floating-point inexact result vector
+pub const VECTOR_FP_INEX: Address = 0x0000C4;
+/// Floating-point divide by zero vector
+pub const VECTOR_FP_DZ: Address = 0x0000C8;
+/// Floating-point underflow vector
+pub const VECTOR_FP_UNFL: Address = 0x0000CC;
+/// Floating-point operand error vector
+pub const VECTOR_FP_OPERR: Address = 0x0000D0;
+/// Floating-point overflow vector
+pub const VECTOR_FP_OVFL: Address = 0x0000D4;
+/// Floating-point signaling NAN vector
+pub const VECTOR_FP_SNAN: Address = 0x0000D8;
 
 /// Function code of the CPU space
 const FC_CPU_SPACE: u8 = 7;
@@ -416,6 +430,9 @@ pub struct CpuM68k<
     /// floating-point instruction exception
     #[serde(skip)]
     pub(in crate::cpu_m68k) step_fpu_unimp: bool,
+    /// The effective address of an FMOVE to memory reporting an exception after its
+    /// operand is stored: the next exception has a mid-instruction frame
+    pub(in crate::cpu_m68k) step_fpu_mid: Option<Address>,
 
     /// External address/data bus
     pub bus: TBus,
@@ -617,6 +634,7 @@ where
             step_inhibit_trace: false,
             step_start_pc: 0,
             step_fpu_unimp: false,
+            step_fpu_mid: None,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -1704,6 +1722,21 @@ where
                     _ => None,
                 };
                 match (CPU_TYPE, six_word) {
+                    _ if self.step_fpu_mid.is_some() => {
+                        // Coprocessor mid-instruction frame: the address of the next
+                        // instruction, of this one, and the effective address at offset
+                        // $10 (MC68881UM 6.1.13). The internal registers hold 1 here, for
+                        // RTE to tell it from an interrupt in the middle of an instruction.
+                        let ea = self.step_fpu_mid.take().unwrap_or(0);
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(20);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), pc)?;
+                        self.write_ticks(ssp.wrapping_add(6), (0b1001 << 12) | (vector as Word))?;
+                        self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
+                        self.write_ticks(ssp.wrapping_add(0x0C), 1u32)?;
+                        self.write_ticks(ssp.wrapping_add(0x10), ea)?;
+                    }
                     (M68000, _) => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
                         self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
@@ -3663,13 +3696,15 @@ where
                 self.set_pc(pc)?;
             }
             0b1001 if (M68020..=M68030).contains(&CPU_TYPE) => {
-                // Coprocessor mid-instruction: the CPU reads the whole frame and the
-                // FPU instruction starts again from its address
+                // Coprocessor mid-instruction: the CPU reads the whole frame. The FPU
+                // instruction starts again from its address after an interrupt, and
+                // after an exception of its own carries on after it.
                 let ssp = *self.regs.ssp();
                 let sr = self.read_ticks::<Word>(ssp)?;
-                self.read_ticks::<Long>(ssp.wrapping_add(2))?;
-                let pc = self.read_ticks(ssp.wrapping_add(8))?;
-                self.read_ticks::<Long>(ssp.wrapping_add(0x0C))?;
+                let next = self.read_ticks::<Long>(ssp.wrapping_add(2))?;
+                let this = self.read_ticks::<Long>(ssp.wrapping_add(8))?;
+                let done = self.read_ticks::<Long>(ssp.wrapping_add(0x0C))? != 0;
+                let pc = if done { next } else { this };
                 self.read_ticks::<Long>(ssp.wrapping_add(0x10))?;
                 *self.regs.ssp_mut() = ssp.wrapping_add(20);
                 advance_cycles!(self, m68000: 0, m68020: 7, m68030: 8)?;

@@ -542,9 +542,15 @@ mod motorola_ftest {
         assert_passed("ftest", run_fixture_030(&mut cpu, &program(8)));
     }
 
+    /// With what `stub.s` does for `_real_snan` and the others in `test.doc`
     #[test]
-    #[ignore = "needs enabled exceptions, not modelled, and handlers for them"]
-    fn enabled_exceptions() {
+    fn enabled_exceptions_on_68881() {
+        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        assert_passed("ftest", run_fixture_020(&mut cpu, &program(16)));
+    }
+
+    #[test]
+    fn enabled_exceptions_on_68882() {
         let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
         assert_passed("ftest", run_fixture_030(&mut cpu, &program(16)));
     }

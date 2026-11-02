@@ -193,6 +193,10 @@ where
 
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
+        // It forces a pending exception to be reported (MC68881UM FNOP)
+        if self.fpu_take_pending()? {
+            return Ok(());
+        }
         self.regs.fpu.used = true;
 
         // Fetch second word (0000)
@@ -201,6 +205,46 @@ where
         self.advance_cycles(Self::fpu_timings().nop())?;
 
         Ok(())
+    }
+
+    /// The idle state frame of the MC68881 or MC68882, whose exceptional operand is at
+    /// `operand` (MC68881UM figures 6-4, 6-5). The exception pending bit of the BIU flags
+    /// is clear if one is pending. Saving takes it out of the FPU: it comes back with
+    /// the FRESTORE of this frame, if the handler leaves that bit clear (MC68881UM
+    /// 6.4.2.2).
+    fn fpu_idle_frame<const N: usize>(&mut self, format: Word, operand: usize) -> [u8; N] {
+        // No pending instruction, operand transfer or exception, and the undefined bits
+        // written as ones
+        const BIU_IDLE: Long = 0x7C00_FFFF;
+        const EXC_PEND: Long = 1 << 27;
+
+        let pending = std::mem::take(&mut self.regs.fpu.exc_pending);
+        let biu = if pending {
+            BIU_IDLE & !EXC_PEND
+        } else {
+            BIU_IDLE
+        };
+        let exc = self.regs.fpu.exc_operand;
+        let mut frame = [0; N];
+        frame[0..2].copy_from_slice(&format.to_be_bytes());
+        frame[4..6].copy_from_slice(&self.regs.fpu.command.to_be_bytes());
+        frame[6..8].copy_from_slice(&[0xFF, 0xFF]);
+        frame[operand..operand + 4].copy_from_slice(&exc.high().to_be_bytes());
+        frame[operand + 4..operand + 8].copy_from_slice(&exc.mid().to_be_bytes());
+        frame[operand + 8..operand + 12].copy_from_slice(&exc.low().to_be_bytes());
+        frame[N - 4..].copy_from_slice(&biu.to_be_bytes());
+        frame
+    }
+
+    /// Takes back what's in an idle state frame
+    fn fpu_restore_idle_frame<const N: usize>(&mut self, frame: [u8; N], operand: usize) {
+        let long = |at: usize| Long::from_be_bytes(frame[at..at + 4].try_into().unwrap());
+        self.regs.fpu.command = (long(0) >> 16) as Word;
+        self.regs.fpu.exc_operand = BitsExtReal::default()
+            .with_high(long(operand) & 0xFFFF_0000)
+            .with_mid(long(operand + 4))
+            .with_low(long(operand + 8));
+        self.regs.fpu.exc_pending = long(N - 4) & (1 << 27) == 0;
     }
 
     /// FSAVE
@@ -219,13 +263,11 @@ where
         // Idle state frame
         match FPU_TYPE {
             FPU_M68881 => {
-                let mut stateframe = [0u8; 28];
-                stateframe[0..4].copy_from_slice(&0x1F180000u32.to_be_bytes());
+                let stateframe = self.fpu_idle_frame::<28>(0x1F18, 0x08);
                 self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
             }
             FPU_M68882 => {
-                let mut stateframe = [0u8; 60];
-                stateframe[0..4].copy_from_slice(&0x1F380000u32.to_be_bytes());
+                let stateframe = self.fpu_idle_frame::<60>(0x1F38, 0x28);
                 self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
             }
             // FSAVE takes a pending exception out of the FPU, so that the other
@@ -260,10 +302,12 @@ where
             self.step_ea_addr = None;
             match FPU_TYPE {
                 FPU_M68881 if state & 0xFF000000 == 0x1F000000 => {
-                    self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
+                    let frame = self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
+                    self.fpu_restore_idle_frame(frame, 0x08 - 4);
                 }
                 FPU_M68882 if state & 0xFF000000 == 0x1F000000 => {
-                    self.read_ea_sz::<{ 60 - 4 }>(instr, instr.get_op2())?;
+                    let frame = self.read_ea_sz::<{ 60 - 4 }>(instr, instr.get_op2())?;
+                    self.fpu_restore_idle_frame(frame, 0x28 - 4);
                 }
                 // The MC68040 idle frame is only the format long word (9-41)
                 FPU_M68040 if state & 0xFFFF0000 == 0x41000000 => {
@@ -319,8 +363,13 @@ where
         let extword = FmoveExtWord(self.fetch_pump()?);
 
         // All but the moves of control registers and FMOVEM can raise an
-        // exception, so they leave their address here (MC68881UM FPIAR)
+        // exception, so they leave their address here (MC68881UM FPIAR), and report one
+        // that's pending (MC68881UM FMOVE, FMOVEM)
         if matches!(extword.subop(), 0b000 | 0b010 | 0b011) {
+            if self.fpu_take_pending()? {
+                return Ok(());
+            }
+            self.regs.fpu.command = extword.0;
             self.regs.fpu.fpiar = self.step_start_pc;
         }
 
@@ -474,6 +523,8 @@ where
                         self.fpu_condition_codes(&value);
                         let excs = self.regs.fpu.fpsr;
                         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+                        self.regs.fpu.exc_pending =
+                            FPU_TYPE != FPU_M68040 && self.fpu_trap_vector().is_some();
                         self.advance_cycles(Self::fpu_timings().movecr())?;
                         return Ok(());
                     }
@@ -516,6 +567,8 @@ where
                     self.regs.fpu.fpsr.exs_mut().set_inex1(true);
                     let excs = self.regs.fpu.fpsr;
                     self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+                    self.regs.fpu.exc_pending =
+                        FPU_TYPE != FPU_M68040 && self.fpu_trap_vector().is_some();
                 }
 
                 let less = if instr.get_addr_mode()? == AddressingMode::DataRegister {
@@ -544,23 +597,23 @@ where
         let less = if in_dn { timings.dn_dst() } else { 0 };
         let cycles = timings.store(extword.dest_fmt()).saturating_sub(less);
         self.regs.fpu.fpsr.exs_mut().0 = 0;
-
-        match extword.dest_fmt() {
+        self.regs.fpu.exc_pending = false;
+        let stored_at = match extword.dest_fmt() {
             0b000 => {
                 let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into(), 32);
-                self.fpu_store(instr, in_dn, cycles, out as Long)?;
+                self.fpu_store(instr, in_dn, cycles, out as Long)?
             }
             0b100 => {
                 let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into(), 16);
-                self.fpu_store(instr, in_dn, cycles, out as Word)?;
+                self.fpu_store(instr, in_dn, cycles, out as Word)?
             }
             0b110 => {
                 let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into(), 8);
-                self.fpu_store(instr, in_dn, cycles, out as Byte)?;
+                self.fpu_store(instr, in_dn, cycles, out as Byte)?
             }
             0b001 => {
                 let out = self.fpu_to_real(fpx, Range::SINGLE).to_single();
-                self.fpu_store(instr, in_dn, cycles, out)?;
+                self.fpu_store(instr, in_dn, cycles, out)?
             }
             0b101 if !in_dn => {
                 let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
@@ -571,6 +624,7 @@ where
                 let out = self.fpu_to_real(fpx, Range::DOUBLE);
                 self.advance_cycles(cycles)?;
                 self.write_fpu_double(ea, out)?;
+                Some(ea)
             }
             0b010 if !in_dn => {
                 let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
@@ -581,6 +635,7 @@ where
                 let out = self.fpu_to_real(fpx, Range::EXTENDED);
                 self.advance_cycles(cycles)?;
                 self.write_fpu_extended(ea, out)?;
+                Some(ea)
             }
             0b011 | 0b111 if !in_dn => {
                 let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
@@ -599,33 +654,34 @@ where
                 };
                 self.advance_cycles(cycles)?;
                 self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], k)?;
+                Some(ea)
             }
             _ => bail!(CpuError::IllegalInstruction),
-        }
+        };
 
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
-        Ok(())
+        self.fpu_store_trap(stored_at)
     }
 
     /// The end of an FMOVE to memory or a data register of `value`, with the time it
-    /// takes, its effective address coming before all that
+    /// takes, its effective address coming before all that. Returns that address.
     fn fpu_store<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         in_dn: bool,
         cycles: Ticks,
         value: T,
-    ) -> Result<()> {
+    ) -> Result<Option<Address>> {
         if in_dn {
             self.advance_cycles(cycles)?;
             self.regs.write_d(instr.get_op2(), value);
-        } else {
-            let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-            self.advance_cycles(cycles)?;
-            self.write_ticks(ea, value)?;
+            return Ok(None);
         }
-        Ok(())
+        let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+        self.advance_cycles(cycles)?;
+        self.write_ticks(ea, value)?;
+        Ok(Some(ea))
     }
 
     /// FMOVEM of the control registers. They are always moved in the same
