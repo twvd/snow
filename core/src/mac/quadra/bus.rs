@@ -91,6 +91,12 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
     pub(crate) asc: Easc,
+    /// Interrupt PAL in the A/UX mode, for logging
+    #[serde(skip)]
+    aux_irq_mode: bool,
+    /// Software interrupt asserted, for logging
+    #[serde(skip)]
+    soft_irq: bool,
     asc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -158,6 +164,8 @@ where
             ram: vec![0; ram_size],
             via1: Via::new(model),
             via2: Self::new_via2(model),
+            aux_irq_mode: false,
+            soft_irq: false,
             scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
@@ -705,6 +713,31 @@ where
         // The interrupt PAL (schematic U55) has a second set of levels for
         // A/UX, selected by VIA1 PB6 (Developer Note table 2-7)
         let pb = self.via1.pb();
+        // Log when these change, to see which systems use them
+        let aux_irq_mode = !pb.aux_inten();
+        if self.aux_irq_mode != aux_irq_mode {
+            self.aux_irq_mode = aux_irq_mode;
+            log::warn!(
+                "Interrupt PAL switched to the {} levels",
+                if self.aux_irq_mode {
+                    "A/UX"
+                } else {
+                    "Macintosh"
+                }
+            );
+        }
+        let soft_irq = !pb.soft_irq();
+        if self.soft_irq != soft_irq {
+            self.soft_irq = soft_irq;
+            log::warn!(
+                "Software interrupt {}",
+                if self.soft_irq {
+                    "asserted"
+                } else {
+                    "released"
+                }
+            );
+        }
         if !pb.aux_inten() {
             return if self.via1.irq() {
                 Some(6)
