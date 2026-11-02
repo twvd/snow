@@ -397,6 +397,8 @@ pub struct Emulator {
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
     serial_bridges: [Option<SccBridge>; 2],
+    /// What the machine remembers of its devices
+    device_book: devices::DeviceBook,
     audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
     /// Ranges of memory the frontend wants to be told about, by id
     memory_notifiers: BTreeMap<u32, MemoryNotifier>,
@@ -715,6 +717,7 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book: Default::default(),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
@@ -771,6 +774,7 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book: Default::default(),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
@@ -901,6 +905,7 @@ impl Emulator {
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
+                buses: self.buses(),
             })))?;
 
         // Memory notifiers. A stopped machine gets all of them looked at, so that
@@ -1447,6 +1452,8 @@ impl Tickable for Emulator {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
                                 } else {
                                     let drv = &mut self.config.swim_mut().drives[drive];
+                                    drv.media_path = Some(PathBuf::from(&filename));
+                                    drv.media_read_only = wp;
                                     drv.image_path = writeback_path;
                                     drv.writeback_enabled = false;
                                     drv.pending_writeback = false;
@@ -1611,6 +1618,10 @@ impl Tickable for Emulator {
                         }
                         if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
+                        } else {
+                            let drv = &mut self.config.swim_mut().drives[drive];
+                            drv.media_path = None;
+                            drv.media_read_only = false;
                         }
                         self.status_update()?;
                     }
@@ -1944,6 +1955,7 @@ impl Tickable for Emulator {
                                     _ => {}
                                 }
                                 self.serial_bridges[ch_idx] = Some(bridge);
+                                self.device_book.serial[ch_idx] = Some(config);
                                 self.event_sender
                                     .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
                             }
@@ -1957,6 +1969,7 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SerialBridgeDisable(ch) => {
                         let ch_idx = ch as usize;
+                        self.device_book.serial[ch_idx] = None;
                         if self.serial_bridges[ch_idx].take().is_some() {
                             info!("Serial bridge disabled on channel {:?}", ch);
                             self.event_sender
