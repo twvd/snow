@@ -7,7 +7,7 @@ use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::opmode;
-use crate::cpu_m68k::fpu::regs::Unimp040;
+use crate::cpu_m68k::fpu::regs::{Busy040, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
 use crate::types::{Long, Word};
@@ -356,6 +356,7 @@ fn unsupported_frame_and_completion() {
     // The handler's work: normalized, with a negative exponent, and E1 clear
     put(&mut cpu, FRAME + 0x3C, &[1 << 4]);
     put(&mut cpu, FRAME + 0x48, &[0]);
+    put(&mut cpu, FRAME + 0x08, &[0xFE]);
     put(
         &mut cpu,
         FRAME + 0x58,
@@ -454,4 +455,174 @@ fn unsupported_move_out_snan() {
     cpu.prefetch_refill().unwrap();
     cpu.step().unwrap();
     assert_eq!(peek_long(&cpu, FRAME + 0x5C), 0xA000_0000);
+}
+
+const EN_OPERR: Long = 1 << 13;
+const EN_OVFL: Long = 1 << 12;
+const EN_DZ: Long = 1 << 10;
+/// FDIV FP1,FP0
+const FDIV: [Word; 2] = [0xF200, 0x0420];
+/// FMUL FP1,FP0
+const FMUL: [Word; 2] = [0xF200, 0x0423];
+
+/// Arithmetic exceptions take their usual vectors, to the same handler here
+fn cpu_with_vectors(code: &[Word]) -> TestCpu {
+    let mut cpu = cpu_with(code);
+    for vector in (0xC0..=0xD8).step_by(4) {
+        put(&mut cpu, vector, &HANDLER.to_be_bytes());
+    }
+    cpu
+}
+
+/// DZ: an E1 exception, pre-instruction at the next floating-point instruction, and the
+/// destination isn't modified. The exception stays until the handler clears E1 in the state
+/// frame, whatever it restores (MC68040UM 9.7, 9.8).
+#[test]
+fn enabled_e1_exception() {
+    let code = [
+        &FDIV[..],
+        &FSAVE,
+        &FRESTORE,
+        &FNOP,
+        &FSAVE,
+        &FRESTORE,
+        &FNOP,
+    ]
+    .concat();
+    let mut cpu = cpu_with_vectors(&code);
+    cpu.regs.fpu.fpcr.0 = EN_DZ;
+    cpu.regs.fpu.fp[0] = ONE;
+    cpu.regs.fpu.fp[1] = BitsExtReal(0);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[0], ONE);
+    assert!(cpu.regs.fpu.fpsr.exs().dz());
+    assert_eq!(cpu.regs.isp, STACK);
+
+    // FSAVE takes it out and FRESTORE puts it back
+    cpu.step().unwrap();
+    assert_eq!(peek_long(&cpu, FRAME), 0x4160_0000);
+    assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 2, "E1");
+    assert_eq!(peek(&cpu, FRAME + 0x49), 0, "T");
+    assert_eq!(peek_long(&cpu, FRAME + 0x40) >> 16, 0x0420);
+    assert_eq!(peek(&cpu, FRAME + 0x3C) >> 5, 0b001, "STAG");
+    assert_eq!(peek_long(&cpu, FRAME + 0x4C), 0x3FFF_0000, "FPTEMP");
+    assert_eq!(cpu.regs.fpu.pending040, None);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.pending040, Some(0xC8));
+
+    let fnop = cpu.regs.pc;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(cpu.regs.isp, STACK - 8);
+    assert_eq!(peek_long(&cpu, STACK - 6), fnop);
+    assert_eq!(peek_long(&cpu, STACK - 2) >> 16, 0xC8);
+
+    // The handler: E1 cleared, then back to the FNOP, which goes through
+    cpu.regs.isp = STACK;
+    cpu.set_pc(fnop + 4).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    put(&mut cpu, FRAME + 0x48, &[0]);
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.isp, STACK);
+    assert_eq!(cpu.regs.fpu.fp[0], ONE, "not an instruction to finish");
+}
+
+/// OVFL: an E3 exception, with the destination written, and in the state frame the result
+/// before rounding: its exponent out of range, with bit 15 in WB_BYTE (MC68040UM 9.7, 9.8)
+#[test]
+fn enabled_e3_exception() {
+    let mut cpu = cpu_with_vectors(&[&FMUL[..], &FSAVE].concat());
+    let big = BitsExtReal(0x7FFE_0000_C000_0000_0000_0001);
+    cpu.regs.fpu.fpcr.0 = EN_OVFL;
+    cpu.regs.fpu.fp[0] = big;
+    cpu.regs.fpu.fp[1] = big;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[0], BitsExtReal::inf(false));
+    assert_eq!(cpu.regs.fpu.pending040, Some(0xD4));
+
+    cpu.step().unwrap();
+    assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 1, "E3");
+    // 1.5^2 x 2^(2 x 16383) = 1.125 x 2^(2 x 16383 + 1): biased, $BFFE in 16 bits
+    assert_eq!(peek_long(&cpu, FRAME + 0x18), 0x3FFE_0000, "WBTE");
+    assert_eq!(peek_long(&cpu, FRAME + 0x1C), 0x9000_0000, "WBTM");
+    assert_eq!(peek(&cpu, FRAME + 0x45) >> 4 & 1, 1, "WBTE15");
+    assert_eq!(peek_long(&cpu, FRAME + 0x34) >> 16, 0x0013, "CMDREG3B");
+}
+
+/// Figure 9-11: FSGLDIV and FSGLMUL as the M68040FPSP looks for them in CMDREG3B
+#[test]
+fn cmdreg3b_mapping() {
+    assert_eq!(Busy040::cmdreg3b(0x0024) & 0x7F, 0x30);
+    assert_eq!(Busy040::cmdreg3b(0x0027) & 0x7F, 0x33);
+    assert_eq!(
+        Busy040::cmdreg3b(0x0080 | 0x23),
+        0x0093,
+        "with the register"
+    );
+}
+
+/// FMOVE to an integer out of range: OPERR, at once, post-instruction, with the source in
+/// ETEMP and FPTEMP for the handler, and T set (MC68040UM 9.7.3, table 9-16)
+#[test]
+fn enabled_move_out_exception() {
+    // FMOVE.L FP0,(A0)
+    let mut cpu = cpu_with_vectors(&[&[0xF210, 0x6000][..], &FSAVE].concat());
+    let huge = BitsExtReal(0x4040_0000_8000_0000_0000_0000);
+    cpu.regs.fpu.fpcr.0 = EN_OPERR;
+    cpu.regs.fpu.fp[0] = huge;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(cpu.regs.isp, STACK - 12);
+    assert_eq!(peek_long(&cpu, STACK - 10), CODE + 4);
+    assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xD0);
+    assert_eq!(peek_long(&cpu, STACK - 4), DATA);
+
+    cpu.set_pc(CODE + 4).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 2, "E1");
+    assert_eq!(peek(&cpu, FRAME + 0x49), 1 << 4, "T");
+    assert_eq!(peek_long(&cpu, FRAME + 0x58), 0x4040_0000, "ETEMP");
+    assert_eq!(peek_long(&cpu, FRAME + 0x4C), 0x4040_0000, "FPTEMP");
+}
+
+/// BSUN: at the conditional instruction itself, pre-instruction (MC68040UM 9.7.1)
+#[test]
+fn enabled_bsun() {
+    // FBGT.W, branches on the operand being greater, an IEEE-aware predicate that's false
+    // and sets BSUN with a NAN
+    let mut cpu = cpu_with_vectors(&[0xF292, 0x0010, 0x4E71]);
+    cpu.regs.fpu.fpcr.0 = 1 << 15;
+    cpu.regs.fpu.fpsr.set_fpcc_nan(true);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(peek_long(&cpu, STACK - 6), CODE);
+    assert_eq!(peek_long(&cpu, STACK - 2) >> 16, 0xC0);
+}
+
+/// A frame of an FMOVE to memory, restored with its exception, is reported with the address
+/// of the FMOVE, which is where the M68040FPSP writes the result (x_store, gen_except)
+#[test]
+fn restored_move_out_exception_has_the_address() {
+    // FMOVE.P FP0,(A0){#3}; FSAVE (A1); FRESTORE (A1); FNOP
+    let code = [&[0xF210, 0x6C03][..], &FSAVE, &FRESTORE, &FNOP].concat();
+    let mut cpu = cpu_with_vectors(&code);
+    cpu.regs.fpu.fp[0] = ONE;
+    cpu.step().unwrap();
+    cpu.regs.isp = STACK;
+    cpu.set_pc(CODE + 4).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    // As the handler leaves it, for an underflow it found
+    cpu.regs.fpu.fpcr.0 = 1 << 11;
+    cpu.regs.fpu.fpsr.exs_mut().set_unfl(true);
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(cpu.regs.isp, STACK - 12);
+    assert_eq!(peek_long(&cpu, STACK - 10), CODE + 8, "the FNOP again");
+    assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xCC);
+    assert_eq!(peek_long(&cpu, STACK - 4), DATA);
 }

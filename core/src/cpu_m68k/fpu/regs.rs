@@ -7,6 +7,8 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
+use crate::cpu_m68k::fpu::arith::Unpacked;
+
 bitfield! {
     /// Exception bitfields
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -138,10 +140,13 @@ impl Busy040 {
     /// Size of the busy state frame in bytes
     pub const FRAME_SIZE: usize = 100;
 
+    const CU_SAVEPC: usize = 0x08;
+    const WBTEMP: usize = 0x18;
     const CMDREG3B: usize = 0x34;
     const STAG: usize = 0x3C;
     const CMDREG1B: usize = 0x40;
     const DTAG: usize = 0x44;
+    const WB_BYTE: usize = 0x45;
     const E_BYTE: usize = 0x48;
     const T_BYTE: usize = 0x49;
     const FPTEMP: usize = 0x4C;
@@ -153,9 +158,9 @@ impl Busy040 {
     const E3: u8 = 1 << 1;
     const T: u8 = 1 << 4;
 
-    /// For an unsupported data type: E1 is always set, and T for a move to memory
+    /// An exception of the conversion unit: E1 is set, and T for a move to memory
     /// (MC68040UM table 9-16)
-    pub fn unsupported(
+    pub fn new(
         cmdreg1b: Word,
         (etemp, stag): ([Long; 3], u8),
         (fptemp, dtag): ([Long; 3], u8),
@@ -187,6 +192,34 @@ impl Busy040 {
         Self(frame)
     }
 
+    /// An exception of the write-back stage instead, E3: OVFL, UNFL or INEX2 of an
+    /// arithmetic instruction, with its result before rounding in WBTEMP (MC68040UM 9.8):
+    /// the 64 bits of the mantissa, then guard, round and sticky, in bits 1 and 0 of
+    /// byte $3C and bit 7 of byte $3D (the M68040FPSP, fpsp.h and dnrm_lp).
+    pub fn with_writeback(mut self, wbtemp: Unpacked) -> Self {
+        let cmdreg1b = Word::from_be_bytes([self.0[Self::CMDREG1B], self.0[Self::CMDREG1B + 1]]);
+        let cmdreg3b = Self::cmdreg3b(cmdreg1b);
+        let exp = (wbtemp.exp + 16383) as u16;
+        let high = (Long::from(wbtemp.neg) << 31) | (Long::from(exp & 0x7FFF) << 16);
+        let mantissa = (wbtemp.man >> 64) as u64;
+        self.0[Self::WBTEMP..Self::WBTEMP + 4].copy_from_slice(&high.to_be_bytes());
+        self.0[Self::WBTEMP + 4..Self::WBTEMP + 12].copy_from_slice(&mantissa.to_be_bytes());
+        self.0[Self::WB_BYTE] |= ((exp >> 15) as u8) << 4;
+        let guard = wbtemp.man & (1 << 63) != 0;
+        let round = wbtemp.man & (1 << 62) != 0;
+        let sticky = wbtemp.man & ((1 << 62) - 1) != 0 || wbtemp.sticky;
+        self.0[Self::STAG] |= (u8::from(guard) << 1) | u8::from(round);
+        self.0[Self::STAG + 1] |= u8::from(sticky) << 7;
+        self.0[Self::CMDREG3B..Self::CMDREG3B + 2].copy_from_slice(&cmdreg3b.to_be_bytes());
+        self.0[Self::E_BYTE] = Self::E3;
+        self
+    }
+
+    /// A post-instruction exception, of an FMOVE to memory or a data register: T
+    pub fn post_instruction(&self) -> bool {
+        self.0[Self::T_BYTE] & Self::T != 0
+    }
+
     /// An exception is still to report: E1 or E3
     pub fn has_exception(&self) -> bool {
         self.0[Self::E_BYTE] & (Self::E1 | Self::E3) != 0
@@ -203,10 +236,16 @@ impl Busy040 {
         }
     }
 
-    /// The encoded command word for an exception of the write-back stage (MC68040UM
-    /// figure 9-11)
-    pub fn command3(&self) -> Word {
-        Word::from_be_bytes([self.0[Self::CMDREG3B], self.0[Self::CMDREG3B + 1]])
+    /// CMDREG3B for a command word: its bits in another order (MC68040UM figure 9-11, with
+    /// the mapping in the M68040FPSP, gen_except)
+    pub fn cmdreg3b(cmdreg1b: Word) -> Word {
+        (cmdreg1b & 0x03C3) | ((cmdreg1b & (1 << 2)) << 3) | ((cmdreg1b >> 3 & 0b111) << 2)
+    }
+
+    /// CU_SAVEPC with all its bits set, as the M68040FPSP leaves it (res_func) when the
+    /// instruction is to go on, with the operands of the frame
+    pub fn restarts(&self) -> bool {
+        self.0[Self::CU_SAVEPC] == 0xFE
     }
 
     fn operand(&self, at: usize, tag: usize) -> BitsExtReal {
@@ -338,9 +377,15 @@ pub struct FpuRegisterFile {
     /// Not in the null state of a reset: FSAVE saves an idle frame
     #[serde(default)]
     pub used: bool,
+    /// MC68040: the last result before it was rounded, for an exception on it
+    #[serde(skip)]
+    pub unrounded: Option<Unpacked>,
     /// MC68040: the instruction waiting for the exception handler, until FSAVE
     #[serde(default)]
     pub busy040: Option<Busy040>,
+    /// MC68040: the effective address of the last FMOVE to memory that took an exception
+    #[serde(default)]
+    pub move_ea040: Address,
     /// MC68040: the vector of an exception to report at the next floating-point
     /// instruction but FSAVE (MC68040UM 9.6.2)
     #[serde(default)]
@@ -400,7 +445,9 @@ impl Default for FpuRegisterFile {
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),
             used: false,
+            unrounded: None,
             busy040: None,
+            move_ea040: 0,
             pending040: None,
             exc_pending: false,
             exc_operand: BitsExtReal::default(),

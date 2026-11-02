@@ -10,10 +10,12 @@ use crate::cpu_m68k::cpu::{
     CpuError, CpuM68k, ExceptionGroup, VECTOR_FP_BSUN, VECTOR_FP_DZ, VECTOR_FP_INEX,
     VECTOR_FP_OPERR, VECTOR_FP_OVFL, VECTOR_FP_SNAN, VECTOR_FP_UNFL,
 };
-use crate::cpu_m68k::fpu::instruction::opmode;
+use crate::cpu_m68k::fpu::instruction::{FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::math::FloatMath;
+use crate::cpu_m68k::fpu::regs::{Busy040, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
+use crate::types::Long;
 
 use super::arith::{self, Range, Unpacked, Value};
 use super::constants;
@@ -294,6 +296,7 @@ where
                 BitsExtReal::inf(neg)
             }
             Value::Round(unpacked) => {
+                self.regs.fpu.unrounded = Some(unpacked);
                 let rounded = arith::round(unpacked, self.fpu_rounding_mode(), to);
                 // Added to what's there already: FSINCOS has two results, and whole
                 // numbers have inexact bits of their own
@@ -335,6 +338,7 @@ where
         // it (MC68881UM 6.4.2.2)
         self.regs.fpu.fpsr.exs_mut().0 = 0;
         self.regs.fpu.exc_pending = false;
+        self.regs.fpu.unrounded = None;
 
         let mut cos_register = None;
         let dyadic = opmode::is_dyadic(opmode);
@@ -353,11 +357,7 @@ where
                 self.fpu_condition_codes(&quiet);
                 let excs = self.regs.fpu.fpsr;
                 self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
-                return Ok(if FPU_TYPE == FPU_M68040 {
-                    *dest
-                } else {
-                    self.fpu_trap_result(*dest, source, dest, None)
-                });
+                return Ok(self.fpu_trap_result(*dest, source, dest, None));
             }
             if matches!(opmode, opmode::FSINCOS..=opmode::FSINCOS_LAST) {
                 let register = usize::from(opmode & 0b111);
@@ -549,9 +549,6 @@ where
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
 
-        if FPU_TYPE == FPU_M68040 {
-            return Ok(result);
-        }
         Ok(self.fpu_trap_result(result, source, dest, cos_register))
     }
 
@@ -598,6 +595,33 @@ where
         }
     }
 
+    /// An enabled exception of an arithmetic instruction on the MC68040, reported by the
+    /// next floating-point instruction but FSAVE: E3 for what comes from the result, E1 for
+    /// the others (MC68040UM 9.7, 9.8).
+    pub(in crate::cpu_m68k) fn fpu_exception040(
+        &mut self,
+        extword: FmoveExtWord,
+        source: ([Long; 3], u8),
+        dest: ([Long; 3], u8),
+    ) {
+        let Some(vector) = self.fpu_trap_vector() else {
+            return;
+        };
+        let on_result = matches!(vector, VECTOR_FP_OVFL | VECTOR_FP_UNFL | VECTOR_FP_INEX);
+        let fpiar = self.regs.fpu.fpiar;
+        let frame = match self.regs.fpu.unrounded {
+            Some(unrounded) if on_result && opmode::writeback_stage(extword.opmode()) => {
+                Busy040::new(extword.0, source, dest, fpiar, false).with_writeback(unrounded)
+            }
+            // The handlers look for the operand in ETEMP for OVFL, in FPTEMP for UNFL
+            // (the M68040FPSP, x_ovfl and x_unfl)
+            _ if on_result => Busy040::new(extword.0, source, source, fpiar, false),
+            _ => Busy040::new(extword.0, source, dest, fpiar, false),
+        };
+        self.regs.fpu.busy040 = Some(frame);
+        self.regs.fpu.pending040 = Some(vector);
+    }
+
     /// Reports a pending exception at the start of a floating-point instruction, which
     /// runs again after the handler: a pre-instruction exception (MC68881UM 6.1, 6.1.13).
     /// The acknowledge clears it on the MC68881, and on the MC68882 it stays until the
@@ -610,6 +634,19 @@ where
             };
             if let Some(regs) = self.restart_regs.take() {
                 regs.restore(&mut self.regs);
+            }
+            // The manual doesn't say which frame a restored T takes. A format $3 one, with the
+            // address of the FMOVE, is the only one that works: gen_except sends an FMOVE to
+            // memory here, and store in the M68040FPSP writes the result through that address.
+            // A format $0 frame has none, so the FPSP wrote through what's above it on the
+            // stack: found with FMOVE.X of a denormalized number and UNFL enabled.
+            if self
+                .regs
+                .fpu
+                .busy040
+                .is_some_and(|busy| busy.post_instruction())
+            {
+                self.step_fpu_post = Some(self.regs.fpu.move_ea040);
             }
             self.raise_exception(ExceptionGroup::Group2, vector, None)?;
             return Ok(true);
@@ -634,7 +671,7 @@ where
     /// and the instruction runs again after the handler (MC68881UM 6.1.1). Returns true if
     /// taken.
     pub(in crate::cpu_m68k) fn fpu_bsun_trap(&mut self, bsun: bool) -> Result<bool> {
-        if !bsun || FPU_TYPE == FPU_M68040 || !self.regs.fpu.fpcr.exc().bsun() {
+        if !bsun || !self.regs.fpu.fpcr.exc().bsun() {
             return Ok(false);
         }
         if let Some(regs) = self.restart_regs.take() {
@@ -648,12 +685,25 @@ where
     /// the middle of the instruction, with the effective address (MC68881UM 6.1). The
     /// operand on overflow, underflow or a signaling NAN is what was to be stored
     /// (MC68881UM 6.1.2, 6.1.4, 6.1.5).
-    pub(in crate::cpu_m68k) fn fpu_store_trap(&mut self, ea: Option<Address>) -> Result<()> {
+    ///
+    /// On the MC68040 it's a post-instruction exception, with the source in the frame for
+    /// the handler (MC68040UM 9.7, table 9-16).
+    pub(in crate::cpu_m68k) fn fpu_store_trap(
+        &mut self,
+        ea: Option<Address>,
+        extword: FmoveExtWord,
+    ) -> Result<()> {
         let Some(vector) = self.fpu_trap_vector() else {
             return Ok(());
         };
         if FPU_TYPE == FPU_M68040 {
-            return Ok(());
+            let source = Unimp040::operand(&self.regs.fpu.fp[extword.src_reg()]);
+            let fpiar = self.regs.fpu.fpiar;
+            self.regs.fpu.busy040 = Some(Busy040::new(extword.0, source, source, fpiar, true));
+            self.prefetch_pump()?;
+            self.regs.fpu.move_ea040 = ea.unwrap_or(0);
+            self.step_fpu_post = Some(ea.unwrap_or(0));
+            return self.raise_exception(ExceptionGroup::Group2, vector, None);
         }
         self.regs.fpu.exc_pending = FPU_TYPE == FPU_M68882;
         self.prefetch_pump()?;
