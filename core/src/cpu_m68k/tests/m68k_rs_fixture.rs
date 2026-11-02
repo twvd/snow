@@ -466,6 +466,23 @@ musashi_000!(musashi_000_subx, "fixtures/musashi/mc68000/subx.bin");
 musashi_000!(musashi_000_swap, "fixtures/musashi/mc68000/swap.bin");
 musashi_000!(musashi_000_trapv, "fixtures/musashi/mc68000/trapv.bin");
 
+/// `stub.s` assembled with the entry point set, followed by the image of a `.sa` file
+fn motorola_program(sa: &str, entry: u32) -> Vec<u8> {
+    let mut program = include_bytes!("fixtures/motorola/stub.bin").to_vec();
+    let at = program.len() - 128 - 4;
+    program[at..at + 4].copy_from_slice(&entry.to_be_bytes());
+    for line in sa.lines() {
+        let Some(values) = line.trim().strip_prefix("dc.l") else {
+            continue;
+        };
+        for value in values.split(',') {
+            let value = u32::from_str_radix(value.trim().trim_start_matches('$'), 16);
+            program.extend(value.unwrap().to_be_bytes());
+        }
+    }
+    program
+}
+
 /// Motorola's integer test of its M68060 Software Package: 64-bit multiply and
 /// divide, CMP2/CHK2, MOVEP, effective addresses, CAS and CAS2. On the 68060 these
 /// are emulated, the 68020 to the 68040 have them in hardware. See
@@ -473,19 +490,8 @@ musashi_000!(musashi_000_trapv, "fixtures/musashi/mc68000/trapv.bin");
 mod motorola_itest {
     use super::*;
 
-    /// `stub.s` assembled, followed by the image of `itest.sa`
     fn program() -> Vec<u8> {
-        let mut program = include_bytes!("fixtures/motorola/stub.bin").to_vec();
-        for line in include_str!("fixtures/motorola/itest.sa").lines() {
-            let Some(values) = line.trim().strip_prefix("dc.l") else {
-                continue;
-            };
-            for value in values.split(',') {
-                let value = u32::from_str_radix(value.trim().trim_start_matches('$'), 16);
-                program.extend(value.unwrap().to_be_bytes());
-            }
-        }
-        program
+        motorola_program(include_str!("fixtures/motorola/itest.sa"), 0)
     }
 
     #[test]
@@ -504,5 +510,42 @@ mod motorola_itest {
     fn m68040() {
         let mut cpu = CpuM68040Fpu::<TestBus>::new(TestBus::new(M68040_ADDRESS_MASK));
         assert_passed("itest", run_fixture_040(&mut cpu, &program()));
+    }
+}
+
+/// Motorola's FP test of the same package, with the three entry points of `test.doc`, on
+/// the MC68881 and MC68882. The MC68040 needs the FPSP for these, which isn't in the tree.
+mod motorola_ftest {
+    use super::*;
+
+    fn program(entry: u32) -> Vec<u8> {
+        motorola_program(include_str!("fixtures/motorola/ftest.sa"), entry)
+    }
+
+    /// Effective addresses, data types, overflow and underflow
+    #[test]
+    fn main_on_68881() {
+        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        assert_passed("ftest", run_fixture_020(&mut cpu, &program(0)));
+    }
+
+    #[test]
+    fn main_on_68882() {
+        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        assert_passed("ftest", run_fixture_030(&mut cpu, &program(0)));
+    }
+
+    #[test]
+    #[ignore = "fsin of pi expects the value of the FPSP, $BFBF80..., not the correct one"]
+    fn unimplemented_instructions() {
+        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        assert_passed("ftest", run_fixture_030(&mut cpu, &program(8)));
+    }
+
+    #[test]
+    #[ignore = "needs enabled exceptions, not modelled, and handlers for them"]
+    fn enabled_exceptions() {
+        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        assert_passed("ftest", run_fixture_030(&mut cpu, &program(16)));
     }
 }
