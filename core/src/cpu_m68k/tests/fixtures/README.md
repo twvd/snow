@@ -64,15 +64,14 @@ Musashi test directory for defines such as `STACK2_BASE` (extra RAM,
 
 ## Motorola
 
-`motorola/` has the integer test of the M68060 Software Package, Motorola's own
-test of its package, from the distribution in NetBSD
-(`sys/arch/m68k/060sp/dist` of https://github.com/NetBSD/src, revisions 1.1 of
-2000/04/14), unchanged:
+`motorola/` has the tests of the M68060 Software Package, Motorola's own tests of its
+package, from the distribution in NetBSD (`sys/arch/m68k/060sp/dist` of
+https://github.com/NetBSD/src, revisions 1.1 of 2000/04/14), unchanged:
 
-- `itest.sa` — the test as a hexadecimal image, the only form Motorola supports,
-  and what the test runs.
-- `itest.s` — its source, which Motorola includes "for documentation purposes".
-  It's in a syntax GNU as doesn't take, so it isn't built.
+- `itest.sa`, `ftest.sa` — the tests as hexadecimal images, the only form Motorola
+  supports, and what the tests here run.
+- `itest.s`, `ftest.s` — their sources, which Motorola includes "for documentation
+  purposes". They're in a syntax GNU as doesn't take, so they aren't built.
 - `test.doc` — Motorola's description, with the call-outs a host provides.
 
 Each carries Motorola's notice, which must stay whole; it permits use, modification
@@ -80,8 +79,10 @@ and distribution if it is retained and if modified versions are identified as
 such. Copyright (C) 1993, 1994, 1995, 1996 Motorola Inc.
 
 `motorola/stub.s` is ours, not Motorola's, with `stub.bin` built from it as its
-comment says: the call-outs, and starting the test. The values `itest` expects are
-for the 68060's package, and aren't known to have been checked on these CPUs.
+comment says: the call-outs, and starting a test. The values these expect are for the
+68060's package, and aren't known to have been checked on these CPUs. `ftest` also
+has values only its FPSP gives, and expects handlers for enabled exceptions: see the
+tests that are ignored.
 
 ## Licenses
 

@@ -1,6 +1,7 @@
-| Runs Motorola's itest.sa (see ../README.md): the call-outs it needs, printing
-| on the test device. The image follows the 128 bytes of call-outs at the end of
-| this stub, loaded there by the test. Not part of Motorola's package.
+| Runs Motorola's itest.sa or ftest.sa (see ../README.md): the call-outs they need,
+| printing on the test device. The image follows the 128 bytes of call-outs at the
+| end of this stub, loaded there by the test, which also sets the entry point in the
+| long word just before them. Not part of Motorola's package.
 |
 | Build: m68k-apple-macos-as -m68040 stub.s -o stub.o
 |        m68k-apple-macos-ld -Ttext=0x10000 -e _start stub.o -o stub.elf
@@ -12,7 +13,9 @@
 	.globl	_start
 _start:
 	movea.l	#0x0F0000,%sp
-	jsr	callouts+128
+	move.l	entry(%pc),%d0
+	lea	callouts+128(%pc),%a0
+	jsr	(%a0,%d0.l)
 	move.l	#1,DEV_PASS
 1:	stop	#0x2700
 	bra	1b
@@ -47,6 +50,8 @@ print_num:
 	rts
 
 	.balign	4
+entry:
+	.long	0
 callouts:
 	.long	print_str-callouts
 	.long	print_num-callouts
