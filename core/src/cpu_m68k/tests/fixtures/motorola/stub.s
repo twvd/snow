@@ -13,12 +13,30 @@
 	.globl	_start
 _start:
 	movea.l	#0x0F0000,%sp
+	lea	fp_handler(%pc),%a0
+	moveq	#6,%d0
+	lea	0xC0.w,%a1
+1:	move.l	%a0,(%a1)+
+	dbra	%d0,1b
 	move.l	entry(%pc),%d0
 	lea	callouts+128(%pc),%a0
 	jsr	(%a0,%d0.l)
 	move.l	#1,DEV_PASS
 1:	stop	#0x2700
 	bra	1b
+
+| Enabled exceptions: clears the exception pending bit in the frame, as test.doc says of
+| _real_snan and the others, and as the MC68882 needs (MC68881UM 6.1.13). The size in the
+| frame is the offset of the BIU flags, and that's their top byte.
+fp_handler:
+	fsave	-(%sp)
+	move.l	%d0,-(%sp)
+	moveq	#0,%d0
+	move.b	5(%sp),%d0
+	bset	#3,4(%sp,%d0.w)
+	move.l	(%sp)+,%d0
+	frestore (%sp)+
+	rte
 
 | The test passes a string on the stack, and returns with it there
 print_str:

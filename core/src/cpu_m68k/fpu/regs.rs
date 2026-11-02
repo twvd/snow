@@ -221,6 +221,16 @@ pub struct FpuRegisterFile {
     /// Not in the null state of a reset: FSAVE saves an idle frame
     #[serde(default)]
     pub used: bool,
+    /// A floating-point exception is pending, to report at the next floating-point
+    /// instruction, with the type from FPSR and FPCR: EXC PEND (MC68881UM 6.4.2.2)
+    #[serde(default)]
+    pub exc_pending: bool,
+    /// The operand for the exception handler, in FSAVE's idle frame (MC68881UM 6.1)
+    #[serde(default)]
+    pub exc_operand: BitsExtReal,
+    /// The command or conditional predicate of the last instruction, in FSAVE's idle frame
+    #[serde(default)]
+    pub command: Word,
     /// MC68040: state after an unimplemented floating-point instruction
     /// exception, until FSAVE
     pub unimp040: Option<Unimp040>,
@@ -266,6 +276,9 @@ impl Default for FpuRegisterFile {
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),
             used: false,
+            exc_pending: false,
+            exc_operand: BitsExtReal::default(),
+            command: 0,
             unimp040: None,
         }
     }

@@ -8,6 +8,7 @@ mod format2;
 mod fpu040;
 mod fpu_ops;
 mod fpu_overlap;
+mod fpu_traps;
 mod group2_exceptions;
 mod illegal_exception;
 mod inspect;
