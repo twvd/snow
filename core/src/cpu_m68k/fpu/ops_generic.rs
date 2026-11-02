@@ -9,13 +9,13 @@ use strum::IntoEnumIterator;
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::{
-    CpuError, CpuM68k, ExceptionGroup, PrefetchWord, VECTOR_FORMAT_ERROR, VECTOR_LINEF,
-    VECTOR_PRIVILEGE_VIOLATION,
+    CpuError, CpuM68k, ExceptionGroup, PrefetchWord, VECTOR_FORMAT_ERROR, VECTOR_FP_UNSUPPORTED,
+    VECTOR_LINEF, VECTOR_PRIVILEGE_VIOLATION,
 };
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::arith::Range;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
-use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
+use crate::cpu_m68k::fpu::regs::{Busy040, FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
@@ -191,6 +191,47 @@ where
         Self::fpu_timings().alu_head(operand)
     }
 
+    /// The unsupported data type exception of the MC68040: the instruction goes no further
+    /// for now, and a pre-instruction exception comes at the next floating-point
+    /// instruction. The handler normalizes what it needs to in the state frame, and
+    /// FRESTORE of that frame has the FPU finish the instruction (MC68040UM 9.6.2, and the
+    /// M68040FPSP, x_unsupp and res_func).
+    fn fpu_unsupported040(
+        &mut self,
+        extword: FmoveExtWord,
+        source: ([Long; 3], u8),
+        dest: ([Long; 3], u8),
+    ) {
+        let frame = Busy040::unsupported(extword.0, source, dest, self.regs.fpu.fpiar, false);
+        self.regs.fpu.busy040 = Some(frame);
+        self.regs.fpu.pending040 = Some(VECTOR_FP_UNSUPPORTED);
+    }
+
+    /// Whether an operand is what the MC68040 doesn't have in hardware: denormalized or
+    /// unnormalized (MC68040UM 9.6.2)
+    fn fpu_unsupported_operand040(value: &BitsExtReal) -> bool {
+        !value.is_nan() && !value.is_inf() && !value.is_zero() && !value.i()
+    }
+
+    /// The source operand of `value` for the state frame. A denormalized single or double
+    /// precision one is in the frame as it is in its format, with the fraction in place and
+    /// a tag of its own (MC68040UM figure 9-9, the tags in 9.8), where `value` has it
+    /// normalized.
+    fn fpu_source040(value: &BitsExtReal, src_spec: u8) -> ([Long; 3], u8) {
+        let exp = value.e() as i32 - 16383;
+        let smallest = match src_spec {
+            0b001 => -126,
+            0b101 => -1022,
+            _ => return Unimp040::operand(value),
+        };
+        if value.is_nan() || value.is_inf() || value.is_zero() || exp >= smallest {
+            return Unimp040::operand(value);
+        }
+        let man = value.raw_mantissa() >> (smallest - exp);
+        let raw = BitsExtReal::zero(value.s()).with_raw_mantissa(man);
+        ([raw.high(), raw.mid(), raw.low()], 0b101)
+    }
+
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
         // It forces a pending exception to be reported (MC68881UM FNOP)
@@ -273,6 +314,15 @@ where
             // FSAVE takes a pending exception out of the FPU, so that the other
             // floating-point instructions of the handler don't report it
             // again (MC68040UM 9.8)
+            FPU_M68040 if self.regs.fpu.busy040.is_some() => {
+                self.regs.fpu.pending040 = None;
+                let frame = self.regs.fpu.busy040.take().map(|busy| busy.0);
+                self.write_ea_sz(
+                    instr,
+                    instr.get_op2(),
+                    frame.unwrap_or([0; Busy040::FRAME_SIZE]),
+                )?;
+            }
             FPU_M68040 => match self.regs.fpu.unimp040.take() {
                 Some(unimp) => self.write_ea_sz(instr, instr.get_op2(), unimp.to_frame())?,
                 None => self.write_ea_sz(instr, instr.get_op2(), 0x41000000u32.to_be_bytes())?,
@@ -283,6 +333,40 @@ where
         self.advance_cycles(Self::fpu_timings().save())?;
 
         Ok(())
+    }
+
+    /// What the handler left in FPSR stays, as the instruction isn't starting anew: INEX1 of
+    /// a packed source (the M68040FPSP, get_op and gen_except, and FADD.P compared with the
+    /// MC68882). FCMP keeps its destination, as ever.
+    fn fpu_finish_busy040(
+        &mut self,
+        extword: FmoveExtWord,
+        source: &BitsExtReal,
+        dest: &BitsExtReal,
+    ) -> Result<()> {
+        let status = self.regs.fpu.fpsr;
+        let result = self.fpu_alu_op(extword.opmode(), source, dest)?;
+        self.regs.fpu.fpsr.exs_mut().0 |= status.exs().0;
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+        if !matches!(extword.opmode(), opmode::FCMP | opmode::FTST) {
+            self.regs.fpu.fp[extword.dst_reg()] = result;
+        }
+        Ok(())
+    }
+
+    /// A busy frame back in the MC68040: with its exception bits clear, the FPU goes on with
+    /// the instruction, on the operands in the frame (the M68040FPSP, res_func and
+    /// gen_except: MC68040UM 9.6.1 leaves this to its source).
+    fn fpu_restore_busy040(&mut self, busy: Busy040) -> Result<()> {
+        self.regs.fpu.pending040 = None;
+        if busy.has_exception() {
+            log::warn!("FRESTORE of an MC68040 busy state frame: its exception is not reported");
+            self.regs.fpu.busy040 = None;
+            return Ok(());
+        }
+        let extword = FmoveExtWord(busy.command());
+        self.fpu_finish_busy040(extword, &busy.source(), &busy.dest())
     }
 
     /// FRESTORE
@@ -333,11 +417,13 @@ where
                 }
                 // Busy frame, 100 bytes
                 FPU_M68040 if state & 0xFFFF0000 == 0x41600000 => {
-                    self.read_ea_sz::<{ 100 - 4 }>(instr, instr.get_op2())?;
+                    let rest =
+                        self.read_ea_sz::<{ Busy040::FRAME_SIZE - 4 }>(instr, instr.get_op2())?;
+                    let mut frame = [0; Busy040::FRAME_SIZE];
+                    frame[..4].copy_from_slice(&state.to_be_bytes());
+                    frame[4..].copy_from_slice(&rest);
                     self.regs.fpu.unimp040 = None;
-                    log::warn!(
-                        "FRESTORE of an MC68040 busy state frame: its exception is not reported"
-                    );
+                    self.fpu_restore_busy040(Busy040(frame))?;
                 }
                 _ => {
                     // Not a frame of this FPU: format error, at the FRESTORE
@@ -394,15 +480,32 @@ where
                         false,
                     );
                 }
+                if FPU_TYPE == FPU_M68040
+                    && (Self::fpu_unsupported_operand040(&src)
+                        || (opmode::is_dyadic(opmode) && Self::fpu_unsupported_operand040(&dest)))
+                {
+                    self.fpu_unsupported040(
+                        extword,
+                        Unimp040::operand(&src),
+                        Unimp040::operand(&dest),
+                    );
+                    return Ok(());
+                }
                 self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
                 self.fpu_arith_cycles(extword, FpuOperand::Fpn, 0)?;
             }
-            0b100 | 0b101 => self.op_fmovem_control(instr, extword)?,
+            0b100 | 0b101 => {
+                // Any floating-point instruction but FSAVE reports it (MC68040UM 9.8)
+                if FPU_TYPE == FPU_M68040 && self.fpu_take_pending()? {
+                    return Ok(());
+                }
+                self.op_fmovem_control(instr, extword)?;
+            }
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
                 let unimp040 = FPU_TYPE == FPU_M68040 && !opmode::implemented_040(extword.opmode());
-                if unimp040 && extword.src_spec() == 0b011 {
+                if FPU_TYPE == FPU_M68040 && extword.src_spec() == 0b011 {
                     // A packed decimal real source stays as it is, bits 63-0
                     // in ETEMP and bits 95-64 in FPTEMP (MC68040UM table 9-16)
                     let packed: [Long; 3] = if instr.get_addr_mode()? == AddressingMode::Immediate {
@@ -424,12 +527,13 @@ where
                         ]
                     };
                     let dtag = Unimp040::operand(&self.regs.fpu.fp[fpx]).1;
-                    return self.fpu_unimp040(
-                        extword,
-                        ([0, packed[1], packed[2]], 0),
-                        ([0, 0, packed[0]], dtag),
-                        true,
-                    );
+                    let source = ([0, packed[1], packed[2]], 0);
+                    let dest = ([0, 0, packed[0]], dtag);
+                    if unimp040 {
+                        return self.fpu_unimp040(extword, source, dest, true);
+                    }
+                    self.fpu_unsupported040(extword, source, dest);
+                    return Ok(());
                 }
                 let mut inex1 = false;
                 let (value_in, operand) = match extword.src_spec() {
@@ -565,6 +669,16 @@ where
                         false,
                     );
                 }
+                if FPU_TYPE == FPU_M68040 {
+                    let frame_source = Self::fpu_source040(&value_in, extword.src_spec());
+                    if frame_source.1 >= 0b100
+                        || (opmode::is_dyadic(extword.opmode())
+                            && Self::fpu_unsupported_operand040(&dest))
+                    {
+                        self.fpu_unsupported040(extword, frame_source, Unimp040::operand(&dest));
+                        return Ok(());
+                    }
+                }
                 let result = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
                 // FTST and FCMP leave the destination as it is, whatever they compare
                 self.regs.fpu.fp[fpx] = result;
@@ -585,7 +699,12 @@ where
                 self.fpu_arith_cycles(extword, operand, less)?;
             }
             0b011 => self.op_fmove_out(instr, extword)?,
-            0b110 | 0b111 => self.op_fmovem(instr, extword)?,
+            0b110 | 0b111 => {
+                if FPU_TYPE == FPU_M68040 && self.fpu_take_pending()? {
+                    return Ok(());
+                }
+                self.op_fmovem(instr, extword)?;
+            }
             _ => {
                 bail!(CpuError::IllegalInstruction);
             }
@@ -602,6 +721,12 @@ where
         let timings = Self::fpu_timings();
         let less = if in_dn { timings.dn_dst() } else { 0 };
         let cycles = timings.store(extword.dest_fmt()).saturating_sub(less);
+        if FPU_TYPE == FPU_M68040 {
+            let packed = matches!(extword.dest_fmt(), 0b011 | 0b111);
+            if packed || Self::fpu_unsupported_operand040(&self.regs.fpu.fp[fpx]) {
+                return self.fpu_move_out_unsupported040(instr, extword);
+            }
+        }
         self.regs.fpu.fpsr.exs_mut().0 = 0;
         self.regs.fpu.exc_pending = false;
         let stored_at = match extword.dest_fmt() {
@@ -668,6 +793,52 @@ where
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
         self.fpu_store_trap(stored_at)
+    }
+
+    /// An FMOVE to memory or a data register of a format or an operand the MC68040 doesn't
+    /// have in hardware: a post-instruction exception, taken at once, in which the handler
+    /// does the move (MC68040UM 9.6.2, table 9-16)
+    fn fpu_move_out_unsupported040(
+        &mut self,
+        instr: &Instruction,
+        extword: FmoveExtWord,
+    ) -> Result<()> {
+        let value = self.regs.fpu.fp[extword.src_reg()];
+        // A signaling NAN is flagged first: the FPSP keeps the SNAN bit it finds in FPSR for a
+        // move out (x_unsupp). In the frame the NAN stays signaling (MC68040UM 9.7.2), and
+        // that's what the FPSP writes to memory (p_moven in res_func).
+        if value.is_snan() {
+            self.regs.fpu.fpsr.exs_mut().set_snan(true);
+            let excs = self.regs.fpu.fpsr;
+            self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+        }
+        let source = Unimp040::operand(&value);
+        let none = ([0; 3], 0);
+        let frame = Busy040::unsupported(extword.0, source, none, self.regs.fpu.fpiar, true);
+        self.regs.fpu.busy040 = Some(frame);
+        let mode = instr.get_addr_mode()?;
+        let ea = if mode == AddressingMode::DataRegister {
+            0
+        } else {
+            let size = match extword.dest_fmt() {
+                0b110 => 1,
+                0b100 => 2,
+                0b000 | 0b001 => 4,
+                0b101 => DOUBLE_SIZE,
+                _ => EXTENDED_SIZE,
+            };
+            match size {
+                1 => self.calc_ea_addr_sz::<1>(instr, mode, instr.get_op2())?,
+                2 => self.calc_ea_addr_sz::<2>(instr, mode, instr.get_op2())?,
+                4 => self.calc_ea_addr_sz::<4>(instr, mode, instr.get_op2())?,
+                DOUBLE_SIZE => self.calc_ea_addr_sz::<DOUBLE_SIZE>(instr, mode, instr.get_op2())?,
+                _ => self.calc_ea_addr_sz::<EXTENDED_SIZE>(instr, mode, instr.get_op2())?,
+            }
+        };
+        // With the prefetch queue refilled, the PC is that of the next instruction
+        self.prefetch_pump()?;
+        self.step_fpu_post = Some(ea);
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_FP_UNSUPPORTED, None)
     }
 
     /// The end of an FMOVE to memory or a data register of `value`, with the time it

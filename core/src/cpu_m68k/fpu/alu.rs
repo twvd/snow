@@ -603,6 +603,17 @@ where
     /// The acknowledge clears it on the MC68881, and on the MC68882 it stays until the
     /// handler's FRESTORE clears it (MC68881UM 6.1.13, 6.4.2.2). Returns true if taken.
     pub(in crate::cpu_m68k) fn fpu_take_pending(&mut self) -> Result<bool> {
+        if FPU_TYPE == FPU_M68040 {
+            // The handler's FSAVE takes it out
+            let Some(vector) = self.regs.fpu.pending040 else {
+                return Ok(false);
+            };
+            if let Some(regs) = self.restart_regs.take() {
+                regs.restore(&mut self.regs);
+            }
+            self.raise_exception(ExceptionGroup::Group2, vector, None)?;
+            return Ok(true);
+        }
         if !self.regs.fpu.exc_pending {
             return Ok(false);
         }
