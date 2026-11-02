@@ -24,6 +24,10 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
+use snow_core::emulator::devices::{
+    BlueScsiSettings, Bus, BusKind, DeviceConfig, DeviceModel, MachineConfig, RefusedDevice,
+    SlotAddr, bus_id,
+};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
@@ -31,7 +35,7 @@ use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
+use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
@@ -79,6 +83,8 @@ impl From<Option<ScsiTargetStatus>> for ScsiTarget {
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
     pub frame_receiver: Arc<Mutex<Option<DisplayBuffer>>>,
+    /// The devices the machine couldn't use
+    pub refused: Vec<RefusedDevice>,
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -104,7 +110,8 @@ pub struct EmulatorInitArgs {
     /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
 
-    /// Override the type of floppy drive (for all drives)
+    /// Override the type of floppy drive (for all drives). In the devices of a workspace.
+    #[serde(skip_serializing)]
     pub override_fdd_type: Option<DriveType>,
 
     /// Enable PMMU (Macintosh II only)
@@ -116,18 +123,25 @@ pub struct EmulatorInitArgs {
     /// Configured video RAM size or default if None (Macintosh LC only)
     pub vram_size: Option<usize>,
 
-    /// Card in the PDS slot (Macintosh LC family)
+    /// Card in the PDS slot (Macintosh LC family). In the devices of a workspace.
+    #[serde(skip_serializing)]
     pub pds_card: PdsCardKind,
 
-    /// Apple IIe Card settings (used if it is in the PDS slot)
+    /// Apple IIe Card settings (used if it is in the PDS slot). In the devices of a workspace.
+    #[serde(skip_serializing)]
     pub iie_card_settings: IieCardSettings,
 
     /// Apple IIe Card controller emulation: host keys can drive the
     /// joystick (used if it is in the PDS slot; on by default)
     pub iie_joystick_emulation: bool,
 
-    /// Selected NuBus video card (if applicable)
+    /// Selected NuBus video card (if applicable). In the devices of a workspace.
+    #[serde(skip_serializing)]
     pub video_card: NubusDeviceKind,
+
+    /// The NuBus slot it's in. In the devices of a workspace.
+    #[serde(skip_serializing)]
+    pub video_card_slot: u8,
 
     /// Overclock
     pub overclock: Option<u64>,
@@ -153,6 +167,7 @@ impl Default for EmulatorInitArgs {
             iie_card_settings: Default::default(),
             iie_joystick_emulation: true,
             video_card: Default::default(),
+            video_card_slot: 0x9,
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
         }
@@ -199,6 +214,10 @@ pub struct EmulatorState {
     /// The settings of the Apple IIe Card, if the machine has one
     iie_card: Option<IieCardSettings>,
 
+    /// The machine came from a state file. Its disks are temporary copies and it doesn't know
+    /// where its cards' ROMs came from, so it can't say what to save in a workspace.
+    restored_from_state: bool,
+
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
     peripheral_debug_enabled: bool,
@@ -220,21 +239,14 @@ impl EmulatorState {
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        scsi_targets: Option<ScsiTargets>,
+        devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
-        shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
-        let display_rom = if let Some(filename) = display_rom_path {
-            Some(std::fs::read(filename)?)
-        } else {
-            None
-        };
         let extension_rom = if let Some(filename) = extension_rom_path {
             Some(std::fs::read(filename)?)
         } else {
@@ -242,13 +254,11 @@ impl EmulatorState {
         };
         self.init(
             &rom,
-            display_rom.as_deref(),
             extension_rom.as_deref(),
-            scsi_targets,
+            devices,
             pram,
             args,
             model,
-            shared_dir,
             custom_datetime,
         )
     }
@@ -258,19 +268,18 @@ impl EmulatorState {
     fn init(
         &mut self,
         rom: &[u8],
-        display_rom: Option<&[u8]>,
         extension_rom: Option<&[u8]>,
-        scsi_targets: Option<ScsiTargets>,
+        mut devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
-        shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
 
         self.last_rom = rom.to_vec();
+        self.restored_from_state = false;
 
         // Initialize emulator
         let model = if let Some(selected) = model {
@@ -280,23 +289,6 @@ impl EmulatorState {
             // Fall back to ROM autodetection
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?
         };
-        // Build extra ROMs array
-        let mut extra_roms = Vec::new();
-        if let Some(display_rom) = display_rom {
-            if model == MacModel::SE30 {
-                extra_roms.push(ExtraROMs::SE30Video(display_rom));
-            } else {
-                // Macintosh II family: the card is chosen explicitly
-                match args.video_card {
-                    NubusDeviceKind::Toby => extra_roms.push(ExtraROMs::Toby(display_rom)),
-                    NubusDeviceKind::Mdc12 => extra_roms.push(ExtraROMs::MDC12(display_rom)),
-                    _ => todo!(),
-                }
-            }
-        }
-        if let Some(extension_rom) = extension_rom {
-            extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
-        }
 
         let mouse_mode = if matches!(args.mouse_disabled, Some(true)) {
             // Deprecated mouse_disabled
@@ -307,20 +299,29 @@ impl EmulatorState {
         self.mouse_mode = mouse_mode;
         self.iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
-        let (mut emulator, frame_recv) = Emulator::new_with_extra(
-            rom,
-            &extra_roms,
-            model,
-            args.monitor,
-            mouse_mode,
-            args.ram_size,
-            args.override_fdd_type,
-            args.pmmu_enabled,
-            args.fpu_enabled,
-            args.vram_size,
-            shared_dir,
-            self.iie_card,
-            0x9,
+        #[cfg(feature = "printer")]
+        for config in &mut devices {
+            if config.known_model() == Some(DeviceModel::LaserWriterIISC) {
+                config.settings.insert(
+                    "output_dir".to_owned(),
+                    serde_json::json!(Self::printer_output_dir()),
+                );
+            }
+        }
+
+        let (mut emulator, frame_recv, refused) = Emulator::new_with_devices(
+            &MachineConfig {
+                rom,
+                model,
+                extension_rom,
+                monitor: args.monitor,
+                mouse_mode,
+                ram_size: args.ram_size,
+                pmmu_enabled: args.pmmu_enabled,
+                fpu_enabled: args.fpu_enabled,
+                vram_size: args.vram_size,
+            },
+            devices,
         )?;
 
         let cmd = emulator.create_cmd_sender();
@@ -334,84 +335,6 @@ impl EmulatorState {
             args.cache_flush_workaround,
         ))?;
 
-        if model.has_scsi() {
-            for id in 0..7 {
-                let Some(ref targets) = scsi_targets else {
-                    break;
-                };
-                match &targets[id] {
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: Some(filename),
-                        ..
-                    } => match emulator.load_hdd_image(filename, id) {
-                        Ok(_) => {
-                            info!(
-                                "SCSI ID #{}: loaded image file {}",
-                                id,
-                                filename.to_string_lossy()
-                            );
-                        }
-                        Err(e) => {
-                            error!("SCSI ID #{}: image load failed: {}", id, e);
-                        }
-                    },
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: None,
-                        ..
-                    } => {
-                        // Invalid, ignore
-                        log::error!("SCSI ID #{} is a hard drive but no image was specified", id);
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        cdrom_folder: Some(dir),
-                        ..
-                    } => {
-                        if let Err(e) = emulator.attach_cdrom_folder(id, dir.clone()) {
-                            error!(
-                                "SCSI ID #{}: Toolbox managed CD-ROM folder attach failed: {}",
-                                id, e
-                            );
-                        } else {
-                            info!(
-                                "SCSI ID #{}: attached Toolbox managed CD-ROM folder {}",
-                                id,
-                                dir.to_string_lossy()
-                            );
-                        }
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        ..
-                    } => {
-                        emulator.attach_cdrom(id);
-                    }
-                    #[cfg(feature = "ethernet")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Ethernet),
-                        ..
-                    } => {
-                        emulator.attach_ethernet(id);
-                    }
-                    #[cfg(feature = "printer")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Printer),
-                        ..
-                    } => {
-                        let output_dir = dirs::desktop_dir()
-                            .or_else(|| std::env::current_dir().ok())
-                            .unwrap_or_default();
-                        emulator.attach_printer(id, output_dir);
-                    }
-                    ScsiTarget {
-                        target_type: None, ..
-                    } => (),
-                };
-            }
-        }
-
         if let Some(pram_path) = pram {
             emulator.persist_pram(pram_path);
         }
@@ -421,7 +344,22 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
+        self.init_finalize(
+            emulator,
+            frame_recv,
+            cmd,
+            args.audio_disabled,
+            false,
+            refused,
+        )
+    }
+
+    /// Where the printer's pages go
+    #[cfg(feature = "printer")]
+    fn printer_output_dir() -> PathBuf {
+        dirs::desktop_dir()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default()
     }
 
     pub fn init_from_statefile<P: AsRef<Path>>(
@@ -434,7 +372,8 @@ impl EmulatorState {
 
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd, false, pause)
+        self.restored_from_state = true;
+        self.init_finalize(emulator, frame_recv, cmd, false, pause, vec![])
     }
 
     fn init_finalize(
@@ -444,6 +383,7 @@ impl EmulatorState {
         cmd: EmulatorCommandSender,
         audio_disabled: bool,
         pause: bool,
+        refused: Vec<RefusedDevice>,
     ) -> Result<EmulatorInitResult> {
         // Initialize audio
         if audio_disabled {
@@ -510,6 +450,7 @@ impl EmulatorState {
 
         Ok(EmulatorInitResult {
             frame_receiver: frame_recv,
+            refused,
         })
     }
 
@@ -779,6 +720,76 @@ impl EmulatorState {
             .unwrap()
             .send(EmulatorCommand::StepOver)
             .unwrap();
+    }
+
+    /// The machine as it is now
+    pub fn buses(&self) -> &[Bus] {
+        self.status.as_ref().map_or(&[], |s| &s.buses)
+    }
+
+    pub const fn restored_from_state(&self) -> bool {
+        self.restored_from_state
+    }
+
+    /// Hands a device its settings, creating it if its slot is empty
+    pub fn add_device(&self, config: DeviceConfig) {
+        if let Some(sender) = self.cmdsender.as_ref() {
+            sender.send(EmulatorCommand::AddDevice(config)).unwrap();
+        }
+    }
+
+    /// The folder shared with the guest
+    pub fn shared_dir(&self) -> Option<PathBuf> {
+        self.buses()
+            .iter()
+            .flat_map(|b| &b.slots)
+            .filter_map(|s| s.device.as_ref())
+            .find(|d| d.model == DeviceModel::BlueScsi)
+            .and_then(|d| Some(PathBuf::from(d.settings.get("shared_dir")?.as_str()?)))
+    }
+
+    /// Shares a folder with the guest, or no more. It takes a slot on the SCSI bus.
+    pub fn set_shared_dir(&self, path: Option<PathBuf>) {
+        let Some(sender) = self.cmdsender.as_ref() else {
+            return;
+        };
+        let buses = self.buses();
+        let Some(bus_idx) = buses.iter().position(|b| b.kind == BusKind::Scsi) else {
+            return;
+        };
+        let slots = &buses[bus_idx].slots;
+        let current = slots.iter().position(|s| {
+            s.device
+                .as_ref()
+                .is_some_and(|d| d.model == DeviceModel::BlueScsi)
+        });
+        if let Some(slot) = current {
+            sender
+                .send(EmulatorCommand::RemoveDevice(SlotAddr {
+                    bus: bus_idx,
+                    slot,
+                }))
+                .unwrap();
+        }
+        let Some(shared_dir) = path else {
+            return;
+        };
+        let free = current.or_else(|| slots.iter().rposition(|s| s.device.is_none()));
+        let Some(free) = free else {
+            self.warn_no_scsi_id();
+            return;
+        };
+        let config = DeviceConfig::new(
+            bus_id::SCSI,
+            &slots[free].id,
+            &BlueScsiSettings { shared_dir },
+        )
+        .unwrap();
+        sender.send(EmulatorCommand::AddDevice(config)).unwrap();
+    }
+
+    fn warn_no_scsi_id(&self) {
+        warn!("No free SCSI ID for the shared folder");
     }
 
     /// Returns a reference to floppy drive status for the requested drive.
@@ -1440,13 +1451,6 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::SaveState(p.to_path_buf(), screenshot))
             .unwrap();
-    }
-
-    pub fn set_shared_dir(&self, path: Option<PathBuf>) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender.send(EmulatorCommand::SetSharedDir(path)).unwrap();
     }
 
     pub fn set_debug_framebuffers(&mut self, v: bool) {
