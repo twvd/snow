@@ -9,10 +9,11 @@ use strum::IntoEnumIterator;
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::{
-    CpuError, CpuM68k, ExceptionGroup, PrefetchWord, VECTOR_FORMAT_ERROR, VECTOR_FP_UNSUPPORTED,
-    VECTOR_LINEF, VECTOR_PRIVILEGE_VIOLATION,
+    CpuError, CpuM68k, ExceptionGroup, PrefetchWord, VECTOR_FORMAT_ERROR, VECTOR_FP_SNAN,
+    VECTOR_FP_UNSUPPORTED, VECTOR_LINEF, VECTOR_PRIVILEGE_VIOLATION,
 };
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
+use crate::cpu_m68k::fpu::alu::NONMASKABLE_040;
 use crate::cpu_m68k::fpu::arith::Range;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::regs::{Busy040, FpuRegisterFile, Unimp040};
@@ -364,7 +365,7 @@ where
     fn fpu_restore_busy040(&mut self, busy: Busy040) -> Result<()> {
         if busy.has_exception() {
             self.regs.fpu.busy040 = Some(busy);
-            self.regs.fpu.pending040 = self.fpu_trap_vector();
+            self.regs.fpu.pending040 = self.fpu_vector_with(NONMASKABLE_040);
             return Ok(());
         }
         self.regs.fpu.busy040 = None;
@@ -760,17 +761,29 @@ where
         }
         self.regs.fpu.fpsr.exs_mut().0 = 0;
         self.regs.fpu.exc_pending = false;
+        if FPU_TYPE == FPU_M68040
+            && !extword.dest_is_integer()
+            && self.regs.fpu.fp[fpx].is_snan()
+            && self.regs.fpu.fpcr.exc().snan()
+        {
+            return self.fpu_move_out_snan040(instr, extword, cycles);
+        }
+        // The integer, and how many bits it was to fit in
+        let mut integer = None;
         let stored_at = match extword.dest_fmt() {
             0b000 => {
                 let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into(), 32);
+                integer = Some((out, 32));
                 self.fpu_store(instr, in_dn, cycles, out as Long)?
             }
             0b100 => {
                 let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into(), 16);
+                integer = Some((out, 16));
                 self.fpu_store(instr, in_dn, cycles, out as Word)?
             }
             0b110 => {
                 let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into(), 8);
+                integer = Some((out, 8));
                 self.fpu_store(instr, in_dn, cycles, out as Byte)?
             }
             0b001 => {
@@ -821,9 +834,58 @@ where
             _ => bail!(CpuError::IllegalInstruction),
         };
 
+        if FPU_TYPE == FPU_M68040
+            && let Some((whole, bits)) = integer
+        {
+            let real = self.regs.fpu.fpsr.exs().operr();
+            if real || whole == -(1i64 << (bits - 1)) {
+                self.regs.fpu.fpsr.exs_mut().set_operr(false);
+                let excs = self.regs.fpu.fpsr;
+                self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+                return self.fpu_operr_trap040(stored_at, extword, (whole, bits), real);
+            }
+        }
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
         self.fpu_store_trap(stored_at, extword)
+    }
+
+    /// FMOVE of a signaling NAN to single, double or extended precision with SNAN enabled on
+    /// the MC68040: the destination isn't modified, and a pre-instruction exception is reported
+    /// at the next floating-point instruction (MC68040UM 9.7.2.1).
+    fn fpu_move_out_snan040(
+        &mut self,
+        instr: &Instruction,
+        extword: FmoveExtWord,
+        cycles: Ticks,
+    ) -> Result<()> {
+        self.fpu_move_out_ea(instr, extword)?;
+        self.advance_cycles(cycles)?;
+        self.regs.fpu.fpsr.exs_mut().set_snan(true);
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+        let source = Unimp040::operand(&self.regs.fpu.fp[extword.src_reg()]);
+        let frame = Busy040::new(extword.0, source, source, self.regs.fpu.fpiar, false);
+        self.regs.fpu.busy040 = Some(frame);
+        self.regs.fpu.pending040 = Some(VECTOR_FP_SNAN);
+        Ok(())
+    }
+
+    /// The effective address of FMOVE to memory, 0 for a data register, with what it does to
+    /// the address register. Only the size of the format matters here.
+    fn fpu_move_out_ea(&mut self, instr: &Instruction, extword: FmoveExtWord) -> Result<Address> {
+        let mode = instr.get_addr_mode()?;
+        if mode == AddressingMode::DataRegister {
+            return Ok(0);
+        }
+        let op = instr.get_op2();
+        match extword.dest_fmt() {
+            0b110 => self.calc_ea_addr_sz::<1>(instr, mode, op),
+            0b100 => self.calc_ea_addr_sz::<2>(instr, mode, op),
+            0b000 | 0b001 => self.calc_ea_addr_sz::<4>(instr, mode, op),
+            0b101 => self.calc_ea_addr_sz::<DOUBLE_SIZE>(instr, mode, op),
+            _ => self.calc_ea_addr_sz::<EXTENDED_SIZE>(instr, mode, op),
+        }
     }
 
     /// An FMOVE to memory or a data register of a format or an operand the MC68040 doesn't
@@ -847,25 +909,7 @@ where
         let none = ([0; 3], 0);
         let frame = Busy040::new(extword.0, source, none, self.regs.fpu.fpiar, true);
         self.regs.fpu.busy040 = Some(frame);
-        let mode = instr.get_addr_mode()?;
-        let ea = if mode == AddressingMode::DataRegister {
-            0
-        } else {
-            let size = match extword.dest_fmt() {
-                0b110 => 1,
-                0b100 => 2,
-                0b000 | 0b001 => 4,
-                0b101 => DOUBLE_SIZE,
-                _ => EXTENDED_SIZE,
-            };
-            match size {
-                1 => self.calc_ea_addr_sz::<1>(instr, mode, instr.get_op2())?,
-                2 => self.calc_ea_addr_sz::<2>(instr, mode, instr.get_op2())?,
-                4 => self.calc_ea_addr_sz::<4>(instr, mode, instr.get_op2())?,
-                DOUBLE_SIZE => self.calc_ea_addr_sz::<DOUBLE_SIZE>(instr, mode, instr.get_op2())?,
-                _ => self.calc_ea_addr_sz::<EXTENDED_SIZE>(instr, mode, instr.get_op2())?,
-            }
-        };
+        let ea = self.fpu_move_out_ea(instr, extword)?;
         // With the prefetch queue refilled, the PC is that of the next instruction
         self.prefetch_pump()?;
         self.regs.fpu.move_ea040 = ea;
