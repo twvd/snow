@@ -267,6 +267,14 @@ pub(crate) struct FloppyDrive {
     #[serde(skip)]
     pub(crate) image_path: Option<PathBuf>,
 
+    /// The file the inserted image came from, if any: what a workspace remembers
+    #[serde(skip)]
+    pub(crate) media_path: Option<PathBuf>,
+
+    /// The inserted image was asked to be write-protected
+    #[serde(skip)]
+    pub(crate) media_read_only: bool,
+
     /// Per-drive writeback opt-in. Only meaningful when [`Self::image_path`]
     /// is set and `floppy.supports_writeback()`.
     #[serde(skip)]
@@ -322,6 +330,8 @@ impl FloppyDrive {
             weak_bit_rng: WeakBitRng::default(),
 
             image_path: None,
+            media_path: None,
+            media_read_only: false,
             writeback_enabled: false,
             pending_writeback: false,
             eject_writeback: None,
@@ -676,6 +686,8 @@ impl FloppyDrive {
             None
         };
         self.image_path = None;
+        self.media_path = None;
+        self.media_read_only = false;
         self.writeback_enabled = false;
         self.pending_writeback = false;
     }
