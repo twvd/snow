@@ -4,6 +4,7 @@ pub mod instruction;
 pub mod math;
 pub mod ops_branch;
 pub mod ops_generic;
+pub mod packed;
 pub mod regs;
 pub mod storage;
 pub mod timings;

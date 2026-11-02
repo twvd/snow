@@ -27,7 +27,7 @@ where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
-    fn fpu_rounding_mode(&self) -> RoundingMode {
+    pub(in crate::cpu_m68k) fn fpu_rounding_mode(&self) -> RoundingMode {
         // 3.5.2 Rounding modes
         // Table 3-21
         match self.regs.fpu.fpcr.rnd() {
