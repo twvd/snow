@@ -17,6 +17,11 @@ use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 use crate::types::Long;
 
+/// The bits of OVFL and UNFL in the exception byte: on the MC68040 they always take their
+/// exception, as the M68040FPSP gives the result (MC68040UM 9.7.4.2, 9.7.5.2)
+pub(in crate::cpu_m68k) const NONMASKABLE_040: Long = (1 << 4) | (1 << 3);
+const EXC_SNAN: Long = 1 << 6;
+
 use super::arith::{self, Range, Unpacked, Value};
 use super::constants;
 use super::{SEMANTICS_EXTENDED, SEMANTICS_FUNCTIONS};
@@ -555,8 +560,13 @@ where
     /// The type of exception that's enabled and has happened, the highest priority one
     /// (MC68881UM 6.1.9), from FPSR and FPCR (MC68881UM 6.4.2.2)
     pub(in crate::cpu_m68k) fn fpu_trap_vector(&self) -> Option<Address> {
+        self.fpu_vector_with(0)
+    }
+
+    /// The same, with the exceptions in `always` taken whether they are enabled or not
+    pub(in crate::cpu_m68k) fn fpu_vector_with(&self, always: Long) -> Option<Address> {
         let fpsr = self.regs.fpu.fpsr.0;
-        let active = (fpsr >> 8) & (self.regs.fpu.fpcr.0 >> 8) & 0xFF;
+        let active = (fpsr >> 8) & ((self.regs.fpu.fpcr.0 >> 8) | always) & 0xFF;
         [
             (1 << 7, VECTOR_FP_BSUN),
             (1 << 6, VECTOR_FP_SNAN),
@@ -581,7 +591,11 @@ where
         dest: &BitsExtReal,
         cos_register: Option<(usize, BitsExtReal)>,
     ) -> BitsExtReal {
-        let vector = self.fpu_trap_vector();
+        let vector = if FPU_TYPE == FPU_M68040 {
+            self.fpu_vector_with(NONMASKABLE_040)
+        } else {
+            self.fpu_trap_vector()
+        };
         self.regs.fpu.exc_pending = vector.is_some();
         match vector {
             Some(VECTOR_FP_SNAN | VECTOR_FP_OPERR | VECTOR_FP_DZ) => {
@@ -591,6 +605,8 @@ where
                 }
                 *dest
             }
+            // The register isn't affected, the handler writes it (MC68040UM 9.7.4.2, 9.7.5.2)
+            Some(VECTOR_FP_OVFL | VECTOR_FP_UNFL) if FPU_TYPE == FPU_M68040 => *dest,
             _ => result,
         }
     }
@@ -604,7 +620,7 @@ where
         source: ([Long; 3], u8),
         dest: ([Long; 3], u8),
     ) {
-        let Some(vector) = self.fpu_trap_vector() else {
+        let Some(vector) = self.fpu_vector_with(NONMASKABLE_040) else {
             return;
         };
         let on_result = matches!(vector, VECTOR_FP_OVFL | VECTOR_FP_UNFL | VECTOR_FP_INEX);
@@ -614,8 +630,20 @@ where
                 Busy040::new(extword.0, source, dest, fpiar, false).with_writeback(unrounded)
             }
             // The handlers look for the operand in ETEMP for OVFL, in FPTEMP for UNFL
-            // (the M68040FPSP, x_ovfl and x_unfl)
-            _ if on_result => Busy040::new(extword.0, source, source, fpiar, false),
+            // (the M68040FPSP, x_ovfl and x_unfl). They take the sign from it and not from the
+            // instruction, so it's there after FABS or FNEG: the manual doesn't say, found
+            // with these results through the FPSP against the MC68882 path.
+            _ if on_result => {
+                let (mut operand, tag) = source;
+                let opmode = extword.opmode();
+                match opmode::rounded(opmode).map_or(opmode, |(op, _)| op) {
+                    opmode::FABS => operand[0] &= 0x7FFF_FFFF,
+                    opmode::FNEG => operand[0] ^= 0x8000_0000,
+                    _ => {}
+                }
+                let operand = (operand, tag);
+                Busy040::new(extword.0, operand, operand, fpiar, false)
+            }
             _ => Busy040::new(extword.0, source, dest, fpiar, false),
         };
         self.regs.fpu.busy040 = Some(frame);
@@ -693,7 +721,15 @@ where
         ea: Option<Address>,
         extword: FmoveExtWord,
     ) -> Result<()> {
-        let Some(vector) = self.fpu_trap_vector() else {
+        // To an integer, a signaling NAN is taken at once too (MC68040UM 9.7.2.2)
+        let always = if FPU_TYPE != FPU_M68040 {
+            0
+        } else if extword.dest_is_integer() {
+            NONMASKABLE_040 | EXC_SNAN
+        } else {
+            NONMASKABLE_040
+        };
+        let Some(vector) = self.fpu_vector_with(always) else {
             return Ok(());
         };
         if FPU_TYPE == FPU_M68040 {
@@ -709,6 +745,40 @@ where
         self.prefetch_pump()?;
         self.step_fpu_mid = Some(ea.unwrap_or(0));
         self.raise_exception(ExceptionGroup::Group2, vector, None)
+    }
+
+    /// FMOVE to an integer on the MC68040 of what doesn't fit, or of the largest negative
+    /// integer, which the FPU flags by mistake: taken at once, enabled or not, for the handler
+    /// to write the destination and tell them apart (MC68040UM 9.7.3.2).
+    ///
+    /// That leaves OPERR out of FPSR, as the M68040FPSP adds it for a real one only (store_max
+    /// in x_operr), and FPTEMP has what it looks for there: the integer in two's complement
+    /// with an exponent of $C000 for the mistake, an exponent from $4000 for one that doesn't
+    /// fit, per the note at the top of x_operr.
+    pub(in crate::cpu_m68k) fn fpu_operr_trap040(
+        &mut self,
+        ea: Option<Address>,
+        extword: FmoveExtWord,
+        (whole, bits): (i64, i32),
+        real: bool,
+    ) -> Result<()> {
+        let value = self.regs.fpu.fp[extword.src_reg()];
+        let fptemp = if real {
+            let exp = match arith::kind(&value) {
+                arith::Kind::Num(a) => 0x4000 + (a.exp - (bits - 1)).clamp(0, 0x3FFF) as Long,
+                _ => 0x7FFF,
+            };
+            [(Long::from(value.s()) << 31) | (exp << 16), 0, 0]
+        } else {
+            [0xC000_0000, 0xFFFF_FFFF, whole as Long]
+        };
+        let source = Unimp040::operand(&value);
+        let fpiar = self.regs.fpu.fpiar;
+        self.regs.fpu.busy040 = Some(Busy040::new(extword.0, source, (fptemp, 0), fpiar, true));
+        self.prefetch_pump()?;
+        self.regs.fpu.move_ea040 = ea.unwrap_or(0);
+        self.step_fpu_post = Some(ea.unwrap_or(0));
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_FP_OPERR, None)
     }
 
     /// The BSUN bit of a conditional instruction, which also goes in AIOP (MC68881UM 2.3.4)

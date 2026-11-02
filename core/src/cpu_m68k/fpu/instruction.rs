@@ -219,6 +219,11 @@ bitfield! {
 }
 
 impl FmoveExtWord {
+    /// FMOVE to byte, word or long word
+    pub fn dest_is_integer(&self) -> bool {
+        matches!(self.dest_fmt(), 0b000 | 0b100 | 0b110)
+    }
+
     pub fn src_spec_instrsz(&self) -> Option<InstructionSize> {
         match self.src_spec() {
             0b000 => Some(InstructionSize::Long),

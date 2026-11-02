@@ -529,7 +529,7 @@ fn enabled_e1_exception() {
     assert_eq!(cpu.regs.fpu.fp[0], ONE, "not an instruction to finish");
 }
 
-/// OVFL: an E3 exception, with the destination written, and in the state frame the result
+/// OVFL: an E3 exception, with the destination not written, and in the state frame the result
 /// before rounding: its exponent out of range, with bit 15 in WB_BYTE (MC68040UM 9.7, 9.8)
 #[test]
 fn enabled_e3_exception() {
@@ -539,7 +539,7 @@ fn enabled_e3_exception() {
     cpu.regs.fpu.fp[0] = big;
     cpu.regs.fpu.fp[1] = big;
     cpu.step().unwrap();
-    assert_eq!(cpu.regs.fpu.fp[0], BitsExtReal::inf(false));
+    assert_eq!(cpu.regs.fpu.fp[0], big, "for the handler to write");
     assert_eq!(cpu.regs.fpu.pending040, Some(0xD4));
 
     cpu.step().unwrap();
@@ -564,7 +564,8 @@ fn cmdreg3b_mapping() {
 }
 
 /// FMOVE to an integer out of range: OPERR, at once, post-instruction, with the source in
-/// ETEMP and FPTEMP for the handler, and T set (MC68040UM 9.7.3, table 9-16)
+/// ETEMP, the exponent past the integer in FPTEMP for the handler, and T set (MC68040UM 9.7.3,
+/// table 9-16, the note at the top of x_operr in the M68040FPSP)
 #[test]
 fn enabled_move_out_exception() {
     // FMOVE.L FP0,(A0)
@@ -585,7 +586,11 @@ fn enabled_move_out_exception() {
     assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 2, "E1");
     assert_eq!(peek(&cpu, FRAME + 0x49), 1 << 4, "T");
     assert_eq!(peek_long(&cpu, FRAME + 0x58), 0x4040_0000, "ETEMP");
-    assert_eq!(peek_long(&cpu, FRAME + 0x4C), 0x4040_0000, "FPTEMP");
+    assert_eq!(
+        peek_long(&cpu, FRAME + 0x4C),
+        0x4022_0000,
+        "FPTEMP, 34 past a long word"
+    );
 }
 
 /// BSUN: at the conditional instruction itself, pre-instruction (MC68040UM 9.7.1)
@@ -625,4 +630,134 @@ fn restored_move_out_exception_has_the_address() {
     assert_eq!(peek_long(&cpu, STACK - 10), CODE + 8, "the FNOP again");
     assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xCC);
     assert_eq!(peek_long(&cpu, STACK - 4), DATA);
+}
+
+/// OVFL and UNFL always take their exception, enabled or not, and the register isn't affected
+/// (MC68040UM 9.7.4.2, 9.7.5.2)
+#[test]
+fn nonmaskable_arithmetic() {
+    let mut cpu = cpu_with_vectors(&[&FMUL[..], &FNOP].concat());
+    let big = BitsExtReal(0x7FFE_0000_C000_0000_0000_0000);
+    cpu.regs.fpu.fp[0] = big;
+    cpu.regs.fpu.fp[1] = big;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[0], big);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(peek_long(&cpu, STACK - 2) >> 16, 0xD4);
+
+    let mut cpu = cpu_with_vectors(&[&FMUL[..], &FNOP].concat());
+    let small = BitsExtReal(0x0001_0000_8000_0000_0000_0000);
+    cpu.regs.fpu.fp[0] = small;
+    cpu.regs.fpu.fp[1] = small;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[0], small);
+    assert_eq!(cpu.regs.fpu.pending040, Some(0xCC));
+}
+
+/// FNEG and FABS have the sign of their result on the operand in the frame, as the FPSP takes
+/// it from there, and neither of them is E3
+#[test]
+fn nonmaskable_sign_in_the_frame() {
+    // FSNEG FP1,FP0, then FSABS FP1,FP0
+    for (op, sign) in [(0x045A, 0x7FFE_0000), (0x0458, 0x7FFE_0000)] {
+        let mut cpu = cpu_with_vectors(&[&[0xF200, op][..], &FSAVE].concat());
+        cpu.regs.fpu.fp[1] = BitsExtReal(0xFFFE_0000_C000_0000_0000_0000);
+        cpu.step().unwrap();
+        cpu.step().unwrap();
+        assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 2, "E1");
+        assert_eq!(peek_long(&cpu, FRAME + 0x58), sign, "ETEMP");
+        assert_eq!(peek_long(&cpu, FRAME + 0x4C), sign, "FPTEMP");
+    }
+}
+
+/// Moves to memory take theirs at once, in a format $3 frame, with the source in ETEMP and
+/// FPTEMP, also when not enabled (MC68040UM 9.7.4.2, 9.7.5.2)
+#[test]
+fn nonmaskable_move_out() {
+    // FMOVE.S FP0,(A0)
+    let mut cpu = cpu_with_vectors(&[0xF210, 0x6400, 0x4E71]);
+    cpu.regs.fpu.fp[0] = BitsExtReal(0x7FFE_0000_C000_0000_0000_0000);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xD4);
+    assert!(cpu.regs.fpu.busy040.unwrap().post_instruction());
+}
+
+/// To an integer, what doesn't fit takes OPERR at once, and FPSR hasn't got OPERR yet: the
+/// FPSP adds it, and FPTEMP tells it from the largest negative integer, which the FPU flags
+/// by mistake (MC68040UM 9.7.3.2, the note at the top of x_operr)
+#[test]
+fn nonmaskable_integer_move_out() {
+    let run = |value: u128, op: Word| {
+        // FMOVE.x FP0,(A0); FSAVE (A1)
+        let mut cpu = cpu_with_vectors(&[&[0xF210, op][..], &FSAVE].concat());
+        cpu.regs.fpu.fp[0] = BitsExtReal(value);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.pc, HANDLER);
+        assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xD0);
+        assert!(!cpu.regs.fpu.fpsr.exs().operr());
+        cpu.set_pc(CODE + 4).unwrap();
+        cpu.prefetch_refill().unwrap();
+        cpu.step().unwrap();
+        [FRAME + 0x4C, FRAME + 0x50, FRAME + 0x54].map(|at| peek_long(&cpu, at))
+    };
+    // +2^32 to a long word, one step above where it stops fitting
+    assert_eq!(
+        run(0x401F_0000_8000_0000_0000_0000, 0x6000),
+        [0x4001_0000, 0, 0]
+    );
+    // -2^31 to a long word, -2^15 to a word, -2^7 to a byte
+    assert_eq!(
+        run(0xC01E_0000_8000_0000_0000_0000, 0x6000),
+        [0xC000_0000, 0xFFFF_FFFF, 0x8000_0000]
+    );
+    assert_eq!(
+        run(0xC00E_0000_8000_0000_0000_0000, 0x7000),
+        [0xC000_0000, 0xFFFF_FFFF, 0xFFFF_8000]
+    );
+    assert_eq!(
+        run(0xC006_0000_8000_0000_0000_0000, 0x7800),
+        [0xC000_0000, 0xFFFF_FFFF, 0xFFFF_FF80]
+    );
+}
+
+/// A signaling NAN to an integer takes SNAN at once, enabled or not (MC68040UM 9.7.2.2). To
+/// single, double or extended precision it does nothing when disabled but give a non-signaling
+/// NAN, and when enabled it's for the next floating-point instruction, with the destination
+/// not modified (MC68040UM 9.7.2.1).
+#[test]
+fn snan_move_out() {
+    let snan = BitsExtReal(0x7FFF_0000_A000_0000_0000_0000);
+    // FMOVE.L FP0,(A0)
+    let mut cpu = cpu_with_vectors(&[0xF210, 0x6000, 0x4E71]);
+    cpu.regs.fpu.fp[0] = snan;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(peek_long(&cpu, STACK - 6) >> 16, 0x3000 | 0xD8);
+
+    // FMOVE.S FP0,(A0)
+    let mut cpu = cpu_with_vectors(&[0xF210, 0x6400, 0x4E71]);
+    cpu.regs.fpu.fp[0] = snan;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.isp, STACK);
+    assert_eq!(peek_long(&cpu, DATA), 0x7FE0_0000);
+
+    let code = [&[0xF210, 0x6400][..], &FSAVE, &FRESTORE, &FNOP].concat();
+    let mut cpu = cpu_with_vectors(&code);
+    cpu.regs.fpu.fp[0] = snan;
+    cpu.regs.fpu.fpcr.0 = 1 << 14;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.isp, STACK, "not at once");
+    assert_eq!(peek_long(&cpu, DATA), 0, "not written");
+    assert!(cpu.regs.fpu.fpsr.exs().snan());
+    assert_eq!(cpu.regs.fpu.pending040, Some(0xD8));
+    cpu.step().unwrap();
+    assert_eq!(peek(&cpu, FRAME + 0x48), 1 << 2, "E1");
+    assert_eq!(peek(&cpu, FRAME + 0x49), 0, "T");
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, HANDLER);
+    assert_eq!(cpu.regs.isp, STACK - 8);
+    assert_eq!(peek_long(&cpu, STACK - 2) >> 16, 0xD8);
 }
