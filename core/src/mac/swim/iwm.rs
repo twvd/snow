@@ -98,8 +98,6 @@ impl Swim {
 
     /// A memory-mapped I/O address was accessed
     pub(super) fn iwm_access(&mut self, offset: Address) {
-        let was_ext_enabled = self.extdrive && self.enable;
-
         match (offset >> 9) & 0x0F {
             0 => self.ca0 = false,
             1 => self.ca0 = true,
@@ -159,7 +157,7 @@ impl Swim {
             _ => (),
         }
 
-        if was_ext_enabled && !(self.extdrive && self.enable) {
+        if !self.dcd_port_enabled() {
             // Dropping !ENBL2 takes the chain back to its first device
             self.dcd_chain_pos = 0;
         }
