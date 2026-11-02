@@ -23,3 +23,7 @@ pub const SEMANTICS_DOUBLE: Semantics = Semantics::new(11, 53, RoundingMode::Nea
 /// the ALU and its temporary registers (MC68881UM 6.1.5), which also holds the
 /// whole range of denormalized numbers
 pub const SEMANTICS_EXTENDED: Semantics = Semantics::new(17, 64, RoundingMode::NearestTiesToEven);
+
+/// What the transcendental functions compute in: enough bits to round correctly in nearly
+/// all cases, with the exponent of the extended precision semantics
+pub const SEMANTICS_FUNCTIONS: Semantics = Semantics::new(17, 128, RoundingMode::NearestTiesToEven);

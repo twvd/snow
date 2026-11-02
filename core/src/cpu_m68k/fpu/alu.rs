@@ -12,9 +12,9 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 
-use super::SEMANTICS_EXTENDED;
 use super::arith::{self, Range, Unpacked, Value};
 use super::constants;
+use super::{SEMANTICS_EXTENDED, SEMANTICS_FUNCTIONS};
 
 impl<
     TBus,
@@ -50,38 +50,19 @@ where
         }
     }
 
-    /// e^x - 1 keeps the precision of small x: done in a higher precision, and
-    /// below 2^-80 the result is x itself in extended precision
+    /// e^x - 1 keeps the precision of small x, with more bits still for the subtraction
     fn fpu_etoxm1(x: &Float) -> Float {
-        if x.is_nan() || x.is_zero() {
-            return x.clone();
-        }
-        if x.is_inf() {
-            return if x.is_negative() {
-                Float::one(SEMANTICS_EXTENDED, true)
-            } else {
-                x.clone()
-            };
-        }
-        if x.get_exp() < -80 {
-            return x.clone();
-        }
-        let high = SEMANTICS_EXTENDED.increase_precision(128);
-        (Float::e(high).pow(&x.cast(high)) - Float::one(high, false)).cast(SEMANTICS_EXTENDED)
+        let high = x.get_semantics().increase_precision(128);
+        let one = Float::one(high, false);
+        (Float::e(high).pow(&x.cast(high)) - one).cast(x.get_semantics())
     }
 
     /// ln(1 + x) keeps the precision of small x, the same way
     fn fpu_lognp1(x: &Float) -> Float {
-        if x.is_nan() || x.is_zero() {
-            return x.clone();
-        }
-        if x.get_exp() < -80 && !x.is_inf() {
-            return x.clone();
-        }
-        let high = SEMANTICS_EXTENDED.increase_precision(128);
+        let high = x.get_semantics().increase_precision(128);
         (x.cast(high) + Float::one(high, false))
             .log()
-            .cast(SEMANTICS_EXTENDED)
+            .cast(x.get_semantics())
     }
 
     /// FMOVE of FPn to an integer between `min` and `max` of `size` bits: rounds with the
@@ -241,8 +222,37 @@ where
             return special;
         }
         // These run in the default mode, as only their final result gets the rounding
-        // mode (MC68881UM 4.5.5.2)
-        let near = &Float::from(*source);
+        // mode (MC68881UM 4.5.5.2), with many more bits than the result has
+        let near = &Float::from(*source).cast(SEMANTICS_FUNCTIONS);
+        let sem = near.get_semantics();
+
+        // So small that the first term of the series is all that counts, for the ones
+        // that start at x, and that the series fails to say on subtractions. They are
+        // inexact as well, as the rest of the series is there.
+        if near.get_exp() < -(sem.get_precision() as i64) {
+            let tiny = arith::from_float(near, near.is_negative());
+            let one = arith::from_float(&Float::one(sem, false), false);
+            match opmode {
+                opmode::FSIN
+                | opmode::FTAN
+                | opmode::FASIN
+                | opmode::FATAN
+                | opmode::FSINH
+                | opmode::FTANH
+                | opmode::FATANH
+                | opmode::FETOXM1
+                | opmode::FLOGNP1 => return tiny,
+                opmode::FCOS
+                | opmode::FCOSH
+                | opmode::FETOX
+                | opmode::FTWOTOX
+                | opmode::FTENTOX => {
+                    return one;
+                }
+                _ => (),
+            }
+        }
+
         let result = match opmode {
             opmode::FACOS => near.acos(),
             opmode::FCOS => near.cos(),
@@ -254,10 +264,10 @@ where
             opmode::FLOGNP1 => Self::fpu_lognp1(near),
             opmode::FLOG2 => near.log2(),
             opmode::FLOG10 => near.log10(),
-            opmode::FETOX => Float::e(SEMANTICS_EXTENDED).pow(near),
+            opmode::FETOX => Float::e(sem).pow(near),
             opmode::FETOXM1 => Self::fpu_etoxm1(near),
-            opmode::FTWOTOX => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(near),
-            opmode::FTENTOX => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(near),
+            opmode::FTWOTOX => Float::from_u64(sem, 2).pow(near),
+            opmode::FTENTOX => Float::from_u64(sem, 10).pow(near),
             opmode::FSINH => near.sinh(),
             opmode::FCOSH => near.cosh(),
             opmode::FTANH => near.tanh(),

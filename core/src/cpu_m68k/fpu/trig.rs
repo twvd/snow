@@ -1,4 +1,4 @@
-use arpfloat::Float;
+use arpfloat::{Float, RoundingMode};
 
 pub trait FloatTrig {
     fn atan(&self) -> Self;
@@ -16,7 +16,7 @@ impl FloatTrig for Float {
     fn atan(&self) -> Self {
         // atan(1) = π/4 shortcut
         if self == &Self::one(self.get_semantics(), false) {
-            return Self::from_f64(std::f64::consts::FRAC_PI_4).cast(self.get_semantics());
+            return Self::pi(self.get_semantics()).scale(-2, RoundingMode::Zero);
         }
 
         // Handle special cases
@@ -25,7 +25,7 @@ impl FloatTrig for Float {
         }
 
         if self.is_inf() {
-            let pi_2 = Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+            let pi_2 = Self::pi(self.get_semantics()).scale(-1, RoundingMode::Zero);
             return if !self.is_negative() {
                 pi_2
             } else {
@@ -37,7 +37,7 @@ impl FloatTrig for Float {
         let x = if self.abs() > Self::from_f64(1.0).cast(self.get_semantics()) {
             let recip = Self::from_f64(1.0).cast(self.get_semantics()) / self.clone();
             let result = atan_taylor_series(&recip);
-            let pi_2 = Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+            let pi_2 = Self::pi(self.get_semantics()).scale(-1, RoundingMode::Zero);
             return if !self.is_negative() {
                 pi_2 - result
             } else {
@@ -65,7 +65,7 @@ impl FloatTrig for Float {
 
         // acos(-1) = π
         if self == &one.neg() {
-            return Self::from_f64(std::f64::consts::PI).cast(self.get_semantics());
+            return Self::pi(self.get_semantics());
         }
 
         // |x| > 1 is undefined
@@ -77,7 +77,7 @@ impl FloatTrig for Float {
         // Using identity: acos(x) = π/2 - atan(x / √(1 - x²))
         let x_sq = self * self;
         let sqrt_term = (one - x_sq).sqrt();
-        let pi_2 = Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+        let pi_2 = Self::pi(self.get_semantics()).scale(-1, RoundingMode::Zero);
 
         if self.is_zero() {
             return pi_2;
@@ -90,7 +90,7 @@ impl FloatTrig for Float {
             at
         } else {
             // For negative x: atan(√(1-x²)/x) is negative, add π
-            at + Self::from_f64(std::f64::consts::PI).cast(self.get_semantics())
+            at + Self::pi(self.get_semantics())
         }
     }
 
@@ -104,13 +104,13 @@ impl FloatTrig for Float {
 
         // asin(1) = π/2
         if self == &one {
-            return Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+            return Self::pi(self.get_semantics()).scale(-1, RoundingMode::Zero);
         }
 
         // asin(-1) = -π/2
         if self == &one.neg() {
-            return Self::from_f64(std::f64::consts::FRAC_PI_2)
-                .cast(self.get_semantics())
+            return Self::pi(self.get_semantics())
+                .scale(-1, RoundingMode::Zero)
                 .neg();
         }
 
@@ -158,34 +158,38 @@ impl FloatTrig for Float {
     }
 }
 
+/// atan(x) for |x| <= 1, by the Taylor series after halving the angle until the series
+/// converges fast: atan(x) = 2 atan(x / (1 + sqrt(1 + x²)))
 fn atan_taylor_series(x: &Float) -> Float {
-    // Taylor series: atan(x) = x - x³/3 + x⁵/5 - x⁷/7 + ...
-    // Valid for |x| ≤ 1
+    const HALVINGS: i64 = 4;
+    let sem = x.get_semantics();
+    let one = Float::one(sem, false);
+    let mut x = x.clone();
+    for _ in 0..HALVINGS {
+        x = &x / (&one + (&one + &x * &x).sqrt());
+    }
 
+    // x - x³/3 + x⁵/5 - x⁷/7 + ...
+    let x_squared = &x * &x;
     let mut result = x.clone();
-    let mut term = x.clone();
-    let x_squared = x * x;
-
-    // Iterate until convergence (when term becomes negligible)
-    // Maximum 50 iterations to prevent infinite loops
-    for i in 1..50 {
+    let mut term = x;
+    let mut i = 1;
+    loop {
         term *= &x_squared;
-        let denominator = Float::from_f64((2 * i + 1) as f64).cast(x.get_semantics());
-        let current_term = &term / denominator;
-
+        let current_term = &term / Float::from_u64(sem, 2 * i + 1);
+        if current_term.is_zero()
+            || current_term.get_exp() < result.get_exp() - sem.get_precision() as i64 - 2
+        {
+            break;
+        }
         if i % 2 == 0 {
             result += &current_term;
         } else {
             result -= &current_term;
         }
-
-        // Check for convergence - if the term is very small relative to result
-        if current_term.abs() < x.relative_epsilon(1e-15) {
-            break;
-        }
+        i += 1;
     }
-
-    result
+    result.scale(HALVINGS, RoundingMode::Zero)
 }
 
 #[cfg(test)]

@@ -1116,3 +1116,30 @@ fn fmovecr_constants() {
     // Reserved
     assert_eq!(run(0x01, 0), (0, 0, 0));
 }
+
+/// Results within the error of the manual (MC68881UM 4.3.2), correctly rounded here, from
+/// values computed with a few hundred digits
+#[test]
+fn transcendental_values() {
+    const FATAN: Word = 0x0A;
+    const FSIN: Word = 0x0E;
+    const FASIN: Word = 0x0C;
+    const FTANH: Word = 0x09;
+    const FETOX: Word = 0x10;
+    const FLOGN: Word = 0x14;
+    for (opmode, src, high, man) in [
+        // atan(1) = pi/4, which came from a double precision pi
+        (FATAN, ext(0x3FFF, J), 0x3FFE, 0xC90F_DAA2_2168_C235u64),
+        (FATAN, ext(0x4000, J), 0x3FFF, 0x8DB7_0C97_5DF2_2363),
+        (FSIN, ext(0x3FFF, J), 0x3FFE, 0xD76A_A478_4867_7021),
+        (FASIN, ext(0x3FFE, J), 0x3FFE, 0x860A_91C1_6B9B_2C23),
+        (FETOX, ext(0x3FFF, J), 0x4000, 0xADF8_5458_A2BB_4A9B),
+        (FLOGN, ext(0x4000, J), 0x3FFE, 0xB172_17F7_D1CF_79AC),
+        // Small values: the subtractions in these lost everything
+        (FTANH, ext(0x3F00, J), 0x3F00, J),
+        (FATAN, ext(0x3F00, J), 0x3F00, J),
+    ] {
+        let (h, m, _) = result(&run_fop(opmode, ext(0, 0), src, 0));
+        assert_eq!((h, m), (high, man), "opmode {opmode:02X}");
+    }
+}
