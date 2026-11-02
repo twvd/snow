@@ -25,6 +25,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::cuda::Cuda;
 use crate::mac::macii::via2::Via2;
+use crate::mac::maclc::pds_iie::{IieCardSettings, PdsIIeCard};
 use crate::mac::maclc::via::Via;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
@@ -54,6 +55,23 @@ const BUS_FREQUENCY: Ticks = 25_000_000;
 /// Primus, the LC 475; a jumper makes it an Aladdin, the Quadra 605).
 const CPU_ID: u32 = 0xA55A_2221;
 const CPU_ID_ADDR: Address = 0x5FFF_FFFC;
+
+/// Swing of the Apple IIe Card's speaker in the sound output, full scale = 1:
+/// as on the LC, a guess
+const IIE_SPEAKER_GAIN: f32 = 0.5;
+
+/// Extra wait states, in C16M ticks, of an access to the registers of the Apple
+/// IIe Card other than the Slinky, for the self-test of IIe Startup. It reads
+/// $04, sets $20, then acks a trap with $0C, and expects the ack to clear the next
+/// code, $20. If the ack comes before the 65C02 has produced that code, the code
+/// stays and the test sees it where it wants $28, and reports the card as
+/// defective, problem #4. The test passes from 2 ticks on the 14" monitor and 4
+/// on the 12", where the Mac also has its 560x384 mode to set; this has 1 more.
+/// It's a host speed race that real machines have too: IIe Startup 2.2.2d1 was
+/// made for the 33 MHz LC 575 "to resolve an issue at startup", and all it does
+/// to this is ignore the result of the test. The real wait states of the card
+/// are not known, and the Slinky is left fast, for its RAM and display traffic.
+const IIE_CONTROL_WAITS: Ticks = 5;
 
 /// Period of the 60.15 Hz interrupt of PrimeTime on VIA 1 CA1, in VIA ticks
 const TICK60_PERIOD: Ticks = 13024;
@@ -250,6 +268,9 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
+    /// Apple IIe Card in the expansion slot, when installed
+    iie_card: Option<PdsIIeCard>,
+
     /// Built-in video
     pub(crate) dafb: Dafb<TRenderer>,
 
@@ -280,6 +301,7 @@ where
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         vram_size: Option<usize>,
+        iie_card: Option<IieCardSettings>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
@@ -324,6 +346,7 @@ where
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
+            iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
 
             dafb: Dafb::new(
                 renderer,
@@ -720,7 +743,15 @@ where
             DeviceCycle::Stall(n) => return BusResponse::Stall(n),
             DeviceCycle::Access(w) => w,
         };
-        let w = self.native_clock.scale_dev16_waits(w, IO_BUS_WAITS);
+        let slinky = (0x10..0x12).contains(&(acc.addr & 0xFFFF));
+        let card_waits = if self.iie_card.is_some() && !slinky {
+            IIE_CONTROL_WAITS
+        } else {
+            0
+        };
+        let w = self
+            .native_clock
+            .scale_dev16_waits(w, IO_BUS_WAITS + card_waits);
         bus_access_long(acc, w, self, Self::slot_read, Self::slot_write)
     }
 
@@ -748,16 +779,22 @@ where
         Some(())
     }
 
-    /// One cycle of a card, with the offset in the slot: without a card
-    /// nothing answers, which is a bus error, as the Slot Manager expects.
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn slot_port_read(&mut self, _offset: Address, _len: u32) -> Option<u32> {
-        None
+    /// The Apple IIe card in the slot, if installed
+    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+        self.iie_card.as_mut()
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn slot_port_write(&mut self, _offset: Address, _len: u32, _val: u32) -> Option<()> {
-        None
+    /// One cycle of a card, with the offset in the slot: without a card
+    /// nothing answers, which is a bus error, as the Slot Manager expects.
+    fn slot_port_read(&mut self, offset: Address, len: u32) -> Option<u32> {
+        let card = self.iie_card.as_mut()?;
+        Some(card.slot_read(offset, len))
+    }
+
+    fn slot_port_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
+        let card = self.iie_card.as_mut()?;
+        card.slot_write(offset, len, val);
+        Some(())
     }
 
     /// SLOTE_IRQ from a card (schematic: its own pin on PrimeTime)
@@ -1106,6 +1143,10 @@ where
             // The Cuda also goes through its start
             self.cuda.reset();
             self.dfac2.reset();
+            // The card is an independent computer: only power on resets it
+            if let Some(card) = &mut self.iie_card {
+                card.reset(true);
+            }
         }
 
         self.via1.reset();
@@ -1234,8 +1275,13 @@ where
         self.sound_clock += c16m_ticks;
         while self.sound_clock >= self.sound.sample_period() {
             self.sound_clock -= self.sound.sample_period();
+            // The Apple IIe Card's speaker is mixed in after the DFAC II
+            let speaker = self
+                .iie_card
+                .as_mut()
+                .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
             self.sound
-                .tick(self.speed == EmulatorSpeed::Accurate, 0.0)?;
+                .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }
 
         self.dafb.tick(native_ticks, ctx)?;
@@ -1262,6 +1308,11 @@ where
             self.via2.set_irq(IRQ_CA2);
         } else {
             self.via2.clear_irq(IRQ_CA2);
+        }
+
+        // The Apple IIe Card runs in its own clock domain, ticked at C16M
+        if let Some(card) = &mut self.iie_card {
+            card.tick(c16m_ticks, ())?;
         }
 
         // The SWIM is on the I/O bus, clocked by C16M
@@ -1381,9 +1432,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::maclc::pds_iie::DECL_ROM;
     use crate::renderer::NullRenderer;
 
-    fn bus() -> Lc475Bus<NullRenderer> {
+    fn bus_with_card(iie_card: Option<IieCardSettings>) -> Lc475Bus<NullRenderer> {
         Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
@@ -1392,7 +1444,20 @@ mod tests {
             MouseMode::Disabled,
             Some(4 * 1024 * 1024),
             None,
+            iie_card,
         )
+    }
+
+    fn bus() -> Lc475Bus<NullRenderer> {
+        bus_with_card(None)
+    }
+
+    #[test]
+    fn iie_card_answers_in_the_slot() {
+        let mut bus = bus_with_card(Some(IieCardSettings::default()));
+        // The declaration ROM ends at the top of the slot, on the odd bytes
+        assert_eq!(bus.slot_read(0xFEFF_FFFF, 1), Some(u32::from(DECL_ROM[0])));
+        assert_eq!(bus.slot_read(0xFEFF_FFFE, 1), Some(0xFF));
     }
 
     #[test]
@@ -1416,6 +1481,7 @@ mod tests {
             MacMonitor::default(),
             MouseMode::Disabled,
             Some(12 * 1024 * 1024),
+            None,
             None,
         );
         assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));

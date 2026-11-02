@@ -167,3 +167,13 @@ machine_bus!(
     Quadra700(Quadra700Bus<ChannelRenderer>, quadra700, quadra700_mut),
     Lc475(Lc475Bus<ChannelRenderer>, lc475, lc475_mut),
 );
+
+impl MachineBus040 {
+    /// The Apple IIe Card in the PDS of an LC 475
+    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+        match self {
+            Self::Quadra700(_) => None,
+            Self::Lc475(bus) => bus.iie_card_mut(),
+        }
+    }
+}
