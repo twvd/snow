@@ -11,8 +11,13 @@ use anyhow::{Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use snow_floppy::Floppy;
 
+use super::Emulator;
 use crate::mac::MacModel;
+use crate::mac::scc::SccCh;
+use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 
 /// The ids of the buses. They are in the workspace files: they must not change.
@@ -305,7 +310,7 @@ pub enum FunctionState {
     FileSharing(FileSharingState),
     Video,
     AppleIIe,
-    SerialLink,
+    SerialLink(Option<SerialBridgeStatus>),
 }
 
 #[derive(Debug, Clone)]
@@ -688,10 +693,291 @@ impl MacModel {
     }
 }
 
+/// What a machine remembers of its devices, where the devices don't
+#[derive(Default)]
+pub(super) struct DeviceBook {
+    /// The cards the machine was built with. They can't change, so they report what they got.
+    pub(super) cards: Vec<DeviceConfig>,
+    /// The Apple IIe Card's drives, in chain order
+    pub(super) iie_chain: Vec<DeviceModel>,
+    /// The image in each of those drives
+    pub(super) iie_media: Vec<Option<PathBuf>>,
+    pub(super) serial: [Option<SerialBridgeConfig>; 2],
+    /// The SCSI ID the shared folder sits at, and the folder
+    pub(super) blue_scsi: Option<(usize, PathBuf)>,
+}
+
+/// What is behind a slot. Only this file knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotTarget {
+    Drive(usize),
+    Scsi(usize),
+    Card,
+    IieDrive(usize),
+    Serial(SccCh),
+}
+
+fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
+    let number = |base: usize| slot.id.parse::<usize>().unwrap_or(base) - base;
+    match bus.kind {
+        BusKind::Swim => SlotTarget::Drive(number(1)),
+        BusKind::Scsi => SlotTarget::Scsi(number(0)),
+        BusKind::IieDisk => SlotTarget::IieDrive(number(1)),
+        BusKind::Serial if slot.id == "A" => SlotTarget::Serial(SccCh::A),
+        BusKind::Serial => SlotTarget::Serial(SccCh::B),
+        BusKind::Nubus | BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => SlotTarget::Card,
+    }
+}
+
+fn settings_map(settings: &impl Serialize) -> Map<String, Value> {
+    to_map(settings).unwrap_or_default()
+}
+
+/// The list a machine with these buses can be created from
+pub fn device_configs(buses: &[Bus]) -> Vec<DeviceConfig> {
+    let mut configs = vec![];
+    for bus in buses {
+        for slot in &bus.slots {
+            let Some(device) = &slot.device else {
+                continue;
+            };
+            let is_default = slot.default_model == Some(device.model);
+            if is_default && device.settings.is_empty() {
+                continue;
+            }
+            configs.push(DeviceConfig {
+                bus: bus.id.clone(),
+                slot: slot.id.clone(),
+                model: (!is_default).then(|| device.model.key().to_owned()),
+                settings: device.settings.clone(),
+            });
+        }
+    }
+    configs
+}
+
+impl Emulator {
+    /// The machine as it is now
+    pub fn buses(&self) -> Vec<Bus> {
+        let mut buses = self.model.buses();
+        if !self.device_book.iie_chain.is_empty()
+            && let Some(pds) = buses.iter().position(|b| b.kind == BusKind::LcPds)
+        {
+            buses.insert(
+                pds + 1,
+                MacModel::iie_disk_bus(self.device_book.iie_chain.len()),
+            );
+        }
+        for bus in &mut buses {
+            let mut slots = std::mem::take(&mut bus.slots);
+            for slot in &mut slots {
+                slot.device = self.device_in(bus, slot);
+            }
+            bus.slots = slots;
+            self.block_offers(bus);
+        }
+        buses
+    }
+
+    /// The list a machine like this one can be created from
+    pub fn devices(&self) -> Vec<DeviceConfig> {
+        device_configs(&self.buses())
+    }
+
+    /// Finds a slot from what a workspace knows of it
+    pub fn find_slot(&self, bus: &str, slot: &str) -> Option<SlotAddr> {
+        let buses = self.buses();
+        let bus_idx = buses.iter().position(|b| b.id == bus)?;
+        let slot = buses[bus_idx].slots.iter().position(|s| s.id == slot)?;
+        Some(SlotAddr { bus: bus_idx, slot })
+    }
+
+    /// One of each on a bus: the frontend has offered no more than that so far
+    fn block_offers(&self, bus: &mut Bus) {
+        if bus.kind != BusKind::Scsi {
+            return;
+        }
+        let has = |model| {
+            bus.slots
+                .iter()
+                .any(|s| s.device.as_ref().is_some_and(|d| d.model == model))
+        };
+        let mut offers = std::mem::take(&mut bus.offers);
+        for offer in &mut offers {
+            offer.blocked = match offer.model {
+                #[cfg(feature = "ethernet")]
+                DeviceModel::DaynaPortScsiLink => has(offer.model),
+                #[cfg(feature = "printer")]
+                DeviceModel::LaserWriterIISC => has(offer.model),
+                DeviceModel::BlueScsi => has(offer.model),
+                _ => false,
+            };
+        }
+        bus.offers = offers;
+    }
+
+    fn device_in(&self, bus: &Bus, slot: &Slot) -> Option<Device> {
+        match slot_target(bus, slot) {
+            SlotTarget::Drive(i) => self.drive_device(i),
+            SlotTarget::Scsi(i) => self.scsi_device(i),
+            SlotTarget::Card => {
+                let config = self
+                    .device_book
+                    .cards
+                    .iter()
+                    .find(|c| c.bus == bus.id && c.slot == slot.id)?;
+                let model = config.known_model()?;
+                Some(Device {
+                    model,
+                    settings: config.settings.clone(),
+                    state: match model.function() {
+                        FunctionKind::AppleIIe => FunctionState::AppleIIe,
+                        _ => FunctionState::Video,
+                    },
+                })
+            }
+            SlotTarget::IieDrive(i) => {
+                let media = self.device_book.iie_media.get(i).cloned().flatten();
+                Some(Device {
+                    model: *self.device_book.iie_chain.get(i)?,
+                    settings: settings_map(&FloppySettings {
+                        media: media.clone(),
+                        read_only: false,
+                    }),
+                    state: FunctionState::IieFloppy(IieFloppyState { media }),
+                })
+            }
+            SlotTarget::Serial(ch) => {
+                let (model, settings) = match self.device_book.serial[ch as usize].as_ref()? {
+                    SerialBridgeConfig::Pty => (
+                        DeviceModel::SerialBridge,
+                        settings_map(&SerialBridgeSettings::default()),
+                    ),
+                    SerialBridgeConfig::Tcp(port) => (
+                        DeviceModel::SerialBridge,
+                        settings_map(&SerialBridgeSettings {
+                            tcp_port: Some(*port),
+                        }),
+                    ),
+                    SerialBridgeConfig::LocalTalk => (DeviceModel::LocalTalkAdapter, Map::new()),
+                };
+                Some(Device {
+                    model,
+                    settings,
+                    state: FunctionState::SerialLink(
+                        self.serial_bridges[ch as usize]
+                            .as_ref()
+                            .map(|b| b.status()),
+                    ),
+                })
+            }
+        }
+    }
+
+    fn drive_device(&self, i: usize) -> Option<Device> {
+        let swim = self.config.swim();
+        let drive = swim.drives.get(i)?;
+        let model = DeviceModel::from_drive_type(drive.drive_type)?;
+        let media = drive
+            .floppy_inserted
+            .then(|| drive.media_path.clone())
+            .flatten();
+        Some(Device {
+            model,
+            settings: settings_map(&FloppySettings {
+                media: media.clone(),
+                read_only: media.is_some() && drive.media_read_only,
+            }),
+            state: FunctionState::Floppy(FloppyState {
+                media,
+                ejected: !drive.floppy_inserted,
+                motor: drive.motor,
+                writing: drive.motor && swim.is_writing(),
+                track: drive.track,
+                image_title: drive.floppy.get_title().to_owned(),
+                dirty: drive.floppy.is_dirty(),
+                drive_type: drive.drive_type,
+                writeback_supported: drive.image_path.is_some()
+                    && drive.floppy.supports_writeback(),
+                writeback_enabled: drive.writeback_enabled,
+            }),
+        })
+    }
+
+    fn scsi_device(&self, id: usize) -> Option<Device> {
+        if let Some((blue_id, dir)) = &self.device_book.blue_scsi
+            && *blue_id == id
+        {
+            return Some(Device {
+                model: DeviceModel::BlueScsi,
+                settings: settings_map(&BlueScsiSettings {
+                    shared_dir: dir.clone(),
+                }),
+                state: FunctionState::FileSharing(FileSharingState {
+                    shared_dir: Some(dir.clone()),
+                }),
+            });
+        }
+        let scsi = self.config.scsi();
+        let image = scsi.get_disk_imagefn(id).map(|p| p.to_path_buf());
+        match scsi.get_target_type(id)? {
+            ScsiTargetType::Disk => Some(Device {
+                model: DeviceModel::ScsiHardDisk,
+                settings: settings_map(&HardDiskSettings {
+                    media: image.clone()?,
+                    read_only: false,
+                }),
+                state: FunctionState::HardDisk(HardDiskState {
+                    media: image,
+                    capacity: scsi.get_disk_capacity(id),
+                }),
+            }),
+            ScsiTargetType::Cdrom => {
+                let folder = scsi.get_cdrom_folder(id).map(|p| p.to_path_buf());
+                Some(Device {
+                    model: DeviceModel::ScsiCdrom,
+                    settings: settings_map(&CdromSettings {
+                        media: folder.clone().or_else(|| image.clone()),
+                    }),
+                    state: FunctionState::Cdrom(CdromState {
+                        media: image,
+                        folder,
+                    }),
+                })
+            }
+            #[cfg(feature = "ethernet")]
+            ScsiTargetType::Ethernet => {
+                let target = scsi.targets[id].as_ref()?;
+                let link = target.eth_link()?;
+                Some(Device {
+                    model: DeviceModel::DaynaPortScsiLink,
+                    settings: settings_map(&serde_json::json!({ "link": link })),
+                    state: FunctionState::Ethernet(EthernetState {
+                        link,
+                        capture: target.eth_capture_status(),
+                    }),
+                })
+            }
+            #[cfg(feature = "printer")]
+            ScsiTargetType::Printer => Some(Device {
+                model: DeviceModel::LaserWriterIISC,
+                settings: Map::new(),
+                state: FunctionState::Printer,
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    /// A machine that does nothing: enough to look at its devices
+    fn machine(model: MacModel) -> Emulator {
+        let rom = vec![0; 128 * 1024];
+        Emulator::new(&rom, &[], model).unwrap().0
+    }
 
     fn slots(model: MacModel, bus: &str) -> Vec<String> {
         model
@@ -779,5 +1065,29 @@ mod tests {
         .unwrap();
         let settings: ScsiHardDiskSettings = cfg.parse().unwrap();
         assert_eq!(settings.disk.media, PathBuf::from("a.img"));
+    }
+
+    #[test]
+    fn a_new_machine_has_its_drives_and_nothing_to_save() {
+        let emu = machine(MacModel::Plus);
+        let buses = emu.buses();
+        let swim = buses.iter().find(|b| b.id == bus_id::SWIM).unwrap();
+        assert_eq!(swim.slots.len(), 2);
+        for slot in &swim.slots {
+            let device = slot.device.as_ref().unwrap();
+            assert_eq!(device.model, DeviceModel::Mac800KDrive);
+            assert!(matches!(&device.state, FunctionState::Floppy(f) if f.ejected));
+        }
+        let scsi = buses.iter().find(|b| b.id == bus_id::SCSI).unwrap();
+        assert!(scsi.slots.iter().all(|s| s.device.is_none()));
+        assert_eq!(emu.devices(), vec![]);
+    }
+
+    #[test]
+    fn slots_are_found_by_what_a_workspace_knows() {
+        let emu = machine(MacModel::Plus);
+        assert!(emu.find_slot(bus_id::SCSI, "3").is_some());
+        assert!(emu.find_slot(bus_id::SCSI, "7").is_none());
+        assert!(emu.find_slot(bus_id::NUBUS, "9").is_none());
     }
 }

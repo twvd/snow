@@ -182,6 +182,7 @@ pub struct EmulatorStatus {
     pub ram_size: usize,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],
+    pub buses: Vec<super::devices::Bus>,
 }
 
 #[cfg(feature = "ethernet")]
