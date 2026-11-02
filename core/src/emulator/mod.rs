@@ -6,7 +6,7 @@ pub mod save;
 
 use serde::{Deserialize, Serialize};
 use snow_floppy::Floppy;
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof, TwoImg};
+use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -35,12 +35,11 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
-use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
+use crate::mac::serial_bridge::SccBridge;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
@@ -427,6 +426,7 @@ impl Emulator {
             None,
             None,
             None,
+            0x9,
         )
     }
 
@@ -444,6 +444,7 @@ impl Emulator {
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
+        video_card_slot: u8,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -511,7 +512,7 @@ impl Emulator {
                     bail!("Macintosh II requires display card ROM")
                 };
                 let nubus = [NubusCardConfig {
-                    slot: 0x9,
+                    slot: video_card_slot,
                     kind,
                     rom: mdcrom,
                 }];
@@ -554,7 +555,7 @@ impl Emulator {
                     bail!("Macintosh II requires display card ROM")
                 };
                 let nubus = [NubusCardConfig {
-                    slot: 0x9,
+                    slot: video_card_slot,
                     kind,
                     rom: mdcrom,
                 }];
@@ -703,6 +704,10 @@ impl Emulator {
 
         config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
+        let mut device_book = devices::DeviceBook::default();
+        if let Some(settings) = iie_card {
+            device_book.set_iie_chain(&settings);
+        }
 
         let mut emu = Self {
             config,
@@ -717,7 +722,7 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
-            device_book: Default::default(),
+            device_book,
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
@@ -1433,6 +1438,18 @@ impl Tickable for Emulator {
                         log::info!("Mouse mode: {:?}", mode);
                         self.config.set_mouse_mode(mode);
                     }
+                    EmulatorCommand::AddDevice(config) => {
+                        if let Err(e) = self.add_device(&config) {
+                            self.user_warning(&format!("{}: {:#}", config.label(), e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::RemoveDevice(addr) => {
+                        if let Err(e) = self.remove_device(addr) {
+                            self.user_warning(&format!("{:#}", e));
+                        }
+                        self.status_update()?;
+                    }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
                         self.flush_pending_writebacks(true);
@@ -1469,60 +1486,12 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::InsertIieDisk(drive, path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header names the sector order, else
-                                // the extension does
-                                let (bytes, order) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
-                                            (img.data, DskOrder::Prodos)
-                                        }
-                                        Ok(img) => (img.data, DskOrder::Dos),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else if path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-                                {
-                                    (&bytes[..], DskOrder::Prodos)
-                                } else {
-                                    (&bytes[..], DskOrder::Dos)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
-                                            self.user_error(&format!(
-                                                "Cannot insert IIe disk '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
+                        if let Err(e) = self.insert_iie_disk(drive, &path) {
+                            self.user_error(&format!(
+                                "Cannot insert IIe disk '{}': {:#}",
+                                path.display(),
+                                e
+                            ));
                         }
                         self.status_update()?;
                     }
@@ -1551,52 +1520,12 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::InsertIieUniDisk(path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header carries the lock flag; a
-                                // raw image is the blocks alone
-                                let (data, locked) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) => (img.data.to_vec(), img.locked),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    (bytes, false)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_unidisk(data, locked) {
-                                            self.user_error(&format!(
-                                                "Cannot insert UniDisk 3.5 image '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
+                        if let Err(e) = self.insert_iie_unidisk(&path) {
+                            self.user_error(&format!(
+                                "Cannot insert IIe disk '{}': {:#}",
+                                path.display(),
+                                e
+                            ));
                         }
                         self.status_update()?;
                     }
@@ -1937,44 +1866,15 @@ impl Tickable for Emulator {
                         self.config.scc_mut().push_rx(ch, &data);
                     }
                     EmulatorCommand::SerialBridgeEnable(ch, config) => {
-                        let ch_idx = ch as usize;
-                        match SccBridge::new(&config) {
-                            Ok(bridge) => {
-                                let status = bridge.status();
-                                info!("SCC bridge enabled on channel {:?}: {}", ch, status);
-                                match &status {
-                                    SerialBridgeStatus::Pty(path) => {
-                                        self.user_notice(&format!(
-                                            "Serial bridge PTY: {}",
-                                            path.display()
-                                        ));
-                                    }
-                                    SerialBridgeStatus::LocalTalk(_) => {
-                                        self.user_notice("LocalTalk bridge enabled");
-                                    }
-                                    _ => {}
-                                }
-                                self.serial_bridges[ch_idx] = Some(bridge);
-                                self.device_book.serial[ch_idx] = Some(config);
-                                self.event_sender
-                                    .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Failed to enable SCC bridge on channel {:?}: {}",
-                                    ch, e
-                                ));
-                            }
+                        if let Err(e) = self.serial_bridge_enable(ch, config) {
+                            self.user_error(&format!(
+                                "Failed to enable SCC bridge on channel {:?}: {}",
+                                ch, e
+                            ));
                         }
                     }
                     EmulatorCommand::SerialBridgeDisable(ch) => {
-                        let ch_idx = ch as usize;
-                        self.device_book.serial[ch_idx] = None;
-                        if self.serial_bridges[ch_idx].take().is_some() {
-                            info!("Serial bridge disabled on channel {:?}", ch);
-                            self.event_sender
-                                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
-                        }
+                        self.serial_bridge_disable(ch)?;
                     }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
