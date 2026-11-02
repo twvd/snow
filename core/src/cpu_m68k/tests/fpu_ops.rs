@@ -520,3 +520,271 @@ fn binary_real_sources_become_extended_exactly() {
         );
     }
 }
+
+/// A value by its bits: sign and exponent, and mantissa
+fn ext(high: Word, man: u64) -> BitsExtReal {
+    BitsExtReal::default()
+        .with_high(Long::from(high) << 16)
+        .with_raw_mantissa(man)
+}
+
+/// Runs FOP FP1,FP0 with FP0 = `dest` and FP1 = `src` and the mode bits of FPCR
+fn run_fop(opmode: Word, dest: BitsExtReal, src: BitsExtReal, fpcr: Long) -> TestCpu {
+    let mut cpu = testcpu(&fop(1, 0, opmode));
+    cpu.regs.fpu.fpcr.0 = fpcr;
+    cpu.regs.fpu.fp[0] = dest;
+    cpu.regs.fpu.fp[1] = src;
+    cpu.step().unwrap();
+    cpu
+}
+
+const J: u64 = 1 << 63;
+const FMUL: Word = 0x23;
+const FDIV: Word = 0x20;
+const FADD: Word = 0x22;
+const FMOVE: Word = 0x00;
+const FSQRT: Word = 0x04;
+const OVFL: Long = 1 << 12;
+const UNFL: Long = 1 << 11;
+const INEX2: Long = 1 << 9;
+
+/// The value and the exception and accrued bytes of a result
+fn result(cpu: &TestCpu) -> (Long, u64, Long) {
+    let fp0 = cpu.regs.fpu.fp[0];
+    (
+        fp0.high() >> 16,
+        fp0.raw_mantissa(),
+        cpu.regs.fpu.fpsr.0 & 0xFFFF,
+    )
+}
+
+/// Exponent 0 is a weight like any other: (-1)^s x 2^(e-16383) x j.f, and
+/// denormalized numbers are that with j = 0 (MC68881UM table 3-3)
+#[test]
+fn denormalized_numbers_have_the_weight_of_exponent_0() {
+    // 0x7FFFFFFF x 2^-16390 from Motorola's ftest, the source being denormalized
+    let cpu = run_fop(
+        FMUL,
+        ext(0x401D, 0xFFFF_FFFE_0000_0000),
+        ext(0x8000, 0x0100_0000_0000_0000),
+        0,
+    );
+    assert_eq!(result(&cpu), (0x8017, 0xFFFF_FFFE_0000_0000, 0));
+    // The smallest normalized number is the one with exponent 0: half of it is
+    // denormalized, and exactly representable. So UNFL, and no INEX2 in either byte,
+    // which keeps AUNFL clear as well (MC68881UM 6.1.5, Motorola's ftest)
+    let cpu = run_fop(FDIV, ext(0, J), ext(0x4000, J), 0);
+    assert_eq!(result(&cpu), (0, 0x4000_0000_0000_0000, UNFL));
+}
+
+/// Overflow is checked after rounding, and only sets INEX2 if the rounding was not
+/// exact (MC68881UM 4.5.5.2, figure 6-3, Motorola's ftest). The accrued byte has
+/// AOVFL, and AINEX from the overflow alone (MC68881UM 2.3.4).
+#[test]
+fn overflow_results_by_rounding_mode() {
+    const AOVFL_AINEX: Long = (1 << 6) | (1 << 3);
+    const INF: (Long, u64) = (0x7FFF, 0);
+    const NEG_INF: (Long, u64) = (0xFFFF, 0);
+    const LARGEST: (Long, u64) = (0x7FFE, !0);
+    const NEG_LARGEST: (Long, u64) = (0xFFFE, !0);
+    // MC68881UM 6.1.4, trap disabled results
+    for (rnd, positive, negative) in [
+        (0, INF, NEG_INF),
+        (1, LARGEST, NEG_LARGEST),
+        (2, LARGEST, NEG_INF),
+        (3, INF, NEG_LARGEST),
+    ] {
+        let fpcr = rnd << 4;
+        let cpu = run_fop(FMUL, ext(0x4000, J), ext(0x7FFE, J), fpcr);
+        assert_eq!(
+            result(&cpu),
+            (positive.0, positive.1, OVFL | AOVFL_AINEX),
+            "mode {rnd}"
+        );
+        let cpu = run_fop(FMUL, ext(0xC000, J), ext(0x7FFE, J), fpcr);
+        assert_eq!(
+            result(&cpu),
+            (negative.0, negative.1, OVFL | AOVFL_AINEX),
+            "mode {rnd}"
+        );
+    }
+    // Rounding up into overflow: inexact as well
+    let cpu = run_fop(FMOVE, ext(0, 0), ext(0x407E, !0), 1 << 6);
+    assert_eq!(result(&cpu), (0x7FFF, 0, OVFL | INEX2 | AOVFL_AINEX));
+}
+
+/// In single or double precision, overflow and underflow go by the range of that
+/// format, in the extended format of the register (MC68881UM 6.1.4, 6.1.5, 6.1.7)
+#[test]
+fn range_of_the_rounding_precision() {
+    const AINEX: Long = 1 << 3;
+    const AUNFL: Long = 1 << 5;
+    const SINGLE: Long = 1 << 6;
+    const DOUBLE: Long = 2 << 6;
+    const RM: Long = 2 << 4;
+    // Largest single precision number, from MC68881UM 6.1.7: exponent $00FF unbiased
+    let cpu = run_fop(FMOVE, ext(0, 0), ext(0x4100, J), SINGLE | RM);
+    assert_eq!(
+        result(&cpu),
+        (0x407E, 0xFFFF_FF00_0000_0000, OVFL | (1 << 6) | AINEX)
+    );
+    let cpu = run_fop(FMOVE, ext(0, 0), ext(0x4400, J), DOUBLE | RM);
+    assert_eq!(
+        result(&cpu),
+        (0x43FE, 0xFFFF_FFFF_FFFF_F800, OVFL | (1 << 6) | AINEX)
+    );
+    // Half the smallest normalized single precision number stays exact, UNFL alone
+    let cpu = run_fop(FMOVE, ext(0, 0), ext(0x3F80, J), SINGLE);
+    assert_eq!(result(&cpu), (0x3F80, J, UNFL));
+    // Below it the mantissa has fewer bits: 1.5 x 2^-149 rounds to 2 x 2^-149
+    let cpu = run_fop(FMOVE, ext(0, 0), ext(0x3F6A, 0xC000_0000_0000_0000), SINGLE);
+    assert_eq!(result(&cpu), (0x3F6B, J, UNFL | INEX2 | AUNFL | AINEX));
+    // All of it goes: the rounding mode says what stays (MC68881UM 6.1.5)
+    for (rnd, high, man) in [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0x3F6A, J)] {
+        let cpu = run_fop(FMOVE, ext(0, 0), ext(0x3000, J), SINGLE | (rnd << 4));
+        assert_eq!(
+            result(&cpu),
+            (high, man, UNFL | INEX2 | AUNFL | AINEX),
+            "mode {rnd}"
+        );
+    }
+}
+
+/// Rounding happens once, from all the bits (MC68881UM figure 6-3): rounding to
+/// extended precision first would lose the sticky bit here
+#[test]
+fn no_double_rounding() {
+    const AINEX: Long = 1 << 3;
+    // 1 + 2^-24 + 2^-16382: above half way in single precision
+    let cpu = run_fop(
+        FADD,
+        ext(0x3FFF, 0x8000_0080_0000_0000),
+        ext(0x0001, J),
+        1 << 6,
+    );
+    assert_eq!(result(&cpu), (0x3FFF, 0x8000_0100_0000_0000, INEX2 | AINEX));
+}
+
+/// INEX2 for anything lost, however far apart the operands are (MC68881UM figure 6-3)
+#[test]
+fn inexact_with_operands_far_apart() {
+    const AINEX: Long = 1 << 3;
+    let cpu = run_fop(FADD, ext(0x7FFE, !0), ext(0x3FFF, J), 0);
+    assert_eq!(result(&cpu), (0x7FFE, !0, INEX2 | AINEX));
+    // Toward zero, a smaller number of the other sign takes one off
+    let cpu = run_fop(FADD, ext(0x3FFF, J), ext(0x8000, 1), 1 << 4);
+    assert_eq!(result(&cpu), (0x3FFE, !0, INEX2 | AINEX));
+}
+
+/// Rounds correctly: sqrt(1 - 2^-64) is nearer to 1 - 2^-64 than to 1
+#[test]
+fn fsqrt_rounds_correctly() {
+    const AINEX: Long = 1 << 3;
+    let cpu = run_fop(FSQRT, ext(0, 0), ext(0x3FFE, !0), 0);
+    assert_eq!(result(&cpu), (0x3FFE, !0, INEX2 | AINEX));
+    let cpu = run_fop(FSQRT, ext(0, 0), ext(0x4001, J), 0);
+    assert_eq!(result(&cpu), (0x4000, J, 0));
+    let cpu = run_fop(FSQRT, ext(0, 0), ext(0x4000, J), 0);
+    assert_eq!(result(&cpu), (0x3FFF, 0xB504_F333_F9DE_6484, INEX2 | AINEX));
+}
+
+/// NANs: the operand itself is the result, the destination's if both are, and a
+/// signaling one becomes non-signaling (MC68881UM 4.5.4). Created NANs have all ones,
+/// and the sign is clear in what the 68881UM calls the default NAN (table 3-3, Motorola's
+/// ftest).
+#[test]
+fn nan_results() {
+    const QNAN: BitsExtReal = BitsExtReal(0xFFFF_0000_D555_5555_5555_5555);
+    const SNAN_BIT: Long = 1 << 14;
+    const AIOP: Long = 1 << 7;
+    const OPERR: Long = 1 << 13;
+    let snan = ext(0x7FFF, 0xA000_0000_0000_0000);
+    // Propagated with the payload, and no exception
+    let cpu = run_fop(FADD, ext(0x3FFF, J), QNAN, 0);
+    assert_eq!(result(&cpu), (0xFFFF, 0xD555_5555_5555_5555, 0));
+    // FNEG and FABS change nothing of it
+    let cpu = run_fop(0x1A, ext(0, 0), QNAN, 0);
+    assert_eq!(result(&cpu), (0xFFFF, 0xD555_5555_5555_5555, 0));
+    // The destination's has priority
+    let cpu = run_fop(FADD, ext(0x7FFF, 0xC000_0000_0000_0000), QNAN, 0);
+    assert_eq!(result(&cpu), (0x7FFF, 0xC000_0000_0000_0000, 0));
+    // Signaling
+    let cpu = run_fop(FADD, ext(0x3FFF, J), snan, 0);
+    assert_eq!(
+        result(&cpu),
+        (0x7FFF, 0xE000_0000_0000_0000, SNAN_BIT | AIOP)
+    );
+    // Created
+    let cpu = run_fop(FDIV, ext(0, 0), ext(0, 0), 0);
+    assert_eq!(result(&cpu), (0x7FFF, !0, OPERR | AIOP));
+}
+
+/// FINT and FGETMAN give extended precision numbers (MC68881UM FINT, FGETMAN), and the
+/// rounding precision of FPCR doesn't apply to them
+#[test]
+fn extended_results_whatever_the_rounding_precision() {
+    const SINGLE: Long = 1 << 6;
+    let value = ext(0x7FFE, !0);
+    assert_eq!(
+        result(&run_fop(0x01, ext(0, 0), value, SINGLE)),
+        (0x7FFE, !0, 0)
+    );
+    assert_eq!(
+        result(&run_fop(0x03, ext(0, 0), value, SINGLE)),
+        (0x7FFE, !0, 0)
+    );
+    assert_eq!(
+        result(&run_fop(0x1F, ext(0, 0), value, SINGLE)),
+        (0x3FFF, !0, 0)
+    );
+}
+
+/// FSGLMUL and FSGLDIV truncate the mantissas of the operands to single precision,
+/// round the result to it, and keep the exponent range of extended precision
+/// (MC68881UM 4.5.5.2)
+#[test]
+fn single_precision_multiply_and_divide() {
+    const FSGLMUL: Word = 0x27;
+    const FSGLDIV: Word = 0x24;
+    // The bits below 24 of the operand don't count
+    let cpu = run_fop(FSGLMUL, ext(0x3FFF, J | 0xFF_FFFF_FFFF), ext(0x3FFF, J), 0);
+    assert_eq!(result(&cpu), (0x3FFF, J, 0));
+    // Far out of the range of single precision, and of any FPCR precision
+    let cpu = run_fop(FSGLMUL, ext(0x7000, J), ext(0x3FFF, J), 2 << 6);
+    assert_eq!(result(&cpu), (0x7000, J, 0));
+    let cpu = run_fop(
+        FSGLDIV,
+        ext(0x3FFF, J),
+        ext(0x4000, 0xC000_0000_0000_0000),
+        0,
+    );
+    assert_eq!(
+        result(&cpu),
+        (0x3FFD, 0xAAAA_AB00_0000_0000, INEX2 | (1 << 3))
+    );
+}
+
+/// From 2^14 on, FSCALE always overflows or underflows (MC68881UM FSCALE), here with a
+/// denormalized number that would otherwise come back in range
+#[test]
+fn fscale_out_of_range() {
+    const FSCALE: Word = 0x26;
+    const AOVFL_AINEX: Long = (1 << 6) | (1 << 3);
+    let cpu = run_fop(FSCALE, ext(0, 1), ext(0x400D, J), 0);
+    assert_eq!(result(&cpu), (0x7FFF, 0, OVFL | AOVFL_AINEX));
+    let cpu = run_fop(FSCALE, ext(0x7FFE, !0), ext(0xC00D, J), 0);
+    assert_eq!(result(&cpu), (0, 0, UNFL | INEX2 | (1 << 5) | (1 << 3)));
+    // In range below that
+    let cpu = run_fop(
+        FSCALE,
+        ext(0x3FFF, J),
+        ext(0x4000, 0xC000_0000_0000_0000),
+        0,
+    );
+    assert_eq!(result(&cpu), (0x4002, J, 0));
+    // By an infinity is an operand error, and of an infinity or a zero the same
+    let cpu = run_fop(FSCALE, ext(0x3FFF, J), BitsExtReal::inf(false), 0);
+    assert_eq!(result(&cpu), (0x7FFF, !0, (1 << 13) | (1 << 7)));
+    let cpu = run_fop(FSCALE, BitsExtReal::inf(true), ext(0x3FFF, J), 0);
+    assert_eq!(result(&cpu), (0xFFFF, 0, 0));
+}

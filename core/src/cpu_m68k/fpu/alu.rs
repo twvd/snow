@@ -1,7 +1,7 @@
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::{FPU_M68040, FpuM68kType};
 use anyhow::{Result, bail};
-use arpfloat::{Float, RoundingMode, Semantics};
+use arpfloat::{Float, RoundingMode};
 
 use crate::bus::{Address, Bus, IrqSource};
 
@@ -12,7 +12,8 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 
-use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
+use super::SEMANTICS_EXTENDED;
+use super::arith::{self, Range, Unpacked, Value};
 
 impl<
     TBus,
@@ -38,58 +39,14 @@ where
         }
     }
 
-    fn fpu_rounding_precision(&self) -> Result<Semantics> {
-        // 3.5.2 Rounding modes
-        // Table 3-21
-        Ok(match self.regs.fpu.fpcr.prec() {
-            0b00 => SEMANTICS_EXTENDED,
-            0b01 => SEMANTICS_SINGLE,
-            0b10 => SEMANTICS_DOUBLE,
-            // Undefined in the manual, it must not stop the emulator
-            0b11 => SEMANTICS_EXTENDED,
-            _ => unreachable!(),
-        })
-    }
-
-    fn fpu_rounding_mode_precision(&self) -> Result<Semantics> {
-        Ok(self
-            .fpu_rounding_precision()?
-            .with_rm(self.fpu_rounding_mode()))
-    }
-
-    /// FMOD and FREM: the exact remainder, and in FPSR the sign and low 7 bits
-    /// of the quotient (MC68881UM FMOD, FREM)
-    fn fpu_remainder(&mut self, dest: &Float, source: &Float, nearest: bool) -> Float {
-        self.regs.fpu.fpsr.set_quotient(0);
-        self.regs
-            .fpu
-            .fpsr
-            .set_quotient_s(dest.is_negative() != source.is_negative());
-        if dest.is_nan() || source.is_nan() || dest.is_inf() || source.is_zero() {
-            return Float::nan(SEMANTICS_EXTENDED, false);
+    /// The rounding precision of FPCR (MC68881UM 2.2.2)
+    fn fpu_rounding_precision(&self) -> Range {
+        match self.regs.fpu.fpcr.prec() {
+            0b01 => Range::SINGLE,
+            0b10 => Range::DOUBLE,
+            // 0b11 is undefined in the manual, it must not stop the emulator
+            _ => Range::EXTENDED,
         }
-        if source.is_inf() || dest.is_zero() {
-            return dest.clone();
-        }
-
-        let (mut rest, mut quotient) = dest.remainder_parts(source);
-        let mut negative = dest.is_negative();
-        if nearest {
-            let divisor = source.abs().cast(rest.get_semantics());
-            let twice = rest.scale(1, RoundingMode::Zero);
-            if twice > divisor || (twice == divisor && quotient & 1 != 0) {
-                rest = divisor - rest;
-                quotient = quotient.wrapping_add(1) & 0x7F;
-                negative = !negative;
-            }
-        }
-        self.regs.fpu.fpsr.set_quotient(quotient);
-        if rest.is_zero() {
-            negative = dest.is_negative();
-        }
-        let mut result = rest.cast(SEMANTICS_EXTENDED);
-        result.set_sign(negative);
-        result
     }
 
     /// e^x - 1 keeps the precision of small x: done in a higher precision, and
@@ -126,177 +83,133 @@ where
             .cast(SEMANTICS_EXTENDED)
     }
 
-    /// Rounds to an integer with the rounding mode of FPCR
-    fn fpu_round_integer(&self, value: &Float) -> Float {
-        if value.is_nan() || value.is_inf() || value.is_zero() {
-            return value.clone();
-        }
-        let rounded = match self.fpu_rounding_mode() {
-            RoundingMode::Zero => value.trunc(),
-            RoundingMode::Negative => value.floor(),
-            RoundingMode::Positive => value.ceil(),
-            _ => {
-                let trunc = value.trunc();
-                let one = Float::one(trunc.get_semantics(), value.is_negative());
-                let half = Float::one(trunc.get_semantics(), false).scale(-1, RoundingMode::Zero);
-                let rest = (value - &trunc).abs();
-                let odd = (&trunc / Float::from_u64(trunc.get_semantics(), 2)).trunc()
-                    * Float::from_u64(trunc.get_semantics(), 2)
-                    != trunc;
-                if rest > half || (rest == half && odd) {
-                    trunc + one
-                } else {
-                    trunc
-                }
-            }
-        };
-        // A zero keeps the sign of what it comes from
-        if rounded.is_zero() {
-            Float::zero(rounded.get_semantics(), value.is_negative())
-        } else {
-            rounded
-        }
-    }
-
     /// FMOVE of FPn to an integer between `min` and `max`: rounds with the
     /// rounding mode of FPCR. Inexact sets INEX2. Not fitting sets OPERR and gives
     /// the largest integer of that sign (MC68881UM 6.1.3).
     pub(in crate::cpu_m68k) fn fpu_to_integer(&mut self, fpx: usize, min: i64, max: i64) -> i64 {
-        let value = Float::from(self.regs.fpu.fp[fpx]);
+        let value = self.regs.fpu.fp[fpx];
         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
 
-        let rounded = self.fpu_round_integer(&value);
-        let sem = rounded.get_semantics();
-        let out = if value.is_nan() || rounded > Float::from_i64(sem, max) {
-            self.regs.fpu.fpsr.exs_mut().set_operr(true);
-            max
-        } else if rounded < Float::from_i64(sem, min) {
-            self.regs.fpu.fpsr.exs_mut().set_operr(true);
-            min
-        } else {
-            self.regs.fpu.fpsr.exs_mut().set_inex2(rounded != value);
-            rounded.to_i64()
+        let limit = if value.s() { min } else { max };
+        let out = match arith::kind(&value) {
+            arith::Kind::Zero => 0,
+            arith::Kind::Num(a) => {
+                let (whole, inexact) = arith::round_to_integer(a, self.fpu_rounding_mode());
+                let magnitude = whole.map_or(0, |w| {
+                    if w.exp < 63 {
+                        (w.man >> (127 - w.exp as u32)) as i64
+                    } else {
+                        i64::MAX
+                    }
+                });
+                let signed = if a.neg { -magnitude } else { magnitude };
+                if (min..=max).contains(&signed) {
+                    self.regs.fpu.fpsr.exs_mut().set_inex2(inexact);
+                    signed
+                } else {
+                    self.regs.fpu.fpsr.exs_mut().set_operr(true);
+                    limit
+                }
+            }
+            _ => {
+                self.regs.fpu.fpsr.exs_mut().set_operr(true);
+                limit
+            }
         };
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
         out
     }
 
-    pub(in crate::cpu_m68k) fn fpu_alu_op(
-        &mut self,
-        opmode: u8,
-        source: &BitsExtReal,
-        dest: &BitsExtReal,
-    ) -> Result<BitsExtReal> {
-        let source = &Float::from(*source);
-        let dest = &Float::from(*dest);
-
-        // The operands are used as they are, only the result gets the rounding
-        // precision of FPCR, or that of the instruction on the 68040 (MC68881UM
-        // 3.5.2). Operations work in extended precision with the rounding mode
-        // of FPCR.
-        let (opmode, sem) = match opmode::rounded(opmode) {
-            Some((op, double)) if FPU_TYPE == FPU_M68040 => {
-                let prec = if double {
-                    SEMANTICS_DOUBLE
-                } else {
-                    SEMANTICS_SINGLE
-                };
-                (op, prec.with_rm(self.fpu_rounding_mode()))
-            }
-            _ => (opmode, self.fpu_rounding_mode_precision()?),
+    /// The source of a function that can't handle the special values: the table of
+    /// each instruction in section 4 of the MC68881UM gives their results
+    fn fpu_special_function(opmode: u8, source: &BitsExtReal) -> Option<Value> {
+        let neg = source.s();
+        let same_zero = Value::Exact(BitsExtReal::zero(neg));
+        let plus_inf = Value::Exact(BitsExtReal::inf(false));
+        let one = |neg| Value::Exact(BitsExtReal::from(&Float::one(SEMANTICS_EXTENDED, neg)));
+        let inf = source.is_inf();
+        let zero = source.is_zero();
+        // Whether the magnitude is above 1 or is 1
+        let (above_one, is_one) = match arith::kind(source) {
+            arith::Kind::Num(a) => (
+                a.exp > 0 || (a.exp == 0 && a.man != 1 << 127),
+                a.exp == 0 && a.man == 1 << 127,
+            ),
+            _ => (false, false),
         };
-        let ext = SEMANTICS_EXTENDED.with_rm(self.fpu_rounding_mode());
-        // The transcendental functions run in the default mode, as only their
-        // final result gets the rounding mode (MC68881UM 4.5.5.2)
-        let near = &source.cast(SEMANTICS_EXTENDED);
-        let source = &source.cast(ext);
-        let dest = &dest.cast(ext);
-
-        // Each arithmetic instruction starts its exception status anew
-        self.regs.fpu.fpsr.exs_mut().0 = 0;
-
-        let result = match opmode {
-            opmode::FMOVE => source.clone(),
-            opmode::FSQRT => source.sqrt(),
-            opmode::FABS => source.abs(),
-            opmode::FADD => dest + source,
-            opmode::FSUB => dest - source,
-            opmode::FMUL => dest * source,
-            opmode::FDIV => dest / source,
-            // Single precision with FPCR rounding mode
-            opmode::FSGLMUL => {
-                let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
-                let source = &source.cast(sem);
-                let dest = &dest.cast(sem);
-                dest * source
+        match opmode {
+            opmode::FSIN | opmode::FTAN if inf => Some(Value::OpErr),
+            opmode::FCOS if inf => Some(Value::OpErr),
+            opmode::FSIN | opmode::FTAN | opmode::FSINH | opmode::FTANH if zero => Some(same_zero),
+            opmode::FASIN | opmode::FATAN | opmode::FATANH | opmode::FETOXM1 if zero => {
+                Some(same_zero)
             }
-            // Single precision with FPCR rounding mode
-            opmode::FSGLDIV => {
-                let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
-                let source = &source.cast(sem);
-                let dest = &dest.cast(sem);
-                dest / source
-            }
-            opmode::FINT => self.fpu_round_integer(source),
-            opmode::FINTRZ => source
-                .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
-                .trunc()
-                .cast(SEMANTICS_EXTENDED),
-            opmode::FCMP => {
-                // Equal infinities and zeros compare as equal, with the sign of
-                // the destination (MC68881UM FCMP)
-                let result = if (dest.is_inf() || dest.is_zero())
-                    && (source.is_inf() || source.is_zero())
-                    && (dest.is_inf() == source.is_inf())
-                    && (dest.is_zero() || dest.is_negative() == source.is_negative())
-                {
-                    Float::zero(ext, dest.is_negative())
+            opmode::FLOGNP1 if zero => Some(same_zero),
+            opmode::FCOS | opmode::FCOSH if zero => Some(one(false)),
+            opmode::FETOX | opmode::FTWOTOX | opmode::FTENTOX if zero => Some(one(false)),
+            opmode::FACOS | opmode::FASIN if inf || above_one => Some(Value::OpErr),
+            opmode::FACOS if is_one && !neg => Some(Value::Exact(BitsExtReal::zero(false))),
+            opmode::FATANH if inf || above_one => Some(Value::OpErr),
+            // This differs from the manuals, which say that +1 gives minus infinity and
+            // -1 plus infinity (MC68881UM 6.1.6, M68000PRM FATANH): that's the wrong sign
+            // for this function, and the M68040 FPSP gives infinity with the sign of the
+            // source, as seen running the ROM's on the Quadra 700. Not checked on a real
+            // 6888x: FPUCheck has this for when there's one.
+            opmode::FATANH if is_one => Some(Value::DivZero(neg)),
+            opmode::FSINH if inf => Some(Value::Exact(*source)),
+            opmode::FCOSH if inf => Some(plus_inf),
+            opmode::FTANH if inf => Some(one(neg)),
+            opmode::FETOX | opmode::FTWOTOX | opmode::FTENTOX if inf => Some(if neg {
+                Value::Exact(BitsExtReal::zero(false))
+            } else {
+                plus_inf
+            }),
+            opmode::FETOXM1 if inf => Some(if neg { one(true) } else { plus_inf }),
+            opmode::FLOGN | opmode::FLOG2 | opmode::FLOG10 => {
+                if zero {
+                    Some(Value::DivZero(true))
+                } else if neg {
+                    Some(Value::OpErr)
+                } else if inf {
+                    Some(plus_inf)
+                } else if is_one {
+                    Some(Value::Exact(BitsExtReal::zero(false)))
                 } else {
-                    dest - source
-                };
-                self.fpu_condition_codes(&result);
-                // TODO flags
-                return Ok(BitsExtReal::from(&dest.cast(SEMANTICS_EXTENDED)));
-            }
-            // Round to nearest whatever FPCR says
-            opmode::FREM => self.fpu_remainder(dest, source, true),
-            // Round to zero whatever FPCR says
-            opmode::FMOD => self.fpu_remainder(dest, source, false),
-            opmode::FGETEXP => {
-                if source.is_inf() || source.is_nan() {
-                    Float::nan(SEMANTICS_EXTENDED, false)
-                } else if source.is_zero() {
-                    source.clone()
-                } else {
-                    // No need to remove the bias here as we store FPx registers unbiased
-                    Float::from_i64(SEMANTICS_EXTENDED, source.get_exp())
+                    None
                 }
             }
-            opmode::FTST => {
-                self.fpu_condition_codes(source);
-                return Ok(BitsExtReal::from(&dest.cast(SEMANTICS_EXTENDED)));
+            opmode::FLOGNP1 => {
+                if neg && is_one {
+                    Some(Value::DivZero(true))
+                } else if neg && (inf || above_one) {
+                    Some(Value::OpErr)
+                } else if inf {
+                    Some(plus_inf)
+                } else {
+                    None
+                }
             }
-            opmode::FNEG => source.neg(),
+            _ => None,
+        }
+    }
+
+    /// A transcendental function of an in-range source
+    fn fpu_function(opmode: u8, source: &BitsExtReal) -> Value {
+        if let Some(special) = Self::fpu_special_function(opmode, source) {
+            return special;
+        }
+        // These run in the default mode, as only their final result gets the rounding
+        // mode (MC68881UM 4.5.5.2)
+        let near = &Float::from(*source);
+        let result = match opmode {
             opmode::FACOS => near.acos(),
             opmode::FCOS => near.cos(),
             opmode::FATAN => near.atan(),
             opmode::FSIN => near.sin(),
-            opmode::FSINCOS..=opmode::FSINCOS_LAST => {
-                let fpc = usize::from(opmode & 0b111);
-
-                // M6888x UM: "If FPc and FPs specify the same floating-point data register,
-                // the sine result is stored in the register, and the cosine result is discarded."
-                //
-                // So we store the cosine result first, which will be overwritten by the sine
-                // result later if destination registers are the same.
-                self.regs.fpu.fp[fpc] = BitsExtReal::from(&near.cos());
-
-                near.sin()
-            }
             opmode::FASIN => near.asin(),
             opmode::FTAN => near.tan(),
             opmode::FLOGN => near.log(),
@@ -311,99 +224,270 @@ where
             opmode::FCOSH => near.cosh(),
             opmode::FTANH => near.tanh(),
             opmode::FATANH => near.atanh(),
-            opmode::FSCALE => dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
-            opmode::FGETMAN => {
-                if source.is_inf() || source.is_nan() {
-                    Float::nan(SEMANTICS_EXTENDED, false)
-                } else if source.is_zero() {
-                    source.clone()
-                } else {
-                    // Decompose and recreate float to get a normalized mantissa,
-                    // with the sign of the source (MC68881UM FGETMAN)
-                    Float::from_parts(
-                        SEMANTICS_EXTENDED,
-                        source.is_negative(),
-                        0,
-                        source.get_mantissa(),
-                    )
-                }
-            }
-
-            _ => bail!(CpuError::IllegalInstruction),
+            _ => unreachable!("not a function"),
         };
+        arith::from_float(&result, near.is_negative())
+    }
 
-        let result = result.cast(sem);
-        self.fpu_set_status(opmode, source, dest, &result);
+    /// Applies the end of an arithmetic instruction to what it computed: a rounded
+    /// result and the exception status (MC68881UM 4.5.5.2)
+    fn fpu_finish(&mut self, value: Value, to: Range) -> BitsExtReal {
+        match value {
+            Value::Exact(bits) => bits,
+            Value::OpErr => {
+                self.regs.fpu.fpsr.exs_mut().set_operr(true);
+                BitsExtReal::nan(false)
+            }
+            Value::DivZero(neg) => {
+                self.regs.fpu.fpsr.exs_mut().set_dz(true);
+                BitsExtReal::inf(neg)
+            }
+            Value::Round(unpacked) => {
+                let rounded = arith::round(unpacked, self.fpu_rounding_mode(), to);
+                // Added to what's there already: FSINCOS has two results, and whole
+                // numbers have inexact bits of their own
+                let fpsr = &mut self.regs.fpu.fpsr;
+                let (inex2, ovfl, unfl) =
+                    (fpsr.exs().inex2(), fpsr.exs().ovfl(), fpsr.exs().unfl());
+                fpsr.exs_mut().set_inex2(inex2 || rounded.inexact);
+                fpsr.exs_mut().set_ovfl(ovfl || rounded.overflow);
+                fpsr.exs_mut().set_unfl(unfl || rounded.underflow);
+                rounded.bits
+            }
+        }
+    }
+
+    pub(in crate::cpu_m68k) fn fpu_alu_op(
+        &mut self,
+        opmode: u8,
+        source: &BitsExtReal,
+        dest: &BitsExtReal,
+    ) -> Result<BitsExtReal> {
+        // The result gets the rounding precision of FPCR (MC68881UM 3.5.2), or
+        // that of the instruction on the 68040
+        let (opmode, to) = match opmode::rounded(opmode) {
+            Some((op, double)) if FPU_TYPE == FPU_M68040 => {
+                (op, if double { Range::DOUBLE } else { Range::SINGLE })
+            }
+            _ => (opmode, self.fpu_rounding_precision()),
+        };
+        let rm = self.fpu_rounding_mode();
+
+        // Each arithmetic instruction starts its exception status anew
+        self.regs.fpu.fpsr.exs_mut().0 = 0;
+
+        let dyadic = opmode::is_dyadic(opmode);
+        let result = if source.is_nan() || (dyadic && dest.is_nan()) {
+            // Of two NANs the destination's is the result, and a signaling one
+            // becomes non-signaling (MC68881UM 4.5.4)
+            let snan = source.is_snan() || (dyadic && dest.is_snan());
+            self.regs.fpu.fpsr.exs_mut().set_snan(snan);
+            let nan = if dyadic && dest.is_nan() {
+                dest
+            } else {
+                source
+            };
+            let quiet = nan.with_f(nan.f() | (1 << 62));
+            if matches!(opmode, opmode::FCMP | opmode::FTST) {
+                self.fpu_condition_codes(&quiet);
+                let excs = self.regs.fpu.fpsr;
+                self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+                return Ok(*dest);
+            }
+            if matches!(opmode, opmode::FSINCOS..=opmode::FSINCOS_LAST) {
+                self.regs.fpu.fp[usize::from(opmode & 0b111)] = quiet;
+            }
+            if matches!(opmode, opmode::FMOD | opmode::FREM) {
+                self.regs.fpu.fpsr.set_quotient(0);
+                self.regs.fpu.fpsr.set_quotient_s(false);
+            }
+            quiet
+        } else {
+            let value = match opmode {
+                opmode::FMOVE => match arith::kind(source) {
+                    arith::Kind::Num(a) => Value::Round(a),
+                    arith::Kind::Zero => Value::Exact(BitsExtReal::zero(source.s())),
+                    _ => Value::Exact(BitsExtReal::inf(source.s())),
+                },
+                opmode::FABS | opmode::FNEG => {
+                    let neg = opmode == opmode::FNEG && !source.s();
+                    match arith::kind(source) {
+                        arith::Kind::Num(a) => Value::Round(Unpacked { neg, ..a }),
+                        arith::Kind::Zero => Value::Exact(BitsExtReal::zero(neg)),
+                        _ => Value::Exact(BitsExtReal::inf(neg)),
+                    }
+                }
+                opmode::FSQRT => arith::sqrt(source),
+                opmode::FADD => arith::add(dest, source, false, rm),
+                opmode::FSUB => arith::add(dest, source, true, rm),
+                opmode::FMUL => arith::mul(dest, source),
+                opmode::FDIV => arith::div(dest, source),
+                opmode::FSGLMUL | opmode::FSGLDIV => {
+                    // The mantissa of each operand is truncated to single precision
+                    // first, and the rounding precision of FPCR is ignored (MC68881UM
+                    // 4.5.5.2). From its first bit: operands are normalized in the FPU, as
+                    // the M68040FPSP has it for a denormalized one, which isn't zero then.
+                    let truncated = |bits: &BitsExtReal| {
+                        let man = bits.raw_mantissa();
+                        let kept = 0xFFFF_FF00_0000_0000u64.checked_shr(man.leading_zeros());
+                        bits.with_raw_mantissa(man & kept.unwrap_or(0))
+                    };
+                    let (d, s) = (truncated(dest), truncated(source));
+                    let value = if opmode == opmode::FSGLMUL {
+                        arith::mul(&d, &s)
+                    } else {
+                        arith::div(&d, &s)
+                    };
+                    let bits = self.fpu_finish(value, Range::SINGLE_MANTISSA);
+                    Value::Exact(bits)
+                }
+                opmode::FINT | opmode::FINTRZ => {
+                    let mode = if opmode == opmode::FINTRZ {
+                        RoundingMode::Zero
+                    } else {
+                        rm
+                    };
+                    match arith::kind(source) {
+                        arith::Kind::Num(a) => {
+                            let (whole, inexact) = arith::round_to_integer(a, mode);
+                            self.regs.fpu.fpsr.exs_mut().set_inex2(inexact);
+                            // An extended precision number, whatever the rounding
+                            // precision (MC68881UM FINT, FINTRZ)
+                            let bits = whole.map_or_else(
+                                || BitsExtReal::zero(a.neg),
+                                |w| arith::round(w, RoundingMode::Zero, Range::EXTENDED).bits,
+                            );
+                            Value::Exact(bits)
+                        }
+                        arith::Kind::Zero => Value::Exact(BitsExtReal::zero(source.s())),
+                        _ => Value::Exact(BitsExtReal::inf(source.s())),
+                    }
+                }
+                opmode::FCMP => {
+                    let (less, equal) = arith::compare(dest, source);
+                    // The infinity bit is always cleared. Equal zeros and infinities
+                    // have N from the destination (MC68881UM FCMP)
+                    let fpsr = &mut self.regs.fpu.fpsr;
+                    fpsr.set_fpcc_nan(false);
+                    fpsr.set_fpcc_i(false);
+                    fpsr.set_fpcc_z(equal);
+                    fpsr.set_fpcc_n(less || (equal && dest.s()));
+                    return Ok(*dest);
+                }
+                opmode::FTST => {
+                    self.fpu_condition_codes(source);
+                    return Ok(*dest);
+                }
+                opmode::FREM | opmode::FMOD => match (arith::kind(dest), arith::kind(source)) {
+                    (arith::Kind::Inf, _) | (_, arith::Kind::Zero) => {
+                        // No quotient: the sign is clear too, as the M68040 FPSP leaves it
+                        self.regs.fpu.fpsr.set_quotient(0);
+                        self.regs.fpu.fpsr.set_quotient_s(false);
+                        Value::OpErr
+                    }
+                    (arith::Kind::Zero, _) => {
+                        self.regs.fpu.fpsr.set_quotient(0);
+                        self.regs.fpu.fpsr.set_quotient_s(dest.s() != source.s());
+                        Value::Exact(BitsExtReal::zero(dest.s()))
+                    }
+                    (arith::Kind::Num(a), arith::Kind::Inf) => {
+                        self.regs.fpu.fpsr.set_quotient(0);
+                        self.regs.fpu.fpsr.set_quotient_s(dest.s() != source.s());
+                        Value::Round(a)
+                    }
+                    (arith::Kind::Num(a), arith::Kind::Num(b)) => {
+                        let (rest, neg_quotient, quotient) =
+                            arith::remainder(a, b, opmode == opmode::FREM);
+                        self.regs.fpu.fpsr.set_quotient(quotient);
+                        self.regs.fpu.fpsr.set_quotient_s(neg_quotient);
+                        rest.map_or_else(|| Value::Exact(BitsExtReal::zero(a.neg)), Value::Round)
+                    }
+                    _ => unreachable!("NANs are handled before"),
+                },
+                opmode::FGETEXP => match arith::kind(source) {
+                    arith::Kind::Inf => Value::OpErr,
+                    arith::Kind::Zero => Value::Exact(*source),
+                    arith::Kind::Num(a) if a.exp == 0 => Value::Exact(BitsExtReal::zero(false)),
+                    arith::Kind::Num(a) => {
+                        let magnitude = u128::from(a.exp.unsigned_abs());
+                        let top = 127 - magnitude.leading_zeros();
+                        Value::Round(Unpacked {
+                            neg: a.exp < 0,
+                            exp: top as i32,
+                            man: magnitude << (127 - top),
+                            sticky: false,
+                        })
+                    }
+                    arith::Kind::Nan => unreachable!("NANs are handled before"),
+                },
+                opmode::FGETMAN => match arith::kind(source) {
+                    arith::Kind::Inf => Value::OpErr,
+                    arith::Kind::Zero => Value::Exact(*source),
+                    // An extended precision number, whatever the rounding precision
+                    // (MC68881UM FGETMAN)
+                    arith::Kind::Num(a) => Value::Exact(
+                        arith::round(Unpacked { exp: 0, ..a }, rm, Range::EXTENDED).bits,
+                    ),
+                    arith::Kind::Nan => unreachable!("NANs are handled before"),
+                },
+                opmode::FSCALE => match (arith::kind(dest), arith::kind(source)) {
+                    (_, arith::Kind::Inf) => Value::OpErr,
+                    (arith::Kind::Zero | arith::Kind::Inf, _) => Value::Exact(*dest),
+                    (arith::Kind::Num(a), arith::Kind::Zero) => Value::Round(a),
+                    (arith::Kind::Num(a), arith::Kind::Num(by)) => {
+                        Value::Round(arith::scale(a, by))
+                    }
+                    _ => unreachable!("NANs are handled before"),
+                },
+                opmode::FSINCOS..=opmode::FSINCOS_LAST => {
+                    // M6888x UM: "If FPc and FPs specify the same floating-point data
+                    // register, the sine result is stored in the register, and the
+                    // cosine result is discarded."
+                    //
+                    // So we store the cosine result first, which will be overwritten
+                    // by the sine result later if destination registers are the same.
+                    let cos = Self::fpu_function(opmode::FCOS, source);
+                    self.regs.fpu.fp[usize::from(opmode & 0b111)] = self.fpu_finish(cos, to);
+                    Self::fpu_function(opmode::FSIN, source)
+                }
+                opmode::FACOS
+                | opmode::FCOS
+                | opmode::FATAN
+                | opmode::FSIN
+                | opmode::FASIN
+                | opmode::FTAN
+                | opmode::FLOGN
+                | opmode::FLOGNP1
+                | opmode::FLOG2
+                | opmode::FLOG10
+                | opmode::FETOX
+                | opmode::FETOXM1
+                | opmode::FTWOTOX
+                | opmode::FTENTOX
+                | opmode::FSINH
+                | opmode::FCOSH
+                | opmode::FTANH
+                | opmode::FATANH => Self::fpu_function(opmode, source),
+
+                _ => bail!(CpuError::IllegalInstruction),
+            };
+            self.fpu_finish(value, to)
+        };
 
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
 
-        Ok(BitsExtReal::from(&result.cast(SEMANTICS_EXTENDED)))
-    }
-
-    /// Sets the exception status of an arithmetic instruction and accrues it
-    /// (MC68881UM 6.1). Snow's registers don't keep the payload of a NaN, so a
-    /// signalling NaN can't be told apart and SNAN is never set.
-    fn fpu_set_status(&mut self, opmode: u8, source: &Float, dest: &Float, result: &Float) {
-        let dyadic = matches!(opmode, 0b0100000..=0b0101000);
-        let inputs_nan = source.is_nan() || (dyadic && dest.is_nan());
-        let inputs_inf = source.is_inf() || (dyadic && dest.is_inf());
-        let divide = matches!(opmode, 0b0100000 | 0b0100100);
-        let pole = matches!(
-            opmode,
-            0b0010100 | 0b0010101 | 0b0010110 | 0b0000110 | 0b0001101
-        );
-        let dz = result.is_inf() && !inputs_inf && (divide || pole);
-        let ovfl = result.is_inf() && !inputs_inf && !dz;
-        let unfl = result.is_zero()
-            && matches!(
-                opmode,
-                0b0100011 | 0b0100000 | 0b0100110 | 0b0100111 | 0b0100100
-            )
-            && !inputs_inf
-            && !source.is_zero()
-            && !dest.is_zero();
-
-        let inex2 = ovfl || unfl || Self::fpu_inexact(opmode, source, dest, result);
-        let fpsr = &mut self.regs.fpu.fpsr;
-        fpsr.exs_mut().set_operr(result.is_nan() && !inputs_nan);
-        fpsr.exs_mut().set_dz(dz);
-        fpsr.exs_mut().set_ovfl(ovfl);
-        fpsr.exs_mut().set_unfl(unfl);
-        fpsr.exs_mut().set_inex2(inex2);
-
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+
+        Ok(result)
     }
 
-    /// Tells if `result` is not the exact result of the instruction: compares
-    /// with the operation in a much higher precision for the basic operations,
-    /// and takes the others to be inexact unless the result is not a number.
-    fn fpu_inexact(opmode: u8, source: &Float, dest: &Float, result: &Float) -> bool {
-        if result.is_nan() || result.is_inf() {
-            return false;
-        }
-        let high = SEMANTICS_EXTENDED.increase_precision(256);
-        let (s, d) = (source.cast(high), dest.cast(high));
-        let exact = match opmode {
-            0b0000000 | 0b0011000 | 0b0011010 => s.abs(),
-            0b0100010 => return (&d + &s).abs() != result.cast(high).abs(),
-            0b0101000 => return (&d - &s).abs() != result.cast(high).abs(),
-            0b0100011 => (&d * &s).abs(),
-            0b0100000 if !s.is_zero() => (&d / &s).abs(),
-            0b0000100 => s.sqrt().abs(),
-            // Whole numbers, and FMOD and FREM are exact
-            0b0000001 | 0b0000011 => return result.cast(high) != s,
-            0b0100101 | 0b0100001 | 0b0011110 | 0b0011111 | 0b0100110 => return false,
-            _ => return !result.is_zero(),
-        };
-        result.cast(high).abs() != exact
-    }
-
-    pub(in crate::cpu_m68k) fn fpu_condition_codes(&mut self, result: &Float) {
+    /// The condition codes of a result (MC68881UM 4.5.5.1)
+    pub(in crate::cpu_m68k) fn fpu_condition_codes(&mut self, result: &BitsExtReal) {
         self.regs.fpu.fpsr.set_fpcc_nan(result.is_nan());
         self.regs.fpu.fpsr.set_fpcc_i(result.is_inf());
-        self.regs.fpu.fpsr.set_fpcc_n(result.is_negative());
+        self.regs.fpu.fpsr.set_fpcc_n(result.s());
         self.regs.fpu.fpsr.set_fpcc_z(result.is_zero());
     }
 }

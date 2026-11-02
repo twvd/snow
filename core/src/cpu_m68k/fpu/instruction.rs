@@ -106,6 +106,15 @@ pub(in crate::cpu_m68k) mod opmode {
         FDSUB   = 0b1101100, "FDSUB";
     }
 
+    /// Tests if `opmode` has a destination operand as well as a source operand
+    /// (MC68881UM table 4-3)
+    pub(in crate::cpu_m68k) const fn is_dyadic(opmode: u8) -> bool {
+        matches!(
+            opmode,
+            FDIV | FMOD | FADD | FMUL | FSGLDIV | FREM | FSCALE | FSGLMUL | FSUB | FCMP
+        )
+    }
+
     /// Tests if the MC68040 runs `opmode` in hardware: the others take the
     /// unimplemented floating-point instruction exception (MC68040UM
     /// table 9-10)
