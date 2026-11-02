@@ -3,7 +3,7 @@
 //! What is particular to the V8: its address map, the layout of the RAM and
 //! of the video RAM, and its video modes. Its registers are in `pseudovia`.
 
-use super::bus::{IO_WAITS, Region};
+use super::lc_i_bus::{IO_WAITS, Region};
 use super::pseudovia::{RegisterExp, RegisterMonP};
 use super::video::Mode;
 use crate::bus::Address;

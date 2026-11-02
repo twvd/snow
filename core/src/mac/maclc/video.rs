@@ -9,8 +9,8 @@
 //! Video without video RAM (from main RAM) and the 560x384 mode of the
 //! Apple IIe card are not implemented.
 
-use super::bus::C16M_FREQUENCY;
 use super::{sonora, v8};
+use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::Debuggable;
 use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{DisplayBuffer, Renderer};

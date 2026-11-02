@@ -7,7 +7,7 @@
 //!
 //! The 560x384 mode of the Apple IIe card is not implemented.
 
-use super::bus::{IO_WAITS, Region};
+use super::lc_iii_bus::{IO_WAITS, Region};
 use super::video::Mode;
 use crate::bus::Address;
 use crate::mac::MacMonitor;

@@ -30,7 +30,8 @@ use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::macii::bus::MacIIBus;
-use crate::mac::maclc::bus::MacLCBus;
+use crate::mac::maclc::lc_i_bus::LcIBus;
+use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
@@ -120,6 +121,8 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => &inner.$($ref_target)*,
                         Self::MacLCII(inner) => &inner.$($ref_target)*,
                         Self::MacLCIIFpu(inner) => &inner.$($ref_target)*,
+                        Self::MacLCIII(inner) => &inner.$($ref_target)*,
+                        Self::MacLCIIIFpu(inner) => &inner.$($ref_target)*,
                         Self::Quadra700(inner) => &inner.$($ref_target)*,
                     }
                 }
@@ -138,6 +141,8 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCIIFpu(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLCIII(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLCIIIFpu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::Quadra700(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
@@ -156,6 +161,8 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => inner.$($immut_call_target)*,
                         Self::MacLCII(inner) => inner.$($immut_call_target)*,
                         Self::MacLCIIFpu(inner) => inner.$($immut_call_target)*,
+                        Self::MacLCIII(inner) => inner.$($immut_call_target)*,
+                        Self::MacLCIIIFpu(inner) => inner.$($immut_call_target)*,
                         Self::Quadra700(inner) => inner.$($immut_call_target)*,
                     }
                 }
@@ -174,6 +181,8 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => inner.$($mut_call_target)*,
                         Self::MacLCII(inner) => inner.$($mut_call_target)*,
                         Self::MacLCIIFpu(inner) => inner.$($mut_call_target)*,
+                        Self::MacLCIII(inner) => inner.$($mut_call_target)*,
+                        Self::MacLCIIIFpu(inner) => inner.$($mut_call_target)*,
                         Self::Quadra700(inner) => inner.$($mut_call_target)*,
                     }
                 }
@@ -287,13 +296,17 @@ enum EmulatorConfig {
     /// Macintosh SE/30 and 68030-based Macintosh IIs
     MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
     /// Macintosh LC
-    MacLC(Box<CpuM68020<MacLCBus<ChannelRenderer>>>),
+    MacLC(Box<CpuM68020<LcIBus<ChannelRenderer>>>),
     /// Macintosh LC with FPU card
-    MacLCFpu(Box<CpuM68020Fpu68882<MacLCBus<ChannelRenderer>>>),
-    /// Macintosh LC II and LC III
-    MacLCII(Box<CpuM68030<MacLCBus<ChannelRenderer>>>),
-    /// Macintosh LC II and LC III with an FPU
-    MacLCIIFpu(Box<CpuM68030Fpu<MacLCBus<ChannelRenderer>>>),
+    MacLCFpu(Box<CpuM68020Fpu68882<LcIBus<ChannelRenderer>>>),
+    /// Macintosh LC II
+    MacLCII(Box<CpuM68030<LcIBus<ChannelRenderer>>>),
+    /// Macintosh LC II with an FPU
+    MacLCIIFpu(Box<CpuM68030Fpu<LcIBus<ChannelRenderer>>>),
+    /// Macintosh LC III
+    MacLCIII(Box<CpuM68030<LcIIIBus<ChannelRenderer>>>),
+    /// Macintosh LC III with an FPU
+    MacLCIIIFpu(Box<CpuM68030Fpu<LcIIIBus<ChannelRenderer>>>),
     /// Macintosh Quadra 700 (68040)
     Quadra700(Box<CpuM68040Fpu<Quadra700Bus<ChannelRenderer>>>),
 }
@@ -627,7 +640,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let bus = MacLCBus::new(
+                let bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
                 if fpu_enabled {
@@ -636,18 +649,32 @@ impl Emulator {
                     EmulatorConfig::MacLC(Box::new(CpuM68020::new(bus)))
                 }
             }
-            MacModel::LCII | MacModel::LCIII => {
+            MacModel::LCII => {
                 assert!(override_fdd_type.is_none());
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let bus = MacLCBus::new(
+                let bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
                 if fpu_enabled {
                     EmulatorConfig::MacLCIIFpu(Box::new(CpuM68030Fpu::new(bus)))
                 } else {
                     EmulatorConfig::MacLCII(Box::new(CpuM68030::new(bus)))
+                }
+            }
+            MacModel::LCIII => {
+                assert!(override_fdd_type.is_none());
+
+                // Initialize bus and CPU
+                // The FPU is an option on an expansion card
+                let bus = LcIIIBus::new(
+                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                );
+                if fpu_enabled {
+                    EmulatorConfig::MacLCIIIFpu(Box::new(CpuM68030Fpu::new(bus)))
+                } else {
+                    EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(bus)))
                 }
             }
             MacModel::Quadra700 => {
