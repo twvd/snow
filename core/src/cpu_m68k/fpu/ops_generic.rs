@@ -500,7 +500,8 @@ where
                         };
 
                         // No ALU operation
-                        self.regs.fpu.fp[fpx] = BitsExtReal::from(&value);
+                        let value = BitsExtReal::from(&value);
+                        self.regs.fpu.fp[fpx] = value;
                         self.fpu_condition_codes(&value);
                         self.advance_cycles(Self::fpu_timings().movecr())?;
                         return Ok(());

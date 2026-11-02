@@ -176,31 +176,19 @@ impl From<&Float> for BitsExtReal {
             let biased_exp = unbiased_exp + EXPONENT_BIAS as i64;
             let raw_mantissa = value.get_mantissa().as_u64();
 
-            if biased_exp < 1 {
-                // Denormalized number: the exponent is below the smallest
-                // representable normal exponent (biased exponent 1). M68881
-                // encodes these with a biased-exponent field of 0 and
-                // denormalizes the mantissa (shifting it right, so the explicit
-                // integer bit becomes 0) to keep the value correct - this is
-                // gradual underflow.
-                //
-                // A denormal uses the minimum exponent (1 - bias = -16382), the
-                // same as the smallest normal, so the mantissa (normalized at
-                // 2^(biased_exp - bias)) must shift right by (1 - biased_exp).
-                // The discarded low bits are rounded to nearest, ties to even.
-                let shift = (1 - biased_exp) as u32;
+            if biased_exp < 0 {
+                // Denormalized number (MC68881UM table 3-3): a biased exponent of
+                // 0, with the weight it has for a normalized number too, and the
+                // mantissa shifted right to keep the value.
+                let shift = (-biased_exp) as u32;
                 let denorm_mantissa = round_shift_right_nearest_even(raw_mantissa, shift);
                 if denorm_mantissa == 0 {
                     // Underflowed all the way to zero
                     return Self::zero(value.is_negative());
                 }
-                let bits = Self::default()
+                return Self::default()
                     .with_s(value.is_negative())
                     .with_raw_mantissa(denorm_mantissa);
-                // If rounding carried the mantissa up to the explicit integer
-                // bit, the value is now exactly the smallest normal number, so
-                // encode it canonically with biased exponent 1 instead of 0.
-                return bits.with_e(if bits.i() { 1 } else { 0 });
             }
 
             if biased_exp >= EXPONENT_MAX as i64 {
@@ -226,28 +214,17 @@ impl From<BitsExtReal> for Float {
         } else if value.is_zero() {
             Self::zero(SEMANTICS_EXTENDED, value.s())
         } else {
-            // Convert M68881 biased exponent back to unbiased for arpfloat.
-            // A biased-exponent field of 0 denotes a denormalized number, which
-            // uses the minimum exponent (1 - bias = -16382, the same as the
-            // smallest normal) with a non-normalized mantissa - not (0 - bias).
-            let biased_exp = value.e() as i64;
-            let unbiased_exp = if biased_exp == 0 {
-                1 - EXPONENT_BIAS as i64
-            } else {
-                biased_exp - EXPONENT_BIAS as i64
-            };
+            // The same relation whether normalized or not, as exponent 0 has no other
+            // weight here, unlike the IEEE formats: (-1)^s x 2^(e - 16383) x j.f
+            // (MC68881UM table 3-3)
             let raw_mantissa = value.raw_mantissa();
-
-            // Normalize the mantissa if needed (handles unnormals where i=0)
             let leading_zeros = raw_mantissa.leading_zeros() as i64;
-            let normalized_mantissa = raw_mantissa << leading_zeros;
-            let adjusted_exp = unbiased_exp - leading_zeros;
 
             Self::from_parts(
                 SEMANTICS_EXTENDED,
                 value.s(),
-                adjusted_exp,
-                BigInt::from_u64(normalized_mantissa),
+                value.e() as i64 - EXPONENT_BIAS as i64 - leading_zeros,
+                BigInt::from_u64(raw_mantissa << leading_zeros),
             )
         }
     }
@@ -927,31 +904,28 @@ mod tests {
         );
         let bits = BitsExtReal::from(&subnormal);
         assert_eq!(bits.e(), 0, "Subnormal should have zero biased exponent");
-        // biased exp -1 -> shift right by (1 - (-1)) == 2: integer bit lands on bit 61.
-        assert_eq!(bits.raw_mantissa(), 1u64 << 61);
+        // Exponent 0 is worth 2^-16383 (MC68881UM table 3-3), so one place down.
+        assert_eq!(bits.raw_mantissa(), 1u64 << 62);
         assert!(!bits.i(), "Denormal integer bit must be clear");
     }
 
     #[test]
     fn test_denormal_uses_min_exponent() {
-        // A biased-exponent field of 0 must decode with the minimum exponent
-        // (1 - bias = -16382), not (0 - bias = -16383). For mantissa 2^62
-        // (0.1b) the value is (2^62/2^63) * 2^-16382 = 2^-16383, i.e. arpfloat
-        // exponent -16383 after normalizing the leading bit up one place.
+        // A biased-exponent field of 0 is worth 2^-16383, for denormalized numbers
+        // and for normalized ones alike (MC68881UM table 3-3), not the 2^-16382 of
+        // the IEEE formats. For mantissa 2^62 (0.1b) the value is 2^-16384.
         let denorm = BitsExtReal::default()
             .with_e(0)
             .with_raw_mantissa(1u64 << 62);
         let f: Float = denorm.into();
-        assert_eq!(f.get_exp(), -16383);
+        assert_eq!(f.get_exp(), -16384);
 
-        // The smallest normal (biased 1, mantissa 2^63) decodes to exponent
-        // -16382, exactly one binade above the largest denormal: gradual
-        // underflow is continuous with no gap.
-        let smallest_normal = BitsExtReal::default()
-            .with_e(1)
-            .with_raw_mantissa(1u64 << 63);
+        // The smallest normal has that exponent 0, one binade above the largest
+        // denormal: gradual underflow is continuous with no gap.
+        let smallest_normal = BitsExtReal::default().with_raw_mantissa(1u64 << 63);
         let n: Float = smallest_normal.into();
-        assert_eq!(n.get_exp(), -16382);
+        assert_eq!(n.get_exp(), -16383);
+        assert_eq!(BitsExtReal::from(&n), smallest_normal);
     }
 
     #[test]
