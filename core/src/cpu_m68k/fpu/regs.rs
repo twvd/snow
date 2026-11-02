@@ -5,6 +5,7 @@ use arpfloat::Float;
 use num_traits::Zero;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 bitfield! {
     /// Exception bitfields
@@ -125,6 +126,122 @@ bitfield! {
     }
 }
 
+/// The busy state frame of the MC68040, with an instruction in the FPU that needs the
+/// exception handler (MC68040UM figure 9-10).
+///
+/// The bytes are the state: the handler reads and changes them, and what's in FRESTORE's
+/// frame is what the FPU has to go on with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Busy040(#[serde(with = "BigArray")] pub [u8; Self::FRAME_SIZE]);
+
+impl Busy040 {
+    /// Size of the busy state frame in bytes
+    pub const FRAME_SIZE: usize = 100;
+
+    const CMDREG3B: usize = 0x34;
+    const STAG: usize = 0x3C;
+    const CMDREG1B: usize = 0x40;
+    const DTAG: usize = 0x44;
+    const E_BYTE: usize = 0x48;
+    const T_BYTE: usize = 0x49;
+    const FPTEMP: usize = 0x4C;
+    const ETEMP: usize = 0x58;
+    /// Bit in the byte of a tag: bit 15 of the 16-bit internal exponent of the operand
+    const E15: u8 = 1 << 4;
+    /// Bits of E_BYTE and T_BYTE (from the M68040FPSP)
+    const E1: u8 = 1 << 2;
+    const E3: u8 = 1 << 1;
+    const T: u8 = 1 << 4;
+
+    /// For an unsupported data type: E1 is always set, and T for a move to memory
+    /// (MC68040UM table 9-16)
+    pub fn unsupported(
+        cmdreg1b: Word,
+        (etemp, stag): ([Long; 3], u8),
+        (fptemp, dtag): ([Long; 3], u8),
+        fpiar: Address,
+        move_out: bool,
+    ) -> Self {
+        // FSQRT has $05 in the frame, for $04 in the instruction (MC68040UM 9.8)
+        let cmdreg1b = if cmdreg1b & 0x7F == 0x04 {
+            cmdreg1b | 0x01
+        } else {
+            cmdreg1b
+        };
+        let mut frame = [0; Self::FRAME_SIZE];
+        frame[0..2].copy_from_slice(&0x4160u16.to_be_bytes());
+        frame[0x28..0x2C].copy_from_slice(&fpiar.to_be_bytes());
+        frame[Self::STAG] = stag << 5;
+        frame[Self::CMDREG1B..Self::CMDREG1B + 2].copy_from_slice(&cmdreg1b.to_be_bytes());
+        frame[Self::DTAG] = dtag << 5;
+        frame[Self::E_BYTE] = Self::E1;
+        frame[Self::T_BYTE] = if move_out { Self::T } else { 0 };
+        for (i, long) in fptemp.into_iter().enumerate() {
+            frame[Self::FPTEMP + 4 * i..Self::FPTEMP + 4 * i + 4]
+                .copy_from_slice(&long.to_be_bytes());
+        }
+        for (i, long) in etemp.into_iter().enumerate() {
+            frame[Self::ETEMP + 4 * i..Self::ETEMP + 4 * i + 4]
+                .copy_from_slice(&long.to_be_bytes());
+        }
+        Self(frame)
+    }
+
+    /// An exception is still to report: E1 or E3
+    pub fn has_exception(&self) -> bool {
+        self.0[Self::E_BYTE] & (Self::E1 | Self::E3) != 0
+    }
+
+    /// The command word of the instruction. FSQRT has $05 in the frame, for $04 in the
+    /// instruction (MC68040UM 9.8).
+    pub fn command(&self) -> Word {
+        let word = Word::from_be_bytes([self.0[Self::CMDREG1B], self.0[Self::CMDREG1B + 1]]);
+        if word & 0x7F == 0x05 {
+            (word & !0x7F) | 0x04
+        } else {
+            word
+        }
+    }
+
+    /// The encoded command word for an exception of the write-back stage (MC68040UM
+    /// figure 9-11)
+    pub fn command3(&self) -> Word {
+        Word::from_be_bytes([self.0[Self::CMDREG3B], self.0[Self::CMDREG3B + 1]])
+    }
+
+    fn operand(&self, at: usize, tag: usize) -> BitsExtReal {
+        let long =
+            |i: usize| Long::from_be_bytes(self.0[at + 4 * i..at + 4 * i + 4].try_into().unwrap());
+        let bits = BitsExtReal::default()
+            .with_high(long(0) & 0xFFFF_0000)
+            .with_mid(long(1))
+            .with_low(long(2));
+        // A denormalized number the handler normalized has a negative exponent, with bit
+        // 15 of the internal exponent set (the M68040FPSP, res_func). It's the same
+        // number as a denormalized one of the extended format, so it goes back to that.
+        if self.0[tag] & Self::E15 != 0 && bits.i() && bits.e() >= 0x4000 {
+            let shift = 0x8000 - bits.e() as u32;
+            let man = if shift > 63 {
+                0
+            } else {
+                bits.raw_mantissa() >> shift
+            };
+            return bits.with_e(0).with_raw_mantissa(man);
+        }
+        bits
+    }
+
+    /// The source operand, as the handler left it
+    pub fn source(&self) -> BitsExtReal {
+        self.operand(Self::ETEMP, Self::STAG)
+    }
+
+    /// The destination operand, as the handler left it
+    pub fn dest(&self) -> BitsExtReal {
+        self.operand(Self::FPTEMP, Self::DTAG)
+    }
+}
+
 /// Internal state of an MC68040 FPU after an unimplemented floating-point
 /// instruction exception, which FSAVE saves as the unimplemented instruction
 /// state frame (MC68040UM 9.6.1, 9.8)
@@ -221,6 +338,13 @@ pub struct FpuRegisterFile {
     /// Not in the null state of a reset: FSAVE saves an idle frame
     #[serde(default)]
     pub used: bool,
+    /// MC68040: the instruction waiting for the exception handler, until FSAVE
+    #[serde(default)]
+    pub busy040: Option<Busy040>,
+    /// MC68040: the vector of an exception to report at the next floating-point
+    /// instruction but FSAVE (MC68040UM 9.6.2)
+    #[serde(default)]
+    pub pending040: Option<Address>,
     /// A floating-point exception is pending, to report at the next floating-point
     /// instruction, with the type from FPSR and FPCR: EXC PEND (MC68881UM 6.4.2.2)
     #[serde(default)]
@@ -276,6 +400,8 @@ impl Default for FpuRegisterFile {
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),
             used: false,
+            busy040: None,
+            pending040: None,
             exc_pending: false,
             exc_operand: BitsExtReal::default(),
             command: 0,

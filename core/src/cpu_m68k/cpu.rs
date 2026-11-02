@@ -324,6 +324,8 @@ pub const VECTOR_FP_OPERR: Address = 0x0000D0;
 pub const VECTOR_FP_OVFL: Address = 0x0000D4;
 /// Floating-point signaling NAN vector
 pub const VECTOR_FP_SNAN: Address = 0x0000D8;
+/// Floating-point unsupported data type vector
+pub const VECTOR_FP_UNSUPPORTED: Address = 0x0000DC;
 
 /// Function code of the CPU space
 const FC_CPU_SPACE: u8 = 7;
@@ -433,6 +435,9 @@ pub struct CpuM68k<
     /// The effective address of an FMOVE to memory reporting an exception after its
     /// operand is stored: the next exception has a mid-instruction frame
     pub(in crate::cpu_m68k) step_fpu_mid: Option<Address>,
+    /// The effective address of an MC68040 FMOVE to memory that takes an exception at once:
+    /// the next exception has a post-instruction frame
+    pub(in crate::cpu_m68k) step_fpu_post: Option<Address>,
 
     /// External address/data bus
     pub bus: TBus,
@@ -635,6 +640,7 @@ where
             step_start_pc: 0,
             step_fpu_unimp: false,
             step_fpu_mid: None,
+            step_fpu_post: None,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -1722,6 +1728,17 @@ where
                     _ => None,
                 };
                 match (CPU_TYPE, six_word) {
+                    _ if self.step_fpu_post.is_some() => {
+                        // Floating-point post-instruction frame, format $3: the next
+                        // instruction, and the effective address (MC68040UM 8.4.4)
+                        let ea = self.step_fpu_post.take().unwrap_or(0);
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), pc)?;
+                        self.write_ticks(ssp.wrapping_add(6), (0b0011 << 12) | (vector as Word))?;
+                        self.write_ticks(ssp.wrapping_add(8), ea)?;
+                    }
                     _ if self.step_fpu_mid.is_some() => {
                         // Coprocessor mid-instruction frame: the address of the next
                         // instruction, of this one, and the effective address at offset
