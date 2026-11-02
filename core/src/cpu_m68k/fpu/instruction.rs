@@ -151,6 +151,14 @@ pub(in crate::cpu_m68k) mod opmode {
 
     /// For the single and double precision rounded opmodes of the MC68040:
     /// the operation and whether it rounds to double precision
+    /// On the MC68040, an instruction with an execution unit behind the conversion unit,
+    /// where an exception on the result is E3 (MC68040UM 9.8, and FSGLDIV and FSGLMUL as the
+    /// M68040FPSP looks for them in CMDREG3B)
+    pub(in crate::cpu_m68k) fn writeback_stage(opmode: u8) -> bool {
+        let op = rounded(opmode).map_or(opmode, |(op, _)| op);
+        matches!(op, FADD | FSUB | FMUL | FDIV | FSQRT | FSGLMUL | FSGLDIV)
+    }
+
     pub(in crate::cpu_m68k) fn rounded(opmode: u8) -> Option<(u8, bool)> {
         let double = opmode & 0b0000100 != 0;
         let op = match opmode {
