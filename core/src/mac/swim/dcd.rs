@@ -570,7 +570,7 @@ impl DcdDevice {
 
         match command {
             cmd::READ => {
-                debug!("HD20: read {} blocks at {}", count, block);
+                trace!("HD20: read {} blocks at {}", count, block);
                 for i in 0..count {
                     let blk = block + usize::from(i);
                     let mut resp = vec![0x80 | cmd::READ, count - i];
@@ -595,7 +595,7 @@ impl DcdDevice {
                     block
                 };
                 self.next_write_block = blk + 1;
-                debug!("HD20: write block {} ({} left)", blk, count);
+                trace!("HD20: write block {} ({} left)", blk, count);
 
                 let data_start = 6 + TAG_SIZE;
                 let ok = payload.len() >= data_start + DCD_BLOCKSIZE
@@ -938,10 +938,31 @@ mod tests {
     }
 
     #[test]
-    fn daisy_chain() {
-        use crate::bus::{Address, BusMember};
+    fn swim_reset_keeps_the_chain() {
         use crate::mac::swim::Swim;
         use crate::mac::swim::drive::DriveType;
+
+        let mut swim = Swim::new(&[DriveType::GCR800K, DriveType::GCR800K], false, 16_000_000);
+        swim.attach_dcd(device(4)).unwrap();
+        swim.attach_dcd(device(8)).unwrap();
+        swim.dcds[0].set_state(2);
+        swim.dcds[0].set_state(3);
+        assert!(!swim.dcds[0].sense(3));
+
+        swim.reset();
+
+        assert_eq!(swim.dcds.len(), 2);
+        assert_eq!(swim.dcds[0].blocks(), 4);
+        assert_eq!(swim.dcds[0].phase, Phase::Idle);
+        assert!(swim.dcds[0].sense(3));
+    }
+
+    #[test]
+    fn daisy_chain() {
+        use crate::bus::{Address, BusMember};
+        use crate::mac::swim::drive::DriveType;
+        use crate::mac::swim::{MOTOR_TIMER, Swim};
+        use crate::tickable::Tickable;
 
         const LSTRBL: Address = 6 << 9;
         const LSTRBH: Address = 7 << 9;
@@ -968,7 +989,23 @@ mod tests {
         swim.read(LSTRBL);
         assert!(swim.selected_dcd().is_none());
 
-        // Dropping the enable goes back to the head of the chain
+        // With the IWM's timer on, !ENBL2 stays active after the enable drops: the chain
+        // stays where it is
+        swim.read(DISABLE);
+        swim.read(ENABLE);
+        assert!(swim.selected_dcd().is_none());
+
+        // Until the timer runs out, which goes back to the head of the chain
+        swim.read(DISABLE);
+        swim.tick(MOTOR_TIMER + 1, ()).unwrap();
+        swim.read(ENABLE);
+        assert_eq!(swim.selected_dcd().unwrap().blocks(), 4);
+
+        // With the timer off, as Mac OS has it, that's immediate
+        swim.iwm_mode.set_onesec(true);
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert_eq!(swim.selected_dcd().unwrap().blocks(), 8);
         swim.read(DISABLE);
         swim.read(ENABLE);
         assert_eq!(swim.selected_dcd().unwrap().blocks(), 4);
