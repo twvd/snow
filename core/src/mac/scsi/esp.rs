@@ -845,7 +845,9 @@ impl BusMember<Address> for Esp {
                 if self.dma_xfer {
                     esp_check!("FIFO write during a DMA transfer: {}", self.dbg());
                 }
-                if self.selected && self.phase() == PHASE_COMMAND {
+                // Outside of a selection or a DMA transfer, the bytes wait in the
+                // FIFO for Transfer Information (data sheet p.33)
+                if self.phase() == PHASE_COMMAND && (self.selecting || self.dma_xfer) {
                     self.command_byte(val);
                 } else {
                     self.fifo_push(val);
@@ -1034,6 +1036,29 @@ mod tests {
 
     fn phase(esp: &mut Esp) -> u8 {
         esp.read(REG_STATUS).unwrap() & STAT_PHASE
+    }
+
+    #[test]
+    fn cdb_in_the_fifo_waits_for_transfer_information() {
+        let (mut esp, _) = esp_with_disk();
+        // Select without the CDB: the target waits for it
+        command(&mut esp, 0x41);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS | INTR_FC);
+        assert_eq!(phase(&mut esp), PHASE_COMMAND);
+
+        // INQUIRY of 36 bytes
+        for b in [0x12, 0, 0, 0, 36, 0] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        assert!(!esp.get_irq());
+        assert_eq!(phase(&mut esp), PHASE_COMMAND);
+
+        command(&mut esp, 0x10);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS);
+        assert_eq!(phase(&mut esp), PHASE_DATA_IN);
+        // One interrupt, and no data read yet
+        assert!(!esp.get_irq());
+        assert_eq!(esp.fifo_len(), 0);
     }
 
     #[test]
