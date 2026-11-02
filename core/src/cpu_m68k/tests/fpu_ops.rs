@@ -898,3 +898,169 @@ fn fmove_out_nans_and_infinities() {
     assert_eq!(read_long(&cpu, 0x3000), 0xFF80_0000);
     assert_eq!(status(&cpu), 0);
 }
+
+/// Runs FMOVE.P (A0),FP0 with this packed decimal real at A0
+fn run_packed_in(raw: [Long; 3], fpcr: Long) -> TestCpu {
+    let mut cpu = testcpu(&[0xF210, 0x4C00]);
+    cpu.regs.fpu.fpcr.0 = fpcr;
+    for (i, long) in raw.into_iter().enumerate() {
+        for (j, byte) in long.to_be_bytes().into_iter().enumerate() {
+            cpu.bus
+                .mem
+                .insert(0x3000 + 4 * i as Address + j as Address, byte);
+        }
+    }
+    cpu.step().unwrap();
+    cpu
+}
+
+const INEX1: Long = 1 << 8;
+
+/// A packed Inf or NAN used to stop the emulator. Their exponent is all ones with SE
+/// and YY set, and a NAN moves bit for bit (MC68881UM table 3-4).
+#[test]
+fn packed_source_special_values() {
+    for (raw, high, man) in [
+        ([0x7FFF_0000, 0, 0], 0x7FFF, 0),
+        ([0xFFFF_0000, 0, 0], 0xFFFF, 0),
+        // The integer digit and the unused bits are don't cares for these
+        ([0x7FFF_1234, 0, 0], 0x7FFF, 0),
+        ([0x7FFF_0000, 0xC000_0000, 0], 0x7FFF, 0xC000_0000_0000_0000),
+    ] {
+        assert_eq!(result(&run_packed_in(raw, 0)), (high, man, 0), "{raw:08X?}");
+    }
+    // A signaling NAN stays one on the way in, and FMOVE then makes it non-signaling
+    let cpu = run_packed_in([0xFFFF_0000, 0xA000_0000, 1], 0);
+    assert_eq!(result(&cpu), (0xFFFF, 0xE000_0000_0000_0001, SNAN | AIOP));
+    // Zeros, with any exponent, even with non-decimal digits in it (note 2)
+    assert_eq!(result(&run_packed_in([0x0123_0000, 0, 0], 0)), (0, 0, 0));
+    assert_eq!(
+        result(&run_packed_in([0x8ABC_0000, 0, 0], 0)),
+        (0x8000, 0, 0)
+    );
+    // Non-decimal digits count like decimal ones (note 2): 10 here, and it must not stop
+    assert_eq!(
+        result(&run_packed_in([0x0000_000A, 0, 0], 0)),
+        (0x4002, 0xA000_0000_0000_0000, 0)
+    );
+}
+
+/// In-range values, inexact sets INEX1 (MC68881UM 6.1.8), and rounding goes to extended
+/// precision whatever the rounding precision, then to it in the instruction
+#[test]
+fn packed_source_values() {
+    // 1 and 1.5E+1, exact
+    assert_eq!(result(&run_packed_in([1, 0, 0], 0)), (0x3FFF, J, 0));
+    assert_eq!(
+        result(&run_packed_in([0x0001_0001, 0x5000_0000, 0], 0)),
+        (0x4002, 0xF000_0000_0000_0000, 0)
+    );
+    // 0.1, with its sign of exponent: not exact, rounded up in the mode to nearest
+    let raw = [0x4001_0001, 0, 0];
+    let cpu = run_packed_in(raw, 0);
+    assert_eq!(result(&cpu), (0x3FFB, 0xCCCC_CCCC_CCCC_CCCD, INEX1 | AINEX));
+    let cpu = run_packed_in(raw, 1 << 4);
+    assert_eq!(result(&cpu), (0x3FFB, 0xCCCC_CCCC_CCCC_CCCC, INEX1 | AINEX));
+    // Same in single precision, where the FMOVE is what's inexact in INEX2 too
+    let cpu = run_packed_in(raw, 1 << 6);
+    assert_eq!(
+        result(&cpu),
+        (0x3FFB, 0xCCCC_CD00_0000_0000, INEX1 | INEX2 | AINEX)
+    );
+}
+
+/// FMOVE.P FP1,(A0){k}, and the words written and the status
+fn packed_out(value: BitsExtReal, k: i8, fpcr: Long) -> ([Long; 3], Long) {
+    let mut cpu = testcpu(&[0xF210, 0x6C80 | Word::from(k as u8 & 0x7F)]);
+    cpu.regs.fpu.fpcr.0 = fpcr;
+    cpu.regs.fpu.fp[1] = value;
+    cpu.step().unwrap();
+    let raw = [
+        read_long(&cpu, 0x3000),
+        read_long(&cpu, 0x3004),
+        read_long(&cpu, 0x3008),
+    ];
+    (raw, cpu.regs.fpu.fpsr.0 & 0xFFFF)
+}
+
+/// The k-factor, from the examples in MC68881UM FMOVE, on 12345.678765. Only the digits
+/// are from the table: the exponent is +4 for all.
+#[test]
+fn packed_output_k_factor() {
+    let value = run_packed_in([0x0004_0001, 0x2345_6787, 0x6500_0000], 0)
+        .regs
+        .fpu
+        .fp[0];
+    for (k, digits_hi, digits_lo) in [
+        (-5, 0x2345_6787, 0x7000_0000),
+        (-3, 0x2345_6790, 0),
+        (-1, 0x2345_7000, 0),
+        (0, 0x2346_0000, 0),
+        (1, 0, 0),
+        (3, 0x2300_0000, 0),
+        (5, 0x2346_0000, 0),
+    ] {
+        let (raw, status) = packed_out(value, k, 0);
+        assert_eq!(raw, [0x0004_0001, digits_hi, digits_lo], "k={k}");
+        assert_eq!(status, INEX2 | AINEX, "k={k}");
+    }
+    // Above 17 is an operand error, with 17 digits (MC68881UM 6.1.3)
+    let (raw, status) = packed_out(ext(0x3FFF, J), 18, 0);
+    assert_eq!(raw, [1, 0, 0]);
+    assert_eq!(status, OPERR | AIOP);
+}
+
+/// What the M68040FPSP has in bindec, for what the manual leaves out: a value too small for
+/// a negative k-factor rounds to no digits, a denormalized one starts from 10^-4933
+#[test]
+fn packed_out_small_values() {
+    use crate::cpu_m68k::fpu::packed::to_packed;
+    use arpfloat::RoundingMode;
+    let out = |bits: u128, k: i8| to_packed(BitsExtReal(bits), k, RoundingMode::NearestTiesToEven);
+
+    // 2^-16382, k = -64
+    let normal = 0x0001_0000_8000_0000_0000_0000;
+    assert_eq!(out(normal, -64).raw, [0x4001_0000, 0, 0]);
+    assert!(out(normal, -64).inexact);
+    assert!(!out(normal, -64).operr);
+    // The smallest denormalized number
+    assert_eq!(out(1, -64).raw, [0x4064_0000, 0, 0]);
+    assert_eq!(out(1, 17).raw, [0x4933_4000, 0, 0]);
+    assert!(out(1, 17).operr);
+    // The largest one: 1.68E-4932. Too much from 10^-4933, and that's put right.
+    let largest = 0x0000_0000_7FFF_FFFF_FFFF_FFFF;
+    assert_eq!(out(largest, 1).raw[0], 0x4932_4002);
+    // Half of it: 8.4E-4933
+    let half = 0x0000_0000_4000_0000_0000_0000;
+    assert_eq!(out(half, 1).raw[0], 0x4933_4008);
+}
+
+/// Other values out: a fourth exponent digit is an operand error and goes above the
+/// integer digit (MC68881UM 6.1.3, figure 3-11), and the specials have their own form
+#[test]
+fn packed_output_values() {
+    assert_eq!(packed_out(ext(0, 0), 3, 0), ([0, 0, 0], 0));
+    assert_eq!(packed_out(ext(0x8000, 0), 3, 0), ([0x8000_0000, 0, 0], 0));
+    assert_eq!(
+        packed_out(BitsExtReal::inf(true), 3, 0),
+        ([0xFFFF_0000, 0, 0], 0)
+    );
+    assert_eq!(
+        packed_out(ext(0x7FFF, 0xA000_0000_0000_0001), 3, 0),
+        ([0x7FFF_0000, 0xE000_0000, 1], SNAN | AIOP)
+    );
+    // -0.1 to 3 digits by the mode
+    let tenth = ext(0xBFFB, 0xCCCC_CCCC_CCCC_CCCD);
+    assert_eq!(
+        packed_out(tenth, 3, 0),
+        ([0xC001_0001, 0, 0], INEX2 | AINEX)
+    );
+    assert_eq!(
+        packed_out(tenth, 3, 2 << 4),
+        ([0xC001_0001, 0x0100_0000, 0], INEX2 | AINEX)
+    );
+    // The largest number is about 1.19E+4932
+    let (raw, status) = packed_out(ext(0x7FFE, !0), 1, 0);
+    assert_eq!(raw, [0x0932_4001, 0, 0]);
+    assert_eq!(status, OPERR | INEX2 | AIOP | AINEX);
+}

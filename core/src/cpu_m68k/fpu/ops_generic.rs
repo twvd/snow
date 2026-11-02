@@ -377,6 +377,7 @@ where
                         true,
                     );
                 }
+                let mut inex1 = false;
                 let (value_in, operand) = match extword.src_spec() {
                     0b000 => {
                         // Long
@@ -509,7 +510,9 @@ where
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // BCD packed decimal real (immediate)
-                        (self.read_fpu_packed_imm()?, FpuOperand::Packed)
+                        let (value, inexact) = self.read_fpu_packed_imm()?;
+                        inex1 = inexact;
+                        (value, FpuOperand::Packed)
                     }
                     0b011 => {
                         // BCD packed decimal real
@@ -518,7 +521,9 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        (self.read_fpu_packed(ea)?, FpuOperand::Packed)
+                        let (value, inexact) = self.read_fpu_packed(ea)?;
+                        inex1 = inexact;
+                        (value, FpuOperand::Packed)
                     }
                     _ => {
                         bail!(CpuError::IllegalInstruction);
@@ -534,7 +539,15 @@ where
                         false,
                     );
                 }
-                self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
+                let result = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
+                // FTST and FCMP leave the destination as it is, whatever they compare
+                self.regs.fpu.fp[fpx] = result;
+                if inex1 {
+                    // An inexact conversion of the source (MC68881UM 6.1.8)
+                    self.regs.fpu.fpsr.exs_mut().set_inex1(true);
+                    let excs = self.regs.fpu.fpsr;
+                    self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+                }
 
                 let less = if instr.get_addr_mode()? == AddressingMode::DataRegister {
                     Self::fpu_timings().dn_src()
@@ -609,9 +622,11 @@ where
                 let k = if extword.dest_fmt() == 0b011 {
                     extword.k_factor()
                 } else {
-                    self.regs
-                        .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
-                        as i8
+                    // Only the low seven bits count (MC68881UM FMOVE)
+                    let k = self
+                        .regs
+                        .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111);
+                    ((k << 1) as i8) >> 1
                 };
                 self.advance_cycles(cycles)?;
                 self.write_fpu_packed(ea, self.regs.fpu.fp[fpx], k)?;
