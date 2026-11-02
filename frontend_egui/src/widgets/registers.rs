@@ -313,15 +313,9 @@ impl RegistersWidget {
             .body(|mut body| {
                 // FP0-FP7 floating point registers
                 for i in 0..8 {
-                    let fp_current = &self.regs.fpu.fp[i];
-                    let fp_last = &self.lastregs.fpu.fp[i];
-
                     // Check if value changed
-                    let changed = fp_current.is_inf() != fp_last.is_inf()
-                        || fp_current.is_nan() != fp_last.is_nan()
-                        || (!fp_current.is_nan()
-                            && !fp_current.is_inf()
-                            && fp_current.as_f64() != fp_last.as_f64());
+                    let changed = self.regs.fpu.fp[i] != self.lastregs.fpu.fp[i];
+                    let fp_current = &self.regs.fpu.fp[i];
 
                     let color = if changed {
                         Self::COLOR_CHANGED
@@ -340,7 +334,7 @@ impl RegistersWidget {
                             let value_str = if fp_current.is_nan() {
                                 "NaN".to_string()
                             } else if fp_current.is_inf() {
-                                if fp_current.is_negative() {
+                                if fp_current.s() {
                                     "-Infinity".to_string()
                                 } else {
                                     "+Infinity".to_string()

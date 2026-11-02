@@ -9,6 +9,7 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k};
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::fpu::math::FloatMath;
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 
 use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
@@ -161,7 +162,7 @@ where
     /// rounding mode of FPCR. Inexact sets INEX2. Not fitting sets OPERR and gives
     /// the largest integer of that sign (MC68881UM 6.1.3).
     pub(in crate::cpu_m68k) fn fpu_to_integer(&mut self, fpx: usize, min: i64, max: i64) -> i64 {
-        let value = self.regs.fpu.fp[fpx].clone();
+        let value = Float::from(self.regs.fpu.fp[fpx]);
         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
@@ -187,11 +188,11 @@ where
     pub(in crate::cpu_m68k) fn fpu_alu_op(
         &mut self,
         opmode: u8,
-        source: &Float,
-        dest: &Float,
-    ) -> Result<Float> {
-        debug_assert_eq!(source.get_semantics(), SEMANTICS_EXTENDED);
-        debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
+        source: &BitsExtReal,
+        dest: &BitsExtReal,
+    ) -> Result<BitsExtReal> {
+        let source = &Float::from(*source);
+        let dest = &Float::from(*dest);
 
         // The operands are used as they are, only the result gets the rounding
         // precision of FPCR, or that of the instruction on the 68040 (MC68881UM
@@ -259,7 +260,7 @@ where
                 };
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok(dest.cast(SEMANTICS_EXTENDED));
+                return Ok(BitsExtReal::from(&dest.cast(SEMANTICS_EXTENDED)));
             }
             // Round to nearest whatever FPCR says
             opmode::FREM => self.fpu_remainder(dest, source, true),
@@ -277,7 +278,7 @@ where
             }
             opmode::FTST => {
                 self.fpu_condition_codes(source);
-                return Ok(dest.cast(SEMANTICS_EXTENDED));
+                return Ok(BitsExtReal::from(&dest.cast(SEMANTICS_EXTENDED)));
             }
             opmode::FNEG => source.neg(),
             opmode::FACOS => near.acos(),
@@ -292,7 +293,7 @@ where
                 //
                 // So we store the cosine result first, which will be overwritten by the sine
                 // result later if destination registers are the same.
-                self.regs.fpu.fp[fpc] = near.cos();
+                self.regs.fpu.fp[fpc] = BitsExtReal::from(&near.cos());
 
                 near.sin()
             }
@@ -337,8 +338,7 @@ where
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
 
-        // Cast result back to EXTENDED for storage in FPU registers
-        Ok(result.cast(SEMANTICS_EXTENDED))
+        Ok(BitsExtReal::from(&result.cast(SEMANTICS_EXTENDED)))
     }
 
     /// Sets the exception status of an arithmetic instruction and accrues it

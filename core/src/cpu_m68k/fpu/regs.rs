@@ -1,6 +1,5 @@
 use crate::bus::Address;
-use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
-use crate::cpu_m68k::fpu::storage::{BitsExtReal, float_array_as_ext_real};
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::types::{Byte, Long, Word};
 use arpfloat::Float;
 use num_traits::Zero;
@@ -155,8 +154,7 @@ impl Unimp040 {
 
     /// An operand in extended precision as in memory, and its data type
     /// tag (STAG or DTAG, MC68040UM 9.8)
-    pub fn operand(value: &Float) -> ([Long; 3], u8) {
-        let bits = BitsExtReal::from(value);
+    pub fn operand(bits: &BitsExtReal) -> ([Long; 3], u8) {
         let tag = if bits.is_zero() {
             0b001
         } else if bits.is_inf() {
@@ -215,8 +213,8 @@ impl Unimp040 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FpuRegisterFile {
-    #[serde(with = "float_array_as_ext_real")]
-    pub fp: [Float; 8],
+    /// The data registers, in extended precision, with all their bits
+    pub fp: [BitsExtReal; 8],
     pub fpcr: RegisterFPCR,
     pub fpsr: RegisterFPSR,
     pub fpiar: Address,
@@ -238,12 +236,14 @@ impl FpuRegisterFile {
                 String::new()
             }
         };
-        let diff_fp = |name, s: &Float, o: &Float| {
-            if s.is_inf() != o.is_inf()
-                || s.is_nan() != o.is_nan()
-                || (!s.is_nan() && !s.is_inf() && s.as_f64() != o.as_f64())
-            {
-                format!("{}: {:0.4} -> {:0.4} ", name, s.as_f64(), o.as_f64())
+        let diff_fp = |name, s: &BitsExtReal, o: &BitsExtReal| {
+            if s != o {
+                format!(
+                    "{}: {:0.4} -> {:0.4} ",
+                    name,
+                    Float::from(*s).as_f64(),
+                    Float::from(*o).as_f64()
+                )
             } else {
                 String::new()
             }
@@ -261,7 +261,7 @@ impl FpuRegisterFile {
 impl Default for FpuRegisterFile {
     fn default() -> Self {
         Self {
-            fp: core::array::from_fn(|_| Float::nan(SEMANTICS_EXTENDED, false)),
+            fp: [BitsExtReal::nan(false); 8],
             fpcr: RegisterFPCR(0),
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),

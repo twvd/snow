@@ -6,6 +6,7 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
@@ -26,7 +27,7 @@ fn run(opcode: Word, extword: Word, setup: impl Fn(&mut TestCpu)) -> TestCpu {
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.write_a(0, DATA);
     for n in 0..8 {
-        cpu.regs.fpu.fp[n] = Float::from_u64(SEMANTICS_EXTENDED, n as u64 + 1);
+        cpu.regs.fpu.fp[n] = BitsExtReal::from(&Float::from_u64(SEMANTICS_EXTENDED, n as u64 + 1));
     }
     setup(&mut cpu);
     cpu.set_pc(CODE).unwrap();
@@ -110,4 +111,45 @@ fn dynamic_predecrement_store() {
     assert_eq!(cpu.regs.read_a::<Address>(0), base);
     assert_eq!(ext_at(&cpu, base), ONE);
     assert_eq!(ext_at(&cpu, base + 12), THREE);
+}
+
+/// FMOVEM moves the registers with no conversion (MC68881UM FMOVEM), so whatever
+/// the bits are they come back, but for the unused ones of the format, a don't care
+/// on input and zero on output (MC68881UM table 3-3)
+#[test]
+fn moves_all_the_bits_of_a_register() {
+    const VALUES: [[Long; 3]; 7] = [
+        // Non-signaling NAN with a payload
+        [0xFFFF_0000, 0xD555_5555, 0x5555_5555],
+        // Signaling NAN
+        [0x7FFF_0000, 0xA000_0000, 0],
+        // Infinity with either integer bit
+        [0x7FFF_0000, 0, 0],
+        [0x7FFF_0000, 0x8000_0000, 0],
+        // Denormalized
+        [0x0000_0000, 0x0000_0000, 1],
+        // Exponent 0 with the integer bit set
+        [0x8000_0000, 0x8000_0000, 0],
+        // Unnormalized
+        [0x3FFF_0000, 0x4000_0000, 0],
+    ];
+    for [high, mid, low] in VALUES {
+        // FMOVEM.X (A0),FP0
+        let cpu = run(0xF210, 0xD080, |cpu| {
+            for (i, long) in [high | 0x1234, mid, low].into_iter().enumerate() {
+                for (j, byte) in long.to_be_bytes().into_iter().enumerate() {
+                    cpu.bus
+                        .mem
+                        .insert(DATA + 4 * i as Address + j as Address, byte);
+                }
+            }
+        });
+        let fp0 = cpu.regs.fpu.fp[0];
+        assert_eq!([fp0.high(), fp0.mid(), fp0.low()], [high, mid, low]);
+
+        // FMOVEM.X FP0,(A0)
+        let cpu = run(0xF210, 0xF080, |cpu| cpu.regs.fpu.fp[0] = fp0);
+        assert_eq!(ext_at(&cpu, DATA), (high, mid));
+        assert_eq!(ext_at(&cpu, DATA + 4), (mid, low));
+    }
 }

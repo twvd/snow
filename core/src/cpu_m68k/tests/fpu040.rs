@@ -8,13 +8,14 @@ use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::fpu::regs::Unimp040;
+use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestCpu = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
 
-fn ext(v: f64) -> Float {
-    Float::from_f64(v).cast(SEMANTICS_EXTENDED)
+fn ext(v: f64) -> BitsExtReal {
+    BitsExtReal::from(&Float::from_f64(v).cast(SEMANTICS_EXTENDED))
 }
 
 #[test]
@@ -170,7 +171,7 @@ mod unimplemented {
         cpu.regs.isp = STACK;
         cpu.regs.sr.set_supervisor(true);
         cpu.regs.fpu.fp[1] = ext(1.0);
-        cpu.regs.fpu.fp[2] = Float::inf(SEMANTICS_EXTENDED, false);
+        cpu.regs.fpu.fp[2] = BitsExtReal::inf(false);
         setup(&mut cpu);
         cpu.set_pc(CODE).unwrap();
         cpu.prefetch_refill().unwrap();
@@ -190,7 +191,7 @@ mod unimplemented {
 
     const ONE: [Long; 3] = [0x3FFF_0000, 0x8000_0000, 0];
     // Snow writes infinity with the explicit integer bit set
-    const INF: [Long; 3] = [0x7FFF_0000, 0x8000_0000, 0];
+    const INF: [Long; 3] = [0x7FFF_0000, 0, 0];
 
     #[test]
     fn register_source() {
