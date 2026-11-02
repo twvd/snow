@@ -522,6 +522,13 @@ impl Tickable for Swim {
             drv.cycles = self.cycles;
         }
 
+        if !self.dcds.is_empty() {
+            let ticks_per_byte = dcd::ticks_per_byte(self.drives[0].base_frequency);
+            for dcd in &mut self.dcds {
+                dcd.tick_reset(ticks, ticks_per_byte);
+            }
+        }
+
         // The IWM's timer can end !ENBL2 without an access
         if !self.dcd_port_enabled() {
             self.dcd_chain_pos = 0;
