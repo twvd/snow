@@ -1807,7 +1807,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
                         if drive < self.config.swim_mut().drives.len() {
-                            self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;
+                            let drv = &mut self.config.swim_mut().drives[drive];
+                            drv.rpm_adjustment = adjustment;
+                            drv.update_ticks_per_bit();
                         }
                     }
                     #[cfg(feature = "ethernet")]

@@ -584,7 +584,7 @@ impl FloppyDrive {
         self.ticks_per_bit
     }
 
-    fn update_ticks_per_bit(&mut self) {
+    pub(crate) fn update_ticks_per_bit(&mut self) {
         self.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
             Ticks::MAX
         } else {
