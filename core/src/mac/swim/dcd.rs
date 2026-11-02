@@ -45,6 +45,17 @@ pub fn ticks_per_byte(bus_frequency: Ticks) -> Ticks {
 /// Blocks addressable by the 24-bit block numbers of the protocol
 const MAX_BLOCKS: usize = 0xFF_FFFF;
 
+/// Bytes on the wire a device stays busy after a reset, about 3 seconds. Apple's HD 20 Test waits
+/// about 1.5 seconds after a reset and then wants to see /HSHK go low and high again, so it must
+/// outlast that. The real time isn't known: the reset is "the equivalent of a power-on reset"
+/// (tashnotes), which on a real drive takes some seconds.
+const RESET_BUSY_BYTES: Ticks = 183_600;
+
+/// The firmware diagnostics of HD 20 Test. Only Read ID (04) is documented, in tashnotes. These
+/// aren't emulated: they succeed, reads return zeroes and writes go nowhere, which is all the test
+/// looks at. Found by running the test, which fails on the status of any of them otherwise.
+const DIAGNOSTIC_COMMANDS: [u8; 8] = [0x04, 0x05, 0x08, 0x0A, 0x11, 0x15, 0x17, 0x18];
+
 /// Characteristics byte of the Controller Status reply
 mod chars {
     pub const MOUNTABLE: u8 = 0x80;
@@ -232,6 +243,8 @@ pub struct DcdDevice {
     tx_pos: usize,
     tx_sync: bool,
     tx_paused: bool,
+    /// Bus clocks since a reset the device is still busy with
+    reset_busy: Option<Ticks>,
     tx_ticks: Ticks,
 
     /// Block a write continuation goes to
@@ -288,6 +301,7 @@ impl DcdDevice {
             tx_pos: 0,
             tx_sync: false,
             tx_paused: false,
+            reset_busy: None,
             tx_ticks: 0,
             next_write_block: 0,
         })
@@ -346,6 +360,22 @@ impl DcdDevice {
         self.responses.clear();
         self.tx_wire.clear();
         self.tx_paused = false;
+        self.reset_busy = None;
+    }
+
+    /// Time passing for a device that may not be selected: comes back from a reset
+    pub fn tick_reset(&mut self, ticks: Ticks, ticks_per_byte: Ticks) {
+        let Some(busy) = self.reset_busy else {
+            return;
+        };
+        if busy + ticks < RESET_BUSY_BYTES * ticks_per_byte {
+            self.reset_busy = Some(busy + ticks);
+            return;
+        }
+        self.reset_busy = None;
+        if self.phase == Phase::Idle {
+            self.hshk = false;
+        }
     }
 
     /// SENSE (RD) as seen by the Mac in the given CA2:CA1:CA0 state
@@ -375,6 +405,8 @@ impl DcdDevice {
                 debug!("HD20: reset during {:?}", self.phase);
             }
             self.reset();
+            self.hshk = true;
+            self.reset_busy = Some(0);
             return;
         }
         if state == 0 {
@@ -613,6 +645,11 @@ impl DcdDevice {
                 debug!("HD20: format/verify ({:02X})", command);
                 self.responses
                     .push_back(seal_payload(vec![0x80 | command, 0], reply_groups));
+            }
+            c if DIAGNOSTIC_COMMANDS.contains(&c) => {
+                trace!("HD20: diagnostic command {:02X}", c);
+                self.responses
+                    .push_back(seal_payload(vec![0x80 | c, count], reply_groups));
             }
             _ => {
                 warn!("HD20: unsupported command {:02X}", command);
@@ -1126,8 +1163,25 @@ mod tests {
         dev.set_state(4);
         dev.set_state(6);
         dev.set_state(2);
-        assert!(dev.sense(2));
         assert_eq!(dev.phase, Phase::Idle);
+
+        // Busy, then ready
+        assert!(!dev.sense(2));
+        dev.tick_reset(RESET_BUSY_BYTES * TICKS_PER_BYTE - 1, TICKS_PER_BYTE);
+        assert!(!dev.sense(2));
+        dev.tick_reset(1, TICKS_PER_BYTE);
+        assert!(dev.sense(2));
+    }
+
+    #[test]
+    fn diagnostic_commands_succeed() {
+        for command in DIAGNOSTIC_COMMANDS {
+            let mut payload = vec![command, 0, 0, 0, 0, 0];
+            payload.push(payload[0].wrapping_neg());
+            let reply = &transact(&mut device(4), &payload, 1)[0];
+            assert_eq!(reply[0], 0x80 | command);
+            assert_eq!(&reply[2..6], &[0, 0, 0, 0]);
+        }
     }
 
     #[test]
