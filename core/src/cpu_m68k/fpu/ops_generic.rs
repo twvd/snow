@@ -15,7 +15,6 @@ use crate::cpu_m68k::cpu::{
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::arith::Range;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
-use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
 use crate::cpu_m68k::fpu::timings::FpuOperand;
@@ -466,45 +465,15 @@ where
                         );
                     }
                     0b111 => {
-                        // ROM constant (FMOVECR)
-                        // 10^n rounded once from a wider precision, as the
-                        // squarings in powi() lose bits from 10^64 up
-                        let pow10 = |n| {
-                            Float::from_u64(SEMANTICS_EXTENDED.increase_precision(64), 10)
-                                .powi(n)
-                                .cast(SEMANTICS_EXTENDED)
-                        };
-                        let value = match extword.movecr_offset() {
-                            0x00 => Float::pi(SEMANTICS_EXTENDED),
-                            0x0B => Float::from_u64(SEMANTICS_EXTENDED, 2).log10(),
-                            0x0C => Float::e(SEMANTICS_EXTENDED),
-                            0x0D => Float::e(SEMANTICS_EXTENDED).log2(),
-                            0x0E => Float::e(SEMANTICS_EXTENDED).log10(),
-                            0x0F => Float::zero(SEMANTICS_EXTENDED, false),
-                            0x30 => Float::from_u64(SEMANTICS_EXTENDED, 2).log(),
-                            0x31 => Float::from_u64(SEMANTICS_EXTENDED, 10).log(),
-                            0x32 => Float::from_i64(SEMANTICS_EXTENDED, 1),
-                            0x33 => Float::from_i64(SEMANTICS_EXTENDED, 10),
-                            0x34 => Float::from_i64(SEMANTICS_EXTENDED, 100),
-                            0x35 => Float::from_i64(SEMANTICS_EXTENDED, 10000),
-                            0x36 => pow10(8),
-                            0x37 => pow10(16),
-                            0x38 => pow10(32),
-                            0x39 => pow10(64),
-                            0x3A => pow10(128),
-                            0x3B => pow10(256),
-                            0x3C => pow10(512),
-                            0x3D => pow10(1024),
-                            0x3E => pow10(2048),
-                            0x3F => pow10(4096),
-                            // Reserved, and different per mask set (68881UM FMOVECR)
-                            _ => Float::zero(SEMANTICS_EXTENDED, false),
-                        };
-
-                        // No ALU operation
-                        let value = BitsExtReal::from(&value);
+                        // Rounded to the precision of FPCR, which sets INEX2 as for any
+                        // result, and the rest of the exception byte is cleared
+                        // (MC68881UM FMOVECR)
+                        self.regs.fpu.fpsr.exs_mut().0 = 0;
+                        let value = self.fpu_rom_constant(extword.movecr_offset() as u8);
                         self.regs.fpu.fp[fpx] = value;
                         self.fpu_condition_codes(&value);
+                        let excs = self.regs.fpu.fpsr;
+                        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
                         self.advance_cycles(Self::fpu_timings().movecr())?;
                         return Ok(());
                     }

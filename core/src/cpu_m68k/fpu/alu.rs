@@ -14,6 +14,7 @@ use crate::cpu_m68k::fpu::trig::FloatTrig;
 
 use super::SEMANTICS_EXTENDED;
 use super::arith::{self, Range, Unpacked, Value};
+use super::constants;
 
 impl<
     TBus,
@@ -145,6 +146,20 @@ where
             arith::Kind::Inf => BitsExtReal::inf(value.s()),
             arith::Kind::Zero => BitsExtReal::zero(value.s()),
         }
+    }
+
+    /// The rounded constant at `offset` of FMOVECR
+    pub(in crate::cpu_m68k) fn fpu_rom_constant(&mut self, offset: u8) -> BitsExtReal {
+        // The mantissa only, as the M68040 FPSP does: the exponent of 10^4096 stays
+        let to = Range {
+            bits: self.fpu_rounding_precision().bits,
+            ..Range::EXTENDED
+        };
+        let Some((value, inexact)) = constants::constant(offset, self.fpu_rounding_mode()) else {
+            return BitsExtReal::zero(false);
+        };
+        self.regs.fpu.fpsr.exs_mut().set_inex2(inexact);
+        self.fpu_finish(Value::Round(value), to)
     }
 
     /// The source of a function that can't handle the special values: the table of
