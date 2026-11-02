@@ -298,8 +298,14 @@ where
         } else {
             // Idle state frame
             self.regs.fpu.used = true;
-            // We've already read 4 bytes
-            self.step_ea_addr = None;
+            // We've already read 4 bytes. (An)+ goes on from its new address, the other
+            // modes from the one they have: calculating it again would read the frame
+            // from its start, and fetch the extension words again.
+            self.step_ea_addr = if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
+                None
+            } else {
+                self.step_ea_addr.map(|addr| addr.wrapping_add(4))
+            };
             match FPU_TYPE {
                 FPU_M68881 if state & 0xFF000000 == 0x1F000000 => {
                     let frame = self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
