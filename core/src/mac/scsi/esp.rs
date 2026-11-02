@@ -23,6 +23,7 @@ macro_rules! esp_check {
         }
     };
 }
+pub(crate) use esp_check;
 
 /// Size of the data FIFO in bytes
 const FIFO_SIZE: usize = 16;
