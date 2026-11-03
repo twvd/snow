@@ -6,5 +6,6 @@ pub mod bus;
 pub mod cops_sim;
 pub mod fdc_sim;
 pub mod mmu;
+pub mod profile_sim;
 pub mod via;
 pub mod video;
