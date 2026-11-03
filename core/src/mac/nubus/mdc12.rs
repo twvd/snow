@@ -382,3 +382,28 @@ where
         write!(f, "Macintosh Display Card 8-24")
     }
 }
+
+/// The Macs whose NuBus slots take this card
+const fn fits_nubus(mac: crate::mac::MacModel) -> bool {
+    use crate::mac::MacModel;
+    matches!(
+        mac,
+        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DisplayCard824,
+    name: "Display Card 8-24",
+    bus: crate::emulator::devices::BusKind::Nubus,
+    fits: fits_nubus,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Display Card 8-24 ROM",
+        digests: &["e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+};

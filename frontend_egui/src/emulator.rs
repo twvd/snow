@@ -24,9 +24,9 @@ use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
 use snow_core::emulator::devices::{
-    Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FloppyState, FunctionKind,
-    FunctionState, HardDiskSettings, MachineConfig, RefusedDevice, SerialBridgeSettings, Slot,
-    SlotAddr,
+    Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FunctionKind, FunctionStatus,
+    HardDiskSettings, MachineConfig, RefusedDevice, SerialLinkSettings, Slot, SlotAddr,
+    StatusBlock, device_configs, models_for,
 };
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
@@ -182,9 +182,13 @@ pub struct EmulatorState {
     mouse_mode: MouseMode,
     /// The Apple IIe Card is in front
     iie_in_front: bool,
-    /// The machine came from a state file. Its disks are temporary copies and it doesn't know
-    /// where its cards' ROMs came from, so it can't say what to save in a workspace.
-    restored_from_state: bool,
+    /// The machine's buses. They only change when a device comes or goes.
+    buses: Arc<Vec<Bus>>,
+    /// Where the devices' status is, and the copy the menus draw from
+    status_block: Option<Arc<StatusBlock>>,
+    statuses: Vec<Vec<Option<FunctionStatus>>>,
+    /// The generation of the block that copy is of
+    status_generation: u64,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -194,9 +198,6 @@ pub struct EmulatorState {
 
     /// Force an emulator update signal to the App even without new events available
     force_update: LatchingEvent,
-
-    /// Serial bridge status for SCC channels (index 0 = Channel A, index 1 = Channel B)
-    serial_bridge_status: [Option<SerialBridgeStatus>; 2],
 
     /// Currently selected audio device on the host
     host_audio_device: Option<cpal::DeviceId>,
@@ -250,7 +251,6 @@ impl EmulatorState {
         self.deinit();
 
         self.last_rom = rom.to_vec();
-        self.restored_from_state = false;
 
         // Initialize emulator
         let model = if let Some(selected) = model {
@@ -346,7 +346,6 @@ impl EmulatorState {
 
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.restored_from_state = true;
         self.init_finalize(emulator, frame_recv, cmd, false, pause, vec![])
     }
 
@@ -396,6 +395,9 @@ impl EmulatorState {
         }
 
         self.eventrecv = Some(emulator.create_event_recv());
+        self.buses = emulator.buses();
+        self.status_block = Some(emulator.status_block());
+        self.status_generation = u64::MAX;
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || {
@@ -439,6 +441,9 @@ impl EmulatorState {
             self.cmdsender = None;
             self.eventrecv = None;
             self.status = None;
+            self.buses = Arc::default();
+            self.status_block = None;
+            self.statuses.clear();
             self.record_input_path = None;
             self.iie_in_front = false;
         }
@@ -536,6 +541,7 @@ impl EmulatorState {
 
     /// Polls and empties the emulator event channel. Returns `true` if events were received.
     pub fn poll(&mut self) -> bool {
+        let statuses_changed = self.copy_statuses();
         let Some(ref eventrecv) = self.eventrecv else {
             return false;
         };
@@ -545,7 +551,7 @@ impl EmulatorState {
             // on every host OS.
             self.check_audio_output_changed();
 
-            return self.force_update.get_clear();
+            return self.force_update.get_clear() || statuses_changed;
         }
 
         while let Ok(event) = eventrecv.try_recv() {
@@ -553,6 +559,7 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
+                EmulatorEvent::Buses(buses) => self.buses = buses,
                 EmulatorEvent::FloppyEjected(addr, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
@@ -597,9 +604,8 @@ impl EmulatorState {
                 EmulatorEvent::SccTransmitData(ch, data) => {
                     self.scc_tx[ch.to_usize().unwrap()].extend(&data);
                 }
-                EmulatorEvent::SerialBridgeStatus(ch, status) => {
-                    self.serial_bridge_status[ch.to_usize().unwrap()] = status;
-                }
+                // The status block has it
+                EmulatorEvent::SerialBridgeStatus(..) => (),
                 EmulatorEvent::IieInFront(in_front) => self.iie_in_front = in_front,
             }
         }
@@ -700,13 +706,36 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// The machine as it is now
-    pub fn buses(&self) -> &[Bus] {
-        self.status.as_ref().map_or(&[], |s| &s.buses)
+    /// Copies the devices' status when it has changed. The lock is only held for the copy.
+    fn copy_statuses(&mut self) -> bool {
+        let Some(block) = self.status_block.as_ref() else {
+            return false;
+        };
+        let generation = block.generation();
+        if generation == self.status_generation {
+            return false;
+        }
+        self.statuses.clone_from(&block.statuses.lock().unwrap());
+        self.status_generation = generation;
+        true
     }
 
-    pub const fn restored_from_state(&self) -> bool {
-        self.restored_from_state
+    /// The machine as it is now
+    pub fn buses(&self) -> &[Bus] {
+        &self.buses
+    }
+
+    /// What a device in a slot shows
+    pub fn status(&self, addr: SlotAddr) -> Option<&FunctionStatus> {
+        self.statuses.get(addr.bus)?.get(addr.slot)?.as_ref()
+    }
+
+    /// The list this machine can be created from, for a workspace
+    pub fn devices(&self) -> Vec<DeviceConfig> {
+        match self.get_model() {
+            Some(model) => device_configs(&self.buses, &self.statuses, model),
+            None => vec![],
+        }
     }
 
     /// Hands a device its settings, creating it if its slot is empty
@@ -743,35 +772,32 @@ impl EmulatorState {
         })
     }
 
-    /// The Mac's floppy drives
-    pub fn floppy_slots(&self) -> Vec<(SlotAddr, FloppyState)> {
-        self.all_slots()
-            .filter_map(|(addr, _, slot)| match &slot.device.as_ref()?.state {
-                FunctionState::Floppy(f) => Some((addr, f.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The model this slot's bus offers for a function
+    /// The device model of a function this slot's bus takes, if it can take one now
     fn offered(&self, addr: SlotAddr, function: FunctionKind) -> Option<DeviceModel> {
-        let (bus, _) = self.slot(addr)?;
-        bus.offers
-            .iter()
-            .find(|o| o.model.function() == function)
-            .map(|o| o.model)
+        let (bus, slot) = self.slot(addr)?;
+        if slot.blocked {
+            return None;
+        }
+        let model = self.get_model()?;
+        models_for(bus.kind, model)
+            .find(|info| info.function == function && bus.can_take(info))
+            .map(|info| info.model)
     }
 
-    /// An empty slot that can take a model of this function
+    /// An empty slot that can take a device of this function
     fn free_slot(&self, function: FunctionKind) -> Option<SlotAddr> {
         self.all_slots()
-            .find(|(_, bus, slot)| {
-                slot.device.is_none()
-                    && !slot.blocked
-                    && bus
-                        .offers
-                        .iter()
-                        .any(|o| o.model.function() == function && !o.blocked)
+            .find(|(addr, _, slot)| {
+                slot.device.is_none() && self.offered(*addr, function).is_some()
+            })
+            .map(|(addr, _, _)| addr)
+    }
+
+    /// The first Mac floppy drive with no disk in it
+    pub fn free_floppy_drive(&self) -> Option<SlotAddr> {
+        self.all_slots()
+            .find(|(addr, _, _)| {
+                matches!(self.status(*addr), Some(FunctionStatus::Floppy(f)) if f.ejected && f.can_save)
             })
             .map(|(addr, _, _)| addr)
     }
@@ -790,6 +816,11 @@ impl EmulatorState {
             Ok(config) => self.add_device(config),
             Err(e) => error!("{}: {:#}", self.slot_label(addr), e),
         }
+    }
+
+    /// A reference to the bus list, which the caller can keep while it borrows the rest
+    pub fn bus_list(&self) -> Arc<Vec<Bus>> {
+        Arc::clone(&self.buses)
     }
 
     /// Attaches a hard disk, of the model this slot's bus has
@@ -844,30 +875,31 @@ impl EmulatorState {
         if self.slot(addr).is_some_and(|(_, s)| s.device.is_none()) {
             self.attach_cdrom(addr, Some(path.to_path_buf()));
         } else {
-            self.load_media(addr, path);
+            self.load_media(addr, path, false);
         }
     }
 
     /// Puts an image in the first empty CD-ROM drive
     pub fn load_cdrom_firstfree(&self, path: &Path) -> bool {
-        let free = self.all_slots().find(|(_, _, slot)| {
-            matches!(
-                slot.device.as_ref().map(|d| &d.state),
-                Some(FunctionState::Cdrom(c)) if c.media.is_none()
-            )
+        let free = self.all_slots().find(|(addr, _, _)| {
+            matches!(self.status(*addr), Some(FunctionStatus::Cdrom(c)) if c.image.is_none())
         });
         let Some((addr, _, _)) = free else {
             return false;
         };
-        self.load_media(addr, path);
+        self.load_media(addr, path, false);
         true
     }
 
     /// Puts an image in a drive
-    pub fn load_media(&self, addr: SlotAddr, path: &Path) {
+    pub fn load_media(&self, addr: SlotAddr, path: &Path, read_only: bool) {
         if let Some(sender) = self.cmdsender.as_ref() {
             sender
-                .send(EmulatorCommand::LoadMedia(addr, path.to_path_buf()))
+                .send(EmulatorCommand::LoadMedia(
+                    addr,
+                    path.to_path_buf(),
+                    read_only,
+                ))
                 .unwrap();
         }
     }
@@ -913,17 +945,7 @@ impl EmulatorState {
 
     /// Loads a floppy image from the specified path
     pub fn load_floppy(&self, addr: SlotAddr, path: &Path, wp: bool) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::InsertFloppy(
-                addr,
-                path.to_string_lossy().to_string(),
-                wp,
-            ))
-            .unwrap();
+        self.load_media(addr, path, wp);
     }
 
     /// Sets the joystick and buttons on the Apple IIe card's game port.
@@ -942,7 +964,7 @@ impl EmulatorState {
         };
 
         // Find a free floppy drive
-        let Some((addr, _)) = self.floppy_slots().into_iter().find(|(_, d)| d.ejected) else {
+        let Some(addr) = self.free_floppy_drive() else {
             return false;
         };
         sender
@@ -1129,14 +1151,6 @@ impl EmulatorState {
 
     pub fn take_message(&mut self) -> Option<(UserMessageType, String)> {
         self.messages.pop_front()
-    }
-
-    pub fn force_eject(&self, addr: SlotAddr) {
-        self.cmdsender
-            .as_ref()
-            .unwrap()
-            .send(EmulatorCommand::EjectFloppy(addr))
-            .unwrap();
     }
 
     /// Sets, or with None removes, a memory notifier. This only does something
@@ -1406,27 +1420,25 @@ impl EmulatorState {
             .map(|(addr, _, _)| addr)
     }
 
-    /// Plugs a host link in a serial port
+    /// Plugs a host link in a serial port: a byte link, or a LocalTalk adapter
     pub fn enable_serial_bridge(&self, ch: SccCh, config: &SerialBridgeConfig) -> Result<()> {
         let Some(addr) = self.serial_slot(ch) else {
             return Ok(());
         };
-        match *config {
-            SerialBridgeConfig::Pty => self.attach_model(
-                addr,
-                DeviceModel::SerialBridge,
-                &SerialBridgeSettings::default(),
-            ),
-            SerialBridgeConfig::Tcp(port) => self.attach_model(
-                addr,
-                DeviceModel::SerialBridge,
-                &SerialBridgeSettings {
+        let (function, settings) = match *config {
+            SerialBridgeConfig::Pty => (FunctionKind::SerialLink, SerialLinkSettings::default()),
+            SerialBridgeConfig::Tcp(port) => (
+                FunctionKind::SerialLink,
+                SerialLinkSettings {
                     tcp_port: Some(port),
                 },
             ),
             SerialBridgeConfig::LocalTalk => {
-                self.attach_model(addr, DeviceModel::LocalTalkAdapter, &());
+                (FunctionKind::LocalTalk, SerialLinkSettings::default())
             }
+        };
+        if let Some(model) = self.offered(addr, function) {
+            self.attach_model(addr, model, &settings);
         }
         Ok(())
     }
@@ -1440,11 +1452,16 @@ impl EmulatorState {
     }
 
     pub fn get_serial_bridge_status(&self, ch: SccCh) -> Option<&SerialBridgeStatus> {
-        self.serial_bridge_status[ch.to_usize().unwrap()].as_ref()
+        match self.status(self.serial_slot(ch)?)? {
+            FunctionStatus::SerialLink(s) | FunctionStatus::LocalTalk(s) => s.as_ref(),
+            _ => None,
+        }
     }
 
     pub fn is_serial_bridge_enabled(&self, ch: SccCh) -> bool {
-        self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
+        self.serial_slot(ch)
+            .and_then(|addr| self.slot(addr))
+            .is_some_and(|(_, slot)| slot.device.is_some())
     }
 
     #[cfg(feature = "ethernet")]

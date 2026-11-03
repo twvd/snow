@@ -5,7 +5,7 @@ pub mod devices;
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
+use snow_floppy::loaders::{FloppyImageSaver, Moof};
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -39,7 +39,7 @@ use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
-use crate::mac::serial_bridge::SccBridge;
+use crate::mac::serial_bridge::SerialDevice;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
@@ -405,9 +405,13 @@ pub struct Emulator {
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
-    serial_bridges: [Option<SccBridge>; 2],
+    serial_bridges: [Option<Box<dyn SerialDevice>>; 2],
     /// What the machine remembers of its devices
     device_book: devices::DeviceBook,
+    /// The machine's buses, as the frontend sees them. Built again when a device comes or goes.
+    bus_list: Arc<Vec<devices::Bus>>,
+    /// The status of every device, shared with the frontend
+    status_block: Arc<devices::StatusBlock>,
     audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
     /// Ranges of memory the frontend wants to be told about, by id
     memory_notifiers: BTreeMap<u32, MemoryNotifier>,
@@ -749,11 +753,14 @@ impl Emulator {
             peripheral_debug: false,
             serial_bridges: [None, None],
             device_book,
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
         };
+        emu.rebuild_bus_list();
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -783,7 +790,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f, tmpdir)?;
+        let (mut config, devices) = load_state_from(f, tmpdir)?;
         config.after_deserialize(renderer);
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
@@ -807,11 +814,19 @@ impl Emulator {
             peripheral_debug: false,
             serial_bridges: [None, None],
             device_book: Default::default(),
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
         };
+        // The state doesn't hold where the devices came from, the list does
+        let devices = serde_json::from_str(&devices).unwrap_or_else(|e| {
+            log::warn!("No device list in the state file: {}", e);
+            vec![]
+        });
+        emu.reinstate_devices(devices);
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -902,6 +917,8 @@ impl Emulator {
             }
         }
 
+        self.publish_status();
+
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.config.cpu_regs().clone(),
@@ -913,7 +930,6 @@ impl Emulator {
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
-                buses: self.buses(),
             })))?;
 
         // Memory notifiers. A stopped machine gets all of them looked at, so that
@@ -1291,52 +1307,31 @@ impl Emulator {
     fn poll_localtalk_bridge(&mut self) {
         // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
         // Only poll if RX is enabled and no character is available (ready for new packet)
-        if self
-            .config
-            .scc_mut()
-            .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
-            && self
-                .config
-                .scc()
-                .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
-            && let Some(ref mut bridge) = self.serial_bridges[1]
-            && bridge.is_localtalk()
+        let ch = crate::mac::scc::SccCh::B;
+        if self.config.scc_mut().take_localtalk_poll_needed(ch)
+            && self.config.scc().is_rx_ready_for_data(ch)
+            && let Some(device) = self.serial_bridges[ch as usize].as_mut()
         {
-            // Propagate SCC state to LocalTalk bridge
-            let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
-            bridge.set_node_address(sdlc_addr);
-            bridge.set_address_search_mode(
-                self.config
-                    .scc()
-                    .is_address_search_mode(crate::mac::scc::SccCh::B),
-            );
-
-            // Prefer SDLC frame-boundary path if frames are ready
-            let frames = self
-                .config
-                .scc_mut()
-                .take_tx_frames(crate::mac::scc::SccCh::B);
+            let scc = self.config.scc();
+            device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+            let frames = self.config.scc_mut().take_tx_frames(ch);
             if !frames.is_empty() {
                 for frame in &frames {
-                    bridge.send_frame(frame);
+                    device.tx_frame(frame);
                 }
-                // Drain tx_queue to avoid double-sending
-                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                // The same bytes are in the byte queue too
+                self.config.scc_mut().take_tx(ch);
             }
-
-            // Byte-stream TX path (fallback when no frame boundaries detected)
-            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
-                let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                bridge.write_from_scc(&tx_data);
+            if self.config.scc().has_tx_data(ch) {
+                let tx_data = self.config.scc_mut().take_tx(ch);
+                device.tx_bytes(&tx_data);
             }
 
             // Now poll for incoming data and pending CTS
-            bridge.poll();
-            let rx_data = bridge.read_to_scc();
+            device.poll();
+            let rx_data = device.rx();
             if !rx_data.is_empty() {
-                self.config
-                    .scc_mut()
-                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+                self.config.scc_mut().push_rx(ch, &rx_data);
             }
         }
     }
@@ -1398,11 +1393,12 @@ impl Emulator {
     }
 
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+    fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+        let devices = serde_json::to_string(&self.devices())?;
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot)?;
+        save_state_to(&f, &self.config, screenshot, devices)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -1459,38 +1455,6 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(addr, filename, wp) => {
-                        let Ok(drive) = self.drive_at(addr) else {
-                            continue;
-                        };
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                if wp {
-                                    img.set_force_wp();
-                                }
-                                let writeback_path =
-                                    img.supports_writeback().then(|| PathBuf::from(&filename));
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                } else {
-                                    let drv = &mut self.config.swim_mut().drives[drive];
-                                    drv.media_path = Some(PathBuf::from(&filename));
-                                    drv.media_read_only = wp;
-                                    drv.image_path = writeback_path;
-                                    drv.writeback_enabled = false;
-                                    drv.pending_writeback = false;
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {:?}",
-                                    filename, e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
-                    }
                     EmulatorCommand::SetIieGamePort(port) => {
                         let card = self.iie_card_mut();
                         if let Some(card) = card {
@@ -1512,13 +1476,6 @@ impl Tickable for Emulator {
                             drv.media_read_only = false;
                         }
                         self.status_update()?;
-                    }
-                    EmulatorCommand::EjectFloppy(addr) => {
-                        let Ok(drive) = self.drive_at(addr) else {
-                            continue;
-                        };
-                        self.try_writeback(drive);
-                        self.config.swim_mut().drives[drive].eject();
                     }
                     EmulatorCommand::SetFloppyWriteback(addr, enabled) => {
                         let Ok(drive) = self.drive_at(addr) else {
@@ -1549,8 +1506,8 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::LoadMedia(addr, filename) => {
-                        if let Err(e) = self.load_media(addr, &filename) {
+                    EmulatorCommand::LoadMedia(addr, filename, wp) => {
+                        if let Err(e) = self.load_media(addr, &filename, wp) {
                             self.user_error(&format!(
                                 "Cannot load '{}': {:#}",
                                 filename.display(),
@@ -1895,50 +1852,42 @@ impl Tickable for Emulator {
             for ch in crate::mac::scc::SccCh::iter() {
                 let ch_idx = ch as usize;
 
-                // Poll bridges for incoming data and status changes
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                    // Propagate SCC state to LocalTalk bridge
-                    if bridge.is_localtalk() {
-                        let sdlc_addr = self.config.scc().sdlc_address(ch);
-                        bridge.set_node_address(sdlc_addr);
-                        bridge
-                            .set_address_search_mode(self.config.scc().is_address_search_mode(ch));
-
-                        // Prefer SDLC frame-boundary path if frames are ready
-                        let frames = self.config.scc_mut().take_tx_frames(ch);
-                        if !frames.is_empty() {
-                            for frame in &frames {
-                                bridge.send_frame(frame);
-                            }
-                            // Drain tx_queue to avoid double-sending via byte-stream
-                            self.config.scc_mut().take_tx(ch);
+                // The SCC's station for a device carrying frames
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                    let scc = self.config.scc();
+                    device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+                    let frames = self.config.scc_mut().take_tx_frames(ch);
+                    if !frames.is_empty() {
+                        for frame in &frames {
+                            device.tx_frame(frame);
                         }
+                        // The same bytes are in the byte queue too
+                        self.config.scc_mut().take_tx(ch);
                     }
                 }
 
-                // Check for TX data from SCC (byte-stream path / fallback)
+                // Check for TX data from SCC
                 if self.config.scc().has_tx_data(ch) {
                     let tx_data = self.config.scc_mut().take_tx(ch);
 
-                    // Route through bridge if active, otherwise send to frontend
-                    if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                        bridge.write_from_scc(&tx_data);
+                    // Route through the device if there is one, otherwise send to frontend
+                    if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                        device.tx_bytes(&tx_data);
                     } else {
                         self.event_sender
                             .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
                     }
                 }
 
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
-                    let has_data = bridge.poll();
-                    if has_data {
+                    if device.poll() {
                         self.event_sender
-                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
+                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(device.status())))?;
                     }
 
-                    // Read incoming data from bridge and send to SCC
-                    let rx_data = bridge.read_to_scc();
+                    // Read incoming data from the device and send to SCC
+                    let rx_data = device.rx();
                     if !rx_data.is_empty() {
                         self.config.scc_mut().push_rx(ch, &rx_data);
                     }

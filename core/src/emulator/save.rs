@@ -11,7 +11,7 @@ use crate::mac::scsi::bus::ScsiBus;
 #[cfg(not(feature = "mmap"))]
 compile_error!("feature \"savestates\" requires the \"mmap\" feature");
 
-const HEADER_VERSION: u16 = 1;
+const HEADER_VERSION: u16 = 2;
 
 #[binrw]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -37,6 +37,8 @@ pub struct SaveHeader {
     pub model: NullString,
     /// Snow version (short hash)
     pub snow_version: NullString,
+    /// The machine's devices, as a workspace lists them, in JSON
+    pub devices: NullString,
     /// Image sizes, per SCSI target. 0 is no image.
     pub scsi_imgs: [u64; ScsiBus::MAX_TARGETS],
     /// Optional screenshot (PNG), length.
@@ -55,6 +57,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     mut writer: W,
     config: &EmulatorConfig,
     screenshot: Option<Vec<u8>>,
+    devices: String,
 ) -> Result<()> {
     let compression_level = 0; // library default
 
@@ -64,6 +67,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
         compression_level,
         model: config.model().to_string().into(),
         snow_version: crate::build_version().into(),
+        devices: devices.into(),
         timestamp: chrono::Local::now().to_rfc3339().into(),
         scsi_imgs: core::array::from_fn(|id| {
             config
@@ -102,7 +106,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
 pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Path>>(
     mut reader: R,
     tmpdir: P,
-) -> Result<EmulatorConfig> {
+) -> Result<(EmulatorConfig, String)> {
     let header = SaveHeader::read(&mut reader)?;
 
     if header.version != HEADER_VERSION {
@@ -162,7 +166,7 @@ pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::pa
         bail!("Expected EOF but found more data");
     }
 
-    Ok(config)
+    Ok((config, header.devices.to_string()))
 }
 
 /// Returns only the header from given state file

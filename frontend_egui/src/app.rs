@@ -25,8 +25,8 @@ use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::devices::{
-    Bus, BusKind, DeviceConfig, DeviceModel, FloppyState, FunctionKind, FunctionState,
-    RefusedDevice, Slot, SlotAddr, bus_id, device_configs,
+    Bus, BusKind, DeviceConfig, FloppyStatus, FunctionKind, FunctionStatus, RefusedDevice, Slot,
+    SlotAddr, bus_id, models_for,
 };
 use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::MacModel;
@@ -218,7 +218,9 @@ pub struct SnowGui {
     cdrom_files_dialog: SnowFileDialog,
     cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
-    iie_disk_dialog: SnowFileDialog,
+    /// For the drives that aren't the Mac's: its filter comes from the drive's status
+    media_dialog: SnowFileDialog,
+    media_dialog_slot: SlotAddr,
     /// The Apple IIe Card's joystick input (None without the card)
     iie_joystick: Option<Joystick>,
     /// The Apple IIe joystick mapping window is open
@@ -226,9 +228,6 @@ pub struct SnowGui {
     /// The binding being assigned in the mapping window: the next key or
     /// controller button pressed goes there
     joy_capture: Option<(JoyInput, usize)>,
-    /// The Apple IIe Card's drive the image pickers load into.
-    iie_dialog_slot: SlotAddr,
-    iie_unidisk_dialog: SnowFileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -461,17 +460,8 @@ impl SnowGui {
             iie_joystick: None,
             joy_mapping_open: false,
             joy_capture: None,
-            iie_dialog_slot: SlotAddr::default(),
-            iie_disk_dialog: SnowFileDialog::new()
-                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg", "woz"])
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy.clone()),
-            iie_unidisk_dialog: SnowFileDialog::new()
-                .add_filter("Apple II 3.5\" disks", &["po", "2mg"])
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy.clone()),
+            media_dialog: SnowFileDialog::new(),
+            media_dialog_slot: SlotAddr::default(),
             record_dialog: SnowFileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
@@ -1600,8 +1590,11 @@ impl SnowGui {
 
     /// The machine's buses. The core describes them, and how they look is decided here.
     fn draw_menu_devices(&mut self, ui: &mut egui::Ui) {
-        // Needs cloning for the later borrow to call the dialogs
-        let buses = self.emu.buses().to_vec();
+        // A reference to the list, for the later borrows to call the dialogs
+        let buses = self.emu.bus_list();
+        let Some(mac) = self.emu.get_model() else {
+            return;
+        };
         let mut first = true;
         for (bus_idx, bus) in buses.iter().enumerate() {
             // The serial ports are in their own menu
@@ -1609,16 +1602,25 @@ impl SnowGui {
                 continue;
             }
             // Only what could be shown is
-            let shown =
-                |slot: &Slot| slot.device.is_some() || bus.offers.iter().any(|o| !o.model.fixed());
-            if !bus.slots.iter().any(shown) {
+            let can_attach = models_for(bus.kind, mac).any(|info| !info.fixed);
+            let shown: Vec<_> = (0..bus.slots.len())
+                .filter(|&slot| {
+                    let addr = SlotAddr { bus: bus_idx, slot };
+                    match &bus.slots[slot].device {
+                        Some(_) => Self::has_menu(self.emu.status(addr)),
+                        None => can_attach,
+                    }
+                })
+                .collect();
+            if shown.is_empty() {
                 continue;
             }
             if !first {
                 ui.separator();
             }
             first = false;
-            for (slot_idx, slot) in bus.slots.iter().enumerate().filter(|(_, s)| shown(s)) {
+            for slot_idx in shown {
+                let slot = &bus.slots[slot_idx];
                 let addr = SlotAddr {
                     bus: bus_idx,
                     slot: slot_idx,
@@ -1646,23 +1648,17 @@ impl SnowGui {
 
     /// The drives with removable media, for when the menu bar is hidden
     fn draw_menu_removable(&mut self, ui: &mut egui::Ui) {
-        // Needs cloning for the later borrow to call the dialogs
-        let buses = self.emu.buses().to_vec();
+        let buses = self.emu.bus_list();
         for (bus_idx, bus) in buses.iter().enumerate() {
             for (slot_idx, slot) in bus.slots.iter().enumerate() {
-                let removable = slot.device.as_ref().is_some_and(|d| {
-                    matches!(
-                        d.state,
-                        FunctionState::Floppy(_)
-                            | FunctionState::IieFloppy(_)
-                            | FunctionState::Cdrom(_)
-                    )
-                });
-                if removable {
-                    let addr = SlotAddr {
-                        bus: bus_idx,
-                        slot: slot_idx,
-                    };
+                let addr = SlotAddr {
+                    bus: bus_idx,
+                    slot: slot_idx,
+                };
+                if matches!(
+                    self.emu.status(addr),
+                    Some(FunctionStatus::Floppy(_) | FunctionStatus::Cdrom(_))
+                ) {
                     let label = self.emu.slot_label(addr);
                     self.draw_slot_menu(ui, addr, bus, slot, &label, false);
                 }
@@ -1670,7 +1666,16 @@ impl SnowGui {
         }
     }
 
-    /// One slot in the devices menu
+    /// Whether a device's function has anything in the devices menu. A video card or the Apple
+    /// IIe Card has nothing to do while the machine runs, so its slot isn't listed.
+    fn has_menu(status: Option<&FunctionStatus>) -> bool {
+        !matches!(
+            status,
+            Some(FunctionStatus::Video | FunctionStatus::AppleIIe)
+        )
+    }
+
+    /// One slot in the devices menu. It goes by the device's function, never by its model.
     fn draw_slot_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -1681,21 +1686,25 @@ impl SnowGui {
         show_detach: bool,
     ) {
         if let Some(device) = &slot.device {
-            match &device.state {
-                FunctionState::HardDisk(target) => {
+            // A copy, while the menu is drawn, for the calls that need the app
+            let Some(status) = self.emu.status(addr).cloned() else {
+                ui.add_enabled(false, egui::Button::new(format!("{}: ...", label)));
+                return;
+            };
+            match &status {
+                FunctionStatus::HardDisk(target) => {
                     ui.menu_button(
                         format!(
                             "{} {}: HDD {} ({:0.2}MB)",
                             egui_material_icons::icons::ICON_HARD_DRIVE_2,
                             label,
                             target
+                                .settings
                                 .media
-                                .as_ref()
-                                .unwrap()
                                 .file_name()
                                 .unwrap_or_default()
                                 .to_string_lossy(),
-                            target.capacity.unwrap() / 1024 / 1024
+                            target.capacity.unwrap_or_default() / 1024 / 1024
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1710,8 +1719,8 @@ impl SnowGui {
                         },
                     );
                 }
-                FunctionState::Cdrom(target) => {
-                    if let Some(image) = target.media.as_ref() {
+                FunctionStatus::Cdrom(target) => {
+                    if let Some(image) = target.image.as_ref() {
                         // CD inserted
                         ui.menu_button(
                             format!(
@@ -1818,7 +1827,7 @@ impl SnowGui {
                     }
                 }
                 #[cfg(feature = "ethernet")]
-                FunctionState::Ethernet(target) => {
+                FunctionStatus::Ethernet(target) => {
                     ui.menu_button(
                         format!(
                             "{} {}: Ethernet",
@@ -1931,12 +1940,13 @@ impl SnowGui {
                         },
                     );
                 }
-                FunctionState::Printer => {
+                FunctionStatus::Printer => {
                     ui.menu_button(
                         format!(
-                            "{} {}: LaserWriter IISC",
+                            "{} {}: {}",
                             egui_material_icons::icons::ICON_PRINT,
                             label,
+                            device.model.name(),
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1948,52 +1958,16 @@ impl SnowGui {
                         },
                     );
                 }
-                FunctionState::Floppy(floppy) => self.draw_floppy_menu(ui, addr, label, floppy),
-                FunctionState::IieFloppy(floppy) => {
-                    let unidisk = device.model == DeviceModel::UniDisk35;
-                    ui.menu_button(
-                        format!(
-                            "{}: {}",
-                            label,
-                            floppy
-                                .media
-                                .as_ref()
-                                .and_then(|p| p.file_name())
-                                .map_or_else(
-                                    || "(ejected)".to_string(),
-                                    |f| f.to_string_lossy().into()
-                                )
-                        ),
-                        |ui| {
-                            ui.set_min_width(Self::SUBMENU_WIDTH);
-                            if ui.button("Load image...").clicked() {
-                                self.iie_dialog_slot = addr;
-                                if unidisk {
-                                    self.iie_unidisk_dialog
-                                        .pick_file(self.settings.native_file_dialogs);
-                                } else {
-                                    self.iie_disk_dialog
-                                        .pick_file(self.settings.native_file_dialogs);
-                                }
-                            }
-                            if ui
-                                .add_enabled(floppy.media.is_some(), egui::Button::new("Eject"))
-                                .clicked()
-                            {
-                                self.emu.eject_media(addr);
-                            }
-                        },
-                    );
-                }
-                FunctionState::Video | FunctionState::AppleIIe => {
-                    ui.add_enabled(
-                        false,
-                        egui::Button::new(format!("{}: {}", label, device.model.name())),
-                    );
-                }
-                FunctionState::SerialLink(_) => (),
+                FunctionStatus::Floppy(floppy) => self.draw_floppy_menu(ui, addr, label, floppy),
+                FunctionStatus::Video
+                | FunctionStatus::AppleIIe
+                | FunctionStatus::SerialLink(_)
+                | FunctionStatus::LocalTalk(_) => (),
             }
         } else {
+            let Some(mac) = self.emu.get_model() else {
+                return;
+            };
             ui.menu_button(
                 format!(
                     "{} {}: (no device)",
@@ -2003,14 +1977,16 @@ impl SnowGui {
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
                     let mut first = true;
-                    for offer in &bus.offers {
+                    // What can't be attached while the machine runs isn't offered at all
+                    for info in models_for(bus.kind, mac).filter(|info| !info.fixed) {
                         if !first {
                             ui.separator();
                         }
                         first = false;
-                        // The frontend knows functions: a new model of one needs nothing here
-                        let enabled = !offer.blocked && !slot.blocked;
-                        match offer.model.function() {
+                        // The frontend knows functions: a new device model of one needs nothing
+                        // here
+                        let enabled = bus.can_take(info) && !slot.blocked;
+                        match info.function {
                             FunctionKind::HardDisk => {
                                 if ui
                                     .add_enabled(
@@ -2080,11 +2056,11 @@ impl SnowGui {
                                 if ui
                                     .add_enabled(
                                         enabled,
-                                        egui::Button::new(format!("Attach {}", offer.model.name())),
+                                        egui::Button::new(format!("Attach {}", info.name)),
                                     )
                                     .clicked()
                                 {
-                                    self.emu.attach_model(addr, offer.model, &());
+                                    self.emu.attach_model(addr, info.model, &());
                                 }
                             }
                         }
@@ -2148,12 +2124,13 @@ impl SnowGui {
         }
     }
 
+    /// A floppy drive, the Mac's or another. What the drive can't do isn't shown.
     fn draw_floppy_menu(
         &mut self,
         ui: &mut egui::Ui,
         addr: SlotAddr,
         label: &str,
-        d: &FloppyState,
+        d: &FloppyStatus,
     ) {
         ui.menu_button(
             format!(
@@ -2168,56 +2145,65 @@ impl SnowGui {
                     egui_material_icons::icons::ICON_SAVE
                 },
                 label,
-                if d.ejected {
-                    "(ejected)"
-                } else {
-                    &d.image_title
-                }
+                if d.ejected { "(ejected)" } else { &d.title }
             ),
             |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                if ui.button("Insert blank 400/800K floppy").clicked() {
-                    self.emu.insert_blank_floppy(addr, FloppyType::Mac800K);
+                for format in &d.blank_formats {
+                    let text = match format {
+                        FloppyType::Mfm144M => "Insert blank 1.44MB floppy",
+                        _ => "Insert blank 400/800K floppy",
+                    };
+                    if ui.button(text).clicked() {
+                        self.emu.insert_blank_floppy(addr, *format);
+                    }
                 }
-                if ui
-                    .add_enabled(
-                        self.emu.get_model().unwrap().fdd_hd(),
-                        egui::Button::new("Insert blank 1.44MB floppy"),
-                    )
-                    .clicked()
-                {
-                    self.emu.insert_blank_floppy(addr, FloppyType::Mfm144M);
+                if !d.blank_formats.is_empty() {
+                    ui.separator();
                 }
-                ui.separator();
                 if ui.button("Load image...").clicked() {
-                    self.floppy_dialog_target = FloppyDialogTarget::Drive(addr);
-                    self.floppy_dialog
-                        .pick_file(self.settings.native_file_dialogs);
+                    if d.can_save {
+                        // The Mac's drives: the dialog knows the formats that can be saved
+                        self.floppy_dialog_target = FloppyDialogTarget::Drive(addr);
+                        self.floppy_dialog
+                            .pick_file(self.settings.native_file_dialogs);
+                    } else {
+                        self.media_dialog_slot = addr;
+                        self.media_dialog = SnowFileDialog::new()
+                            .add_filter(d.image_label, &d.image_types)
+                            .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                            .initial_directory(Self::default_dir())
+                            .storage(self.settings.fd_floppy.clone());
+                        self.media_dialog
+                            .pick_file(self.settings.native_file_dialogs);
+                    }
                 }
-                ui.menu_button("Load recent image", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                    for (idx, path, display_name) in
-                        self.settings.get_recent_floppy_images_for_display()
-                    {
-                        if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                            self.request_load_floppy(addr, &path, false);
+                if d.can_save {
+                    ui.menu_button("Load recent image", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        for (idx, path, display_name) in
+                            self.settings.get_recent_floppy_images_for_display()
+                        {
+                            if ui.button(format!("{}: {}", idx, display_name)).clicked() {
+                                self.request_load_floppy(addr, &path, false);
+                            }
                         }
+                        if self.settings.recent_floppy_images.is_empty() {
+                            ui.weak("No recent images");
+                        }
+                    });
+                    if ui
+                        .add_enabled(
+                            self.emu.last_images.borrow().contains_key(&addr),
+                            egui::Button::new("Re-insert last ejected floppy"),
+                        )
+                        .clicked()
+                    {
+                        self.emu.reload_floppy(addr);
                     }
-                    if self.settings.recent_floppy_images.is_empty() {
-                        ui.weak("No recent images");
-                    }
-                });
-                if ui
-                    .add_enabled(
-                        self.emu.last_images.borrow().contains_key(&addr),
-                        egui::Button::new("Re-insert last ejected floppy"),
-                    )
-                    .clicked()
-                {
-                    self.emu.reload_floppy(addr);
                 }
                 ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
-                {
+                if d.can_save {
                     let mut wb = d.writeback_enabled;
                     let resp = ui.add_enabled(
                         d.writeback_supported,
@@ -2233,38 +2219,40 @@ impl SnowGui {
                     if wb != d.writeback_enabled {
                         self.emu.set_floppy_writeback(addr, wb);
                     }
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
-                    .clicked()
-                {
-                    self.floppy_dialog_target = FloppyDialogTarget::Drive(addr);
-                    self.floppy_dialog
-                        .save_file(self.settings.native_file_dialogs);
-                }
-                if ui
-                    .add_enabled(
-                        self.emu.last_images.borrow().contains_key(&addr),
-                        egui::Button::new("Save last ejected image..."),
-                    )
-                    .clicked()
-                {
-                    let img = self.emu.last_images.borrow()[&addr].clone();
-                    self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                    self.floppy_dialog
-                        .save_file(self.settings.native_file_dialogs);
+                    ui.separator();
+                    if ui
+                        .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
+                        .clicked()
+                    {
+                        self.floppy_dialog_target = FloppyDialogTarget::Drive(addr);
+                        self.floppy_dialog
+                            .save_file(self.settings.native_file_dialogs);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.emu.last_images.borrow().contains_key(&addr),
+                            egui::Button::new("Save last ejected image..."),
+                        )
+                        .clicked()
+                    {
+                        let img = self.emu.last_images.borrow()[&addr].clone();
+                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
+                        self.floppy_dialog
+                            .save_file(self.settings.native_file_dialogs);
+                    }
                 }
                 ui.separator();
 
+                // The guest ejects the Mac's disks, so for those it's forcing it
+                let eject = if d.can_save { "Force eject" } else { "Eject" };
                 if ui
-                    .add_enabled(!d.ejected, egui::Button::new("Force eject"))
+                    .add_enabled(!d.ejected, egui::Button::new(eject))
                     .clicked()
                 {
-                    self.emu.force_eject(addr);
+                    self.emu.eject_media(addr);
                 }
 
-                if d.drive_type.has_pwm_control() {
+                if d.rpm_control {
                     ui.separator();
                     ui.label("Simulate drive RPM variance");
                     if ui
@@ -2715,8 +2703,7 @@ impl SnowGui {
     /// Returns `false` if no drive is available; otherwise the load may be
     /// gated on a confirmation dialog.
     pub fn request_load_floppy_firstfree(&mut self, path: &Path) -> bool {
-        let free = self.emu.floppy_slots().into_iter().find(|(_, d)| d.ejected);
-        if let Some((addr, _)) = free {
+        if let Some(addr) = self.emu.free_floppy_drive() {
             self.request_load_floppy(addr, path, false);
             return true;
         }
@@ -2897,13 +2884,11 @@ impl SnowGui {
         }
 
         // From what the machine has: the workspace may have asked for a card it couldn't take
-        let has_iie_card = self.emu.buses().iter().any(|b| b.kind == BusKind::IieDisk)
-            || self.emu.buses().iter().flat_map(|b| &b.slots).any(|s| {
-                matches!(
-                    s.device.as_ref().map(|d| &d.state),
-                    Some(FunctionState::AppleIIe)
-                )
-            });
+        let has_iie_card = self.emu.buses().iter().flat_map(|b| &b.slots).any(|s| {
+            s.device
+                .as_ref()
+                .is_some_and(|d| d.model.function() == FunctionKind::AppleIIe)
+        });
         self.iie_joystick = has_iie_card.then(|| {
             let mut joy = Joystick::new(args.iie_joystick_emulation);
             joy.set_bindings(self.joy_bindings());
@@ -3023,9 +3008,8 @@ impl SnowGui {
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
         self.workspace.shader_configs = self.framebuffer.export_config();
-        if self.emu.is_initialized() && !self.emu.restored_from_state() {
-            self.workspace
-                .set_live_devices(device_configs(self.emu.buses()));
+        if self.emu.is_initialized() {
+            self.workspace.set_live_devices(self.emu.devices());
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
@@ -3352,7 +3336,8 @@ impl SnowGui {
         );
         // What's plugged in stays plugged in, and what couldn't be used gets another chance
         devices.extend(
-            device_configs(self.emu.buses())
+            self.emu
+                .devices()
                 .into_iter()
                 .filter(|d| d.known_model().is_some_and(|m| !m.fixed())),
         );
@@ -4019,19 +4004,13 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
-        // Apple IIe 5.25" disk image picker
-        self.iie_disk_dialog.update(ctx, frame);
-        if let Some(path) = self.iie_disk_dialog.take_picked() {
-            self.emu.load_media(self.iie_dialog_slot, &path);
+        // Image picker for the drives that aren't the Mac's
+        self.media_dialog.update(ctx, frame);
+        if let Some(path) = self.media_dialog.take_picked() {
+            self.emu
+                .load_media(self.media_dialog_slot, &path, self.floppy_dialog_wp);
         }
-        self.ui_active &= *self.iie_disk_dialog.state() != egui_file_dialog::DialogState::Open;
-
-        // Apple IIe UniDisk 3.5 image picker
-        self.iie_unidisk_dialog.update(ctx, frame);
-        if let Some(path) = self.iie_unidisk_dialog.take_picked() {
-            self.emu.load_media(self.iie_dialog_slot, &path);
-        }
-        self.ui_active &= *self.iie_unidisk_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.media_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);

@@ -87,15 +87,15 @@ fn main() -> Result<()> {
             secondary_fn.extension().unwrap().to_string_lossy()
         ));
 
-        cmd.send(EmulatorCommand::InsertFloppy(
+        cmd.send(EmulatorCommand::LoadMedia(
             floppy_slot("1"),
-            floppy_fn,
+            PathBuf::from(&floppy_fn),
             false,
         ))?;
         if secondary_fn.exists() {
-            cmd.send(EmulatorCommand::InsertFloppy(
+            cmd.send(EmulatorCommand::LoadMedia(
                 floppy_slot("2"),
-                secondary_fn.to_string_lossy().to_string(),
+                secondary_fn.clone(),
                 false,
             ))?;
         }

@@ -37,15 +37,11 @@ pub enum EmulatorCommand {
     AddDevice(DeviceConfig),
     /// Takes a device out of its slot
     RemoveDevice(SlotAddr),
-    /// Inserts a floppy image from a file.
-    /// Parameters: slot, file, write-protect
-    InsertFloppy(SlotAddr, String, bool),
     /// Inserts a floppy image, passing the image as boxed object.
     /// Parameters: slot, image, write-protect
     #[serde(skip)]
     InsertFloppyImage(SlotAddr, Box<FloppyImage>, bool),
     SaveFloppy(SlotAddr, PathBuf),
-    EjectFloppy(SlotAddr),
     /// Sets the joystick and buttons on the Apple IIe card's game port.
     SetIieGamePort(GamePort),
     /// Toggle automatic writeback for a floppy drive.
@@ -53,8 +49,8 @@ pub enum EmulatorCommand {
     SetFloppyWriteback(SlotAddr, bool),
     /// Branches a disk's image off to a new file
     BranchDisk(SlotAddr, PathBuf),
-    /// Puts an image in a drive
-    LoadMedia(SlotAddr, PathBuf),
+    /// Puts an image in a drive. Parameters: slot, file, write-protect
+    LoadMedia(SlotAddr, PathBuf, bool),
     /// Takes the image out of a drive
     EjectMedia(SlotAddr),
     #[cfg(feature = "ethernet")]
@@ -165,11 +161,10 @@ pub struct EmulatorStatus {
     /// Size of the RAM
     pub ram_size: usize,
     pub effective_speed: f64,
-    pub buses: Vec<super::devices::Bus>,
 }
 
 #[cfg(feature = "ethernet")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EthernetCaptureStatus {
     pub active: bool,
     pub filename: Option<PathBuf>,
@@ -201,6 +196,8 @@ pub struct MemoryNotifierRange {
 #[derive(strum::Display)]
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
+    /// The bus list changed: a device came or went
+    Buses(Arc<Vec<super::devices::Bus>>),
     UserMessage(UserMessageType, String),
     FloppyEjected(SlotAddr, Box<FloppyImage>),
     MediaEjected(SlotAddr),
