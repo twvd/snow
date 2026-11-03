@@ -1152,10 +1152,6 @@ impl Emulator {
             .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
     }
 
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
-    }
-
     pub fn attach_disk_image_at(
         &mut self,
         image: Box<dyn DiskImage>,
@@ -1360,36 +1356,6 @@ impl Emulator {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom(&mut self, id: usize) {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
-        info!("SCSI ID #{}: CD-ROM drive attached", id);
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config
-            .scsi_mut()
-            .attach_cdrom_folder_at(id, dir, audio_provider)?;
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) {
-        self.config.scsi_mut().attach_ethernet_at(id);
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
-        self.config.scsi_mut().attach_printer_at(id, output_dir);
-        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
-    }
-
     #[cfg(feature = "savestates")]
     fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let devices = serde_json::to_string(&self.devices())?;

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::emulator::devices::{Cdrom, CdromSettings, CdromStatus, FunctionMut, replace_status};
+use crate::emulator::devices::{
+    Cdrom, CdromSettings, CdromStatus, CreateContext, DeviceConfig, FunctionMut, replace_status,
+};
 use crate::{
     debuggable::Debuggable,
     emulator::{EmuContext, comm::EmulatorSpeed},
@@ -1693,6 +1695,38 @@ impl Debuggable for ScsiTargetCdrom {
     }
 }
 
+/// Makes a CD-ROM drive from its entry: empty, with an image, or with a folder of images the
+/// guest switches between
+fn create(config: &DeviceConfig, ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: CdromSettings = config.parse()?;
+    let mut cdrom = ScsiTargetCdrom::new(ctx.audio.as_deref_mut());
+    match settings.media {
+        Some(dir) if dir.is_dir() => {
+            cdrom.set_image_dir(Some(dir));
+            if let Err(e) = cdrom.mount_first_image() {
+                log::warn!("Toolbox managed CD-ROM folder: {:#}", e);
+            }
+        }
+        Some(image) => cdrom.load_media(&image)?,
+        None => (),
+    }
+    Ok(Box::new(cdrom))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::ScsiCdrom,
+    name: "CD-ROM drive",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Cdrom,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1937,16 +1971,3 @@ mod tests {
         assert_eq!(cd.common().req_sense(), sense);
     }
 }
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::ScsiCdrom,
-    name: "CD-ROM drive",
-    bus: crate::emulator::devices::BusKind::Scsi,
-    fits: crate::emulator::devices::ModelInfo::fits_all,
-    function: crate::emulator::devices::FunctionKind::Cdrom,
-    fixed: false,
-    one_per_bus: false,
-    rom: None,
-    path_keys: &["media"],
-    adds_buses: &[],
-};

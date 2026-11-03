@@ -1,7 +1,9 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::devices::{Ethernet, EthernetStatus, FunctionMut, replace_status};
+use crate::emulator::devices::{
+    CreateContext, DeviceConfig, Ethernet, EthernetStatus, FunctionMut, replace_status,
+};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -1220,6 +1222,33 @@ impl Ethernet for ScsiTargetEthernet {
     }
 }
 
+/// Makes a DaynaPORT from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let mut adapter = ScsiTargetEthernet::default();
+    // A link this build doesn't have shouldn't cost the device
+    if let Some(link) = config.settings.get("link") {
+        match serde_json::from_value(link.clone()) {
+            Ok(link) => adapter.set_link(link)?,
+            Err(_) => log::warn!("Unknown Ethernet link {}", link),
+        }
+    }
+    Ok(Box::new(adapter))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DaynaPortScsiLink,
+    name: "DaynaPORT SCSI/Link",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: false,
+    one_per_bus: true,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,16 +1338,3 @@ mod tests {
         }
     }
 }
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::DaynaPortScsiLink,
-    name: "DaynaPORT SCSI/Link",
-    bus: crate::emulator::devices::BusKind::Scsi,
-    fits: crate::emulator::devices::ModelInfo::fits_all,
-    function: crate::emulator::devices::FunctionKind::Ethernet,
-    fixed: false,
-    one_per_bus: true,
-    rom: None,
-    path_keys: &[],
-    adds_buses: &[],
-};

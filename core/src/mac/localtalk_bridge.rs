@@ -411,6 +411,27 @@ impl LocalTalkBridge {
     }
 }
 
+/// The host link a LocalTalk adapter opens
+fn create(
+    _config: &crate::emulator::devices::DeviceConfig,
+) -> anyhow::Result<super::serial_bridge::SerialBridgeConfig> {
+    Ok(super::serial_bridge::SerialBridgeConfig::LocalTalk)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::LocalTalkAdapter,
+    name: "LocalTalk adapter",
+    bus: crate::emulator::devices::BusKind::Serial,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::LocalTalk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Serial(create)),
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,16 +543,3 @@ mod tests {
         assert_eq!(src, 10);
     }
 }
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::LocalTalkAdapter,
-    name: "LocalTalk adapter",
-    bus: crate::emulator::devices::BusKind::Serial,
-    fits: crate::emulator::devices::ModelInfo::fits_all,
-    function: crate::emulator::devices::FunctionKind::LocalTalk,
-    fixed: false,
-    one_per_bus: false,
-    rom: None,
-    path_keys: &[],
-    adds_buses: &[],
-};

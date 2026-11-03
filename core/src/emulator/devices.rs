@@ -25,7 +25,7 @@ use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
 use crate::mac::scsi::disk_image::DiskImage;
-use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetType};
 use crate::mac::serial_bridge::{
     SerialBridgeConfig, SerialBridgeStatus, SerialDevice, serial_device,
 };
@@ -109,7 +109,8 @@ pub enum DeviceModel {
     SerialBridge,
 }
 
-/// What a device model's file registers about it
+/// One static record per device model, in that device model's source code file. The frontend
+/// reads it to learn about a device model before any device of it exists.
 pub struct ModelInfo {
     pub model: DeviceModel,
     /// In the menus: free to change
@@ -128,6 +129,23 @@ pub struct ModelInfo {
     pub path_keys: &'static [&'static str],
     /// The buses a device of this model adds
     pub adds_buses: &'static [BusKind],
+    /// How a device of this model is made. None: the machine build makes it.
+    pub(crate) create: Option<CreateFn>,
+}
+
+/// What making a device can draw on, besides its settings
+pub(crate) struct CreateContext<'a> {
+    /// Where a CD-ROM drive plays audio
+    pub(crate) audio: Option<&'a mut dyn crate::renderer::AudioProvider>,
+}
+
+/// How a device model's file makes a device. There's one kind per bus type, because each bus
+/// holds its devices behind its own slot trait.
+#[derive(Clone, Copy)]
+pub(crate) enum CreateFn {
+    Scsi(fn(&DeviceConfig, &mut CreateContext) -> Result<Box<dyn ScsiTarget>>),
+    /// The host link a serial device opens
+    Serial(fn(&DeviceConfig) -> Result<SerialBridgeConfig>),
 }
 
 /// A ROM a device model needs
@@ -1623,54 +1641,26 @@ impl Emulator {
         if !bus.can_take(info) || slot.blocked {
             bail!("A {} can't go here right now", model.name());
         }
-        match (slot_target(bus, slot), model) {
-            (SlotTarget::Scsi(id), DeviceModel::ScsiHardDisk) => {
-                let settings: HardDiskSettings = config.parse()?;
-                if settings.read_only {
-                    bail!("SCSI disks can't be read-only yet");
-                }
-                self.load_hdd_image(&settings.media, id)
+        let Some(create) = info.create else {
+            bail!("A {} is made with the machine", model.name());
+        };
+        match (slot_target(bus, slot), create) {
+            (SlotTarget::Scsi(id), CreateFn::Scsi(create)) => {
+                let mut audio = self.audio_provider.as_deref().map(|a| a.lock().unwrap());
+                let mut ctx = CreateContext {
+                    audio: audio.as_deref_mut().map(|a| a as _),
+                };
+                let target = create(config, &mut ctx);
+                drop(audio);
+                self.config.scsi_mut().attach_target_at(id, target?)?;
             }
-            (SlotTarget::Scsi(id), DeviceModel::ScsiCdrom) => {
-                let settings: CdromSettings = config.parse()?;
-                match settings.media {
-                    Some(dir) if dir.is_dir() => self.attach_cdrom_folder(id, dir),
-                    Some(image) => {
-                        self.attach_cdrom(id);
-                        self.load_target(SlotTarget::Scsi(id), model, &image, false)
-                    }
-                    None => {
-                        self.attach_cdrom(id);
-                        Ok(())
-                    }
-                }
+            (SlotTarget::Serial(ch), CreateFn::Serial(create)) => {
+                self.serial_bridge_enable(ch, create(config)?)?;
             }
-            #[cfg(feature = "ethernet")]
-            (SlotTarget::Scsi(id), DeviceModel::DaynaPortScsiLink) => {
-                self.attach_ethernet(id);
-                self.configure_device(SlotTarget::Scsi(id), model, config)
-            }
-            #[cfg(feature = "printer")]
-            (SlotTarget::Scsi(id), DeviceModel::LaserWriterIISC) => {
-                let settings: LaserWriterIISCSettings = config.parse()?;
-                self.attach_printer(id, settings.output_dir.unwrap_or_else(std::env::temp_dir));
-                Ok(())
-            }
-            (SlotTarget::Serial(ch), DeviceModel::SerialBridge) => {
-                let settings: SerialLinkSettings = config.parse()?;
-                self.serial_bridge_enable(
-                    ch,
-                    match settings.tcp_port {
-                        Some(port) => SerialBridgeConfig::Tcp(port),
-                        None => SerialBridgeConfig::Pty,
-                    },
-                )
-            }
-            (SlotTarget::Serial(ch), DeviceModel::LocalTalkAdapter) => {
-                self.serial_bridge_enable(ch, SerialBridgeConfig::LocalTalk)
-            }
-            (t, model) => bail!("{:?} can't take a {}", t, model.name()),
+            (t, _) => bail!("{:?} can't take a {}", t, model.name()),
         }
+        info!("{} #{}: {} attached", bus.id, slot.id, model.name());
+        Ok(())
     }
 
     /// Hands a device that's already there its settings
