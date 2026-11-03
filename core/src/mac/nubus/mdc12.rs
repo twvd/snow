@@ -4,7 +4,7 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
+use super::{NubusSlot, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -257,6 +257,15 @@ where
         self.vblank_irq = false;
         self.vblank_enable = false;
         self.ctrl.0 = 0;
+    }
+
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        // 2 MB of VRAM, below the registers at $20_0000
+        let window = Window {
+            mask: 0xE0_0000,
+            value: 0,
+        };
+        Some((window, &mut self.vram))
     }
 
     fn get_irq(&self) -> bool {

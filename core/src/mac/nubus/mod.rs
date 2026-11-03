@@ -22,10 +22,31 @@ pub enum NubusCard<TRenderer: Renderer> {
     Toby(Toby<TRenderer>),
 }
 
+/// A card's memory window: the bus reaches the memory behind it directly, like
+/// RAM. An offset in the slot is in the window when `offset & mask == value`.
+#[derive(Clone, Copy)]
+pub struct Window {
+    pub mask: Address,
+    pub value: Address,
+}
+
+impl Window {
+    /// Picks the byte of the memory an offset in the window reaches. The bits
+    /// above the lowest one of the mask aren't decoded, so they mirror.
+    pub const fn index_mask(self) -> Address {
+        (1 << self.mask.trailing_zeros()) - 1
+    }
+}
+
 /// What a NuBus slot sees of a card
 pub trait NubusSlot<TRenderer>:
     BusMember<Address> + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display
 {
+    /// The card's memory window, and the memory behind it. What the memory
+    /// doesn't cover goes to `read` and `write`, like the registers.
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        None
+    }
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
     fn blank(&mut self) -> Result<()>;
@@ -73,6 +94,10 @@ where
 
     pub fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         with_card!(self, c => c.write(addr, val))
+    }
+
+    pub fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        with_card!(self, c => c.window())
     }
 }
 

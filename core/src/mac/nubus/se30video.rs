@@ -3,7 +3,7 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
+use super::{NubusSlot, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -95,6 +95,15 @@ where
         self.fb_select = false;
     }
 
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        // 64 KB of VRAM, also seen at $E0_0000
+        let window = Window {
+            mask: 0x1F_0000,
+            value: 0,
+        };
+        Some((window, &mut self.vram))
+    }
+
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
@@ -126,9 +135,8 @@ where
     fn read(&mut self, addr: Address) -> Option<u8> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                Some(self.vram[(addr & 0xFFFF) as usize])
-            }
+            // VRAM, as the window decodes it
+            a if a & 0x1F_0000 == 0 => Some(self.vram[(a & 0xFFFF) as usize]),
             // ROM
             0xFE_0000..=0xFF_FFFF => Some(self.rom[(addr - 0xFE_0000) as usize % self.rom.len()]),
             _ => None,
@@ -138,8 +146,8 @@ where
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                self.vram[(addr as usize) & 0xFFFF] = val;
+            a if a & 0x1F_0000 == 0 => {
+                self.vram[(a & 0xFFFF) as usize] = val;
                 Some(())
             }
             _ => None,

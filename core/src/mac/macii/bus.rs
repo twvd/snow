@@ -461,9 +461,19 @@ where
         self.nubus_devices[(addr >> 24) as usize - 0xF9].as_mut()
     }
 
-    /// The cards are reached a byte at a time
+    /// A card's memory window is reached like RAM, and the rest of the card a
+    /// byte at a time
     fn slot_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         let card = self.slot_card(addr)?;
+        let offset = addr & 0xFF_FFFF;
+        if let Some((window, mem)) = card.window()
+            && offset & window.mask == window.value
+        {
+            let idx = (offset & window.index_mask()) as usize;
+            if let Some(bytes) = mem.get(idx..idx + len as usize) {
+                return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+            }
+        }
         Some((addr..addr + len).fold(0, |v, a| {
             (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
         }))
@@ -471,6 +481,16 @@ where
 
     fn slot_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
         let card = self.slot_card(addr)?;
+        let offset = addr & 0xFF_FFFF;
+        if let Some((window, mem)) = card.window()
+            && offset & window.mask == window.value
+        {
+            let idx = (offset & window.index_mask()) as usize;
+            if let Some(bytes) = mem.get_mut(idx..idx + len as usize) {
+                bytes.copy_from_slice(&val.to_be_bytes()[4 - len as usize..]);
+                return Some(());
+            }
+        }
         for a in addr..addr + len {
             let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
             Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val));
