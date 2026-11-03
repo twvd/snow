@@ -4517,6 +4517,8 @@ where
         let mut ticks = 0;
         // Dropping dirty data changes what memory looks like
         self.watch_hit |= self.watch_active;
+        // The bus controller finishes the last write first
+        self.write_credit = 0;
         self.caches.invalidate(
             &mut bus_transaction!(self, &mut ticks),
             caches,
