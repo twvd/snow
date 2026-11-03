@@ -853,6 +853,19 @@ impl Emulator {
     }
 
     fn status_update(&mut self) -> Result<()> {
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config
+            && let Some(disk) = lisa.bus.disk_take_ejected()
+            && disk.writeback
+            && disk.dirty()
+            && let Some(path) = &disk.media
+            && let Err(e) = std::fs::write(path, disk.to_image())
+        {
+            self.user_error(&format!(
+                "Cannot write Lisa floppy '{}': {}",
+                path.display(),
+                e
+            ));
+        }
         for i in 0..self.config.swim().drives.len() {
             self.writeback_ejected(i);
         }
