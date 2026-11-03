@@ -2321,6 +2321,24 @@ impl Debuggable for PdsIIeCard {
     }
 }
 
+const fn fits_lc_pds(mac: crate::mac::MacModel) -> bool {
+    mac.has_lc_pds()
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::AppleIIePdsCard,
+    name: "Apple IIe Card",
+    bus: crate::emulator::devices::BusKind::LcPds,
+    fits: fits_lc_pds,
+    function: crate::emulator::devices::FunctionKind::AppleIIe,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[crate::emulator::devices::BusKind::IieDisk],
+    create: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4278,20 +4296,3 @@ mod tests {
         );
     }
 }
-
-const fn fits_lc_pds(mac: crate::mac::MacModel) -> bool {
-    mac.has_lc_pds()
-}
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::AppleIIePdsCard,
-    name: "Apple IIe Card",
-    bus: crate::emulator::devices::BusKind::LcPds,
-    fits: fits_lc_pds,
-    function: crate::emulator::devices::FunctionKind::AppleIIe,
-    fixed: true,
-    one_per_bus: false,
-    rom: None,
-    path_keys: &[],
-    adds_buses: &[crate::emulator::devices::BusKind::IieDisk],
-};

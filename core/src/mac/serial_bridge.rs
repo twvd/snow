@@ -455,6 +455,15 @@ impl SerialDevice for super::localtalk_bridge::LocalTalkBridge {
     }
 }
 
+/// The host link a serial bridge opens, from its entry
+fn create(config: &crate::emulator::devices::DeviceConfig) -> anyhow::Result<SerialBridgeConfig> {
+    let settings: crate::emulator::devices::SerialLinkSettings = config.parse()?;
+    Ok(match settings.tcp_port {
+        Some(port) => SerialBridgeConfig::Tcp(port),
+        None => SerialBridgeConfig::Pty,
+    })
+}
+
 pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
     model: crate::emulator::devices::DeviceModel::SerialBridge,
     name: "Serial bridge",
@@ -466,4 +475,5 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: None,
     path_keys: &[],
     adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Serial(create)),
 };

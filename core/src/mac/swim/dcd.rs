@@ -15,7 +15,9 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
-use crate::emulator::devices::{HardDisk, HardDiskSettings, HardDiskStatus, replace_status};
+use crate::emulator::devices::{
+    DeviceConfig, HardDisk, HardDiskSettings, HardDiskStatus, replace_status,
+};
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_udec};
@@ -753,6 +755,26 @@ impl Debuggable for DcdDevice {
     }
 }
 
+/// Makes an HD20 from its entry
+fn create(config: &DeviceConfig) -> Result<DcdDevice> {
+    let settings: HardDiskSettings = config.parse()?;
+    DcdDevice::open(&settings.media, !settings.read_only)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Hd20,
+    name: "HD20",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::HardDisk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Hd20(create)),
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,16 +1251,3 @@ mod tests {
         assert_eq!(find_volume(&MemImage(img)), (0, 200));
     }
 }
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::Hd20,
-    name: "HD20",
-    bus: crate::emulator::devices::BusKind::Swim,
-    fits: crate::emulator::devices::ModelInfo::fits_all,
-    function: crate::emulator::devices::FunctionKind::HardDisk,
-    fixed: false,
-    one_per_bus: false,
-    rom: None,
-    path_keys: &["media"],
-    adds_buses: &[],
-};
