@@ -822,3 +822,70 @@ mod tests {
         assert!(drv.floppy_ejected.is_some());
     }
 }
+
+/// The early Macs can be built with a drive other than their own
+const fn chosen_with_early_macs(mac: crate::mac::MacModel) -> bool {
+    matches!(
+        mac,
+        crate::mac::MacModel::Early128K | crate::mac::MacModel::Early512K
+    )
+}
+
+/// The drives the other Macs have, which aren't chosen
+const fn never_chosen(_mac: crate::mac::MacModel) -> bool {
+    false
+}
+
+pub const INFO_400K: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Mac400KDrive,
+    name: "400K drive",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: chosen_with_early_macs,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+};
+
+pub const INFO_800K: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Mac800KDrive,
+    name: "800K drive",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: never_chosen,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+};
+
+pub const INFO_800K_PWM: crate::emulator::devices::ModelInfo =
+    crate::emulator::devices::ModelInfo {
+        model: crate::emulator::devices::DeviceModel::Mac800KPwmDrive,
+        name: "800K drive (PWM)",
+        bus: crate::emulator::devices::BusKind::Swim,
+        fits: chosen_with_early_macs,
+        function: crate::emulator::devices::FunctionKind::Floppy,
+        fixed: true,
+        one_per_bus: false,
+        rom: None,
+        path_keys: &["media"],
+        adds_buses: &[],
+    };
+
+pub const INFO_SUPERDRIVE: crate::emulator::devices::ModelInfo =
+    crate::emulator::devices::ModelInfo {
+        model: crate::emulator::devices::DeviceModel::MacSuperDrive,
+        name: "SuperDrive",
+        bus: crate::emulator::devices::BusKind::Swim,
+        fits: never_chosen,
+        function: crate::emulator::devices::FunctionKind::Floppy,
+        fixed: true,
+        one_per_bus: false,
+        rom: None,
+        path_keys: &["media"],
+        adds_buses: &[],
+    };

@@ -319,3 +319,28 @@ where
         write!(f, "Macintosh II Video Card (Toby)")
     }
 }
+
+/// The Macs whose NuBus slots take this card
+const fn fits_mac_ii(mac: crate::mac::MacModel) -> bool {
+    use crate::mac::MacModel;
+    matches!(
+        mac,
+        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::MacIIVideoCard,
+    name: "Macintosh II Video Card",
+    bus: crate::emulator::devices::BusKind::Nubus,
+    fits: fits_mac_ii,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Macintosh II Video Card ROM",
+        digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+};

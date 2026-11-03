@@ -855,7 +855,7 @@ mod tests {
     fn a_workspace_survives_a_machine() {
         use snow_core::emulator::Emulator;
         use snow_core::emulator::MouseMode;
-        use snow_core::emulator::devices::{MachineConfig, device_configs};
+        use snow_core::emulator::devices::MachineConfig;
 
         let dir = TestDir::new("machine");
         std::fs::write(dir.0.join("a.img"), vec![0u8; 1024 * 1024]).unwrap();
@@ -871,7 +871,7 @@ mod tests {
             ]}"#,
         );
         let rom = vec![0; 128 * 1024];
-        let (emu, _, refused) = Emulator::new_with_devices(
+        let (mut emu, _, refused) = Emulator::new_with_devices(
             &MachineConfig {
                 rom: &rom,
                 model: MacModel::Plus,
@@ -888,7 +888,7 @@ mod tests {
         .unwrap();
         assert_eq!(refused.len(), 3, "{:#?}", refused);
         ws.kept_devices = refused.into_iter().map(|r| r.config).collect();
-        ws.set_live_devices(device_configs(&emu.buses()));
+        ws.set_live_devices(emu.devices());
 
         let path = dir.0.join("saved.snoww");
         ws.write_file(&path).unwrap();

@@ -61,7 +61,7 @@ impl TryFrom<u8> for LlapType {
 }
 
 /// Status of the LocalTalk bridge
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTalkStatus {
     /// Our node address (0 = not yet assigned)
     pub node_address: u8,
@@ -522,3 +522,16 @@ mod tests {
         assert_eq!(src, 10);
     }
 }
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::LocalTalkAdapter,
+    name: "LocalTalk adapter",
+    bus: crate::emulator::devices::BusKind::Serial,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::LocalTalk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+};

@@ -209,3 +209,23 @@ where
         write!(f, "SE/30 video controller")
     }
 }
+
+const fn fits_se30(mac: crate::mac::MacModel) -> bool {
+    matches!(mac, crate::mac::MacModel::SE30)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::SE30Video,
+    name: "SE/30 video",
+    bus: crate::emulator::devices::BusKind::BuiltIn,
+    fits: fits_se30,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "SE/30 video ROM",
+        digests: &["8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+};

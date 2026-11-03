@@ -1317,3 +1317,16 @@ mod tests {
         }
     }
 }
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DaynaPortScsiLink,
+    name: "DaynaPORT SCSI/Link",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: false,
+    one_per_bus: true,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+};
