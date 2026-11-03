@@ -511,6 +511,7 @@ where
 
     fn via2_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         Self::dev_write(addr, val as Byte, self.via2.write(addr, val as Byte));
+        self.update_amu();
 
         // Lazy update ramsize
         if self.via2.pa().v2ram0() == self.ram_expected_ramsiz {
@@ -748,6 +749,14 @@ where
         self.progkey_pressed.set();
     }
 
+    /// With vFC3 (VIA2 PB3) at 0, the AMU translates 24-bit addresses (Guide to the
+    /// Macintosh Family Hardware, 2nd edition, chapter 4, VIA2 data register B)
+    fn update_amu(&mut self) {
+        if self.amu {
+            self.amu_active = !self.via2.pb().vfc3();
+        }
+    }
+
     fn amu_translate(&self, addr: Address) -> Address {
         if !self.amu {
             return addr;
@@ -906,9 +915,7 @@ where
             bus_frequency: self.bus_frequency(),
         };
 
-        if self.amu {
-            self.amu_active = !self.via2.pb().vfc3();
-        }
+        self.update_amu();
 
         // The devices run at the native frequency, whatever the CPU is
         // overclocked to.
