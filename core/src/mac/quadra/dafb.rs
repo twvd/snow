@@ -183,6 +183,9 @@ where
     const INT_VBL: u32 = 1 << 0;
     const INT_CURSOR: u32 = 1 << 2;
 
+    /// Sense register after reset: no sense line driven
+    const SENSE_UNDRIVEN: u32 = 0b111;
+
     pub fn new(renderer: TRenderer, monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
         Self {
             renderer: Some(renderer),
@@ -196,7 +199,7 @@ where
             timing_control: Field32(0),
             config: Field32(0),
             block_control: Field32(0),
-            sense: Field32(0),
+            sense: Field32(Self::SENSE_UNDRIVEN),
             test: Field32(0),
             turbo_scsi: Field32(0),
             scsi_drq: false,
@@ -227,7 +230,7 @@ where
         self.timing_control = Field32(0);
         self.config = Field32(0);
         self.block_control = Field32(0);
-        self.sense = Field32(0);
+        self.sense = Field32(Self::SENSE_UNDRIVEN);
         self.swatch_mode = Field32(0);
         self.int_enable = Field32(0);
         self.int_status = Field32(0);
@@ -862,6 +865,7 @@ mod tests {
     const PAL_ADDRESS: Address = 0x80_0203;
     const PAL_DATA: Address = 0x80_0213;
     const PBCTRL: Address = 0x80_0223;
+    const SENSE: Address = 0x80_001F;
 
     fn dafb(kind: DafbKind) -> Dafb<NullRenderer> {
         let renderer = NullRenderer::new(0, 0).unwrap();
@@ -904,5 +908,18 @@ mod tests {
             dafb.read(PBCTRL),
             Some(0xA0 | Dafb::<NullRenderer>::ANTELOPE_VERSION)
         );
+    }
+
+    /// The ROM reads the sense lines before it writes the register. With none
+    /// driven, a monitor with an extended sense code reads as code 7, which the
+    /// register returns inverted.
+    #[test]
+    fn sense_lines_undriven_after_reset() {
+        let renderer = NullRenderer::new(0, 0).unwrap();
+        let mut dafb = Dafb::new(renderer, MacMonitor::RGB16, DafbKind::Dafb, 512 * 1024);
+        assert_eq!(dafb.read(SENSE), Some(0));
+        dafb.write(SENSE, 0).unwrap();
+        dafb.reset();
+        assert_eq!(dafb.read(SENSE), Some(0));
     }
 }
