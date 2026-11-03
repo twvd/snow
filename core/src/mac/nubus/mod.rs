@@ -9,7 +9,6 @@ use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
 use mdc12::Mdc12;
-use se30video::SE30Video;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use toby::Toby;
@@ -18,7 +17,6 @@ use toby::Toby;
 #[serde(bound = "")]
 pub enum NubusCard<TRenderer: Renderer> {
     MDC12(Mdc12<TRenderer>),
-    SE30Video(SE30Video<TRenderer>),
     Toby(Toby<TRenderer>),
 }
 
@@ -64,7 +62,6 @@ macro_rules! with_card {
     ($card:expr, $c:ident => $e:expr) => {
         match $card {
             NubusCard::MDC12($c) => $e,
-            NubusCard::SE30Video($c) => $e,
             NubusCard::Toby($c) => $e,
         }
     };
@@ -86,31 +83,49 @@ where
     pub fn video(&mut self) -> Option<&mut dyn VideoCard<TRenderer>> {
         match self {
             Self::MDC12(c) => Some(c),
-            Self::SE30Video(c) => Some(c),
             Self::Toby(c) => Some(c),
         }
     }
+}
 
-    // Statically dispatched, for the paths run on every bus tick and access
+// Statically dispatched, for the paths run on every bus tick and access
 
-    pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        with_card!(self, c => c.tick(ticks, ctx))
+impl<TRenderer> NubusSlot for NubusCard<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        with_card!(self, c => c.window())
     }
 
-    pub fn get_irq(&self) -> bool {
+    fn get_irq(&self) -> bool {
         with_card!(self, c => c.get_irq())
     }
 
-    pub fn read(&mut self, addr: Address) -> Option<u8> {
+    fn reset(&mut self) {
+        with_card!(self, c => c.reset());
+    }
+}
+
+impl<TRenderer> BusMember<Address> for NubusCard<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn read(&mut self, addr: Address) -> Option<u8> {
         with_card!(self, c => c.read(addr))
     }
 
-    pub fn write(&mut self, addr: Address, val: u8) -> Option<()> {
+    fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         with_card!(self, c => c.write(addr, val))
     }
+}
 
-    pub fn window(&mut self) -> Option<(Window, &mut [u8])> {
-        with_card!(self, c => c.window())
+impl<TRenderer> Tickable<&dyn EmuContext> for NubusCard<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        with_card!(self, c => c.tick(ticks, ctx))
     }
 }
 
