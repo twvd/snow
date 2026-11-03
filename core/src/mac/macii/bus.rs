@@ -215,21 +215,30 @@ where
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
+    /// `nubus` cards should be supplied in ascending slot order and `renderers`
+    /// in the matching order (one per card), so that each card is paired with
+    /// its renderer and with the name reported by [`Self::display_names`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
         nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
+        renderers: Vec<TRenderer>,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         amu: bool,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
+        assert_eq!(
+            nubus.len(),
+            renderers.len(),
+            "expected one renderer per NuBus card"
+        );
+        // Build the NuBus cards from the provided configuration. Renderers are
+        // matched to cards in the order the cards are given.
         let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
-        for cfg in nubus {
+        for (cfg, renderer) in nubus.iter().zip(renderers) {
             assert!(
                 model.nubus_slots().contains(&cfg.slot),
                 "NuBus slot {:#X} not available on {}",
@@ -238,9 +247,6 @@ where
             );
             let idx = (cfg.slot - 0x9) as usize;
             // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
             nubus_devices[idx] = Some(match cfg.kind {
                 NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
@@ -305,11 +311,29 @@ where
         bus
     }
 
+    /// The display outputs of this machine, one per installed video card,
+    /// in NuBus slot order.
+    pub fn display_names(&self) -> Vec<String> {
+        self.nubus_devices
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, c)| {
+                c.as_ref()
+                    .map(|card| format!("Slot ${:X}: {}", idx + 0x9, card.slot_ref()))
+            })
+            .collect()
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        assert_eq!(
+            self.nubus_devices.iter().flatten().count(),
+            renderers.len(),
+            "expected one renderer per NuBus card"
+        );
+        // Renderers are matched to cards in NuBus slot order, the same order
+        // as reported by display_names().
+        for (card, renderer) in self.nubus_devices.iter_mut().flatten().zip(renderers) {
             let slot = card.slot();
             slot.set_renderer(renderer);
             slot.render().unwrap();

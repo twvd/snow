@@ -194,9 +194,14 @@ where
         bus
     }
 
+    /// The display outputs of this machine (the single built-in video output)
+    pub fn display_names(&self) -> Vec<String> {
+        vec!["Built-in display".to_string()]
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.video.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        self.video.renderer = renderers.into_iter().next();
         self.sound.after_deserialize();
     }
 

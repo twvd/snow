@@ -44,7 +44,7 @@ use crate::mac::{
 };
 use crate::renderer::AudioProvider;
 use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayHandle, FrameReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
@@ -327,6 +327,7 @@ dispatch! {
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
+        fn display_names(&self) -> Vec<String> { bus.display_names() }
     }
 
     mutable_calls {
@@ -352,7 +353,7 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
-        fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn after_deserialize(&mut self, renderers: Vec<ChannelRenderer>) -> () { bus.after_deserialize(renderers) }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
         fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
@@ -403,12 +404,39 @@ pub struct Emulator {
     memory_notify_time: Instant,
 }
 
+/// Creates one renderer per NuBus card, recording the frame receivers (in the
+/// same order) so they can be paired with the display names afterwards.
+fn make_renderers(
+    nubus: &[NubusCardConfig<'_>],
+    receivers: &mut Vec<FrameReceiver>,
+) -> Result<Vec<ChannelRenderer>> {
+    nubus
+        .iter()
+        .map(|_| {
+            let renderer = ChannelRenderer::new(0, 0)?;
+            receivers.push(renderer.get_receiver());
+            Ok(renderer)
+        })
+        .collect()
+}
+
+/// Pairs display names with their frame receivers into display handles. Both
+/// lists must be in the same order (display install order).
+fn build_displays(names: Vec<String>, receivers: Vec<FrameReceiver>) -> Vec<DisplayHandle> {
+    debug_assert_eq!(names.len(), receivers.len());
+    names
+        .into_iter()
+        .zip(receivers)
+        .map(|(name, receiver)| DisplayHandle { name, receiver })
+        .collect()
+}
+
 impl Emulator {
     pub fn new(
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         Self::new_with_extra(
             rom,
             extra_roms,
@@ -437,12 +465,14 @@ impl Emulator {
         fpu_enabled: bool,
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
+
+        // Frame receivers for each display output, collected in the same order
+        // as the renderers are installed (i.e. the order display_names() reports).
+        let mut receivers: Vec<FrameReceiver> = Vec::new();
 
         let mut config = match model {
             MacModel::Early128K
@@ -461,6 +491,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = CompactMacBus::new(
                     model,
                     rom,
@@ -485,6 +517,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus =
                     MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
@@ -515,13 +549,14 @@ impl Emulator {
                     _ => None,
                 });
 
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 // Initialize bus and CPU. A 68851 takes the place of the AMU.
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
+                    renderers,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -559,12 +594,13 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
+                    renderers,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -598,12 +634,13 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
+                    renderers,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -620,6 +657,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
@@ -631,6 +670,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
@@ -642,6 +683,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = LcIIIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
@@ -658,6 +701,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = Quadra700Bus::new(
                     model,
                     rom,
@@ -675,6 +720,8 @@ impl Emulator {
             MacModel::LC475 => {
                 assert!(override_fdd_type.is_none());
 
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = Lc475Bus::new(
                     model,
                     rom,
@@ -692,6 +739,10 @@ impl Emulator {
 
         config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
+
+        // Pair each display output's name (from the bus, in install order) with
+        // its frame receiver (collected in the same order above).
+        let displays = build_displays(config.display_names(), receivers);
 
         let mut emu = Self {
             config,
@@ -718,7 +769,7 @@ impl Emulator {
                 .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
         }
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Restores a saved emulator state into a new Emulator instance
@@ -726,11 +777,9 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
         let time = Instant::now();
 
         let fstr = path
@@ -741,7 +790,19 @@ impl Emulator {
         let f = File::open(path)?;
 
         let mut config = load_state_from(f, tmpdir)?;
-        config.after_deserialize(renderer);
+
+        // Mint one renderer per display output the restored machine exposes,
+        // keeping the receivers so the frontend can pick up the frames.
+        let names = config.display_names();
+        let mut receivers: Vec<FrameReceiver> = Vec::with_capacity(names.len());
+        let mut renderers: Vec<ChannelRenderer> = Vec::with_capacity(names.len());
+        for _ in &names {
+            let renderer = ChannelRenderer::new(0, 0)?;
+            receivers.push(renderer.get_receiver());
+            renderers.push(renderer);
+        }
+        config.after_deserialize(renderers);
+        let displays = build_displays(names, receivers);
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
         // stuck.
@@ -781,7 +842,7 @@ impl Emulator {
             time.elapsed()
         );
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
