@@ -7,6 +7,7 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
+use super::drive::DriveType;
 use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimMode, dcd};
 use crate::bus::Address;
 use crate::tickable::Ticks;
@@ -125,8 +126,11 @@ impl Swim {
                         return;
                     }
 
-                    let reg = self.get_selected_drive_reg_u8();
-                    self.get_selected_drive_mut().write_drive_reg(reg);
+                    // A Twiggy has no registers: LSTRB is its stepper's PH3
+                    if !self.twiggy_selected() {
+                        let reg = self.get_selected_drive_reg_u8();
+                        self.get_selected_drive_mut().write_drive_reg(reg);
+                    }
                 }
             }
             8 => {
@@ -155,6 +159,11 @@ impl Swim {
             }
             15 => self.q7 = true,
             _ => (),
+        }
+
+        if self.twiggy_selected() && self.iwm_drive_enabled() {
+            let phases = [self.ca0, self.ca1, self.ca2, self.lstrb];
+            self.get_selected_drive_mut().twiggy_phases(phases);
         }
 
         if !self.dcd_port_enabled() {
@@ -280,6 +289,7 @@ impl Swim {
                     399,
                 );
                 drv.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
+                drv.pwm_index = idx.try_into()?;
                 drv.update_ticks_per_bit();
                 drv.pwm_avg_sum = 0;
                 drv.pwm_avg_count = 0;
@@ -322,7 +332,7 @@ impl Swim {
 
     fn iwm_tick_flux(&mut self, ticks: Ticks) -> Result<()> {
         let side = self.get_active_head();
-        let track = self.get_selected_drive().get_active_track();
+        let track = self.get_selected_drive().get_head_track(side);
 
         // Run up to each flux transition within the ticks in turn
         let mut left = ticks;
@@ -459,11 +469,27 @@ impl Swim {
         }
     }
 
+    /// A Twiggy's motor runs while the IWM enables it
+    pub(super) fn update_twiggy_motors(&mut self) {
+        let enabled = self.iwm_drive_enabled();
+        let selected = self.get_selected_drive_idx();
+        for (i, drive) in self.drives.iter_mut().enumerate() {
+            if drive.drive_type == DriveType::Twiggy {
+                drive.set_twiggy_motor(enabled && i == selected);
+            }
+        }
+    }
+
     pub(super) fn iwm_tick(&mut self, ticks: Ticks) -> Result<()> {
-        match self.get_selected_drive().floppy.get_track_type(
-            self.get_active_head(),
-            self.get_selected_drive().get_active_track(),
-        ) {
+        let head = self.get_active_head();
+        if self.twiggy_selected() {
+            self.get_selected_drive_mut().set_twiggy_head(head);
+        }
+        match self
+            .get_selected_drive()
+            .floppy
+            .get_track_type(head, self.get_selected_drive().get_head_track(head))
+        {
             TrackType::Bitstream => self.iwm_tick_bitstream(ticks),
             TrackType::Flux => self.iwm_tick_flux(ticks),
         }

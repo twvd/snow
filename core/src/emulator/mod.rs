@@ -463,6 +463,7 @@ impl Emulator {
 
         let mut config = match model {
             MacModel::Early128K
+            | MacModel::TwiggyMac
             | MacModel::Early512K
             | MacModel::Early512Ke
             | MacModel::Plus

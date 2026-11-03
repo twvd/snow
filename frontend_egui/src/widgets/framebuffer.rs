@@ -306,6 +306,7 @@ impl FramebufferWidget {
     fn default_shader_configs(model: MacModel) -> Vec<ShaderConfig> {
         match model {
             MacModel::Early128K
+            | MacModel::TwiggyMac
             | MacModel::Early512K
             | MacModel::Early512Ke
             | MacModel::Plus

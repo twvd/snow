@@ -61,6 +61,8 @@ pub struct AbsoluteMouse {
 pub enum MacModel {
     /// Macintosh 128K
     Early128K,
+    /// The 1983 prototype of the Macintosh with Twiggy drives: a 128K otherwise
+    TwiggyMac,
     /// Macintosh 512K
     Early512K,
     /// Macintosh 512Ke
@@ -114,6 +116,10 @@ impl MacModel {
     const ROMS: &[(&str, &[Self])] = &[
         // Macintosh 128K
         ("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c", &[Self::Early128K]),
+        // Twiggy Mac, the "4.4T?" of Adam Goolevitch's machine, from its four EPROMs
+        ("a41053e89908e0912800d24aa67685ab264fa8735622d50aa718b073cd17522d", &[Self::TwiggyMac]),
+        // Twiggy Mac, 4.3T
+        ("c1ac5eff09c83156ba6cbf498e1d940db17854f75ad43e63a9f4d536654421a2", &[Self::TwiggyMac]),
         // Macintosh 512K
         ("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e", &[Self::Early512K]),
         // Macintosh Plus v1
@@ -165,6 +171,7 @@ impl MacModel {
     pub const fn has_adb(self) -> bool {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -178,7 +185,7 @@ impl MacModel {
     /// Default RAM size
     pub const fn ram_size_default(self) -> usize {
         match self {
-            Self::Early128K => 128 * 1024,
+            Self::Early128K | Self::TwiggyMac => 128 * 1024,
             Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::Portable15MB => 15 * 1024 * 1024,
@@ -201,6 +208,7 @@ impl MacModel {
     pub const fn ram_size_options(self) -> &'static [usize] {
         match self {
             Self::Early128K => &[128 * 1024],
+            Self::TwiggyMac => &[128 * 1024, 512 * 1024],
             Self::Early512K => &[512 * 1024],
             Self::Early512Ke => &[128 * 1024, 512 * 1024],
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
@@ -294,7 +302,12 @@ impl MacModel {
     /// Supports high-density floppies, implying SWIM controller
     pub const fn fdd_hd(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
+            Self::Early128K
+            | Self::TwiggyMac
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE => false,
             Self::SeFdhd | Self::Classic | Self::Portable | Self::Portable15MB => true,
             Self::MacII => false,
             Self::MacIIFDHD
@@ -314,6 +327,7 @@ impl MacModel {
     pub const fn fdd_drives(self) -> &'static [DriveType] {
         match self {
             Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
+            Self::TwiggyMac => &[DriveType::Twiggy, DriveType::Twiggy],
             Self::Early512Ke | Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
             Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
             Self::SeFdhd => &[
@@ -343,6 +357,7 @@ impl MacModel {
     pub const fn has_scsi(self) -> bool {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Lisa1
@@ -354,7 +369,9 @@ impl MacModel {
 
     pub const fn keymap(self) -> Keymap {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => Keymap::AkM0110,
+            Self::Early128K | Self::TwiggyMac | Self::Early512K | Self::Early512Ke | Self::Plus => {
+                Keymap::AkM0110
+            }
             _ => Keymap::AekM0115,
         }
     }
@@ -364,7 +381,9 @@ impl MacModel {
     pub const fn ram_interleave_cpu(self, cycles: Ticks) -> bool {
         match self {
             // 50/50 ratio for early macs
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => cycles % 8 >= 4,
+            Self::Early128K | Self::TwiggyMac | Self::Early512K | Self::Early512Ke | Self::Plus => {
+                cycles % 8 >= 4
+            }
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for Portable, MacII (and probably onwards)
@@ -375,6 +394,7 @@ impl MacModel {
     pub const fn cpu_type(self) -> CpuM68kType {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -395,6 +415,7 @@ impl MacModel {
     pub fn via1_a_in(self) -> via::RegisterA {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -447,6 +468,7 @@ impl MacModel {
     pub fn via2_b_in(self) -> macii::via2::RegisterB {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -505,6 +527,7 @@ impl Display for MacModel {
             "{}",
             match self {
                 Self::Early128K => "Macintosh 128K",
+                Self::TwiggyMac => "Macintosh (Twiggy prototype)",
                 Self::Early512K => "Macintosh 512K",
                 Self::Early512Ke => "Macintosh 512Ke",
                 Self::Plus => "Macintosh Plus",

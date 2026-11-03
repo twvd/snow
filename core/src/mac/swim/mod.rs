@@ -394,6 +394,10 @@ impl Swim {
         self.write_buffer.is_some()
     }
 
+    fn twiggy_selected(&self) -> bool {
+        self.get_selected_drive().drive_type == DriveType::Twiggy
+    }
+
     fn get_selected_drive(&self) -> &FloppyDrive {
         &self.drives[self.get_selected_drive_idx()]
     }
@@ -466,6 +470,10 @@ impl Swim {
 
     /// Gets the active (selected) drive head
     fn get_active_head(&self) -> usize {
+        // The Twiggy Mac's driver raises SEL for side 0 (Twiggy.ROM $401AC8)
+        if self.twiggy_selected() {
+            return usize::from(!self.sel);
+        }
         if !self.get_selected_drive().drive_type.is_doublesided()
             || self.get_selected_drive().floppy.get_side_count() == 1
             || !self.sel
@@ -536,6 +544,9 @@ impl Tickable for Swim {
             self.dcd_chain_pos = 0;
         }
 
+        if self.mode == SwimMode::Iwm {
+            self.update_twiggy_motors();
+        }
         if self.dcd_selected() {
             self.dcd_tick(ticks);
         } else if self.get_selected_drive().is_running() {
