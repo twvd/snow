@@ -1218,6 +1218,66 @@ impl Emulator {
         }
     }
 
+    fn target_at(&self, addr: SlotAddr) -> Result<SlotTarget> {
+        let buses = self.buses();
+        let bus = buses.get(addr.bus).context("No such bus")?;
+        let slot = bus.slots.get(addr.slot).context("No such slot")?;
+        Ok(slot_target(bus, slot))
+    }
+
+    /// The floppy drive in a slot
+    pub(super) fn drive_at(&self, addr: SlotAddr) -> Result<usize> {
+        match self.target_at(addr)? {
+            SlotTarget::Drive(i) => Ok(i),
+            t => bail!("{:?} is not a floppy drive", t),
+        }
+    }
+
+    /// The SCSI ID of a slot
+    pub(super) fn scsi_id_at(&self, addr: SlotAddr) -> Result<usize> {
+        match self.target_at(addr)? {
+            SlotTarget::Scsi(id) => Ok(id),
+            t => bail!("{:?} is not on SCSI", t),
+        }
+    }
+
+    pub(super) fn branch_disk(&mut self, addr: SlotAddr, path: &Path) -> Result<()> {
+        let id = self.scsi_id_at(addr)?;
+        self.config.scsi_mut().targets[id]
+            .as_mut()
+            .context("No target attached")?
+            .branch_media(path)
+    }
+
+    /// Puts an image in the drive in a slot
+    pub(super) fn load_media(&mut self, addr: SlotAddr, path: &Path) -> Result<()> {
+        match self.target_at(addr)? {
+            SlotTarget::Scsi(id) => self.scsi_load_media(id, path),
+            SlotTarget::IieDrive(i) => self.insert_iie_media(i, path),
+            t => bail!("{:?} doesn't take media", t),
+        }
+    }
+
+    /// Takes the image out of the drive in a slot
+    pub(super) fn eject_media(&mut self, addr: SlotAddr) -> Result<()> {
+        let SlotTarget::IieDrive(i) = self.target_at(addr)? else {
+            bail!("This drive can't eject from here");
+        };
+        let model = *self.device_book.iie_chain.get(i).context("No such drive")?;
+        let drive = self.device_book.iie_chain[..i]
+            .iter()
+            .filter(|m| **m == DeviceModel::Apple525Drive)
+            .count();
+        let card = self.iie_card_mut().context("No Apple IIe Card installed")?;
+        if model == DeviceModel::UniDisk35 {
+            card.eject_unidisk();
+        } else {
+            card.eject_disk(drive);
+        }
+        self.device_book.iie_media[i] = None;
+        Ok(())
+    }
+
     fn scsi_load_media(&mut self, id: usize, path: &Path) -> Result<()> {
         self.config.scsi_mut().targets[id]
             .as_mut()
@@ -1243,7 +1303,7 @@ impl Emulator {
         Ok(())
     }
 
-    fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+    pub(super) fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
         match &mut self.config {
             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
             EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
@@ -1271,7 +1331,7 @@ impl Emulator {
     }
 
     /// Inserts an image in one of the card's 5.25" drives
-    pub(super) fn insert_iie_disk(&mut self, drive: usize, path: &Path) -> Result<()> {
+    fn insert_iie_disk(&mut self, drive: usize, path: &Path) -> Result<()> {
         let bytes = std::fs::read(path)?;
         // A 2IMG header names the sector order, else the extension does
         let (bytes, order) = if TwoImg::detect(&bytes) {
@@ -1309,7 +1369,7 @@ impl Emulator {
     }
 
     /// Inserts an image in the card's UniDisk 3.5
-    pub(super) fn insert_iie_unidisk(&mut self, path: &Path) -> Result<()> {
+    fn insert_iie_unidisk(&mut self, path: &Path) -> Result<()> {
         let bytes = std::fs::read(path)?;
         // A 2IMG header carries the lock flag; a raw image is the blocks alone
         let (data, locked) = if TwoImg::detect(&bytes) {
@@ -1333,11 +1393,7 @@ impl Emulator {
     }
 
     /// Plugs a host link in a serial port
-    pub(super) fn serial_bridge_enable(
-        &mut self,
-        ch: SccCh,
-        config: SerialBridgeConfig,
-    ) -> Result<()> {
+    fn serial_bridge_enable(&mut self, ch: SccCh, config: SerialBridgeConfig) -> Result<()> {
         let bridge = SccBridge::new(&config)?;
         let status = bridge.status();
         info!("SCC bridge enabled on channel {:?}: {}", ch, status);
@@ -1358,7 +1414,7 @@ impl Emulator {
     }
 
     /// Unplugs it
-    pub(super) fn serial_bridge_disable(&mut self, ch: SccCh) -> Result<()> {
+    fn serial_bridge_disable(&mut self, ch: SccCh) -> Result<()> {
         self.device_book.serial[ch as usize] = None;
         if self.serial_bridges[ch as usize].take().is_some() {
             info!("Serial bridge disabled on channel {:?}", ch);
