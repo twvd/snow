@@ -156,6 +156,11 @@ where
         self.states[index % self.states.len()]
     }
 
+    /// The Screen Kit's PROM, by the display size it gives
+    pub fn is_screen_kit(&self) -> bool {
+        self.width == 608
+    }
+
     /// Physical address of the video page
     fn page(&self) -> usize {
         usize::from(self.latch & 0x3F) << PAGE_SHIFT
@@ -259,7 +264,8 @@ where
     }
 }
 
-/// The video of the Lisa, with its PROM (341-0229-A)
+/// The video of the Lisa, with its PROM: the Lisa's own monitor (341-0229-A) or the Screen
+/// Kit's (341-0348-A)
 pub const INFO: ModelInfo = ModelInfo {
     model: DeviceModel::LisaVideo,
     name: "Lisa video",
@@ -270,7 +276,10 @@ pub const INFO: ModelInfo = ModelInfo {
     one_per_bus: false,
     rom: Some(RomInfo {
         label: "Lisa video state PROM",
-        digests: &["31347919b61cfc77e7f54cfdde517018e8d7f36e99206b796204e13fc205c42f"],
+        digests: &[
+            "31347919b61cfc77e7f54cfdde517018e8d7f36e99206b796204e13fc205c42f",
+            "7548b5f60661bb833dae5f0de6b946a787478c5ee68d3af88ab59c8ad7130d2d",
+        ],
         varying_bits: PROM_SERIAL,
     }),
     path_keys: &["rom"],

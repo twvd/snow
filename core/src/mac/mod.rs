@@ -147,6 +147,8 @@ impl MacModel {
         ("b2a411c1b24c92af8f6b58f745e52e0545cc0d4dcdc1e15a90e0a78937cde61e", &[Self::LCIII]),
         // Lisa boot ROM rev H, the two halves merged
         ("4eb245a5a133a202cb07757a7430437a996d91acddfba2c1a3b787e8b5b9d8f5", &[Self::Lisa25]),
+        // Lisa boot ROM rev 3A, for the Screen Kit, the two halves merged
+        ("898d6a0b577c6028c2a627da0cdcb35d13a7cf60fe1de22f6e2fa22ecd0b5c1b", &[Self::Lisa25]),
         // Lisa boot ROM rev F, the two halves merged
         ("50c404fe559814324dde6f6c28b577a5115da52babcdc8bd221f9c467060c3e3", &[Self::Lisa25]),
         // Macintosh LC III (older)
