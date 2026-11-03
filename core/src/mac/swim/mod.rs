@@ -199,7 +199,9 @@ pub struct Swim {
 
     pub(crate) drives: [FloppyDrive; 3],
 
-    /// HD20s (Directly Connected Disks) on the external drive port, in daisy chain order
+    /// HD20s (Directly Connected Disks) on the external drive port, in daisy chain order.
+    /// A save state holds them by slot, not here.
+    #[serde(skip)]
     pub(crate) dcds: Vec<DcdDevice>,
     /// Position along the external daisy chain (LSTRB pulses since !ENBL2 went active)
     dcd_chain_pos: usize,

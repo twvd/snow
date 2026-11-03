@@ -151,7 +151,6 @@ pub(crate) struct ScsiTargetEthernet {
     rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
 
     /// Link type
-    #[serde(skip)]
     link: EthernetLinkType,
 
     /// NAT engine statistics
@@ -714,9 +713,10 @@ impl ScsiTarget for ScsiTargetEthernet {
         &mut self.common
     }
 
+    /// The host side of the link isn't in the state: it opens again
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
-        todo!()
+    fn after_restore(&mut self, _media: Option<&Path>) -> Result<()> {
+        self.set_link(self.link.clone())
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {

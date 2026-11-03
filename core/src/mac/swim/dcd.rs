@@ -330,8 +330,8 @@ impl DcdDevice {
 
     /// Re-attaches the image after loading a save state
     #[cfg(feature = "savestates")]
-    pub fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        let image = FileDiskImage::open(imgfn, true)?;
+    pub fn after_restore(&mut self, media: &Path) -> Result<()> {
+        let image = FileDiskImage::open(media, true)?;
         if image.byte_len() != self.image_len {
             bail!(
                 "HD20 image in save state is {} bytes, expected {}",
@@ -343,15 +343,9 @@ impl DcdDevice {
         Ok(())
     }
 
-    /// Size of the image to store in a save state
-    #[cfg(feature = "savestates")]
-    pub fn savestate_img_len(&self) -> usize {
-        self.image_len
-    }
-
     /// Contents of the image to store in a save state
     #[cfg(feature = "savestates")]
-    pub fn savestate_img_data(&self) -> Option<&[u8]> {
+    pub fn savestate_media(&self) -> Option<&[u8]> {
         self.backend.as_ref().and_then(|b| b.media_bytes())
     }
 

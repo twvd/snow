@@ -242,9 +242,12 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+    fn after_restore(&mut self, media: Option<&Path>) -> Result<()> {
+        let Some(media) = media else {
+            bail!("The save state has no image for this disk");
+        };
         self.backend = Some(Box::new(FileDiskImage::open_block_sized(
-            imgfn,
+            media,
             true,
             DISK_BLOCKSIZE,
         )?));
@@ -252,12 +255,7 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        self.capacity()
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
+    fn savestate_media(&self) -> Option<&[u8]> {
         self.backend().media_bytes()
     }
 }

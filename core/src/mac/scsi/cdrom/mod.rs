@@ -320,6 +320,10 @@ pub(super) struct ScsiTargetCdrom {
     #[serde(skip)]
     pub(super) backend: Option<Box<dyn CdromBackend>>,
 
+    /// Where the disc's image came from, so a restored drive can open it again
+    #[serde(default)]
+    media: Option<PathBuf>,
+
     /// Folder of CD images for a "Toolbox managed" folder-backed drive.
     /// Enumerated on demand for the BlueSCSI Toolbox CD commands. None for a
     /// regular single-image / empty CD-ROM drive.
@@ -372,6 +376,7 @@ impl ScsiTargetCdrom {
         let mut self_ = Self {
             common: Default::default(),
             backend: None,
+            media: None,
             image_dir: None,
             pending_unit_attention: false,
             event_eject: Default::default(),
@@ -675,6 +680,7 @@ impl ScsiTargetCdrom {
     fn eject_media(&mut self) {
         self.event_eject.set();
         self.backend = None;
+        self.media = None;
         self.audio_state = AudioState::Stopped;
         self.audio_pos = LBA_START_SECTOR;
     }
@@ -912,20 +918,23 @@ impl ScsiTargetCdrom {
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
         if is_physical_cdrom_drive_path(path) {
-            self.load_physical_drive(path)
+            self.load_physical_drive(path)?;
         } else if path
             .extension()
             .map(|ext| ext.eq_ignore_ascii_case("cue"))
             .unwrap_or(false)
         {
-            self.load_cue(path)
+            self.load_cue(path)?;
         } else {
             // Assume image is iso or toast
-            self.insert_image(Box::new(FileDiskImage::open(path, false)?))
+            self.insert_image(Box::new(FileDiskImage::open(path, false)?))?;
         }
+        self.media = Some(path.to_path_buf());
+        Ok(())
     }
 
     fn insert_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
+        self.media = image.image_path().map(Path::to_path_buf);
         self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
@@ -1658,9 +1667,18 @@ impl ScsiTarget for ScsiTargetCdrom {
         false
     }
 
+    /// A disc isn't saved in the state: the drive opens its image again
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        self.load_media(imgfn)?;
+    fn after_restore(&mut self, _media: Option<&Path>) -> Result<()> {
+        if let Some(path) = self.media.take()
+            && let Err(e) = self.load_media(&path)
+        {
+            log::warn!(
+                "CD-ROM image {} can't be opened again: {:#}",
+                path.display(),
+                e
+            );
+        }
         Ok(())
     }
 

@@ -459,7 +459,7 @@ impl ScsiTarget for ScsiTargetBlueScsi {
     }
 
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
+    fn after_restore(&mut self, _media: Option<&Path>) -> Result<()> {
         Ok(())
     }
 
