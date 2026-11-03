@@ -287,6 +287,8 @@ pub trait Floppy {
     fn update_status(&mut self, status: &mut FloppyStatus) -> bool;
     fn load(&mut self, media: &Path, read_only: bool) -> Result<()>;
     fn eject(&mut self);
+    /// Writes the disk back to the file it came from, or stops doing so
+    fn set_writeback(&mut self, enabled: bool) -> Result<()>;
 }
 
 /// The HardDisk function
@@ -1266,6 +1268,10 @@ impl Floppy for IieDrive<'_> {
         self.card.chain_media[self.position] = None;
         self.card.chain_read_only[self.position] = false;
     }
+
+    fn set_writeback(&mut self, _enabled: bool) -> Result<()> {
+        bail!("The Apple IIe Card's drives don't write back")
+    }
 }
 
 /// A slot's status as this function's, made one if it was another's: the status and
@@ -1918,6 +1924,13 @@ impl Emulator {
             .context("The device in this slot is gone")?
     }
 
+    pub(super) fn set_floppy_writeback(&mut self, addr: SlotAddr, enabled: bool) -> Result<()> {
+        self.with_function_at(addr, |f| match f {
+            FunctionMut::Floppy(floppy) => floppy.set_writeback(enabled),
+            _ => bail!("This device is not a floppy drive"),
+        })?
+    }
+
     /// Takes the image out of the drive in a slot
     pub(super) fn eject_media(&mut self, addr: SlotAddr) -> Result<()> {
         // The writes to a Mac disk since the last save must not be lost
@@ -2077,6 +2090,15 @@ impl Floppy for FloppyDrive {
 
     fn eject(&mut self) {
         Self::eject(self);
+    }
+
+    fn set_writeback(&mut self, enabled: bool) -> Result<()> {
+        if enabled && (self.image_path.is_none() || !self.floppy.supports_writeback()) {
+            bail!("Writeback unavailable: image was not loaded from a writeback-capable file");
+        }
+        self.writeback_enabled = enabled;
+        self.pending_writeback = false;
+        Ok(())
     }
 }
 

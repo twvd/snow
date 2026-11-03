@@ -2198,7 +2198,8 @@ impl SnowGui {
                     }
                 }
                 ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
-                if d.can_save {
+                // The Mac's drives show it greyed when the image can't be written back
+                if d.can_save || d.writeback_supported {
                     let mut wb = d.writeback_enabled;
                     let resp = ui.add_enabled(
                         d.writeback_supported,
@@ -2214,6 +2215,8 @@ impl SnowGui {
                     if wb != d.writeback_enabled {
                         self.emu.set_floppy_writeback(addr, wb);
                     }
+                }
+                if d.can_save {
                     ui.separator();
                     if ui
                         .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
