@@ -234,15 +234,15 @@ impl ScsiTarget for ScsiTargetPrinter {
 
     // Restore the trace_flag first from the environnement. Not stored in Snow states
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+    fn after_restore(&mut self, media: Option<&Path>) -> Result<()> {
         self.trace_flag = std::env::var("SNOW_SCSI_TRACE_PRINTER")
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false);
 
         #[cfg(feature = "printer")]
         {
-            let data = std::fs::read(imgfn)?;
-            if data.len() > 1 {
+            if let Some(media) = media {
+                let data = std::fs::read(media)?;
                 if self.trace_flag {
                     log::debug!(
                         "LaserWriter: restoring framebuffer {}x{}, {} bytes",
@@ -270,6 +270,8 @@ impl ScsiTarget for ScsiTargetPrinter {
                 ));
             }
         }
+        #[cfg(not(feature = "printer"))]
+        let _ = media;
         Ok(())
     }
 
@@ -280,31 +282,16 @@ impl ScsiTarget for ScsiTargetPrinter {
      * To avoid bloating the state file, we will be saving the framebuffer only if
      * there is something in here. We will do a non blank-check:
      * a blank framebuffer data is all 0xff (255). Anything else we have data to save
-     *
-     * we need to store a fake framebuffer of size 1 when empty, otherwise there will be
-     * no call to after_deserialize() after a restore
      */
     #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        #[cfg(feature = "printer")]
-        if let Some(ref fb) = self.framebuffer
-            && fb.as_raw().iter().any(|&b| b != 255)
-        {
-            return Some(fb.as_raw().len());
-        }
-        Some(1)
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
+    fn savestate_media(&self) -> Option<&[u8]> {
         #[cfg(feature = "printer")]
         if let Some(ref fb) = self.framebuffer
             && fb.as_raw().iter().any(|&b| b != 255)
         {
             return Some(fb.as_raw());
         }
-        // "random" value that will never be read again
-        Some(b"\x5c")
+        None
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {

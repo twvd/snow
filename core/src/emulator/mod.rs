@@ -760,7 +760,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let (mut config, devices) = load_state_from(f, tmpdir)?;
+        let (mut config, devices, slots) = load_state_from(f, tmpdir)?;
         config.after_deserialize(renderer);
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
@@ -795,6 +795,8 @@ impl Emulator {
             log::warn!("No device list in the state file: {}", e);
             vec![]
         });
+        emu.rebuild_bus_list();
+        emu.restore_slots(slots)?;
         emu.reinstate_devices(devices);
         emu.status_update()?;
 
@@ -1318,10 +1320,11 @@ impl Emulator {
     #[cfg(feature = "savestates")]
     fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let devices = serde_json::to_string(&self.devices())?;
+        let slots = self.slot_states()?;
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot, devices)?;
+        save_state_to(&f, &self.config, screenshot, devices, &slots)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",

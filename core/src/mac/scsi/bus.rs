@@ -7,7 +7,6 @@ use std::collections::VecDeque;
 use anyhow::{Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 
 use crate::emulator::EmuContext;
 use crate::emulator::devices::FunctionMut;
@@ -51,8 +50,8 @@ pub struct ScsiBus {
     /// Status of the last executed command
     pub(crate) status: u8,
 
-    /// Attached targets
-    #[serde(with = "BigArray")]
+    /// Attached targets. A save state holds them by slot, not here.
+    #[serde(skip)]
     pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
     /// Whether any target needs ticks, None when to be found out again
@@ -87,14 +86,6 @@ impl ScsiBus {
             device_map_sent: false,
             scsi_trace_cdb,
         }
-    }
-
-    /// Returns the length of image data to write to savestates or None if no data
-    #[cfg(feature = "savestates")]
-    pub fn get_savestate_img_len(&self, id: usize) -> Option<usize> {
-        self.targets[id]
-            .as_ref()
-            .and_then(|t| t.savestate_img_len())
     }
 
     /// Gets the target type (if attached) of an ID
