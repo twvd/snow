@@ -31,6 +31,8 @@ use crate::mac::scsi::target::{ScsiTarget, ScsiTargetType};
 use crate::mac::serial_bridge::{
     SerialBridgeConfig, SerialBridgeStatus, SerialDevice, serial_device,
 };
+use crate::mac::swim::MAX_DCDS;
+use crate::mac::swim::dcd::DcdDevice;
 use crate::mac::swim::drive::{DriveType, FloppyDrive};
 use crate::mac::{ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::DisplayHandle;
@@ -92,6 +94,7 @@ pub enum FunctionKind {
 )]
 pub enum DeviceModel {
     ScsiHardDisk,
+    Hd20,
     ScsiCdrom,
     #[cfg(feature = "ethernet")]
     DaynaPortScsiLink,
@@ -149,6 +152,7 @@ pub(crate) struct CreateContext<'a> {
 #[derive(Clone, Copy)]
 pub(crate) enum CreateFn {
     Scsi(fn(&DeviceConfig, &mut CreateContext) -> Result<Box<dyn ScsiTarget>>),
+    Hd20(fn(&DeviceConfig) -> Result<DcdDevice>),
     /// The host link a serial device opens
     Serial(fn(&DeviceConfig) -> Result<SerialBridgeConfig>),
 }
@@ -184,6 +188,7 @@ impl ModelInfo {
 /// device model's file can't add itself.
 pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::scsi::disk::INFO,
+    &crate::mac::swim::dcd::INFO,
     &crate::mac::scsi::cdrom::INFO,
     #[cfg(feature = "ethernet")]
     &crate::mac::scsi::ethernet::INFO,
@@ -336,8 +341,7 @@ pub struct Slot {
     pub id: String,
     /// In the menus: "internal", "Modem"
     pub name: Option<String>,
-    pub blocked: bool,
-    pub hidden_by_default: bool,
+    /// What the guest needs to use this slot, for the menus to say
     pub hint: Option<String>,
     pub device: Option<Device>,
 }
@@ -347,8 +351,6 @@ impl Slot {
         Self {
             id: id.into(),
             name: None,
-            blocked: false,
-            hidden_by_default: false,
             hint: None,
             device: None,
         }
@@ -447,6 +449,8 @@ impl FunctionStatus {
 pub struct HardDiskStatus {
     pub settings: HardDiskSettings,
     pub capacity: Option<usize>,
+    /// The image can be branched off to a new file
+    pub can_branch: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -754,14 +758,21 @@ impl MacModel {
             .filter_map(|(i, d)| Some((i, DeviceModel::from_drive_type(*d)?)))
             .collect();
         if !drives.is_empty() {
+            let mut slots: Vec<_> = drives
+                .iter()
+                .map(|&(i, model)| Slot::fixed((i + 1).to_string(), model))
+                .collect();
+            // HD20s chain on the external drive port
+            slots.extend((1..=MAX_DCDS).map(|i| Slot {
+                name: Some("HD20".to_owned()),
+                hint: Some(self.hd20_hint().to_owned()),
+                ..Slot::empty(format!("{}{}", HD20_SLOT, i))
+            }));
             buses.push(Bus {
                 kind: BusKind::Swim,
                 id: bus_id::SWIM.to_owned(),
                 title: "Floppy".to_owned(),
-                slots: drives
-                    .iter()
-                    .map(|&(i, model)| Slot::fixed((i + 1).to_string(), model))
-                    .collect(),
+                slots,
             });
         }
 
@@ -836,7 +847,26 @@ impl MacModel {
     pub const fn has_lc_pds(self) -> bool {
         matches!(self, Self::LC | Self::LCII | Self::LCIII | Self::LC475)
     }
+
+    /// What the guest needs to see an HD20. Which ROMs have the driver is in docs/HD20.md.
+    const fn hd20_hint(self) -> &'static str {
+        match self {
+            Self::Early128K => "This Mac doesn't have enough RAM to load the HD20 INIT.",
+            Self::Early512K => {
+                "This Mac needs the HD20 INIT from a boot floppy. It looks for HD20s when it \
+                 starts up."
+            }
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 => {
+                "This Mac's ROM has no HD20 driver, it needs Apple's MacIIHD20 INIT. It looks \
+                 for HD20s when it starts up."
+            }
+            _ => "The Mac looks for HD20s when it starts up.",
+        }
+    }
 }
+
+/// The ids of the HD20 slots on the floppy bus start with this, then their chain position
+pub const HD20_SLOT: &str = "HD20.";
 
 /// What a machine remembers of its devices, where the devices don't
 #[derive(Default)]
@@ -1074,6 +1104,8 @@ impl BuildPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotTarget {
     Drive(usize),
+    /// A position on the HD20 chain
+    Hd20(usize),
     Scsi(usize),
     Card,
     IieDrive(usize),
@@ -1083,7 +1115,10 @@ enum SlotTarget {
 fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
     let number = |base: usize| slot.id.parse::<usize>().unwrap_or(base) - base;
     match bus.kind {
-        BusKind::Swim => SlotTarget::Drive(number(1)),
+        BusKind::Swim => match slot.id.strip_prefix(HD20_SLOT) {
+            Some(position) => SlotTarget::Hd20(position.parse::<usize>().unwrap_or(1) - 1),
+            None => SlotTarget::Drive(number(1)),
+        },
         BusKind::Scsi => SlotTarget::Scsi(number(0)),
         BusKind::IieDisk => SlotTarget::IieDrive(number(1)),
         BusKind::Serial if slot.id == "A" => SlotTarget::Serial(SccCh::A),
@@ -1397,6 +1432,8 @@ impl Emulator {
                 BusKind::IieDisk => {
                     chain.push((config.slot.clone(), model, media));
                 }
+                // The state held these by slot: they're back already
+                BusKind::Swim if model == DeviceModel::Hd20 => (),
                 BusKind::Swim => {
                     let Ok(drive) = config.slot.parse::<usize>() else {
                         continue;
@@ -1492,6 +1529,7 @@ impl Emulator {
                 let mut drive = self.iie_drive(i)?;
                 return Some(f(FunctionMut::Floppy(&mut drive)));
             }
+            SlotTarget::Hd20(i) => FunctionMut::HardDisk(self.config.swim_mut().dcds.get_mut(i)?),
             SlotTarget::Scsi(id) => self.config.scsi_mut().targets[id].as_mut()?.function(),
             SlotTarget::Card => match model.function() {
                 FunctionKind::AppleIIe => FunctionMut::AppleIIe,
@@ -1521,6 +1559,15 @@ impl Emulator {
                             continue;
                         };
                         (postcard::to_allocvec(target)?, target.savestate_media())
+                    }
+                    SlotTarget::Hd20(i) => {
+                        let Some(dcd) = self.config.swim().dcds.get(i) else {
+                            continue;
+                        };
+                        let Some(media) = dcd.savestate_media() else {
+                            bail!("HD20 image cannot be saved in a save state");
+                        };
+                        (postcard::to_allocvec(dcd)?, Some(media))
                     }
                     _ => continue,
                 };
@@ -1557,6 +1604,16 @@ impl Emulator {
                     let mut target: Box<dyn ScsiTarget> = postcard::from_bytes(&state.state)?;
                     target.after_restore(restored.media.as_deref())?;
                     self.config.scsi_mut().attach_target_at(id, target)?;
+                }
+                // Restored in slot order, each takes the position it had
+                SlotTarget::Hd20(_) => {
+                    let mut dcd: DcdDevice = postcard::from_bytes(&state.state)?;
+                    let media = restored
+                        .media
+                        .as_deref()
+                        .context("The save state has no image for this HD20")?;
+                    dcd.after_restore(media)?;
+                    self.config.swim_mut().attach_dcd(dcd)?;
                 }
                 t => log::warn!("{:?} has no saved device to restore", t),
             }
@@ -1657,7 +1714,13 @@ impl Emulator {
         emu.rebuild_bus_list();
 
         let mut refused = plan.refused;
-        for config in plan.rest {
+        let mut rest = plan.rest;
+        // HD20s attach at the next free position, so they go last, in slot order
+        rest.sort_by_key(|c| {
+            let hd20 = c.bus == bus_id::SWIM && c.slot.starts_with(HD20_SLOT);
+            (hd20, if hd20 { c.slot.clone() } else { String::new() })
+        });
+        for config in rest {
             if let Err(e) = emu.add_device(&config) {
                 refused.push(RefusedDevice {
                     config,
@@ -1712,6 +1775,10 @@ impl Emulator {
         match slot_target(bus, slot) {
             SlotTarget::Scsi(id) => self.config.scsi_mut().detach_target(id),
             SlotTarget::Serial(ch) => self.serial_bridge_disable(ch)?,
+            // The ones behind it move up
+            SlotTarget::Hd20(i) => {
+                self.config.swim_mut().detach_dcd(i)?;
+            }
             t => bail!("{:?} doesn't take removable devices", t),
         }
         info!("{} #{}: device removed", bus.id, slot.id);
@@ -1732,7 +1799,7 @@ impl Emulator {
         if info.fixed {
             bail!("A {} can only be chosen with the machine", model.name());
         }
-        if !bus.can_take(info) || slot.blocked {
+        if !bus.can_take(info) {
             bail!("A {} can't go here right now", model.name());
         }
         let Some(create) = info.create else {
@@ -1747,6 +1814,11 @@ impl Emulator {
                 let target = create(config, &mut ctx);
                 drop(audio);
                 self.config.scsi_mut().attach_target_at(id, target?)?;
+            }
+            // It takes the next free position: the slot id only orders the entries, so one
+            // whose image is missing doesn't stop the ones behind it
+            (SlotTarget::Hd20(_), CreateFn::Hd20(create)) => {
+                self.config.swim_mut().attach_dcd(create(config)?)?;
             }
             (SlotTarget::Serial(ch), CreateFn::Serial(create)) => {
                 self.serial_bridge_enable(ch, create(config)?)?;
@@ -1909,6 +1981,10 @@ impl Emulator {
                 let drive = self.config.swim().drives.get(i)?;
                 device(DeviceModel::from_drive_type(drive.drive_type)?, Map::new())
             }
+            SlotTarget::Hd20(i) => {
+                self.config.swim().dcds.get(i)?;
+                device(DeviceModel::Hd20, Map::new())
+            }
             SlotTarget::Scsi(id) => {
                 let model = match self.config.scsi().get_target_type(id)? {
                     ScsiTargetType::Disk => DeviceModel::ScsiHardDisk,
@@ -2028,7 +2104,10 @@ mod tests {
             ["9", "A", "B", "C", "D", "E"]
         );
         assert_eq!(slots(MacModel::MacIIcx, bus_id::NUBUS), ["9", "A", "B"]);
-        assert_eq!(slots(MacModel::Plus, bus_id::SWIM), ["1", "2"]);
+        assert_eq!(
+            slots(MacModel::Plus, bus_id::SWIM),
+            ["1", "2", "HD20.1", "HD20.2", "HD20.3", "HD20.4"]
+        );
         assert_eq!(slots(MacModel::Plus, bus_id::SCSI).len(), 7);
         assert!(slots(MacModel::Early128K, bus_id::SCSI).is_empty());
         assert_eq!(slots(MacModel::LC, bus_id::PDS_LC), ["0"]);
@@ -2105,17 +2184,19 @@ mod tests {
         let emu = machine(MacModel::Plus);
         let buses = emu.buses();
         let swim = buses.iter().find(|b| b.id == bus_id::SWIM).unwrap();
-        assert_eq!(swim.slots.len(), 2);
-        for slot in &swim.slots {
+        // Two drives, and an HD20 chain with nothing on it
+        assert_eq!(swim.slots.len(), 6);
+        for slot in &swim.slots[..2] {
             let device = slot.device.as_ref().unwrap();
             assert_eq!(device.model, DeviceModel::Mac800KDrive);
         }
+        assert!(swim.slots[2..].iter().all(|s| s.device.is_none()));
         let mut emu = emu;
         emu.status_update().unwrap();
         let block = emu.status_block();
         let statuses = block.statuses.lock().unwrap();
         let swim_idx = buses.iter().position(|b| b.id == bus_id::SWIM).unwrap();
-        for status in &statuses[swim_idx] {
+        for status in &statuses[swim_idx][..2] {
             assert!(matches!(status, Some(FunctionStatus::Floppy(f)) if f.ejected));
         }
         drop(statuses);
@@ -2446,23 +2527,70 @@ mod tests {
         assert_eq!(assert_round_trip(MacModel::LC, devices.clone()), devices);
     }
 
+    fn hd20(position: usize, media: PathBuf) -> DeviceConfig {
+        DeviceConfig::of_model(
+            bus_id::SWIM,
+            &format!("{}{}", HD20_SLOT, position),
+            DeviceModel::Hd20,
+            &HardDiskSettings {
+                media,
+                read_only: false,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn hd20s_take_the_next_free_position() {
+        let files = TestFiles::new("hd20");
+        // The file's order doesn't matter, the slot ids do
+        let devices = vec![
+            hd20(2, files.file("b.img", 1024 * 1024)),
+            hd20(1, files.file("a.img", 1024 * 1024)),
+        ];
+        let (mut emu, refused) = build(MacModel::Plus, devices.clone());
+        assert!(refused.is_empty(), "{:?}", refused);
+        let reported = emu.devices();
+        assert_eq!(reported, [devices[1].clone(), devices[0].clone()]);
+
+        // The images can't be opened twice
+        drop(emu);
+
+        // A missing image doesn't stop the one behind it
+        let devices = vec![
+            hd20(1, files.0.join("gone.img")),
+            hd20(2, files.file("c.img", 1024 * 1024)),
+        ];
+        let (mut emu, refused) = build(MacModel::Plus, devices);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(emu.devices(), [hd20(1, files.0.join("c.img"))]);
+        drop(emu);
+
+        // Removing one moves the ones behind it up
+        let (mut emu, _) = build(MacModel::Plus, reported);
+        let first = emu.find_slot(bus_id::SWIM, "HD20.1").unwrap();
+        emu.remove_device(first).unwrap();
+        assert_eq!(emu.devices(), [hd20(1, files.0.join("b.img"))]);
+    }
+
     #[cfg(feature = "savestates")]
     #[test]
     fn a_save_state_holds_the_devices_by_slot() {
         let files = TestFiles::new("state_slots");
         let devices = vec![
+            hd20(1, files.file("hd20.img", 1024 * 1024)),
             scsi_disk("2", files.file("hd.img", 1024 * 1024)),
             scsi_cdrom("3", Some(files.file("cd.iso", 2048 * 32))),
         ];
         let (mut emu, refused) = build(MacModel::Plus, devices);
         assert!(refused.is_empty(), "{:?}", refused);
         let reported = emu.devices();
-        assert_eq!(reported.len(), 2);
+        assert_eq!(reported.len(), 3);
         let state = files.0.join("machine.snows");
         emu.save_state(&state, None).unwrap();
         drop(emu);
 
-        // The disk runs on a copy and says where it came from, the CD-ROM opens its image again
+        // The disks run on copies and say where they came from, the CD-ROM opens its image again
         let (mut restored, _) = Emulator::load_state(&state, files.dir("tmp")).unwrap();
         assert_eq!(restored.devices(), reported);
     }

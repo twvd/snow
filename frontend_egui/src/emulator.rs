@@ -25,7 +25,7 @@ use snow_core::emulator::comm::{
 };
 use snow_core::emulator::devices::{
     Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FunctionKind, FunctionStatus,
-    HardDiskSettings, MachineConfig, RefusedDevice, SerialLinkSettings, Slot, SlotAddr,
+    HD20_SLOT, HardDiskSettings, MachineConfig, RefusedDevice, SerialLinkSettings, Slot, SlotAddr,
     StatusBlock, device_configs, models_for,
 };
 use snow_core::emulator::{Emulator, MouseMode};
@@ -776,10 +776,46 @@ impl EmulatorState {
         })
     }
 
+    /// A slot that can't take a device right now, so the menus grey it. Only the HD20 chain
+    /// has those for now: an HD20 attaches at the next free position.
+    pub fn slot_unavailable(&self, addr: SlotAddr) -> bool {
+        let Some((bus, slot)) = self.slot(addr) else {
+            return true;
+        };
+        let Some(position) = hd20_position(slot) else {
+            return false;
+        };
+        let attached = bus
+            .slots
+            .iter()
+            .filter(|s| s.device.is_some() && hd20_position(s).is_some())
+            .count();
+        position > attached + 1
+    }
+
+    /// A slot the menus don't show. For now, the empty HD20 slots of the Macs whose ROM
+    /// doesn't look for HD20s.
+    pub fn slot_hidden(&self, addr: SlotAddr) -> bool {
+        let Some((_, slot)) = self.slot(addr) else {
+            return true;
+        };
+        slot.device.is_none()
+            && hd20_position(slot).is_some()
+            && !matches!(
+                self.get_model(),
+                Some(
+                    MacModel::Early128K
+                        | MacModel::Early512K
+                        | MacModel::Early512Ke
+                        | MacModel::Plus
+                )
+            )
+    }
+
     /// The device model of a function this slot's bus takes, if it can take one now
     fn offered(&self, addr: SlotAddr, function: FunctionKind) -> Option<DeviceModel> {
-        let (bus, slot) = self.slot(addr)?;
-        if slot.blocked {
+        let (bus, _) = self.slot(addr)?;
+        if self.slot_unavailable(addr) {
             return None;
         }
         let model = self.get_model()?;
@@ -788,12 +824,17 @@ impl EmulatorState {
             .map(|info| info.model)
     }
 
-    /// An empty slot that can take a device of this function
+    /// An empty slot that can take a device of this function, SCSI first
     fn free_slot(&self, function: FunctionKind) -> Option<SlotAddr> {
+        let free = |(addr, _, slot): &(SlotAddr, &Bus, &Slot)| {
+            slot.device.is_none()
+                && !self.slot_hidden(*addr)
+                && self.offered(*addr, function).is_some()
+        };
         self.all_slots()
-            .find(|(addr, _, slot)| {
-                slot.device.is_none() && self.offered(*addr, function).is_some()
-            })
+            .filter(|(_, bus, _)| bus.kind == BusKind::Scsi)
+            .find(free)
+            .or_else(|| self.all_slots().find(free))
             .map(|(addr, _, _)| addr)
     }
 
@@ -1539,4 +1580,9 @@ impl EmulatorState {
             .map(|p| p.lock().unwrap().is_underrun())
             .unwrap_or(false)
     }
+}
+
+/// The position of an HD20 slot on the chain, from 1
+fn hd20_position(slot: &Slot) -> Option<usize> {
+    slot.id.strip_prefix(HD20_SLOT)?.parse().ok()
 }

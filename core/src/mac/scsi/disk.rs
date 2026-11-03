@@ -276,6 +276,7 @@ impl HardDisk for ScsiTargetDisk {
                 read_only: false,
             },
             capacity: self.capacity(),
+            can_branch: true,
         };
         replace_status(status, new)
     }

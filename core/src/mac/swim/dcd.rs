@@ -8,13 +8,16 @@
 //! See docs/HD20.md for the protocol and its sources.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::{
+    DeviceConfig, HardDisk, HardDiskSettings, HardDiskStatus, replace_status,
+};
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_udec};
@@ -213,6 +216,8 @@ enum RxStep {
 pub struct DcdDevice {
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
+    /// The image the user gave: a restored machine runs on a copy
+    media: Option<PathBuf>,
     /// Size of the whole image file in bytes, for save states
     image_len: usize,
 
@@ -283,6 +288,7 @@ impl DcdDevice {
 
         Ok(Self {
             image_len: image.byte_len(),
+            media: image.image_path().map(Path::to_path_buf),
             backend: Some(image),
             first_block,
             blocks,
@@ -324,8 +330,8 @@ impl DcdDevice {
 
     /// Re-attaches the image after loading a save state
     #[cfg(feature = "savestates")]
-    pub fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        let image = FileDiskImage::open(imgfn, true)?;
+    pub fn after_restore(&mut self, media: &Path) -> Result<()> {
+        let image = FileDiskImage::open(media, true)?;
         if image.byte_len() != self.image_len {
             bail!(
                 "HD20 image in save state is {} bytes, expected {}",
@@ -337,15 +343,9 @@ impl DcdDevice {
         Ok(())
     }
 
-    /// Size of the image to store in a save state
-    #[cfg(feature = "savestates")]
-    pub fn savestate_img_len(&self) -> usize {
-        self.image_len
-    }
-
     /// Contents of the image to store in a save state
     #[cfg(feature = "savestates")]
-    pub fn savestate_img_data(&self) -> Option<&[u8]> {
+    pub fn savestate_media(&self) -> Option<&[u8]> {
         self.backend.as_ref().and_then(|b| b.media_bytes())
     }
 
@@ -714,6 +714,25 @@ impl DcdDevice {
     }
 }
 
+/// The HardDisk function of an HD20
+impl HardDisk for DcdDevice {
+    fn update_status(&mut self, status: &mut HardDiskStatus) -> bool {
+        let new = HardDiskStatus {
+            settings: HardDiskSettings {
+                media: self.media.clone().unwrap_or_default(),
+                read_only: !self.writable,
+            },
+            capacity: Some(self.blocks * DCD_BLOCKSIZE),
+            can_branch: false,
+        };
+        replace_status(status, new)
+    }
+
+    fn branch(&mut self, _path: &Path) -> Result<()> {
+        bail!("An HD20's image can't be branched off yet")
+    }
+}
+
 impl Debuggable for DcdDevice {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
@@ -729,6 +748,27 @@ impl Debuggable for DcdDevice {
         ]
     }
 }
+
+/// Makes an HD20 from its entry
+fn create(config: &DeviceConfig) -> Result<DcdDevice> {
+    let settings: HardDiskSettings = config.parse()?;
+    DcdDevice::open(&settings.media, !settings.read_only)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Hd20,
+    name: "HD20",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::HardDisk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    monitors: &[],
+    create: Some(crate::emulator::devices::CreateFn::Hd20(create)),
+};
 
 #[cfg(test)]
 mod tests {
