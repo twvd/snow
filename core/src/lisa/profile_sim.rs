@@ -122,8 +122,12 @@ impl ProfileSim {
             .with_context(|| format!("Cannot open {}", path.display()))?;
         let mut data = vec![];
         file.read_to_end(&mut data)?;
-        if data.len() < BLOCK_SIZE {
-            bail!("Not an image of {}-byte blocks", BLOCK_SIZE);
+        if data.len() / BLOCK_SIZE < BLOCKS_5MB {
+            bail!(
+                "A Lisa hard disk has at least {} blocks of {} bytes",
+                BLOCKS_5MB,
+                BLOCK_SIZE
+            );
         }
         self.data = data;
         self.file = writable.then_some(file);
