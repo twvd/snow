@@ -11,7 +11,7 @@ use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
 };
-use crate::cpu_m68k::{CpuM68kType, FpuM68kType, M68040};
+use crate::cpu_m68k::{CpuM68kType, M68040};
 use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow, bail};
@@ -55,14 +55,8 @@ const fn cache_mode(desc: Long) -> CacheMode {
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,

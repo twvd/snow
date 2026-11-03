@@ -33,11 +33,11 @@ use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM, FC_USER_DA
 use crate::cpu_m68k::cpu::CpuError;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg, TrTranslationReg};
 use crate::cpu_m68k::pmmu::translate::PMMU_ATC_URP;
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68881, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestBus = Testbus<Address, u8, Bus68020>;
-type TestCpu = CpuM68030Fpu<TestBus>;
+type TestCpu = CpuM68030<TestBus>;
 
 /// E=1, PS=4 KB, IS=8, TIA=12: one level of 4096 short descriptors.
 const TC: u32 = 0x80C8_C000;
@@ -80,7 +80,7 @@ fn mmu_on(cpu: &mut TestCpu, tc: u32, table: Address, pages: u32) {
 /// Supervisor-mode 68030 with the first 32 4 KB pages identity-mapped.
 fn cpu_mmu_030() -> TestCpu {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68881);
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.sr.set_int_prio_mask(7);
     mmu_on(&mut cpu, TC, TABLE, 32);
@@ -380,15 +380,16 @@ fn atc_hit_write_sets_leaf_descriptor_m_bit() {
 /// PFLUSHS, which also flushes globally shared entries.
 mod m68851 {
     use super::*;
-    use crate::cpu_m68k::{CpuM68020Pmmu, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68020, M68020_ADDRESS_MASK};
 
-    type TestCpu = CpuM68020Pmmu<TestBus>;
+    type TestCpu = CpuM68020<TestBus>;
 
     /// A supervisor-mode 68020 with the 68851 enabled over the same
     /// identity-mapped table as `cpu_mmu_030`.
     fn cpu_68851() -> TestCpu {
         let bus = Testbus::new(M68020_ADDRESS_MASK);
-        let mut cpu = TestCpu::new(bus);
+        let mut cpu = TestCpu::new(bus, FPU_M68881);
+        cpu.add_68851();
         cpu.regs.sr.set_supervisor(true);
         cpu.regs.sr.set_int_prio_mask(7);
         for page in 0..32 {

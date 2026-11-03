@@ -5,11 +5,13 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
-use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68020, CpuM68030, FPU_M68881, FPU_M68882, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK,
+};
 use crate::types::{Long, Word};
 
-type Cpu81 = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
-type Cpu82 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+type Cpu81 = CpuM68020<Testbus<Address, u8, Bus68020>>;
+type Cpu82 = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 const HANDLER: Address = 0x2000;
@@ -39,9 +41,9 @@ const FDIV: [Word; 2] = [0xF200, 0x0420];
 const FADD: [Word; 2] = [0xF200, 0x0422];
 
 macro_rules! helpers {
-    ($name:ident, $cpu:ty, $mask:expr) => {
+    ($name:ident, $cpu:ty, $fpu:expr, $mask:expr) => {
         fn $name(code: &[Word]) -> $cpu {
-            let mut cpu = <$cpu>::new(Testbus::new($mask));
+            let mut cpu = <$cpu>::new(Testbus::new($mask), $fpu);
             for (i, w) in code.iter().enumerate() {
                 let [h, l] = w.to_be_bytes();
                 cpu.bus.mem.insert(CODE + 2 * i as Address, h);
@@ -65,8 +67,8 @@ macro_rules! helpers {
         }
     };
 }
-helpers!(cpu81, Cpu81, M68020_ADDRESS_MASK);
-helpers!(cpu82, Cpu82, M68030_ADDRESS_MASK);
+helpers!(cpu81, Cpu81, FPU_M68881, M68020_ADDRESS_MASK);
+helpers!(cpu82, Cpu82, FPU_M68882, M68030_ADDRESS_MASK);
 
 fn long(mem: &std::collections::HashMap<Address, u8>, a: Address) -> Long {
     (0..4).fold(0, |v, i| {

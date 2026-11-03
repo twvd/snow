@@ -1,7 +1,7 @@
 //! M68851 PMMU - Opcode implementations
 
+use crate::cpu_m68k::M68030;
 use crate::cpu_m68k::cache::CpuCaches;
-use crate::cpu_m68k::{FpuM68kType, M68030};
 use anyhow::{Result, bail};
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -15,14 +15,8 @@ use crate::types::{DoubleLong, Long, Word};
 use super::instruction::Pmove1Extword;
 use super::regs::{RegisterPSR, TcReg, TrTranslationReg};
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -42,7 +36,7 @@ where
 
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
         self.pmmu_translation_changed();
-        if !PMMU {
+        if !self.pmmu {
             return self.op_linef(instr);
         }
 

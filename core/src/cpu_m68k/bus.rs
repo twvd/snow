@@ -1,7 +1,6 @@
 //! M68k CPU - Bus access functionality
 
 use crate::bus::{Address, Bus, InspectRun, InspectableBus, IrqSource};
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
 use crate::cpu_m68k::cache::{CacheTag, CpuCaches};
 use crate::cpu_m68k::cpu::{
@@ -76,14 +75,8 @@ pub(in crate::cpu_m68k) const fn low_bytes(val: Long, bytes: u32) -> Long {
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -422,7 +415,7 @@ where
     /// Translates the logical address of an access
     #[inline(always)]
     fn translate(&mut self, acc: &CpuAccess) -> Result<Translation> {
-        if acc.kind == AccessKind::Physical || !PMMU {
+        if acc.kind == AccessKind::Physical || !self.pmmu {
             return Ok(Translation {
                 paddr: acc.laddr,
                 cache: CacheMode::WriteThrough,
@@ -512,7 +505,7 @@ where
         laddr: Address,
         size: u32,
     ) -> Option<(Long, u32)> {
-        if kind == AccessKind::Physical || !PMMU {
+        if kind == AccessKind::Physical || !self.pmmu {
             return None;
         }
         let slot = if kind == AccessKind::Fetch {
@@ -831,7 +824,7 @@ where
         value: Long,
     ) -> bool {
         if kind == AccessKind::Physical
-            || !PMMU
+            || !self.pmmu
             || !self.breakpoints.is_empty()
             || self.watch_active
         {

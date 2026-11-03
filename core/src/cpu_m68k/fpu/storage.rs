@@ -1,4 +1,3 @@
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
@@ -269,14 +268,8 @@ impl From<BitsExtReal> for Float {
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -407,7 +400,7 @@ mod tests {
     use crate::bus::Address;
     use crate::bus::access::Bus68020;
     use crate::bus::testbus::Testbus;
-    use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
     use crate::types::Byte;
 
     use super::*;
@@ -450,9 +443,10 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
-                M68020_ADDRESS_MASK,
-            ));
+            let mut cpu = CpuM68020::<Testbus<Address, Byte, Bus68020>>::new(
+                Testbus::new(M68020_ADDRESS_MASK),
+                FPU_M68881,
+            );
 
             // Ensure _something_ was written
             for a in 0..12 {
@@ -493,9 +487,10 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
-                M68020_ADDRESS_MASK,
-            ));
+            let mut cpu = CpuM68020::<Testbus<Address, Byte, Bus68020>>::new(
+                Testbus::new(M68020_ADDRESS_MASK),
+                FPU_M68881,
+            );
 
             // Ensure _something_ was written
             for a in 0..8 {
@@ -536,9 +531,10 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
-                M68020_ADDRESS_MASK,
-            ));
+            let mut cpu = CpuM68020::<Testbus<Address, Byte, Bus68020>>::new(
+                Testbus::new(M68020_ADDRESS_MASK),
+                FPU_M68881,
+            );
 
             // Ensure _something_ was written
             for a in 0..4 {
@@ -1075,9 +1071,10 @@ mod tests {
     #[test]
     fn test_memory_bias_persistence() {
         // Test that bias is correctly preserved when storing/loading from memory
-        let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
-            M68020_ADDRESS_MASK,
-        ));
+        let mut cpu = CpuM68020::<Testbus<Address, Byte, Bus68020>>::new(
+            Testbus::new(M68020_ADDRESS_MASK),
+            FPU_M68881,
+        );
 
         let test_exponents = vec![-1000, -1, 0, 1, 1000];
 

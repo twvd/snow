@@ -1,4 +1,3 @@
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::{Result, bail};
 use arpfloat::Float;
@@ -26,14 +25,8 @@ use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -81,9 +74,9 @@ where
         operand: FpuOperand,
         less: Ticks,
     ) -> Result<()> {
-        let timings = Self::fpu_timings();
+        let timings = self.fpu_timings();
         let total = timings.alu(extword.opmode(), operand).saturating_sub(less);
-        let cpu = if FPU_TYPE == FPU_M68882
+        let cpu = if self.fpu_type == FPU_M68882
             && extword.opmode() == 0
             && matches!(
                 operand,
@@ -144,7 +137,7 @@ where
             Some(PrefetchWord::Word(w)) => FmoveExtWord(*w),
             _ => return 0,
         };
-        let fmove = FPU_TYPE == FPU_M68882 && extword.opmode() == 0;
+        let fmove = self.fpu_type == FPU_M68882 && extword.opmode() == 0;
         let operand = match (extword.subop(), extword.src_spec()) {
             // FMOVE FPm,FPn on the 68882
             (0b000, _) if fmove => {
@@ -176,7 +169,7 @@ where
             (0b010, 0b011) => FpuOperand::Packed,
             // FMOVE FPm,<ea> in single, double or extended format on the 68882,
             // which waits for the end of the previous operation if that writes FPm
-            (0b011, fmt @ (0b001 | 0b101 | 0b010)) if FPU_TYPE == FPU_M68882 => {
+            (0b011, fmt @ (0b001 | 0b101 | 0b010)) if self.fpu_type == FPU_M68882 => {
                 return if self.fpu_busy_regs & 1 << extword.src_reg() != 0 {
                     0
                 } else {
@@ -189,7 +182,7 @@ where
             }
             _ => return 0,
         };
-        Self::fpu_timings().alu_head(operand)
+        self.fpu_timings().alu_head(operand)
     }
 
     /// The unsupported data type exception of the MC68040: the instruction goes no further
@@ -244,7 +237,7 @@ where
         // Fetch second word (0000)
         self.fetch()?;
 
-        self.advance_cycles(Self::fpu_timings().nop())?;
+        self.advance_cycles(self.fpu_timings().nop())?;
 
         Ok(())
     }
@@ -299,11 +292,11 @@ where
             // Null state: nothing since a reset or the restore of a null frame
             // (MC68881UM 6.4.2.1)
             self.write_ea_sz(instr, instr.get_op2(), [0u8; 4])?;
-            self.advance_cycles(Self::fpu_timings().save())?;
+            self.advance_cycles(self.fpu_timings().save())?;
             return Ok(());
         }
         // Idle state frame
-        match FPU_TYPE {
+        match self.fpu_type {
             FPU_M68881 => {
                 let stateframe = self.fpu_idle_frame::<28>(0x1F18, 0x08);
                 self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
@@ -331,7 +324,7 @@ where
             _ => todo!(),
         };
 
-        self.advance_cycles(Self::fpu_timings().save())?;
+        self.advance_cycles(self.fpu_timings().save())?;
 
         Ok(())
     }
@@ -404,7 +397,7 @@ where
             } else {
                 self.step_ea_addr.map(|addr| addr.wrapping_add(4))
             };
-            match FPU_TYPE {
+            match self.fpu_type {
                 FPU_M68881 if state & 0xFF000000 == 0x1F000000 => {
                     let frame = self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
                     self.fpu_restore_idle_frame(frame, 0x08 - 4);
@@ -455,7 +448,7 @@ where
             };
         }
 
-        let timings = Self::fpu_timings();
+        let timings = self.fpu_timings();
         self.advance_cycles(if state & 0xFF000000 == 0 {
             timings.restore_null()
         } else {
@@ -490,7 +483,7 @@ where
                 let dest = self.regs.fpu.fp[extword.dst_reg()];
                 let opmode = extword.opmode();
 
-                if FPU_TYPE == FPU_M68040 && !opmode::implemented_040(opmode) {
+                if self.fpu_type == FPU_M68040 && !opmode::implemented_040(opmode) {
                     return self.fpu_unimp040(
                         extword,
                         Unimp040::operand(&src),
@@ -498,7 +491,7 @@ where
                         false,
                     );
                 }
-                if FPU_TYPE == FPU_M68040
+                if self.fpu_type == FPU_M68040
                     && (Self::fpu_unsupported_operand040(&src)
                         || (opmode::is_dyadic(opmode) && Self::fpu_unsupported_operand040(&dest)))
                 {
@@ -510,7 +503,7 @@ where
                     return Ok(());
                 }
                 self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
-                if FPU_TYPE == FPU_M68040 {
+                if self.fpu_type == FPU_M68040 {
                     self.fpu_exception040(
                         extword,
                         Unimp040::operand(&src),
@@ -521,7 +514,7 @@ where
             }
             0b100 | 0b101 => {
                 // Any floating-point instruction but FSAVE reports it (MC68040UM 9.8)
-                if FPU_TYPE == FPU_M68040 && self.fpu_take_pending()? {
+                if self.fpu_type == FPU_M68040 && self.fpu_take_pending()? {
                     return Ok(());
                 }
                 self.op_fmovem_control(instr, extword)?;
@@ -529,8 +522,9 @@ where
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
-                let unimp040 = FPU_TYPE == FPU_M68040 && !opmode::implemented_040(extword.opmode());
-                if FPU_TYPE == FPU_M68040 && extword.src_spec() == 0b011 {
+                let unimp040 =
+                    self.fpu_type == FPU_M68040 && !opmode::implemented_040(extword.opmode());
+                if self.fpu_type == FPU_M68040 && extword.src_spec() == 0b011 {
                     // A packed decimal real source stays as it is, bits 63-0
                     // in ETEMP and bits 95-64 in FPTEMP (MC68040UM table 9-16)
                     let packed: [Long; 3] = if instr.get_addr_mode()? == AddressingMode::Immediate {
@@ -638,7 +632,7 @@ where
                         )?;
                         (self.read_fpu_extended(ea)?, FpuOperand::Extended)
                     }
-                    0b111 if FPU_TYPE == FPU_M68040 => {
+                    0b111 if self.fpu_type == FPU_M68040 => {
                         // FMOVECR is not in the hardware of the MC68040
                         // (MC68040UM table 9-10)
                         return self.fpu_unimp040(
@@ -659,8 +653,8 @@ where
                         let excs = self.regs.fpu.fpsr;
                         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
                         self.regs.fpu.exc_pending =
-                            FPU_TYPE != FPU_M68040 && self.fpu_trap_vector().is_some();
-                        self.advance_cycles(Self::fpu_timings().movecr())?;
+                            self.fpu_type != FPU_M68040 && self.fpu_trap_vector().is_some();
+                        self.advance_cycles(self.fpu_timings().movecr())?;
                         return Ok(());
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
@@ -694,7 +688,7 @@ where
                         false,
                     );
                 }
-                if FPU_TYPE == FPU_M68040 {
+                if self.fpu_type == FPU_M68040 {
                     let frame_source = Self::fpu_source040(&value_in, extword.src_spec());
                     if frame_source.1 >= 0b100
                         || (opmode::is_dyadic(extword.opmode())
@@ -707,7 +701,7 @@ where
                 let result = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
                 // FTST and FCMP leave the destination as it is, whatever they compare
                 self.regs.fpu.fp[fpx] = result;
-                if FPU_TYPE == FPU_M68040 {
+                if self.fpu_type == FPU_M68040 {
                     self.fpu_exception040(
                         extword,
                         Self::fpu_source040(&value_in, extword.src_spec()),
@@ -720,11 +714,11 @@ where
                     let excs = self.regs.fpu.fpsr;
                     self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
                     self.regs.fpu.exc_pending =
-                        FPU_TYPE != FPU_M68040 && self.fpu_trap_vector().is_some();
+                        self.fpu_type != FPU_M68040 && self.fpu_trap_vector().is_some();
                 }
 
                 let less = if instr.get_addr_mode()? == AddressingMode::DataRegister {
-                    Self::fpu_timings().dn_src()
+                    self.fpu_timings().dn_src()
                 } else {
                     0
                 };
@@ -732,7 +726,7 @@ where
             }
             0b011 => self.op_fmove_out(instr, extword)?,
             0b110 | 0b111 => {
-                if FPU_TYPE == FPU_M68040 && self.fpu_take_pending()? {
+                if self.fpu_type == FPU_M68040 && self.fpu_take_pending()? {
                     return Ok(());
                 }
                 self.op_fmovem(instr, extword)?;
@@ -750,10 +744,10 @@ where
     fn op_fmove_out(&mut self, instr: &Instruction, extword: FmoveExtWord) -> Result<()> {
         let fpx = extword.src_reg();
         let in_dn = instr.get_addr_mode()? == AddressingMode::DataRegister;
-        let timings = Self::fpu_timings();
+        let timings = self.fpu_timings();
         let less = if in_dn { timings.dn_dst() } else { 0 };
         let cycles = timings.store(extword.dest_fmt()).saturating_sub(less);
-        if FPU_TYPE == FPU_M68040 {
+        if self.fpu_type == FPU_M68040 {
             let packed = matches!(extword.dest_fmt(), 0b011 | 0b111);
             if packed || Self::fpu_unsupported_operand040(&self.regs.fpu.fp[fpx]) {
                 return self.fpu_move_out_unsupported040(instr, extword);
@@ -761,7 +755,7 @@ where
         }
         self.regs.fpu.fpsr.exs_mut().0 = 0;
         self.regs.fpu.exc_pending = false;
-        if FPU_TYPE == FPU_M68040
+        if self.fpu_type == FPU_M68040
             && !extword.dest_is_integer()
             && self.regs.fpu.fp[fpx].is_snan()
             && self.regs.fpu.fpcr.exc().snan()
@@ -834,7 +828,7 @@ where
             _ => bail!(CpuError::IllegalInstruction),
         };
 
-        if FPU_TYPE == FPU_M68040
+        if self.fpu_type == FPU_M68040
             && let Some((whole, bits)) = integer
         {
             let real = self.regs.fpu.fpsr.exs().operr();
@@ -984,7 +978,7 @@ where
             }
         }
 
-        self.advance_cycles(Self::fpu_timings().move_creg(instr, extword.reg(), !to_ea)?)
+        self.advance_cycles(self.fpu_timings().move_creg(instr, extword.reg(), !to_ea)?)
     }
 
     /// FMOVEM - Multiple FPU register move
@@ -1027,7 +1021,7 @@ where
     ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        let (setup, per_reg) = Self::fpu_timings().fmovem_to_ea();
+        let (setup, per_reg) = self.fpu_timings().fmovem_to_ea();
         self.advance_cycles(setup)?;
 
         for fp_reg in fmovem_order(reverse_order) {
@@ -1071,7 +1065,7 @@ where
     ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        let (setup, per_reg) = Self::fpu_timings().fmovem_to_regs();
+        let (setup, per_reg) = self.fpu_timings().fmovem_to_regs();
         self.advance_cycles(setup)?;
 
         for fp_reg in fmovem_order(reverse_order) {

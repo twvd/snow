@@ -35,11 +35,11 @@ use crate::bus::testbus::{Access, Testbus};
 use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM};
 use crate::cpu_m68k::cpu::CpuError;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestBus = Testbus<Address, u8, Bus68020>;
-type TestCpu = CpuM68030Fpu<TestBus>;
+type TestCpu = CpuM68030<TestBus>;
 
 /// E=1, PS=4 KB, IS=8, TIA=12: one level of 4096 short descriptors indexed
 /// by logical bits 23:12. IS+TIA+PS = 8+12+12 = 32.
@@ -87,7 +87,7 @@ fn mmu_on(cpu: &mut TestCpu, tc: u32, table: Address, pages: u32) {
 
 fn testcpu() -> TestCpu {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.sr.set_int_prio_mask(7);
     cpu

@@ -3,7 +3,9 @@
 use crate::bus::Address;
 use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68000, CpuM68020, FPU_M68881, FPU_NONE, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+};
 
 macro_rules! run {
     ($cpu:expr, $code:expr) => {{
@@ -29,8 +31,10 @@ const MOVEM_L: [u8; 4] = [0x48, 0xE0, 0x80, 0x80];
 
 #[test]
 fn long_68000_stores_the_initial_value() {
-    let mut cpu =
-        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    let mut cpu = CpuM68000::<Testbus<Address, u8, Bus68000>>::new(
+        Testbus::new(M68000_ADDRESS_MASK),
+        FPU_NONE,
+    );
     let (mem, a0) = run!(&mut cpu, MOVEM_L);
     assert_eq!(mem, [0x11, 0x11, 0x22, 0x22, 0, 0, 0x30, 0x10]);
     assert_eq!(a0, 0x3008);
@@ -38,8 +42,10 @@ fn long_68000_stores_the_initial_value() {
 
 #[test]
 fn long_68020_stores_the_decremented_value() {
-    let mut cpu =
-        CpuM68020Fpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<Testbus<Address, u8, Bus68020>>::new(
+        Testbus::new(M68020_ADDRESS_MASK),
+        FPU_M68881,
+    );
     let (mem, a0) = run!(&mut cpu, MOVEM_L);
     assert_eq!(mem, [0x11, 0x11, 0x22, 0x22, 0, 0, 0x30, 0x0C]);
     assert_eq!(a0, 0x3008);
@@ -47,8 +53,10 @@ fn long_68020_stores_the_decremented_value() {
 
 #[test]
 fn word_68020_stores_the_value_decremented_by_two() {
-    let mut cpu =
-        CpuM68020Fpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<Testbus<Address, u8, Bus68020>>::new(
+        Testbus::new(M68020_ADDRESS_MASK),
+        FPU_M68881,
+    );
     for a in 0x3008..0x3010 {
         cpu.bus.mem.insert(a, 0);
     }

@@ -3,10 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::{Access, Testbus};
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::Long;
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const MOVE_L_A0_D0: u16 = 0x2010;
 const MOVE_L_D0_A0: u16 = 0x2080;
@@ -23,7 +23,7 @@ fn run_words(words: &[u16], width: u32, addr: Address, d0: Long) -> TestCpu {
     const PC: Address = 0x1000;
     let mut bus = Testbus::new(M68020_ADDRESS_MASK);
     bus.port_widths.push((DATA..=DATA + 0xFF, width));
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68881);
 
     let program = words.iter().copied().chain([0x4E71, 0x4E71]);
     for (i, word) in program.enumerate() {

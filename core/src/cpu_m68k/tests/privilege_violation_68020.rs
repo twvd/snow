@@ -11,15 +11,15 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::cpu::PrefetchWord;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 /// Initialize a test system with code at a given PC
 fn testcpu(initial_ssp: Address, initial_pc: Address, code: &[u16]) -> TestCpu {
     let bus = Testbus::new(M68020_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68881);
 
     // Write code to memory
     for (i, &word) in code.iter().enumerate() {

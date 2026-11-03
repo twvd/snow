@@ -3,10 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::{Byte, Long, Word};
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 const SRC: Address = 0x3000;
@@ -14,7 +14,7 @@ const DST: Address = 0x4000;
 
 /// Runs `opcode` with `adjustment`, A0 = SRC and A1 = DST
 fn run(opcode: Word, adjustment: Word, setup: impl Fn(&mut TestCpu)) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     for (i, w) in [opcode, adjustment, 0x4E71, 0x4E71].into_iter().enumerate() {
         let addr = CODE + 2 * i as Address;
         cpu.bus.mem.insert(addr, (w >> 8) as u8);

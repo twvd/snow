@@ -3,10 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::{Byte, Long, Word};
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 const BOUNDS: Address = 0x3000;
@@ -32,7 +32,7 @@ fn read_long(cpu: &TestCpu, addr: Address) -> Long {
 
 /// Runs the instruction of `code` with `bounds` at BOUNDS in A0
 fn run(code: &[Word], bounds: &[Byte], setup: impl Fn(&mut TestCpu)) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     for (i, &w) in code.iter().chain([0x4E71, 0x4E71].iter()).enumerate() {
         write_word(&mut cpu, CODE + 2 * i as Address, w);
     }

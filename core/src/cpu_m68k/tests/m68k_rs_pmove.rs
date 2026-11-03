@@ -28,11 +28,11 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestBus = Testbus<Address, u8, Bus68020>;
-type TestCpu = CpuM68030Fpu<TestBus>;
+type TestCpu = CpuM68030<TestBus>;
 
 const CODE: Address = 0x0200;
 const DATA: Address = 0x2000;
@@ -61,7 +61,7 @@ fn read_long(bus: &TestBus, addr: Address) -> Long {
 /// vectors test PMOVE decode, not translation).
 fn cpu_030() -> TestCpu {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.sr.set_int_prio_mask(7);
     cpu.regs.isp = 0x1000;

@@ -3,7 +3,9 @@
 use crate::bus::Address;
 use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68000, CpuM68020, FPU_M68881, FPU_NONE, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+};
 
 macro_rules! check {
     ($cpu:expr) => {{
@@ -23,14 +25,18 @@ macro_rules! check {
 
 #[test]
 fn min_by_minus_one_overflows_68000() {
-    let mut cpu =
-        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    let mut cpu = CpuM68000::<Testbus<Address, u8, Bus68000>>::new(
+        Testbus::new(M68000_ADDRESS_MASK),
+        FPU_NONE,
+    );
     check!(&mut cpu);
 }
 
 #[test]
 fn min_by_minus_one_overflows_68020() {
-    let mut cpu =
-        CpuM68020Fpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<Testbus<Address, u8, Bus68020>>::new(
+        Testbus::new(M68020_ADDRESS_MASK),
+        FPU_M68881,
+    );
     check!(&mut cpu);
 }

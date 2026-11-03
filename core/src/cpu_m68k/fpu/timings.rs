@@ -7,7 +7,7 @@ use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
-use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
+use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
 use crate::tickable::Ticks;
 use crate::types::Word;
 
@@ -433,22 +433,16 @@ static TIMINGS_68882: FpuTimings = MC68882;
 /// MC68040 instruction timings
 static TIMINGS_68040: FpuTimings = MC68040;
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
     /// Instruction timings of the FPU this CPU is configured with
     #[inline(always)]
-    pub(in crate::cpu_m68k) fn fpu_timings() -> &'static FpuTimings {
-        match FPU_TYPE {
+    pub(in crate::cpu_m68k) fn fpu_timings(&self) -> &'static FpuTimings {
+        match self.fpu_type {
             FPU_M68881 => &TIMINGS_68881,
             FPU_M68882 => &TIMINGS_68882,
             FPU_M68040 => &TIMINGS_68040,

@@ -30,8 +30,8 @@ use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::{TestDevice, Testbus};
 use crate::cpu_m68k::disassembler::Disassembler;
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020Fpu, CpuM68030Fpu, CpuM68040Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
-    M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
+    CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
+    M68000_ADDRESS_MASK, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
 };
 
 /// 32-bit data bus (68020/68030).
@@ -130,9 +130,9 @@ macro_rules! run_fixture {
 }
 
 run_fixture!(run_fixture_000, CpuM68000<TestBus16>, M68000_ADDRESS_MASK);
-run_fixture!(run_fixture_020, CpuM68020Fpu<TestBus>, M68020_ADDRESS_MASK);
-run_fixture!(run_fixture_030, CpuM68030Fpu<TestBus>, M68030_ADDRESS_MASK);
-run_fixture!(run_fixture_040, CpuM68040Fpu<TestBus>, M68040_ADDRESS_MASK);
+run_fixture!(run_fixture_020, CpuM68020<TestBus>, M68020_ADDRESS_MASK);
+run_fixture!(run_fixture_030, CpuM68030<TestBus>, M68030_ADDRESS_MASK);
+run_fixture!(run_fixture_040, CpuM68040<TestBus>, M68040_ADDRESS_MASK);
 
 /// The fixture signalled pass at least once and never failed.
 fn assert_passed(name: &str, (pass, fail): (u32, u32)) {
@@ -140,66 +140,72 @@ fn assert_passed(name: &str, (pass, fail): (u32, u32)) {
 }
 
 macro_rules! fixture_test {
-    ($name:ident, $bin:literal, $run:ident, $cpu:ident, $mask:expr) => {
+    ($name:ident, $bin:literal, $run:ident, $cpu:ident, $fpu:expr, $mask:expr) => {
         #[test]
         fn $name() {
-            let mut cpu = $cpu::new(Testbus::new($mask));
+            let mut cpu = $cpu::new(Testbus::new($mask), $fpu);
             let counts = $run(&mut cpu, include_bytes!($bin));
             assert_passed(stringify!($name), counts);
         }
     };
-    ($(#[$attr:meta])* $name:ident, $bin:literal, $run:ident, $cpu:ident, $mask:expr) => {
+    ($(#[$attr:meta])* $name:ident, $bin:literal, $run:ident, $cpu:ident, $fpu:expr, $mask:expr) => {
         $(#[$attr])*
         #[test]
         fn $name() {
-            let mut cpu = $cpu::new(Testbus::new($mask));
+            let mut cpu = $cpu::new(Testbus::new($mask), $fpu);
             let counts = $run(&mut cpu, include_bytes!($bin));
             assert_passed(stringify!($name), counts);
         }
     };
 }
 
-// 68020 fixtures. CpuM68020Fpu: M68020 + 68881, no PMMU.
+// 68020 fixtures. CpuM68020: M68020 + 68881, no PMMU.
 fixture_test!(
     fixture_bitfield_ops,
     "fixtures/m68020/bin/bitfield_ops.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 fixture_test!(
     fixture_cas,
     "fixtures/m68020/bin/cas.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 fixture_test!(
     fixture_long_muldiv,
     "fixtures/m68020/bin/long_muldiv.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 fixture_test!(
     fixture_chk2_cmp2,
     "fixtures/m68020/bin/chk2_cmp2.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 fixture_test!(
     fixture_boundary_edge,
     "fixtures/m68020/bin/boundary_edge.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 fixture_test!(
     fixture_msp_test,
     "fixtures/m68020/bin/msp_test.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 // T0 trace-on-change-of-flow is not implemented: Snow's SR mask forces
@@ -210,7 +216,8 @@ fixture_test!(
     fixture_trace_t0,
     "fixtures/m68020/bin/trace_t0.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 // CALLM/RTM are not implemented (68020-only module-call pair).
@@ -219,17 +226,19 @@ fixture_test!(
     fixture_callm_020,
     "fixtures/m68020/bin/callm_020.bin",
     run_fixture_020,
-    CpuM68020Fpu,
+    CpuM68020,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 
-// 68030 fixtures. CpuM68030Fpu: M68030 + 68882, PMMU present (off by
+// 68030 fixtures. CpuM68030: M68030 + 68882, PMMU present (off by
 // default in these fixtures).
 fixture_test!(
     fixture_cache_030,
     "fixtures/m68030/bin/cache_030.bin",
     run_fixture_030,
-    CpuM68030Fpu,
+    CpuM68030,
+    FPU_M68882,
     M68030_ADDRESS_MASK
 );
 // Negative test: MOVE16 is 68040-only and must take Line-F on the 68030.
@@ -237,7 +246,8 @@ fixture_test!(
     fixture_move16_030,
     "fixtures/m68030/bin/move16_030.bin",
     run_fixture_030,
-    CpuM68030Fpu,
+    CpuM68030,
+    FPU_M68882,
     M68030_ADDRESS_MASK
 );
 
@@ -251,19 +261,19 @@ fixture_test!(
 // ---------------------------------------------------------------------------
 
 macro_rules! musashi_test {
-    ($name:ident, $bin:literal, $run:ident, $cpu:ident, $mask:expr) => {
+    ($name:ident, $bin:literal, $run:ident, $cpu:ident, $fpu:expr, $mask:expr) => {
         #[test]
         fn $name() {
-            let mut cpu = $cpu::new(Testbus::new($mask));
+            let mut cpu = $cpu::new(Testbus::new($mask), $fpu);
             let counts = $run(&mut cpu, include_bytes!($bin));
             assert_passed(stringify!($name), counts);
         }
     };
-    ($(#[$attr:meta])* $name:ident, $bin:literal, $run:ident, $cpu:ident, $mask:expr) => {
+    ($(#[$attr:meta])* $name:ident, $bin:literal, $run:ident, $cpu:ident, $fpu:expr, $mask:expr) => {
         $(#[$attr])*
         #[test]
         fn $name() {
-            let mut cpu = $cpu::new(Testbus::new($mask));
+            let mut cpu = $cpu::new(Testbus::new($mask), $fpu);
             let counts = $run(&mut cpu, include_bytes!($bin));
             assert_passed(stringify!($name), counts);
         }
@@ -272,19 +282,19 @@ macro_rules! musashi_test {
 
 macro_rules! musashi_040 {
     ($name:ident, $bin:literal) => {
-        musashi_test!($name, $bin, run_fixture_020, CpuM68020Fpu, M68020_ADDRESS_MASK);
+        musashi_test!($name, $bin, run_fixture_020, CpuM68020, FPU_M68881, M68020_ADDRESS_MASK);
     };
     ($(#[$attr:meta])* $name:ident, $bin:literal) => {
-        musashi_test!($(#[$attr])* $name, $bin, run_fixture_020, CpuM68020Fpu, M68020_ADDRESS_MASK);
+        musashi_test!($(#[$attr])* $name, $bin, run_fixture_020, CpuM68020, FPU_M68881, M68020_ADDRESS_MASK);
     };
 }
 
 macro_rules! musashi_000 {
     ($name:ident, $bin:literal) => {
-        musashi_test!($name, $bin, run_fixture_000, CpuM68000, M68000_ADDRESS_MASK);
+        musashi_test!($name, $bin, run_fixture_000, CpuM68000, FPU_NONE, M68000_ADDRESS_MASK);
     };
     ($(#[$attr:meta])* $name:ident, $bin:literal) => {
-        musashi_test!($(#[$attr])* $name, $bin, run_fixture_000, CpuM68000, M68000_ADDRESS_MASK);
+        musashi_test!($(#[$attr])* $name, $bin, run_fixture_000, CpuM68000, FPU_NONE, M68000_ADDRESS_MASK);
     };
 }
 
@@ -339,7 +349,7 @@ musashi_040!(musashi_040_trapcc, "fixtures/musashi/mc68040/trapcc.bin");
 /// from M68000; see test_extb_l_is_illegal_on_68000).
 #[test]
 fn extb_l_executes_on_68020() {
-    let mut cpu = CpuM68020Fpu::<TestBus>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<TestBus>::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.d[0] = 0x1234_5680; // byte 0x80 = -128
     cpu.bus.mem.insert(0x1000, 0x49); // EXTB.l D0
@@ -496,19 +506,19 @@ mod motorola_itest {
 
     #[test]
     fn m68020() {
-        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        let mut cpu = CpuM68020::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK), FPU_M68881);
         assert_passed("itest", run_fixture_020(&mut cpu, &program()));
     }
 
     #[test]
     fn m68030() {
-        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        let mut cpu = CpuM68030::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK), FPU_M68882);
         assert_passed("itest", run_fixture_030(&mut cpu, &program()));
     }
 
     #[test]
     fn m68040() {
-        let mut cpu = CpuM68040Fpu::<TestBus>::new(TestBus::new(M68040_ADDRESS_MASK));
+        let mut cpu = CpuM68040::<TestBus>::new(TestBus::new(M68040_ADDRESS_MASK), FPU_M68040);
         assert_passed("itest", run_fixture_040(&mut cpu, &program()));
     }
 }
@@ -525,33 +535,33 @@ mod motorola_ftest {
     /// Effective addresses, data types, overflow and underflow
     #[test]
     fn main_on_68881() {
-        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        let mut cpu = CpuM68020::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK), FPU_M68881);
         assert_passed("ftest", run_fixture_020(&mut cpu, &program(0)));
     }
 
     #[test]
     fn main_on_68882() {
-        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        let mut cpu = CpuM68030::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK), FPU_M68882);
         assert_passed("ftest", run_fixture_030(&mut cpu, &program(0)));
     }
 
     #[test]
     #[ignore = "fsin of pi expects the value of the FPSP, $BFBF80..., not the correct one"]
     fn unimplemented_instructions() {
-        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        let mut cpu = CpuM68030::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK), FPU_M68882);
         assert_passed("ftest", run_fixture_030(&mut cpu, &program(8)));
     }
 
     /// With what `stub.s` does for `_real_snan` and the others in `test.doc`
     #[test]
     fn enabled_exceptions_on_68881() {
-        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        let mut cpu = CpuM68020::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK), FPU_M68881);
         assert_passed("ftest", run_fixture_020(&mut cpu, &program(16)));
     }
 
     #[test]
     fn enabled_exceptions_on_68882() {
-        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        let mut cpu = CpuM68030::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK), FPU_M68882);
         assert_passed("ftest", run_fixture_030(&mut cpu, &program(16)));
     }
 }

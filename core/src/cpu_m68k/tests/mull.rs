@@ -3,14 +3,14 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 /// MULx.L D1,<dh:>D0 and returns (D0, D2, NZVC)
 fn mull(extword: Word, d0: Long, d1: Long) -> (Long, Long, (bool, bool, bool, bool)) {
-    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     for (i, w) in [0x4C01, extword].into_iter().enumerate() {
         let [h, l] = w.to_be_bytes();
         cpu.bus.mem.insert(0x1000 + 2 * i as Address, h);

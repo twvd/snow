@@ -10,7 +10,7 @@ use crate::bus::Address;
 use crate::bus::access::Bus68000;
 use crate::bus::testbus::{Access, Testbus};
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
-use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK, M68000_SR_MASK};
+use crate::cpu_m68k::{CpuM68000, FPU_NONE, M68000_ADDRESS_MASK, M68000_SR_MASK};
 use crate::tickable::Ticks;
 
 #[derive(Debug, Deserialize)]
@@ -292,7 +292,7 @@ fn run_testcase(testcase: &Testcase, level: TestLevel) {
         bus.write(*addr, *val);
     }
 
-    let mut cpu = CpuM68000::new(bus);
+    let mut cpu = CpuM68000::new(bus, FPU_NONE);
     cpu.trace_mask = true;
     cpu.regs = regs_initial;
     cpu.prefetch = testcase
