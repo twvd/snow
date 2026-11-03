@@ -69,21 +69,15 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     /// Return a mutable reference to the ScsiTargetCommon data
     fn common(&mut self) -> &mut ScsiTargetCommon;
 
-    /// Called after loading a savestate to restore SCSI image data that was
-    /// previously saved by `savestate_img_data`
+    /// Called on a target restored from a save state, with a file holding the media it saved
+    /// there, if it saved any
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
+    fn after_restore(&mut self, media: Option<&Path>) -> Result<()>;
 
-    /// Returns the length of data to save to savestates or None if no data
-    #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        None
-    }
-
-    /// Returns the data to save to savestates or None if no data
+    /// The media to save with the target in a save state, if any
     // TODO: take a Writer argument instead of returning a potentially massive array
     #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
+    fn savestate_media(&self) -> Option<&[u8]> {
         None
     }
 

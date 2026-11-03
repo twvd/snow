@@ -20,6 +20,8 @@ use snow_floppy::loaders::{Autodetect, FloppyImageLoader, TwoImg};
 use snow_floppy::{Floppy as _, FloppyType};
 
 use super::comm::EmulatorEvent;
+#[cfg(feature = "savestates")]
+use super::save::{RestoredSlot, SavedSlot, SlotState};
 use super::{Emulator, EmulatorConfig, MouseMode};
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
@@ -1339,6 +1341,7 @@ impl Emulator {
 
     /// After a state is restored: the state has the devices but not where they came from, so
     /// this takes it from the list saved with it
+    #[cfg(feature = "savestates")]
     pub(super) fn reinstate_devices(&mut self, devices: Vec<DeviceConfig>) {
         let layout = self.model.buses();
         let mut chain = vec![];
@@ -1380,7 +1383,7 @@ impl Emulator {
                         drive.media_path = media.media;
                     }
                 }
-                // A SCSI device knows where its media came from
+                // The state held these by slot: they're back already
                 BusKind::Scsi => (),
                 BusKind::Serial => {
                     // The host's side of a link isn't in the state: it starts again
@@ -1477,6 +1480,63 @@ impl Emulator {
             }
         };
         Some(f(function))
+    }
+
+    /// The devices a save state holds by slot, each serialized on its own, with its media.
+    /// Fixed devices are part of the machine's state, and serial links open again.
+    #[cfg(feature = "savestates")]
+    pub(super) fn slot_states(&self) -> Result<Vec<SavedSlot<'_>>> {
+        let mut states = vec![];
+        for bus in self.bus_list.iter() {
+            for slot in bus.slots.iter().filter(|s| s.device.is_some()) {
+                let (state, media) = match slot_target(bus, slot) {
+                    SlotTarget::Scsi(id) => {
+                        let Some(target) = self.config.scsi().targets[id].as_ref() else {
+                            continue;
+                        };
+                        (postcard::to_allocvec(target)?, target.savestate_media())
+                    }
+                    _ => continue,
+                };
+                states.push((
+                    SlotState {
+                        bus: bus.id.clone(),
+                        slot: slot.id.clone(),
+                        state,
+                        media_len: media.map(|m| m.len() as u64),
+                    },
+                    media,
+                ));
+            }
+        }
+        Ok(states)
+    }
+
+    /// Puts the devices a save state held by slot back in their slots
+    #[cfg(feature = "savestates")]
+    pub(super) fn restore_slots(&mut self, slots: Vec<RestoredSlot>) -> Result<()> {
+        for restored in slots {
+            let state = &restored.state;
+            let Some(addr) = self.find_slot(&state.bus, &state.slot) else {
+                log::warn!(
+                    "{} #{}: no such slot for its saved device",
+                    state.bus,
+                    state.slot
+                );
+                continue;
+            };
+            let bus = &self.bus_list[addr.bus];
+            match slot_target(bus, &bus.slots[addr.slot]) {
+                SlotTarget::Scsi(id) => {
+                    let mut target: Box<dyn ScsiTarget> = postcard::from_bytes(&state.state)?;
+                    target.after_restore(restored.media.as_deref())?;
+                    self.config.scsi_mut().attach_target_at(id, target)?;
+                }
+                t => log::warn!("{:?} has no saved device to restore", t),
+            }
+        }
+        self.rebuild_bus_list();
+        Ok(())
     }
 
     /// Runs `f` on the Ethernet adapter in a slot
@@ -2327,6 +2387,27 @@ mod tests {
         assert_eq!(at(bus_id::IIE_DISK), at(bus_id::PDS_LC) + 1);
         drop(emu);
         assert_eq!(assert_round_trip(MacModel::LC, devices.clone()), devices);
+    }
+
+    #[cfg(feature = "savestates")]
+    #[test]
+    fn a_save_state_holds_the_devices_by_slot() {
+        let files = TestFiles::new("state_slots");
+        let devices = vec![
+            scsi_disk("2", files.file("hd.img", 1024 * 1024)),
+            scsi_cdrom("3", Some(files.file("cd.iso", 2048 * 32))),
+        ];
+        let (mut emu, refused) = build(MacModel::Plus, devices);
+        assert!(refused.is_empty(), "{:?}", refused);
+        let reported = emu.devices();
+        assert_eq!(reported.len(), 2);
+        let state = files.0.join("machine.snows");
+        emu.save_state(&state, None).unwrap();
+        drop(emu);
+
+        // The disk runs on a copy and says where it came from, the CD-ROM opens its image again
+        let (mut restored, _) = Emulator::load_state(&state, files.dir("tmp")).unwrap();
+        assert_eq!(restored.devices(), reported);
     }
 
     #[cfg(feature = "savestates")]
