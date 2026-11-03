@@ -12,7 +12,6 @@ use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
 use mdc12::Mdc12;
-use se30video::SE30Video;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use toby::Toby;
@@ -21,7 +20,6 @@ use toby::Toby;
 #[serde(bound = "")]
 pub enum NubusCard<TRenderer: Renderer> {
     MDC12(Mdc12<TRenderer>),
-    SE30Video(SE30Video<TRenderer>),
     Toby(Toby<TRenderer>),
 }
 
@@ -52,7 +50,6 @@ macro_rules! with_card {
     ($card:expr, $c:ident => $e:expr) => {
         match $card {
             NubusCard::MDC12($c) => $e,
-            NubusCard::SE30Video($c) => $e,
             NubusCard::Toby($c) => $e,
         }
     };
@@ -74,27 +71,40 @@ where
     pub fn video(&mut self) -> Option<&mut dyn VideoCard<TRenderer>> {
         match self {
             Self::MDC12(c) => Some(c),
-            Self::SE30Video(c) => Some(c),
             Self::Toby(c) => Some(c),
         }
     }
+}
 
-    // Statically dispatched, for the paths run on every bus tick and access
+// Statically dispatched, for the paths run on every bus tick and access
 
-    pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        with_card!(self, c => c.tick(ticks, ctx))
-    }
-
-    pub fn get_irq(&self) -> bool {
+impl<TRenderer> NubusSlot for NubusCard<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn get_irq(&self) -> bool {
         with_card!(self, c => c.get_irq())
     }
 
-    pub fn read_sized(&mut self, offset: Address, size: u32) -> Option<u32> {
+    fn read_sized(&mut self, offset: Address, size: u32) -> Option<u32> {
         with_card!(self, c => c.read_sized(offset, size))
     }
 
-    pub fn write_sized(&mut self, offset: Address, size: u32, val: u32) -> Option<()> {
+    fn write_sized(&mut self, offset: Address, size: u32, val: u32) -> Option<()> {
         with_card!(self, c => c.write_sized(offset, size, val))
+    }
+
+    fn reset(&mut self) {
+        with_card!(self, c => c.reset());
+    }
+}
+
+impl<TRenderer> Tickable<&dyn EmuContext> for NubusCard<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        with_card!(self, c => c.tick(ticks, ctx))
     }
 }
 
