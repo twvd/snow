@@ -224,6 +224,16 @@ impl DeviceModel {
     }
 }
 
+/// The Ethernet function. Any model providing it looks the same to the frontend.
+#[cfg(feature = "ethernet")]
+pub trait Ethernet {
+    fn link(&self) -> crate::mac::scsi::ethernet::EthernetLinkType;
+    fn set_link(&mut self, link: crate::mac::scsi::ethernet::EthernetLinkType) -> Result<()>;
+    fn start_capture(&mut self, filename: &Path) -> Result<()>;
+    fn stop_capture(&mut self) -> Option<(PathBuf, usize)>;
+    fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
+}
+
 /// Something that can go in a slot
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Offer {
@@ -1240,8 +1250,9 @@ impl Emulator {
                         .map_err(|_| anyhow!("Unknown Ethernet link {}", link))?;
                     self.config.scsi_mut().targets[id]
                         .as_mut()
-                        .context("No target attached")?
-                        .eth_set_link(link)?;
+                        .and_then(|t| t.ethernet_mut())
+                        .context("No Ethernet device attached")?
+                        .set_link(link)?;
                 }
                 Ok(())
             }
@@ -1617,14 +1628,14 @@ impl Emulator {
             }
             #[cfg(feature = "ethernet")]
             ScsiTargetType::Ethernet => {
-                let target = scsi.targets[id].as_ref()?;
-                let link = target.eth_link()?;
+                let ethernet = scsi.targets[id].as_ref()?.ethernet()?;
+                let link = ethernet.link();
                 Some(Device {
                     model: DeviceModel::DaynaPortScsiLink,
                     settings: settings_map(&serde_json::json!({ "link": link })),
                     state: FunctionState::Ethernet(EthernetState {
                         link,
-                        capture: target.eth_capture_status(),
+                        capture: ethernet.capture_status(),
                     }),
                 })
             }
@@ -2184,7 +2195,7 @@ mod tests {
         let (mut emu, _) = build(MacModel::Plus, vec![]);
         let disk = scsi_disk("3", files.file("a.img", 1024 * 1024));
         emu.add_device(&disk).unwrap();
-        assert_eq!(emu.devices(), [disk.clone()]);
+        assert_eq!(emu.devices(), std::slice::from_ref(&disk));
 
         // An occupied slot only takes settings for what's in it
         assert!(emu.add_device(&scsi_cdrom("3", None)).is_err());
