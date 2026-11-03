@@ -30,7 +30,7 @@ use super::{
     STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
     disk_image::{DiskImage, FileDiskImage},
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
-    toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
+    toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry, toolbox_metadata},
 };
 
 // CD-ROM protocol Documentation:
@@ -356,6 +356,10 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio sink for CD audio
     #[serde(skip)]
     audio_sink: Option<Box<dyn AudioSink>>,
+
+    /// The BlueSCSI device type at each SCSI ID, for the Toolbox's LIST_DEVICES
+    #[serde(skip)]
+    devices: [u8; 8],
 }
 
 impl ScsiTargetCdrom {
@@ -393,6 +397,7 @@ impl ScsiTargetCdrom {
             ],
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
+            devices: [0xFF; 8],
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -1522,6 +1527,8 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
+            // BlueSCSI Toolbox: METADATA, which every device a BlueSCSI emulates answers
+            0xD9 => Ok(toolbox_metadata(cmd, &self.devices)),
             // BlueSCSI Toolbox: LIST CDS (list the images in the managed folder)
             0xD7 => {
                 let images = self.folder_images();
@@ -1600,6 +1607,10 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn ms_media_type(&self) -> u8 {
         2 // 120mm CD-ROM
+    }
+
+    fn set_device_map(&mut self, devices: &[u8; 8]) {
+        self.devices = *devices;
     }
 
     fn ms_device_specific(&self) -> u8 {

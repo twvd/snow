@@ -430,7 +430,6 @@ impl Emulator {
             false,
             None,
             None,
-            None,
             0x9,
         )
     }
@@ -447,7 +446,6 @@ impl Emulator {
         pmmu_enabled: bool,
         fpu_enabled: bool,
         vram_size: Option<usize>,
-        shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
         video_card_slot: u8,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
@@ -707,7 +705,6 @@ impl Emulator {
             }
         };
 
-        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
         let mut device_book = devices::DeviceBook::default();
         if let Some(settings) = iie_card {

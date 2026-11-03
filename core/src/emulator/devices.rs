@@ -69,7 +69,7 @@ pub enum FunctionKind {
     Floppy,
     Ethernet,
     Printer,
-    FileSharing,
+    FileTransfer,
     Video,
     AppleIIe,
     SerialLink,
@@ -276,6 +276,14 @@ pub trait Ethernet {
     fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
 }
 
+/// The FileTransfer function: a host folder the guest copies files in and out of
+pub trait FileTransfer {
+    fn folder(&self) -> Option<&Path>;
+    fn load(&mut self, folder: &Path) -> Result<()>;
+    /// Stops sharing the folder
+    fn eject(&mut self);
+}
+
 /// A place on a bus
 #[derive(Debug, Clone)]
 pub struct Slot {
@@ -367,7 +375,7 @@ pub enum FunctionStatus {
     #[cfg(feature = "ethernet")]
     Ethernet(EthernetStatus),
     Printer,
-    FileSharing(FileSharingStatus),
+    FileTransfer(FileTransferStatus),
     Video,
     AppleIIe,
     SerialLink(Option<SerialBridgeStatus>),
@@ -381,6 +389,7 @@ impl FunctionStatus {
             Self::HardDisk(s) => settings_map(&s.settings),
             Self::Cdrom(s) => settings_map(&s.settings),
             Self::Floppy(s) => settings_map(&s.settings),
+            Self::FileTransfer(s) => settings_map(&s.settings),
             #[cfg(feature = "ethernet")]
             Self::Ethernet(s) => settings_map(&serde_json::json!({ "link": s.link })),
             _ => Map::new(),
@@ -449,8 +458,8 @@ pub struct EthernetStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileSharingStatus {
-    pub shared_dir: PathBuf,
+pub struct FileTransferStatus {
+    pub settings: FileTransferSettings,
 }
 
 /// The status of every device, shared with the frontend
@@ -626,10 +635,12 @@ impl DeviceSettings for LaserWriterIISCSettings {
     const MODEL: DeviceModel = DeviceModel::LaserWriterIISC;
 }
 
-/// What the file sharing function needs, whichever the device model
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileSharingSettings {
-    pub shared_dir: PathBuf,
+/// What the FileTransfer function needs, whichever the device model
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileTransferSettings {
+    /// The folder the guest copies files in and out of
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<PathBuf>,
 }
 
 /// What the floppy function needs, whichever the device model
@@ -813,8 +824,6 @@ pub(super) struct DeviceBook {
     /// The Apple IIe Card's drives, in chain order
     pub(super) iie_chain: Vec<DeviceModel>,
     pub(super) serial: [Option<SerialBridgeConfig>; 2],
-    /// The SCSI ID the shared folder sits at, and the folder
-    pub(super) blue_scsi: Option<(usize, PathBuf)>,
     /// The images a restored machine's SCSI devices came from: it runs on copies
     pub(super) restored_media: [Option<PathBuf>; 7],
     /// The same for its HD20s
@@ -1325,14 +1334,10 @@ impl Emulator {
                     let Ok(id) = config.slot.parse::<usize>() else {
                         continue;
                     };
-                    if model == DeviceModel::BlueScsi {
-                        if let Ok(settings) = config.parse::<FileSharingSettings>() {
-                            self.config
-                                .scsi_mut()
-                                .set_shared_dir(Some(settings.shared_dir.clone()));
-                            self.device_book.blue_scsi = Some((id, settings.shared_dir));
-                        }
-                    } else if let Some(media) = media.and_then(|m| m.media) {
+                    // A BlueSCSI's folder is its own, not a copy in the state
+                    if model != DeviceModel::BlueScsi
+                        && let Some(media) = media.and_then(|m| m.media)
+                    {
                         self.device_book.restored_media[id] = Some(media);
                     }
                 }
@@ -1502,7 +1507,6 @@ impl Emulator {
             machine.pmmu_enabled,
             machine.fpu_enabled,
             machine.vram_size,
-            None,
             plan.iie_card,
             video_slot,
         )?;
@@ -1569,11 +1573,6 @@ impl Emulator {
             bail!("A {} can't be removed", device.model.name());
         }
         match slot_target(bus, slot) {
-            SlotTarget::Scsi(id) if device.model == DeviceModel::BlueScsi => {
-                debug_assert_eq!(self.device_book.blue_scsi.as_ref().map(|b| b.0), Some(id));
-                self.device_book.blue_scsi = None;
-                self.config.scsi_mut().set_shared_dir(None);
-            }
             SlotTarget::Scsi(id) => {
                 self.config.scsi_mut().detach_target(id);
                 self.device_book.restored_media[id] = None;
@@ -1651,15 +1650,15 @@ impl Emulator {
                 Ok(())
             }
             (SlotTarget::Scsi(id), DeviceModel::BlueScsi) => {
-                let settings: FileSharingSettings = config.parse()?;
-                if !settings.shared_dir.is_dir() {
-                    bail!("{} is not a folder", settings.shared_dir.display());
+                let settings: FileTransferSettings = config.parse()?;
+                if let Some(folder) = &settings.media
+                    && !folder.is_dir()
+                {
+                    bail!("{} is not a folder", folder.display());
                 }
                 self.config
                     .scsi_mut()
-                    .set_shared_dir(Some(settings.shared_dir.clone()));
-                self.device_book.blue_scsi = Some((id, settings.shared_dir));
-                Ok(())
+                    .attach_bluescsi_at(id, settings.media)
             }
             (SlotTarget::Serial(ch), DeviceModel::SerialBridge) => {
                 let settings: SerialLinkSettings = config.parse()?;
@@ -1798,6 +1797,16 @@ impl Emulator {
                 self.iie_drive(i).context("No such drive")?.eject();
                 Ok(())
             }
+            SlotTarget::Scsi(id) => {
+                let target = self.config.scsi_mut().targets[id]
+                    .as_mut()
+                    .context("No target attached")?;
+                let Some(transfer) = target.file_transfer_mut() else {
+                    bail!("This SCSI device has nothing to eject from here");
+                };
+                transfer.eject();
+                Ok(())
+            }
             t => bail!("{:?} can't eject from here", t),
         }
     }
@@ -1860,19 +1869,10 @@ impl Emulator {
                 device(DeviceModel::Hd20, Map::new())
             }
             SlotTarget::Scsi(id) => {
-                if let Some((blue_id, dir)) = &self.device_book.blue_scsi
-                    && *blue_id == id
-                {
-                    return device(
-                        DeviceModel::BlueScsi,
-                        settings_map(&FileSharingSettings {
-                            shared_dir: dir.clone(),
-                        }),
-                    );
-                }
                 let model = match self.config.scsi().get_target_type(id)? {
                     ScsiTargetType::Disk => DeviceModel::ScsiHardDisk,
                     ScsiTargetType::Cdrom => DeviceModel::ScsiCdrom,
+                    ScsiTargetType::BlueScsi => DeviceModel::BlueScsi,
                     #[cfg(feature = "ethernet")]
                     ScsiTargetType::Ethernet => DeviceModel::DaynaPortScsiLink,
                     #[cfg(feature = "printer")]
@@ -1903,13 +1903,6 @@ impl Emulator {
     }
 
     fn scsi_status(&self, id: usize) -> Option<FunctionStatus> {
-        if let Some((blue_id, dir)) = &self.device_book.blue_scsi
-            && *blue_id == id
-        {
-            return Some(FunctionStatus::FileSharing(FileSharingStatus {
-                shared_dir: dir.clone(),
-            }));
-        }
         let scsi = self.config.scsi();
         // A restored machine runs on copies: what matters is where they came from
         let image = self.device_book.restored_media[id]
@@ -1944,6 +1937,14 @@ impl Emulator {
             }
             #[cfg(feature = "printer")]
             ScsiTargetType::Printer => Some(FunctionStatus::Printer),
+            ScsiTargetType::BlueScsi => {
+                let transfer = scsi.targets[id].as_ref()?.file_transfer()?;
+                Some(FunctionStatus::FileTransfer(FileTransferStatus {
+                    settings: FileTransferSettings {
+                        media: transfer.folder().map(Path::to_path_buf),
+                    },
+                }))
+            }
         }
     }
 }
@@ -2276,36 +2277,43 @@ mod tests {
     }
 
     #[test]
-    fn blue_scsi_holds_its_slot() {
+    fn bluescsis_each_share_their_own_folder() {
         let files = TestFiles::new("blue");
-        let blue = DeviceConfig::of_model(
-            bus_id::SCSI,
-            "1",
-            DeviceModel::BlueScsi,
-            &FileSharingSettings {
-                shared_dir: files.dir("shared"),
-            },
-        )
-        .unwrap();
+        let blue = |slot: &str, folder: Option<PathBuf>| {
+            DeviceConfig::of_model(
+                bus_id::SCSI,
+                slot,
+                DeviceModel::BlueScsi,
+                &FileTransferSettings { media: folder },
+            )
+            .unwrap()
+        };
+        let one = blue("1", Some(files.dir("one")));
+        let two = blue("2", Some(files.dir("two")));
+        let none = blue("3", None);
         assert_eq!(
-            assert_round_trip(MacModel::Plus, vec![blue.clone()]),
-            vec![blue.clone()]
+            assert_round_trip(MacModel::Plus, vec![one.clone(), two.clone(), none.clone()]),
+            vec![one.clone(), two.clone(), none.clone()]
         );
 
-        // Its slot is taken, and there's one to a bus
+        // Its slot is taken, and a folder must be a folder
         let (mut emu, refused) = build(
             MacModel::Plus,
             vec![
-                blue.clone(),
+                one.clone(),
                 scsi_cdrom("1", None),
-                DeviceConfig {
-                    slot: "2".into(),
-                    ..blue
-                },
+                blue("4", Some(files.file("not-a-folder", 1))),
             ],
         );
         assert_eq!(refused.len(), 2);
         assert_eq!(emu.devices().len(), 1);
+
+        // The folder changes and goes like a disk's image
+        let addr = emu.find_slot(bus_id::SCSI, "1").unwrap();
+        emu.load_media(addr, &files.dir("two"), false).unwrap();
+        assert_eq!(emu.devices(), vec![blue("1", Some(files.dir("two")))]);
+        emu.eject_media(addr).unwrap();
+        assert_eq!(emu.devices(), vec![blue("1", None)]);
     }
 
     #[test]
@@ -2529,10 +2537,20 @@ mod tests {
             )
             .unwrap(),
             scsi_disk("2", files.file("hd.img", 1024 * 1024)),
+            DeviceConfig::of_model(
+                bus_id::SCSI,
+                "5",
+                DeviceModel::BlueScsi,
+                &FileTransferSettings {
+                    media: Some(files.dir("shared")),
+                },
+            )
+            .unwrap(),
         ];
         let (mut emu, refused) = build(MacModel::LC, devices);
         assert!(refused.is_empty(), "{:?}", refused);
         let reported = emu.devices();
+        assert_eq!(reported.len(), 4);
         let state = files.0.join("machine.snows");
         emu.save_state(&state, None).unwrap();
         drop(emu);

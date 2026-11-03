@@ -25,6 +25,7 @@ use crate::tickable::Ticks;
 pub enum ScsiTargetType {
     Disk,
     Cdrom,
+    BlueScsi,
     #[cfg(feature = "ethernet")]
     Ethernet,
     #[cfg(feature = "printer")]
@@ -116,6 +117,18 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn ethernet_mut(&mut self) -> Option<&mut dyn crate::emulator::devices::Ethernet> {
         None
     }
+
+    /// This target's FileTransfer function, if it provides one
+    fn file_transfer(&self) -> Option<&dyn crate::emulator::devices::FileTransfer> {
+        None
+    }
+
+    fn file_transfer_mut(&mut self) -> Option<&mut dyn crate::emulator::devices::FileTransfer> {
+        None
+    }
+
+    /// The BlueSCSI device type at each SCSI ID on the bus, for the Toolbox's LIST_DEVICES
+    fn set_device_map(&mut self, _devices: &[u8; 8]) {}
 
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;

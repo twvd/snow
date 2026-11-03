@@ -407,7 +407,7 @@ impl Workspace {
                     bus_id::SCSI,
                     &id.to_string(),
                     Some("BlueScsi"),
-                    json!({ "shared_dir": dir }),
+                    json!({ "media": dir }),
                 )),
                 None => log::warn!("No free SCSI ID for the shared folder {}", dir.display()),
             }
@@ -729,10 +729,7 @@ mod tests {
             entry(&ws, "SCSI", "4").model.as_deref(),
             Some("LaserWriterIISC")
         );
-        assert_eq!(
-            entry(&ws, "SCSI", "5").settings["shared_dir"],
-            json!(shared)
-        );
+        assert_eq!(entry(&ws, "SCSI", "5").settings["media"], json!(shared));
         assert_eq!(entry(&ws, "SWIM", "1").settings["media"], json!(floppy));
         assert_eq!(entry(&ws, "SWIM", "1").model, None);
         assert_eq!(entry(&ws, "Serial", "A").settings["tcp_port"], json!(5000));

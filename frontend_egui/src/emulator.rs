@@ -24,7 +24,7 @@ use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
 use snow_core::emulator::devices::{
-    Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FileSharingSettings, FunctionKind,
+    Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FileTransferSettings, FunctionKind,
     FunctionStatus, HD20_SLOT, HardDiskSettings, MachineConfig, RefusedDevice, SerialLinkSettings,
     Slot, SlotAddr, StatusBlock, device_configs, models_for,
 };
@@ -850,9 +850,15 @@ impl EmulatorState {
     }
 
     /// Shares a folder, through the device model this slot's bus has for it
-    pub fn attach_file_sharing(&self, addr: SlotAddr, shared_dir: PathBuf) {
-        if let Some(model) = self.offered(addr, FunctionKind::FileSharing) {
-            self.attach_model(addr, model, &FileSharingSettings { shared_dir });
+    pub fn attach_file_transfer(&self, addr: SlotAddr, folder: PathBuf) {
+        if let Some(model) = self.offered(addr, FunctionKind::FileTransfer) {
+            self.attach_model(
+                addr,
+                model,
+                &FileTransferSettings {
+                    media: Some(folder),
+                },
+            );
         }
     }
 
@@ -965,61 +971,6 @@ impl EmulatorState {
                 self.slot_label(addr)
             ),
         ));
-    }
-
-    /// The folder shared with the guest
-    pub fn shared_dir(&self) -> Option<PathBuf> {
-        self.all_slots()
-            .find_map(|(addr, _, _)| match self.status(addr) {
-                Some(FunctionStatus::FileSharing(s)) => Some(s.shared_dir.clone()),
-                _ => None,
-            })
-    }
-
-    /// Shares a folder with the guest, or no more. It takes a slot on the SCSI bus.
-    pub fn set_shared_dir(&self, path: Option<PathBuf>) {
-        let Some(sender) = self.cmdsender.as_ref() else {
-            return;
-        };
-        let buses = self.buses();
-        let Some(bus_idx) = buses.iter().position(|b| b.kind == BusKind::Scsi) else {
-            return;
-        };
-        let slots = &buses[bus_idx].slots;
-        let current = slots.iter().position(|s| {
-            s.device
-                .as_ref()
-                .is_some_and(|d| d.model.function() == FunctionKind::FileSharing)
-        });
-        if let Some(slot) = current {
-            sender
-                .send(EmulatorCommand::RemoveDevice(SlotAddr {
-                    bus: bus_idx,
-                    slot,
-                }))
-                .unwrap();
-        }
-        let Some(shared_dir) = path else {
-            return;
-        };
-        let free = current.or_else(|| slots.iter().rposition(|s| s.device.is_none()));
-        let Some(free) = free else {
-            warn!("No free SCSI ID for the shared folder");
-            return;
-        };
-        let Some(model) = self.get_model().and_then(|mac| {
-            models_for(BusKind::Scsi, mac).find(|i| i.function == FunctionKind::FileSharing)
-        }) else {
-            return;
-        };
-        let config = DeviceConfig::of_model(
-            &buses[bus_idx].id,
-            &slots[free].id,
-            model.model,
-            &FileSharingSettings { shared_dir },
-        )
-        .unwrap();
-        sender.send(EmulatorCommand::AddDevice(config)).unwrap();
     }
 
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.

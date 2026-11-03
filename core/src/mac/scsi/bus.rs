@@ -21,7 +21,7 @@ use crate::mac::scsi::ethernet::ScsiTargetEthernet;
 use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
-use crate::mac::scsi::toolbox::BlueSCSI;
+use crate::mac::scsi::toolbox::ScsiTargetBlueScsi;
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
@@ -65,9 +65,9 @@ pub struct ScsiBus {
     #[serde(skip)]
     ticking: Option<bool>,
 
+    /// Whether the targets have the map of the bus the BlueSCSI Toolbox reports
     #[serde(skip)]
-    toolbox: BlueSCSI,
-    scsi_debug: bool,
+    device_map_sent: bool,
 
     #[serde(skip)]
     scsi_trace_cdb: bool,
@@ -90,8 +90,7 @@ impl ScsiBus {
             status: 0,
             targets: Default::default(),
             ticking: None,
-            toolbox: BlueSCSI::default(),
-            scsi_debug: false,
+            device_map_sent: false,
             scsi_trace_cdb,
         }
     }
@@ -134,6 +133,7 @@ impl ScsiBus {
                 *slot = match target.target_type() {
                     ScsiTargetType::Disk => 0x00,  // fixed disk
                     ScsiTargetType::Cdrom => 0x02, // optical / CD-ROM
+                    ScsiTargetType::BlueScsi => 0x00,
                     #[cfg(feature = "ethernet")]
                     ScsiTargetType::Ethernet => 0x06, // DaynaPORT
                     #[cfg(feature = "printer")]
@@ -144,8 +144,10 @@ impl ScsiBus {
         map
     }
 
-    pub fn set_shared_dir(&mut self, path: Option<PathBuf>) {
-        self.toolbox = BlueSCSI::new(path);
+    /// Called when a target is attached or detached
+    fn targets_changed(&mut self) {
+        self.ticking = None;
+        self.device_map_sent = false;
     }
 
     /// Loads a disk image (filename) and attaches a hard drive at the given SCSI ID
@@ -157,7 +159,7 @@ impl ScsiBus {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
         self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
-        self.ticking = None;
+        self.targets_changed();
         Ok(())
     }
 
@@ -171,7 +173,7 @@ impl ScsiBus {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
         self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
-        self.ticking = None;
+        self.targets_changed();
         Ok(())
     }
 
@@ -182,7 +184,7 @@ impl ScsiBus {
         audio_provider: Option<&mut (dyn AudioProvider + '_)>,
     ) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
-        self.ticking = None;
+        self.targets_changed();
     }
 
     /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
@@ -204,7 +206,7 @@ impl ScsiBus {
             log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
         }
         self.targets[scsi_id] = Some(Box::new(cdrom));
-        self.ticking = None;
+        self.targets_changed();
         Ok(())
     }
 
@@ -227,20 +229,34 @@ impl ScsiBus {
     #[cfg(feature = "ethernet")]
     pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
-        self.ticking = None;
+        self.targets_changed();
     }
 
     /// Attaches a LaserWriter IISC printer at the given SCSI ID
     #[cfg(feature = "printer")]
     pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
-        self.ticking = None;
+        self.targets_changed();
+    }
+
+    /// Attaches a BlueSCSI sharing a folder, or none yet, at the given SCSI ID
+    pub fn attach_bluescsi_at(
+        &mut self,
+        scsi_id: usize,
+        shared_dir: Option<PathBuf>,
+    ) -> Result<()> {
+        if scsi_id >= Self::MAX_TARGETS {
+            bail!("SCSI ID out of range: {}", scsi_id);
+        }
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetBlueScsi::new(shared_dir)));
+        self.targets_changed();
+        Ok(())
     }
 
     /// Detaches a target from the given SCSI ID
     pub fn detach_target(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = None;
-        self.ticking = None;
+        self.targets_changed();
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
@@ -284,36 +300,18 @@ impl ScsiBus {
             );
         }
 
-        // File-sharing/metadata toolbox commands (0xD0-0xD6, 0xD9) are bus-global
-        // and handled by the shared BlueSCSI helper. The per-device CD switching
-        // commands (LIST_CDS 0xD7 / SET_NEXT_CD 0xD8 / COUNT_CDS 0xDA) fall through
-        // to the addressed target, which owns the folder of images and its media.
-        let result = match cmd_op {
-            0xD0..=0xD6 | 0xD9 => {
-                let toolbox_devices = self.toolbox_device_map();
-                let r = self.toolbox.handle_command(
-                    cmd,
-                    outdata,
-                    &mut self.scsi_debug,
-                    &toolbox_devices,
-                );
-                // Toolbox commands are bus-global here, but the firmware
-                // reports through scsiDev.target->sense, which is where a
-                // client's REQUEST SENSE looks.
-                if let Some((key, asc)) = self.toolbox.take_pending_sense()
-                    && let Some(target) = self.targets[self.sel_id].as_mut()
-                {
-                    target.common().set_cc(key, asc);
-                }
-                Ok(r)
+        if !self.device_map_sent {
+            let map = self.toolbox_device_map();
+            for target in self.targets.iter_mut().flatten() {
+                target.set_device_map(&map);
             }
-            _ => {
-                let Some(target) = self.targets[self.sel_id].as_mut() else {
-                    bail!("SCSI command to disconnected target ID {}", self.sel_id);
-                };
-                target.cmd(cmd, outdata)
-            }
+            self.device_map_sent = true;
+        }
+
+        let Some(target) = self.targets[self.sel_id].as_mut() else {
+            bail!("SCSI command to disconnected target ID {}", self.sel_id);
         };
+        let result = target.cmd(&self.cmdbuf, outdata);
 
         if self.scsi_trace_cdb {
             match &result {

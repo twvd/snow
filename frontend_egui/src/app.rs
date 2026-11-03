@@ -972,46 +972,15 @@ impl SnowGui {
             });
             ui.menu_button("Tools", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                ui.menu_button("File sharing", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
-                    ui.label("Shared folder:");
-                    let mut shared_dir_str = self
-                        .emu
-                        .shared_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    ui.add_enabled(false, egui::TextEdit::singleline(&mut shared_dir_str));
-                    if ui
-                        .add_enabled(
-                            self.emu.is_initialized(),
-                            egui::Button::new("Select folder..."),
-                        )
-                        .clicked()
-                    {
-                        self.shared_dir_dialog
-                            .pick_directory(self.settings.native_file_dialogs);
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(
-                            !shared_dir_str.is_empty(),
-                            egui::Button::new("Disable sharing"),
-                        )
-                        .clicked()
-                    {
-                        self.emu.set_shared_dir(None);
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(
-                            self.emu.is_initialized(),
-                            egui::Button::new("Insert toolbox floppy"),
-                        )
-                        .clicked()
-                    {
-                        self.emu.load_toolbox_floppy();
-                    }
-                });
+                if ui
+                    .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Insert BlueSCSI Toolbox floppy"),
+                    )
+                    .clicked()
+                {
+                    self.emu.load_toolbox_floppy();
+                }
                 ui.separator();
                 if ui
                     .add_enabled(
@@ -1927,21 +1896,38 @@ impl SnowGui {
                         },
                     );
                 }
-                FunctionStatus::FileSharing(state) => {
+                FunctionStatus::FileTransfer(state) => {
+                    let folder = state.settings.media.as_ref();
+                    let folder_name = match folder {
+                        Some(f) => f.file_name().unwrap_or_default().to_string_lossy(),
+                        None => "(no folder)".into(),
+                    };
                     ui.menu_button(
                         format!(
-                            "{} {}: shared folder {}",
+                            "{} {}: {} {}",
                             egui_material_icons::icons::ICON_FOLDER,
                             label,
-                            state
-                                .shared_dir
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
+                            device.model.name(),
+                            folder_name,
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
+                            if let Some(folder) = folder {
+                                ui.weak(format!("Shared folder:\n{}", folder.display()));
+                            }
                             ui.weak("The guest reaches it with the BlueSCSI Toolbox");
+                            ui.separator();
+                            if ui.button("Choose folder...").clicked() {
+                                self.shared_dir_slot = Some(addr);
+                                self.shared_dir_dialog
+                                    .pick_directory(self.settings.native_file_dialogs);
+                            }
+                            if ui
+                                .add_enabled(folder.is_some(), egui::Button::new("Stop sharing"))
+                                .clicked()
+                            {
+                                self.emu.eject_media(addr);
+                            }
                             ui.separator();
                             if ui.button("Detach").clicked() {
                                 self.emu.remove_device(addr);
@@ -2048,7 +2034,7 @@ impl SnowGui {
                                         .pick_directory(self.settings.native_file_dialogs);
                                 }
                             }
-                            FunctionKind::FileSharing => {
+                            FunctionKind::FileTransfer => {
                                 if ui
                                     .add_enabled(
                                         enabled,
@@ -4085,9 +4071,12 @@ impl eframe::App for SnowGui {
         // Shared directory picker dialog
         self.shared_dir_dialog.update(ctx, frame);
         if let Some(path) = self.shared_dir_dialog.take_picked() {
-            match self.shared_dir_slot.take() {
-                Some(addr) => self.emu.attach_file_sharing(addr, path),
-                None => self.emu.set_shared_dir(Some(path)),
+            if let Some(addr) = self.shared_dir_slot.take() {
+                if self.emu.status(addr).is_some() {
+                    self.emu.load_media(addr, &path, false);
+                } else {
+                    self.emu.attach_file_transfer(addr, path);
+                }
             }
 
             self.settings.fd_shared_dir = self.shared_dir_dialog.storage_mut().clone();
