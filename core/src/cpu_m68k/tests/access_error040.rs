@@ -4,10 +4,10 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::regs::Register;
-use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68040, FPU_M68040, M68040_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68040<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 const ACCESS_ERROR_HANDLER: Address = 0x2000;
@@ -47,7 +47,7 @@ fn read_long(cpu: &TestCpu, addr: Address) -> Long {
 /// A CPU running `code` in supervisor mode, with the MMU on: code, stack and
 /// vectors (the low 16MB) transparently translated, MAPPED paged.
 fn testcpu(code: &[Word]) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     cpu.bus.fault_ranges.push(BUS_ERROR..=BUS_ERROR + 0xF);
 
     for (i, &w) in code.iter().enumerate() {

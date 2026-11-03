@@ -3,11 +3,13 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68020, CpuM68030, FPU_M68881, FPU_M68882, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK,
+};
 
 macro_rules! write_cacr {
-    ($cpu:ty, $mask:expr) => {{
-        let mut cpu = <$cpu>::new(Testbus::new($mask));
+    ($cpu:ty, $fpu:expr, $mask:expr) => {{
+        let mut cpu = <$cpu>::new(Testbus::new($mask), $fpu);
         // MOVEC D0,CACR
         for (i, b) in [0x4E, 0x7B, 0x00, 0x02].into_iter().enumerate() {
             cpu.bus.mem.insert(0x1000 + i as Address, b);
@@ -24,7 +26,8 @@ macro_rules! write_cacr {
 #[test]
 fn clear_bits_read_as_zero_68020() {
     let cacr = write_cacr!(
-        CpuM68020Fpu<Testbus<Address, u8, Bus68020>>,
+        CpuM68020<Testbus<Address, u8, Bus68020>>,
+        FPU_M68881,
         M68020_ADDRESS_MASK
     );
     assert_eq!(cacr, 0x0003);
@@ -33,7 +36,8 @@ fn clear_bits_read_as_zero_68020() {
 #[test]
 fn clear_bits_read_as_zero_68030() {
     let cacr = write_cacr!(
-        CpuM68030Fpu<Testbus<Address, u8, Bus68020>>,
+        CpuM68030<Testbus<Address, u8, Bus68020>>,
+        FPU_M68882,
         M68030_ADDRESS_MASK
     );
     assert_eq!(cacr, 0x3313);

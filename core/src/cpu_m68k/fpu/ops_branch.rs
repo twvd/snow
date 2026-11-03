@@ -1,4 +1,3 @@
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::{Result, bail};
 
@@ -10,14 +9,8 @@ use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::timing040;
 use crate::types::{Byte, Word};
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,

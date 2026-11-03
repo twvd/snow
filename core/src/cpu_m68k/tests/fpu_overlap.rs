@@ -3,11 +3,13 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68020, CpuM68030, FPU_M68881, FPU_M68882, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK,
+};
 use crate::tickable::Ticks;
 use crate::types::Word;
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const INITIAL_PC: Address = 0x1000;
 const HANDLER_ADDR: Address = 0x2000;
@@ -26,7 +28,7 @@ fn write_word(cpu: &mut TestCpu, addr: Address, value: Word) {
 }
 
 fn testcpu() -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     for (i, &word) in CODE.iter().enumerate() {
         write_word(&mut cpu, INITIAL_PC + i as Address * 2, word);
     }
@@ -123,9 +125,9 @@ fn test_interrupt_during_wait() {
 
 #[test]
 fn test_68882_head() {
-    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+    type TestCpu030 = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
-    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     #[rustfmt::skip]
     let code: &[Word] = &[
         0xF200, 0x0422, // FADD.X FP1,FP0
@@ -155,9 +157,9 @@ fn test_68882_head() {
 /// Runs FMUL.X FP1,FP0 and then `code` on a 68030 + 68882, and returns the time
 /// at which the second instruction ends
 fn fmove_after_fmul(code: &[Word]) -> Ticks {
-    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+    type TestCpu030 = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
-    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     let words = [&[0xF200, 0x0423], code, &[0x4E71, 0x4E71]].concat();
     for (i, &word) in words.iter().enumerate() {
         let addr = INITIAL_PC + i as Address * 2;

@@ -3,7 +3,7 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020, CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, FPU_NONE, M68020_ADDRESS_MASK};
 
 const INITIAL_SSP: Address = 0x1000;
 const INITIAL_PC: Address = 0x100;
@@ -31,11 +31,11 @@ fn testbus(code: &[u16]) -> Testbus<Address, u8, Bus68020> {
 }
 
 macro_rules! run {
-    ($cpu:ty, $code:expr) => {
-        run!($cpu, $code, 1)
+    ($cpu:ty, $fpu:expr, $code:expr) => {
+        run!($cpu, $fpu, $code, 1)
     };
-    ($cpu:ty, $code:expr, $steps:expr) => {{
-        let mut cpu = <$cpu>::new(testbus($code));
+    ($cpu:ty, $fpu:expr, $code:expr, $steps:expr) => {{
+        let mut cpu = <$cpu>::new(testbus($code), $fpu);
         cpu.regs.isp = INITIAL_SSP;
         cpu.regs.sr.set_supervisor(true);
         cpu.regs.sr.set_int_prio_mask(7);
@@ -64,7 +64,7 @@ fn fpu_instructions_without_fpu() {
     ];
 
     for (name, code) in tests {
-        let cpu = run!(CpuM68020<Testbus<Address, u8, Bus68020>>, code);
+        let cpu = run!(CpuM68020<Testbus<Address, u8, Bus68020>>, FPU_NONE, code);
         assert_eq!(cpu.regs.pc, HANDLER_ADDR, "{}", name);
 
         // Format 0 stack frame with the address of the instruction
@@ -80,7 +80,8 @@ fn fpu_instructions_without_fpu() {
 #[test]
 fn fnop_with_fpu() {
     let cpu = run!(
-        CpuM68020Fpu<Testbus<Address, u8, Bus68020>>,
+        CpuM68020<Testbus<Address, u8, Bus68020>>,
+        FPU_M68881,
         &[0xF280, 0x0000, 0x4E71]
     );
     assert_eq!(cpu.regs.pc, INITIAL_PC + 4);
@@ -97,13 +98,23 @@ const FPU_PROBE: &[u16] = &[
 
 #[test]
 fn fpu_probe_without_fpu() {
-    let cpu = run!(CpuM68020<Testbus<Address, u8, Bus68020>>, FPU_PROBE, 3);
+    let cpu = run!(
+        CpuM68020<Testbus<Address, u8, Bus68020>>,
+        FPU_NONE,
+        FPU_PROBE,
+        3
+    );
     assert_eq!(cpu.regs.pc, BUSERR_HANDLER_ADDR);
 }
 
 #[test]
 fn fpu_probe_with_fpu() {
-    let cpu = run!(CpuM68020Fpu<Testbus<Address, u8, Bus68020>>, FPU_PROBE, 3);
+    let cpu = run!(
+        CpuM68020<Testbus<Address, u8, Bus68020>>,
+        FPU_M68881,
+        FPU_PROBE,
+        3
+    );
     assert_eq!(cpu.regs.pc, INITIAL_PC + 14);
     assert_eq!(cpu.regs.d[1] & 0xFFFF, 0x0802);
 }

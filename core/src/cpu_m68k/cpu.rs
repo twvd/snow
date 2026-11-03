@@ -1,7 +1,7 @@
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus::AccessKind;
 use crate::cpu_m68k::bus_transaction::bus_transaction;
 use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches, FETCH_HIT_TICKS};
+use crate::cpu_m68k::{FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -407,14 +407,8 @@ pub struct SystrapHistoryEntry {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> where
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
@@ -598,16 +592,16 @@ pub struct CpuM68k<
 
     /// NMI edge trigger level
     in_nmi: bool,
+
+    /// FPU fitted to the CPU, or FPU_NONE
+    pub(in crate::cpu_m68k) fpu_type: FpuM68kType,
+
+    /// The CPU has an MMU: always for the 68030 and 68040, a 68851 for the 68020
+    pub(in crate::cpu_m68k) pmmu: bool,
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -615,11 +609,20 @@ where
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
 
-    pub fn new(bus: TBus) -> Self {
+    /// A CPU with the FPU `fpu_type`, or FPU_NONE. The 68030 and the 68040 have
+    /// their MMU, a 68020 gets a 68851 from add_68851().
+    pub fn new(bus: TBus, fpu_type: FpuM68kType) -> Self {
         assert!([M68000, M68020, M68030, M68040].contains(&CPU_TYPE));
+        assert!(match CPU_TYPE {
+            M68000 => fpu_type == FPU_NONE,
+            M68040 => [FPU_NONE, FPU_M68040].contains(&fpu_type),
+            _ => [FPU_NONE, FPU_M68881, FPU_M68882].contains(&fpu_type),
+        });
 
         Self {
             bus,
+            fpu_type,
+            pmmu: CPU_TYPE >= M68030,
             regs: RegisterFile::new(),
             cycles: 0,
             write_credit: 0,
@@ -678,7 +681,13 @@ where
 
     /// Returns true if this CPU has a (paged) memory management unit.
     pub const fn has_pmmu(&self) -> bool {
-        PMMU
+        self.pmmu
+    }
+
+    /// Fits a 68851 PMMU to a 68020
+    pub fn add_68851(&mut self) {
+        assert_eq!(CPU_TYPE, M68020);
+        self.pmmu = true;
     }
 
     /// Resets the CPU, loads reset vector and initial SP
@@ -1007,7 +1016,7 @@ where
             self.write_credit = 0;
         }
         let mut irq_taken = false;
-        let execute_result = if FPU_TYPE != FPU_NONE
+        let execute_result = if self.fpu_type != FPU_NONE
             && instr.data & 0xFE00 == 0xF200
             && !self.fpu_wait(instr.data)?
         {
@@ -2100,7 +2109,7 @@ where
             | InstructionMnemonic::FTRAPcc
             | InstructionMnemonic::FTRAPcc_w
             | InstructionMnemonic::FTRAPcc_l
-                if FPU_TYPE == FPU_NONE =>
+                if self.fpu_type == FPU_NONE =>
             {
                 self.op_linef(instr)
             }
@@ -4640,7 +4649,7 @@ where
         if fc != FC_CPU_SPACE || addr & !FPU_CIR_MASK != FPU_CIR_BASE {
             return Ok(false);
         }
-        if FPU_TYPE == FPU_NONE {
+        if self.fpu_type == FPU_NONE {
             bail!(CpuError::BusError(Group0Details {
                 function_code: fc,
                 ir: 0,
@@ -5911,14 +5920,8 @@ where
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches> Tickable
+    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -5934,23 +5937,28 @@ where
 mod tests {
     use crate::bus::access::{Bus68000, Bus68020};
     use crate::bus::testbus::Testbus;
-    use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{
+        CpuM68000, CpuM68020, FPU_M68881, FPU_NONE, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+    };
 
     use super::*;
 
     #[test]
     fn sr_68000() {
-        let mut cpu =
-            CpuM68000::<Testbus<Address, Byte, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+        let mut cpu = CpuM68000::<Testbus<Address, Byte, Bus68000>>::new(
+            Testbus::new(M68000_ADDRESS_MASK),
+            FPU_NONE,
+        );
         cpu.set_sr(0xFFFF);
         assert!(!cpu.regs.sr.m());
     }
 
     #[test]
     fn sr_68020() {
-        let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
-            M68020_ADDRESS_MASK,
-        ));
+        let mut cpu = CpuM68020::<Testbus<Address, Byte, Bus68020>>::new(
+            Testbus::new(M68020_ADDRESS_MASK),
+            FPU_M68881,
+        );
         cpu.set_sr(0xFFFF);
         assert!(cpu.regs.sr.m());
     }

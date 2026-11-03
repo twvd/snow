@@ -8,8 +8,8 @@ use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
 use crate::cpu_m68k::regs::Register;
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020, CpuM68030, CpuM68040Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
-    M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
+    CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_NONE, M68000_ADDRESS_MASK,
+    M68020_ADDRESS_MASK, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
 };
 use crate::types::Long;
 
@@ -20,7 +20,7 @@ const MAPPED: Address = 0x5000;
 const MAPPED_TO: Address = 0x9000;
 
 type Cpu030 = CpuM68030<Testbus<Address, u8, Bus68020>>;
-type Cpu040 = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
+type Cpu040 = CpuM68040<Testbus<Address, u8, Bus68020>>;
 
 macro_rules! write_long {
     ($cpu:expr, $addr:expr, $value:expr) => {
@@ -48,7 +48,7 @@ const TABLE_B: Address = 0x11000;
 /// A 68030 with 4 KB pages and two levels of short tables: the first 128 KB
 /// map to themselves but for MAPPED, and page $20000 is invalid
 fn cpu030() -> Cpu030 {
-    let mut cpu = Cpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = Cpu030::new(Testbus::new(M68030_ADDRESS_MASK), FPU_NONE);
     write_long!(cpu, TABLE_A, TABLE_B | 0b10);
     for page in 0..0x20 {
         write_long!(cpu, TABLE_B + page * 4, (page << 12) | 0b01);
@@ -72,7 +72,7 @@ const COPYBACK: Long = 1 << 5;
 /// A 68040 with 4 KB pages: the first 64 pages map to themselves but for
 /// MAPPED, in copyback mode, and the next pointer entry is invalid
 fn cpu040() -> Cpu040 {
-    let mut cpu = Cpu040::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = Cpu040::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     write_long!(cpu, ROOT_040, PTR_040 | TABLE_VALID);
     write_long!(cpu, PTR_040, PAGE_040 | TABLE_VALID);
     for page in 0..0x40 {
@@ -275,8 +275,10 @@ macro_rules! assert_no_trace {
 
 #[test]
 fn no_caches_goes_to_the_bus() {
-    let mut cpu =
-        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    let mut cpu = CpuM68000::<Testbus<Address, u8, Bus68000>>::new(
+        Testbus::new(M68000_ADDRESS_MASK),
+        FPU_NONE,
+    );
     cpu.bus.mem.insert(0x1234, 0x56);
     assert_eq!(cpu.inspect_read(0x1234, true), Some(0x56));
     assert_eq!(cpu.inspect_read(0x1234, false), Some(0x56));
@@ -431,8 +433,10 @@ fn words_are_big_endian() {
 
 #[test]
 fn caches_020() {
-    let mut cpu =
-        CpuM68020::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<Testbus<Address, u8, Bus68020>>::new(
+        Testbus::new(M68020_ADDRESS_MASK),
+        FPU_NONE,
+    );
     cpu.regs.sr.set_supervisor(true);
     cpu.regs.write(Register::CACR, 1_u32);
     write_long!(cpu, 0x2000, 0x1122_3344);
@@ -747,8 +751,10 @@ fn bulk_030_finds_entries_by_view() {
 
 #[test]
 fn bulk_no_caches_goes_to_the_bus() {
-    let mut cpu =
-        CpuM68000::<Testbus<Address, u8, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
+    let mut cpu = CpuM68000::<Testbus<Address, u8, Bus68000>>::new(
+        Testbus::new(M68000_ADDRESS_MASK),
+        FPU_NONE,
+    );
     cpu.bus.mem.insert(0x1234, 0x56);
     let mut out = [0; 2];
     for view in [

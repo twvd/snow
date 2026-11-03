@@ -5,16 +5,16 @@ use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 use arpfloat::Float;
 
-type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 
 fn testcpu(code: &[Word]) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     for (i, w) in code.iter().enumerate() {
         let [h, l] = w.to_be_bytes();
         cpu.bus.mem.insert(CODE + 2 * i as Address, h);

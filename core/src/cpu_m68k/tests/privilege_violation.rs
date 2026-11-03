@@ -6,7 +6,7 @@ use crate::bus::Address;
 use crate::bus::access::Bus68000;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::cpu::PrefetchWord;
-use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68000, FPU_NONE, M68000_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
@@ -14,7 +14,7 @@ type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
 /// Initialize a test system with code at a given PC
 fn testcpu(initial_ssp: Address, initial_pc: Address, code: &[u16]) -> TestCpu {
     let bus = Testbus::new(M68000_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_NONE);
 
     // Write code to memory
     for (i, &word) in code.iter().enumerate() {

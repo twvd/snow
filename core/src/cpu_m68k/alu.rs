@@ -1,20 +1,13 @@
 use super::cpu::CpuM68k;
 use super::regs::RegisterSR;
 use super::{CpuM68kType, CpuSized};
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::types::{Byte, Long, MyIntTraits, Word};
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,

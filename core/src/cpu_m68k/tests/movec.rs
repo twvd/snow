@@ -3,7 +3,9 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68030Fpu, CpuM68040Fpu, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68030, CpuM68040, FPU_M68040, FPU_M68882, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
+};
 use crate::types::Word;
 
 const CODE: Address = 0x1000;
@@ -12,8 +14,8 @@ const ILLEGAL_HANDLER: Address = 0x2000;
 /// Runs MOVEC D0,<reg> then MOVEC <reg>,D1 and tells whether the register
 /// exists: the value comes back, or the first MOVEC is an illegal instruction.
 macro_rules! movec_exists {
-    ($cpu:ty, $mask:expr, $reg:expr) => {{
-        let mut cpu = <$cpu>::new(Testbus::new($mask));
+    ($cpu:ty, $fpu:expr, $mask:expr, $reg:expr) => {{
+        let mut cpu = <$cpu>::new(Testbus::new($mask), $fpu);
         let code: [Word; 4] = [0x4E7B, $reg, 0x4E7A, 0x1000 | $reg];
         for (i, w) in code.iter().enumerate() {
             let addr = CODE + 2 * i as Address;
@@ -44,7 +46,8 @@ macro_rules! movec_exists {
 
 fn exists_030(reg: Word) -> bool {
     movec_exists!(
-        CpuM68030Fpu<Testbus<Address, u8, Bus68020>>,
+        CpuM68030<Testbus<Address, u8, Bus68020>>,
+        FPU_M68882,
         M68030_ADDRESS_MASK,
         reg
     )
@@ -52,7 +55,8 @@ fn exists_030(reg: Word) -> bool {
 
 fn exists_040(reg: Word) -> bool {
     movec_exists!(
-        CpuM68040Fpu<Testbus<Address, u8, Bus68020>>,
+        CpuM68040<Testbus<Address, u8, Bus68020>>,
+        FPU_M68040,
         M68040_ADDRESS_MASK,
         reg
     )

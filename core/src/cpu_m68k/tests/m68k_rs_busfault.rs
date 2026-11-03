@@ -34,11 +34,11 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestBus = Testbus<Address, u8, Bus68020>;
-type TestCpu = CpuM68030Fpu<TestBus>;
+type TestCpu = CpuM68030<TestBus>;
 
 const SSP: Address = 0x1F00;
 const USP: Address = 0x1800;
@@ -94,7 +94,7 @@ fn read_long(bus: &TestBus, addr: Address) -> Long {
 /// points at HANDLER, whose code the individual test writes.
 fn user_mode_030_with_table(fault_desc: Long) -> TestCpu {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
 
     write_long(&mut cpu.bus, ROOT_TABLE, B_TABLE | 2); // root[0] -> B table (short)
     write_long(&mut cpu.bus, B_TABLE, 0x0000_0001); // B[0]: identity page at 0
@@ -314,7 +314,7 @@ fn ptest_reports_write_protect_on_read_walks() {
 #[test]
 fn ptest_reports_supervisor_only_on_user_probe() {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
 
     const ROOT: Address = 0x8000;
     const B: Address = 0x8800;
@@ -428,7 +428,7 @@ fn ptest_reports_bus_error_during_table_search() {
     const PAGE: Address = 0x0001_0000; // root idx 0, B idx 2
 
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
     // Fault only the B[2] descriptor the test probes.
     cpu.bus.fault_ranges.push(B + 8..=B + 11);
     write_long(&mut cpu.bus, ROOT, B | 2); // root[0] -> B table (short)
@@ -466,7 +466,7 @@ fn ptest_reports_bus_error_during_table_search() {
 #[test]
 fn moves_is_privileged() {
     let bus = Testbus::new(M68030_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68882);
     write_long(&mut cpu.bus, 8 * 4, HANDLER); // privilege violation vector
 
     cpu.regs.sr.set_supervisor(false);

@@ -5,8 +5,8 @@ use crate::bus::Address;
 use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020Fpu, CpuM68030Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
-    M68030_ADDRESS_MASK,
+    CpuM68000, CpuM68020, CpuM68030, FPU_M68881, FPU_M68882, FPU_NONE, M68000_ADDRESS_MASK,
+    M68020_ADDRESS_MASK, M68030_ADDRESS_MASK,
 };
 
 const CODE: Address = 0x1000;
@@ -16,13 +16,13 @@ const EXTWORDS: [u16; 11] = [
 ];
 
 macro_rules! scan {
-    ($name:ident, $cpu:ident, $bus:ident, $mask:ident) => {
+    ($name:ident, $cpu:ident, $fpu:ident, $bus:ident, $mask:ident) => {
         #[test]
         fn $name() {
             let mut failed = vec![];
             for (opcode, ext) in (0..=u16::MAX).flat_map(|o| EXTWORDS.iter().map(move |&e| (o, e)))
             {
-                let mut cpu = $cpu::<Testbus<Address, u8, $bus>>::new(Testbus::new($mask));
+                let mut cpu = $cpu::<Testbus<Address, u8, $bus>>::new(Testbus::new($mask), $fpu);
                 // Every vector at an even address past the code
                 for v in 2..64 {
                     let a = v * 4;
@@ -63,16 +63,36 @@ macro_rules! scan {
     };
 }
 
-scan!(scan_68000, CpuM68000, Bus68000, M68000_ADDRESS_MASK);
-scan!(scan_68020, CpuM68020Fpu, Bus68020, M68020_ADDRESS_MASK);
-scan!(scan_68030, CpuM68030Fpu, Bus68020, M68030_ADDRESS_MASK);
+scan!(
+    scan_68000,
+    CpuM68000,
+    FPU_NONE,
+    Bus68000,
+    M68000_ADDRESS_MASK
+);
+scan!(
+    scan_68020,
+    CpuM68020,
+    FPU_M68881,
+    Bus68020,
+    M68020_ADDRESS_MASK
+);
+scan!(
+    scan_68030,
+    CpuM68030,
+    FPU_M68882,
+    Bus68020,
+    M68030_ADDRESS_MASK
+);
 
 /// An invalid effective address found past an extension word still stacks the
 /// address of the instruction (MC68030UM 8.1.5): BFTST A0
 #[test]
 fn illegal_frame_has_the_instruction_address() {
-    let mut cpu =
-        CpuM68020Fpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = CpuM68020::<Testbus<Address, u8, Bus68020>>::new(
+        Testbus::new(M68020_ADDRESS_MASK),
+        FPU_M68881,
+    );
     cpu.bus.mem.insert(0x12, 0x04);
     cpu.bus.mem.insert(CODE, 0xE8);
     cpu.bus.mem.insert(CODE + 1, 0xC8);

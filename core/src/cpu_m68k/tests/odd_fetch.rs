@@ -4,7 +4,9 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68020, CpuM68030, FPU_M68881, FPU_M68882, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK,
+};
 use crate::types::Word;
 
 const CODE: Address = 0x1000;
@@ -12,8 +14,8 @@ const HANDLER: Address = 0x400;
 const STACK: Address = 0x8000;
 
 macro_rules! run {
-    ($cpu:ty, $mask:expr, $code:expr, $stack:expr) => {{
-        let mut cpu = <$cpu>::new(Testbus::new($mask));
+    ($cpu:ty, $fpu:expr, $mask:expr, $code:expr, $stack:expr) => {{
+        let mut cpu = <$cpu>::new(Testbus::new($mask), $fpu);
         let code: &[Word] = $code;
         for (i, w) in code.iter().enumerate() {
             let [h, l] = w.to_be_bytes();
@@ -50,50 +52,50 @@ macro_rules! run {
 }
 
 macro_rules! tests {
-    ($mod:ident, $cpu:ty, $mask:expr) => {
+    ($mod:ident, $cpu:ty, $fpu:expr, $mask:expr) => {
         mod $mod {
             use super::*;
             type Cpu = $cpu;
 
             #[test]
             fn jmp() {
-                run!(Cpu, $mask, &[0x4ED0], &[]); // JMP (A0)
+                run!(Cpu, $fpu, $mask, &[0x4ED0], &[]); // JMP (A0)
             }
             #[test]
             fn jsr() {
-                run!(Cpu, $mask, &[0x4E90], &[]); // JSR (A0)
+                run!(Cpu, $fpu, $mask, &[0x4E90], &[]); // JSR (A0)
             }
             #[test]
             fn bra() {
-                run!(Cpu, $mask, &[0x6001], &[]); // BRA.B *+3
+                run!(Cpu, $fpu, $mask, &[0x6001], &[]); // BRA.B *+3
             }
             #[test]
             fn bsr() {
-                run!(Cpu, $mask, &[0x6101], &[]); // BSR.B *+3
+                run!(Cpu, $fpu, $mask, &[0x6101], &[]); // BSR.B *+3
             }
             #[test]
             fn dbra() {
-                run!(Cpu, $mask, &[0x51C8, 0x0001], &[]); // DBRA D0,*+3
+                run!(Cpu, $fpu, $mask, &[0x51C8, 0x0001], &[]); // DBRA D0,*+3
             }
             #[test]
             fn rts() {
-                run!(Cpu, $mask, &[0x4E75], &[0, 0x3001]);
+                run!(Cpu, $fpu, $mask, &[0x4E75], &[0, 0x3001]);
             }
             #[test]
             fn rtd() {
-                run!(Cpu, $mask, &[0x4E74, 0], &[0, 0x3001]);
+                run!(Cpu, $fpu, $mask, &[0x4E74, 0], &[0, 0x3001]);
             }
             #[test]
             fn rtr() {
-                run!(Cpu, $mask, &[0x4E77], &[0, 0, 0x3001]);
+                run!(Cpu, $fpu, $mask, &[0x4E77], &[0, 0, 0x3001]);
             }
             #[test]
             fn rte() {
-                run!(Cpu, $mask, &[0x4E73], &[0x2000, 0, 0x3001, 0]);
+                run!(Cpu, $fpu, $mask, &[0x4E73], &[0x2000, 0, 0x3001, 0]);
             }
             #[test]
             fn fbt() {
-                run!(Cpu, $mask, &[0xF28F, 0x0001], &[]); // FBT *+3
+                run!(Cpu, $fpu, $mask, &[0xF28F, 0x0001], &[]); // FBT *+3
             }
         }
     };
@@ -101,11 +103,13 @@ macro_rules! tests {
 
 tests!(
     m68020,
-    CpuM68020Fpu<Testbus<Address, u8, Bus68020>>,
+    CpuM68020<Testbus<Address, u8, Bus68020>>,
+    FPU_M68881,
     M68020_ADDRESS_MASK
 );
 tests!(
     m68030,
-    CpuM68030Fpu<Testbus<Address, u8, Bus68020>>,
+    CpuM68030<Testbus<Address, u8, Bus68020>>,
+    FPU_M68882,
     M68030_ADDRESS_MASK
 );

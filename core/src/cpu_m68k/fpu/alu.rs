@@ -1,5 +1,5 @@
 use crate::cpu_m68k::cache::CpuCaches;
-use crate::cpu_m68k::{FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
+use crate::cpu_m68k::{FPU_M68040, FPU_M68881, FPU_M68882};
 use anyhow::{Result, bail};
 use arpfloat::{Float, RoundingMode};
 
@@ -26,14 +26,8 @@ use super::arith::{self, Range, Unpacked, Value};
 use super::constants;
 use super::{SEMANTICS_EXTENDED, SEMANTICS_FUNCTIONS};
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -332,7 +326,7 @@ where
         // The result gets the rounding precision of FPCR (MC68881UM 3.5.2), or
         // that of the instruction on the 68040
         let (opmode, to) = match opmode::rounded(opmode) {
-            Some((op, double)) if FPU_TYPE == FPU_M68040 => {
+            Some((op, double)) if self.fpu_type == FPU_M68040 => {
                 (op, if double { Range::DOUBLE } else { Range::SINGLE })
             }
             _ => (opmode, self.fpu_rounding_precision()),
@@ -591,7 +585,7 @@ where
         dest: &BitsExtReal,
         cos_register: Option<(usize, BitsExtReal)>,
     ) -> BitsExtReal {
-        let vector = if FPU_TYPE == FPU_M68040 {
+        let vector = if self.fpu_type == FPU_M68040 {
             self.fpu_vector_with(NONMASKABLE_040)
         } else {
             self.fpu_trap_vector()
@@ -606,7 +600,7 @@ where
                 *dest
             }
             // The register isn't affected, the handler writes it (MC68040UM 9.7.4.2, 9.7.5.2)
-            Some(VECTOR_FP_OVFL | VECTOR_FP_UNFL) if FPU_TYPE == FPU_M68040 => *dest,
+            Some(VECTOR_FP_OVFL | VECTOR_FP_UNFL) if self.fpu_type == FPU_M68040 => *dest,
             _ => result,
         }
     }
@@ -655,7 +649,7 @@ where
     /// The acknowledge clears it on the MC68881, and on the MC68882 it stays until the
     /// handler's FRESTORE clears it (MC68881UM 6.1.13, 6.4.2.2). Returns true if taken.
     pub(in crate::cpu_m68k) fn fpu_take_pending(&mut self) -> Result<bool> {
-        if FPU_TYPE == FPU_M68040 {
+        if self.fpu_type == FPU_M68040 {
             // The handler's FSAVE takes it out
             let Some(vector) = self.regs.fpu.pending040 else {
                 return Ok(false);
@@ -685,7 +679,7 @@ where
         let Some(vector) = self.fpu_trap_vector() else {
             return Ok(false);
         };
-        if FPU_TYPE == FPU_M68881 {
+        if self.fpu_type == FPU_M68881 {
             self.regs.fpu.exc_pending = false;
         }
         if let Some(regs) = self.restart_regs.take() {
@@ -722,7 +716,7 @@ where
         extword: FmoveExtWord,
     ) -> Result<()> {
         // To an integer, a signaling NAN is taken at once too (MC68040UM 9.7.2.2)
-        let always = if FPU_TYPE != FPU_M68040 {
+        let always = if self.fpu_type != FPU_M68040 {
             0
         } else if extword.dest_is_integer() {
             NONMASKABLE_040 | EXC_SNAN
@@ -732,7 +726,7 @@ where
         let Some(vector) = self.fpu_vector_with(always) else {
             return Ok(());
         };
-        if FPU_TYPE == FPU_M68040 {
+        if self.fpu_type == FPU_M68040 {
             let source = Unimp040::operand(&self.regs.fpu.fp[extword.src_reg()]);
             let fpiar = self.regs.fpu.fpiar;
             self.regs.fpu.busy040 = Some(Busy040::new(extword.0, source, source, fpiar, true));
@@ -741,7 +735,7 @@ where
             self.step_fpu_post = Some(ea.unwrap_or(0));
             return self.raise_exception(ExceptionGroup::Group2, vector, None);
         }
-        self.regs.fpu.exc_pending = FPU_TYPE == FPU_M68882;
+        self.regs.fpu.exc_pending = self.fpu_type == FPU_M68882;
         self.prefetch_pump()?;
         self.step_fpu_mid = Some(ea.unwrap_or(0));
         self.raise_exception(ExceptionGroup::Group2, vector, None)

@@ -6,7 +6,9 @@ use crate::bus::Address;
 use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::cpu::PrefetchWord;
-use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{
+    CpuM68000, CpuM68020, FPU_M68881, FPU_NONE, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+};
 use crate::types::{Long, Word};
 
 type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
@@ -14,7 +16,7 @@ type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
 /// Initialize a test system with code at a given PC
 fn testcpu(initial_ssp: Address, initial_pc: Address, code: &[u16]) -> TestCpu {
     let bus = Testbus::new(M68000_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_NONE);
 
     // Write code to memory
     for (i, &word) in code.iter().enumerate() {
@@ -566,11 +568,11 @@ fn test_multiple_interrupts_all() {
 /// (MC68030UM 8.1.9, 8.4)
 #[test]
 fn test_master_stack_throwaway_frame() {
-    type Cpu020 = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+    type Cpu020 = CpuM68020<Testbus<Address, u8, Bus68020>>;
     let byte = |cpu: &Cpu020, a: Address| Word::from(*cpu.bus.mem.get(&a).unwrap_or(&0));
     let word = |cpu: &Cpu020, a: Address| (byte(cpu, a) << 8) | byte(cpu, a + 1);
 
-    let mut cpu = Cpu020::new(Testbus::new(M68020_ADDRESS_MASK));
+    let mut cpu = Cpu020::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68881);
     for (a, b) in [
         (0x64 + 2, 0x04),
         (0x400, 0x4e),

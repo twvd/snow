@@ -11,12 +11,12 @@
 use anyhow::Result;
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::instruction::{
     AddressingMode, BfxExtWord, ExtWord, Instruction, InstructionMnemonic, MemoryIndirectAction,
 };
-use crate::cpu_m68k::{CpuM68kType, FpuM68kType};
 use crate::tickable::Ticks;
 use crate::types::Long;
 
@@ -1437,14 +1437,8 @@ const fn move_src_row(row: Ea040) -> usize {
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,

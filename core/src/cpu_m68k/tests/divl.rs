@@ -3,10 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68881, M68020_ADDRESS_MASK};
 use crate::types::Long;
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const SIGNED: u16 = 0x0800;
 const SIZE_64: u16 = 0x0400;
@@ -16,7 +16,7 @@ fn divl(flags: u16, d1: Long, d0: Long, d2: Long) -> TestCpu {
     const PC: Address = 0x1000;
     let ext = flags | if flags & SIZE_64 != 0 { 1 } else { 0 };
     let bus = Testbus::new(M68020_ADDRESS_MASK);
-    let mut cpu = TestCpu::new(bus);
+    let mut cpu = TestCpu::new(bus, FPU_M68881);
 
     for (i, word) in [0x4C42, ext, 0x4E71, 0x4E71].into_iter().enumerate() {
         let addr = PC + (i as Address * 2);

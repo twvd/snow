@@ -9,10 +9,10 @@ use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::fpu::regs::{Busy040, Unimp040};
 use crate::cpu_m68k::fpu::storage::BitsExtReal;
-use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68040, FPU_M68040, M68040_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68040<Testbus<Address, u8, Bus68020>>;
 
 fn ext(v: f64) -> BitsExtReal {
     BitsExtReal::from(&Float::from_f64(v).cast(SEMANTICS_EXTENDED))
@@ -20,7 +20,7 @@ fn ext(v: f64) -> BitsExtReal {
 
 #[test]
 fn rounded_add() {
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     // Exact in double precision, not in single
     let small = ext(2f64.powi(-30));
     let one = ext(1.0);
@@ -97,7 +97,7 @@ fn unimp_fsave_frestore() {
         0xF35F, // FRESTORE (A7)+
         0xF35F, // FRESTORE (A7)+
     ];
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     for (i, w) in code.iter().enumerate() {
         let addr = CODE + 2 * i as Address;
         cpu.bus.mem.insert(addr, (w >> 8) as u8);
@@ -163,7 +163,7 @@ mod unimplemented {
     /// Runs the first instruction of `code`, with 1.0 in FP1 and infinity
     /// in FP2
     fn run(code: &[Word], setup: impl Fn(&mut TestCpu)) -> TestCpu {
-        let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+        let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
         for (i, &w) in code.iter().enumerate() {
             write_word(&mut cpu, CODE + 2 * i as Address, w);
         }
@@ -285,7 +285,7 @@ const FSAVE: [Word; 1] = [0xF311];
 const FRESTORE: [Word; 1] = [0xF351];
 
 fn cpu_with(code: &[Word]) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     for (i, w) in code.iter().enumerate() {
         put(&mut cpu, CODE + 2 * i as Address, &w.to_be_bytes());
     }

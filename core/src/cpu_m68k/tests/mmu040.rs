@@ -4,10 +4,10 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::regs::Register;
-use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68040, FPU_M68040, M68040_ADDRESS_MASK};
 use crate::types::{Field32, Long};
 
-type TestCpu = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68040<Testbus<Address, u8, Bus68020>>;
 
 // Physical addresses of the three table levels
 const ROOT_TABLE: Address = 0x0001_0000;
@@ -46,7 +46,7 @@ fn read_long(cpu: &TestCpu, addr: Address) -> Long {
 const LOGICAL: Address = 0x1084_2000;
 
 fn testcpu(leaf_flags: Long) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
 
     // Create a page table that points LOGICAL to 0x200000
     write_long(&mut cpu, ROOT_TABLE + 8 * 4, PTR_TABLE | TABLE_VALID);
@@ -276,7 +276,7 @@ fn pmmu_opcodes_are_line_f() {
     );
 
     // Taken as the F-line exception
-    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     write_long(&mut cpu, 0x1000, 0xF010_4000);
     write_long(&mut cpu, 0x2C, 0x2000);
     cpu.regs.isp = 0x8000;

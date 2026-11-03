@@ -3,7 +3,6 @@
 
 use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::M68040;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
@@ -194,14 +193,8 @@ pub(in crate::cpu_m68k) mod atc_serde {
     }
 }
 
-impl<
-    TBus,
-    const ADDRESS_MASK: Address,
-    const CPU_TYPE: CpuM68kType,
-    const FPU_TYPE: FpuM68kType,
-    const PMMU: bool,
-    TCaches,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, TCaches>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
@@ -317,7 +310,7 @@ where
         vaddr: Address,
         writing: bool,
     ) -> Result<Translation> {
-        if !PMMU {
+        if !self.pmmu {
             return Ok(Translation {
                 paddr: vaddr,
                 cache: CacheMode::WriteThrough,
@@ -340,7 +333,7 @@ where
     where
         TBus: InspectableBus<Address, Byte>,
     {
-        if !PMMU {
+        if !self.pmmu {
             return Some(vaddr);
         }
 

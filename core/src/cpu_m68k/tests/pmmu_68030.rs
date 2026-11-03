@@ -4,11 +4,11 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg, TrTranslationReg};
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::tickable::Ticks;
 use crate::types::Word;
 
-type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
 const INITIAL_PC: Address = 0x1000;
 const TABLE_A: Address = 0x10000;
@@ -34,7 +34,7 @@ fn page_desc(vaddr: Address) -> Address {
 /// A 68030 with 4 KB pages and two levels of short tables, where the first 16 MB
 /// map to themselves, running `code`
 fn testcpu(code: &[Word]) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     for (i, &word) in code.iter().chain(&[0x4E71, 0x4E71]).enumerate() {
         let addr = INITIAL_PC + i as Address * 2;
         cpu.bus.mem.insert(addr, (word >> 8) as u8);

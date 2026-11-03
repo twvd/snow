@@ -3,15 +3,15 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, CpuM68040Fpu};
+use crate::cpu_m68k::{CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882};
 use crate::cpu_m68k::{M68020_ADDRESS_MASK, M68030_ADDRESS_MASK, M68040_ADDRESS_MASK};
 use crate::types::Word;
 
 const SP: Address = 0x8000;
 
 macro_rules! link_a7 {
-    ($cpu:ident, $mask:expr, $code:expr) => {{
-        let mut cpu = $cpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new($mask));
+    ($cpu:ident, $fpu:expr, $mask:expr, $code:expr) => {{
+        let mut cpu = $cpu::<Testbus<Address, u8, Bus68020>>::new(Testbus::new($mask), $fpu);
         let code: &[Word] = $code;
         for (i, w) in code.iter().enumerate() {
             let [h, l] = w.to_be_bytes();
@@ -35,18 +35,36 @@ const LINK_L: &[Word] = &[0x480F, 0xFFFF, 0xFFF0];
 
 #[test]
 fn m68040_pushes_the_decremented_sp() {
-    assert_eq!(link_a7!(CpuM68040Fpu, M68040_ADDRESS_MASK, LINK_W), SP - 4);
-    assert_eq!(link_a7!(CpuM68040Fpu, M68040_ADDRESS_MASK, LINK_L), SP - 4);
+    assert_eq!(
+        link_a7!(CpuM68040, FPU_M68040, M68040_ADDRESS_MASK, LINK_W),
+        SP - 4
+    );
+    assert_eq!(
+        link_a7!(CpuM68040, FPU_M68040, M68040_ADDRESS_MASK, LINK_L),
+        SP - 4
+    );
 }
 
 #[test]
 fn m68030_pushes_the_old_sp() {
-    assert_eq!(link_a7!(CpuM68030Fpu, M68030_ADDRESS_MASK, LINK_W), SP);
-    assert_eq!(link_a7!(CpuM68030Fpu, M68030_ADDRESS_MASK, LINK_L), SP);
+    assert_eq!(
+        link_a7!(CpuM68030, FPU_M68882, M68030_ADDRESS_MASK, LINK_W),
+        SP
+    );
+    assert_eq!(
+        link_a7!(CpuM68030, FPU_M68882, M68030_ADDRESS_MASK, LINK_L),
+        SP
+    );
 }
 
 #[test]
 fn m68020_pushes_the_old_sp() {
-    assert_eq!(link_a7!(CpuM68020Fpu, M68020_ADDRESS_MASK, LINK_W), SP);
-    assert_eq!(link_a7!(CpuM68020Fpu, M68020_ADDRESS_MASK, LINK_L), SP);
+    assert_eq!(
+        link_a7!(CpuM68020, FPU_M68881, M68020_ADDRESS_MASK, LINK_W),
+        SP
+    );
+    assert_eq!(
+        link_a7!(CpuM68020, FPU_M68881, M68020_ADDRESS_MASK, LINK_L),
+        SP
+    );
 }

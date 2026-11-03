@@ -3,10 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+type TestCpu = CpuM68030<Testbus<Address, u8, Bus68020>>;
 
 const CODE: Address = 0x1000;
 const HANDLER: Address = 0x2000;
@@ -28,7 +28,7 @@ fn read_long(cpu: &TestCpu, addr: Address) -> Long {
 
 /// Runs `steps` instructions of `code` with every vector pointing at HANDLER
 fn run(code: &[Word], steps: usize, setup: impl Fn(&mut TestCpu)) -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     for (i, &w) in code.iter().enumerate() {
         write_word(&mut cpu, CODE + 2 * i as Address, w);
     }
@@ -159,7 +159,7 @@ fn rte_unknown_format_is_format_error() {
 fn rte_throwaway_frame() {
     // RTE on the interrupt stack with a throwaway frame whose SR selects the
     // master stack, holding a normal frame
-    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK));
+    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
     write_word(&mut cpu, CODE, 0x4E73);
     for (i, w) in [0x3700, 0x0000, 0x0000, 0x1000].iter().enumerate() {
         write_word(&mut cpu, STACK - 8 + 2 * i as Address, *w);
