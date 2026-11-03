@@ -1206,3 +1206,16 @@ mod tests {
         assert_eq!(find_volume(&MemImage(img)), (0, 200));
     }
 }
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Hd20,
+    name: "HD20",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::HardDisk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+};

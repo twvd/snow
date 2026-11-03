@@ -1571,7 +1571,7 @@ impl SnowGui {
                     let addr = SlotAddr { bus: bus_idx, slot };
                     match &bus.slots[slot].device {
                         Some(_) => Self::has_menu(self.emu.status(addr)),
-                        None => can_attach,
+                        None => can_attach && !self.emu.slot_hidden(addr),
                     }
                 })
                 .collect();
@@ -1671,13 +1671,19 @@ impl SnowGui {
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
+                            if target.settings.read_only {
+                                ui.weak("Read-only");
+                                ui.separator();
+                            }
                             if ui.button("Detach hard drive").clicked() {
                                 self.emu.remove_device(addr);
                             }
-                            ui.separator();
-                            if ui.button("Branch off image...").clicked() {
-                                self.hdd_dialog_idx = addr;
-                                self.hdd_dialog.save_file(self.settings.native_file_dialogs);
+                            if target.can_branch {
+                                ui.separator();
+                                if ui.button("Branch off image...").clicked() {
+                                    self.hdd_dialog_idx = addr;
+                                    self.hdd_dialog.save_file(self.settings.native_file_dialogs);
+                                }
                             }
                         },
                     );
@@ -1953,6 +1959,7 @@ impl SnowGui {
             let Some(mac) = self.emu.get_model() else {
                 return;
             };
+            let unavailable = self.emu.slot_unavailable(addr);
             ui.menu_button(
                 format!(
                     "{} {}: (no device)",
@@ -1961,6 +1968,10 @@ impl SnowGui {
                 ),
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
+                    if let Some(hint) = &slot.hint {
+                        ui.weak(hint);
+                        ui.separator();
+                    }
                     let mut first = true;
                     // What can't be attached while the machine runs isn't offered at all
                     for info in models_for(bus.kind, mac).filter(|info| !info.fixed) {
@@ -1970,7 +1981,7 @@ impl SnowGui {
                         first = false;
                         // The frontend knows functions: a new device model of one needs nothing
                         // here
-                        let enabled = bus.can_take(info) && !slot.blocked;
+                        let enabled = bus.can_take(info) && !unavailable;
                         match info.function {
                             FunctionKind::HardDisk => {
                                 if ui
