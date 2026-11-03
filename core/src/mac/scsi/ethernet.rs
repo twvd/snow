@@ -1,7 +1,7 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::devices::Ethernet;
+use crate::emulator::devices::{Ethernet, EthernetStatus, FunctionMut, replace_status};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -794,23 +794,8 @@ impl ScsiTarget for ScsiTargetEthernet {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Ethernet(self)
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -967,14 +952,6 @@ impl ScsiTarget for ScsiTargetEthernet {
             }
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
         }
-    }
-
-    fn ethernet(&self) -> Option<&dyn Ethernet> {
-        Some(self)
-    }
-
-    fn ethernet_mut(&mut self) -> Option<&mut dyn Ethernet> {
-        Some(self)
     }
 }
 
@@ -1136,6 +1113,14 @@ impl Debuggable for ScsiTargetEthernet {
 }
 
 impl Ethernet for ScsiTargetEthernet {
+    fn update_status(&mut self, status: &mut EthernetStatus) -> bool {
+        let new = EthernetStatus {
+            link: self.link(),
+            capture: self.capture_status(),
+        };
+        replace_status(status, new)
+    }
+
     fn set_link(&mut self, link: EthernetLinkType) -> Result<()> {
         // Terminate active links
         // Dropping the senders will cause the channel to close and the receiver threads to terminate
