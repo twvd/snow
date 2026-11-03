@@ -4,6 +4,7 @@
 use crate::loaders::fluxfox::Fluxfox;
 use crate::loaders::{
     A2Rv2, A2Rv3, Bitfile, Dart, Diskcopy42, FloppyImageLoader, Moof, PFI, PRI, RawImage, TwoImg,
+    Woz,
 };
 use crate::{FloppyImage, FloppyType};
 
@@ -27,6 +28,7 @@ pub enum ImageType {
     PRI,
     Raw,
     TwoImg,
+    WOZ,
 }
 
 impl ImageType {
@@ -44,6 +46,7 @@ impl ImageType {
             Self::PRI => &["pri"],
             Self::Raw => &["dsk", "raw", "img", "image", "po"],
             Self::TwoImg => &["2mg", "2img"],
+            Self::WOZ => &["woz"],
         }
     }
 
@@ -70,6 +73,7 @@ impl ImageType {
             Self::PRI => "PCE PRI",
             Self::Raw => "Raw image",
             Self::TwoImg => "Apple II 2IMG",
+            Self::WOZ => "Applesauce WOZ",
         }
     }
 }
@@ -81,6 +85,10 @@ impl Autodetect {
         // MOOF
         if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
             return Ok(ImageType::MOOF);
+        }
+        // WOZ
+        if Woz::detect(data) {
+            return Ok(ImageType::WOZ);
         }
         // A2R v2
         if data.len() >= 8 && data[0..8] == *b"A2R2\xFF\n\r\n" {
@@ -150,6 +158,7 @@ impl FloppyImageLoader for Autodetect {
             ImageType::PRI => PRI::load(data, filename),
             ImageType::Raw => RawImage::load(data, filename),
             ImageType::TwoImg => TwoImg::load(data, filename),
+            ImageType::WOZ => Woz::load(data, filename),
 
             ImageType::Fluxfox => {
                 #[cfg(feature = "fluxfox")]

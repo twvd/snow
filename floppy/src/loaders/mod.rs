@@ -13,6 +13,7 @@ mod pfi;
 mod pri;
 mod raw;
 mod twoimg;
+mod woz;
 
 use std::path::Path;
 
@@ -28,6 +29,7 @@ pub use pfi::PFI;
 pub use pri::PRI;
 pub use raw::RawImage;
 pub use twoimg::{TwoImg, TwoImgData};
+pub use woz::{Woz, WozData, WozTrack};
 
 use crate::FloppyImage;
 
