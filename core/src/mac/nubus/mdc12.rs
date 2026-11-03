@@ -4,7 +4,7 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::{NubusSlot, Window};
+use super::{NubusSlot, VideoCard, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -249,7 +249,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for Mdc12<TRenderer>
+impl<TRenderer> NubusSlot for Mdc12<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -271,7 +271,12 @@ where
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.ctrl.0 = 0;

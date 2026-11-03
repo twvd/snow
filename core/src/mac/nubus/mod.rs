@@ -39,7 +39,7 @@ impl Window {
 }
 
 /// What a NuBus slot sees of a card
-pub trait NubusSlot<TRenderer>:
+pub trait NubusSlot:
     BusMember<Address> + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display
 {
     /// The card's memory window, and the memory behind it. What the memory
@@ -49,6 +49,10 @@ pub trait NubusSlot<TRenderer>:
     }
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
+}
+
+/// What the machine sees of a video card, with the renderer it owns
+pub trait VideoCard<TRenderer> {
     fn blank(&mut self) -> Result<()>;
     fn render(&mut self) -> Result<()>;
     /// Reinstalls the renderer, which is not serialized
@@ -70,12 +74,21 @@ impl<TRenderer> NubusCard<TRenderer>
 where
     TRenderer: Renderer,
 {
-    pub fn slot(&mut self) -> &mut dyn NubusSlot<TRenderer> {
+    pub fn slot(&mut self) -> &mut dyn NubusSlot {
         with_card!(self, c => c)
     }
 
-    pub fn slot_ref(&self) -> &dyn NubusSlot<TRenderer> {
+    pub fn slot_ref(&self) -> &dyn NubusSlot {
         with_card!(self, c => c)
+    }
+
+    /// The card as a video card, if it is one
+    pub fn video(&mut self) -> Option<&mut dyn VideoCard<TRenderer>> {
+        match self {
+            Self::MDC12(c) => Some(c),
+            Self::SE30Video(c) => Some(c),
+            Self::Toby(c) => Some(c),
+        }
     }
 
     // Statically dispatched, for the paths run on every bus tick and access

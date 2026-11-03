@@ -3,7 +3,7 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::{NubusSlot, Window};
+use super::{NubusSlot, VideoCard, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -144,7 +144,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for Toby<TRenderer>
+impl<TRenderer> NubusSlot for Toby<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -165,7 +165,12 @@ where
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for Toby<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0);
         self.render()?;
