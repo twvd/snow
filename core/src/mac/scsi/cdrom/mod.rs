@@ -1640,16 +1640,6 @@ impl ScsiTarget for ScsiTargetCdrom {
         Ok(())
     }
 
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
-    }
-
     fn ticks(&self) -> bool {
         true
     }

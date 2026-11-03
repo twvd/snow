@@ -50,7 +50,9 @@ use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "ethernet")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
@@ -1814,8 +1816,9 @@ impl Tickable for Emulator {
                         };
                         self.config.scsi_mut().targets[idx]
                             .as_mut()
+                            .and_then(|t| t.ethernet_mut())
                             .context("Setting link on non-ethernet device")?
-                            .eth_set_link(link)?;
+                            .set_link(link)?;
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(addr, filename) => {
@@ -1824,8 +1827,9 @@ impl Tickable for Emulator {
                         };
                         match self.config.scsi_mut().targets[idx]
                             .as_mut()
+                            .and_then(|t| t.ethernet_mut())
                             .context("No ethernet device attached")?
-                            .eth_start_capture(&filename)
+                            .start_capture(&filename)
                         {
                             Ok(_) => {
                                 self.user_success(&format!(
@@ -1850,8 +1854,9 @@ impl Tickable for Emulator {
                         };
                         match self.config.scsi_mut().targets[idx]
                             .as_mut()
+                            .and_then(|t| t.ethernet_mut())
                             .context("No ethernet device attached")?
-                            .eth_stop_capture()
+                            .stop_capture()
                         {
                             Some((filename, count)) => {
                                 self.user_success(&format!(

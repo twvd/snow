@@ -272,16 +272,6 @@ impl ScsiTarget for ScsiTargetDisk {
     fn branch_media(&mut self, path: &Path) -> Result<()> {
         self.backend_mut().branch_media(path)
     }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
-    }
 }
 
 impl Debuggable for ScsiTargetDisk {

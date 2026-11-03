@@ -106,24 +106,17 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         Ok(())
     }
 
+    /// This target's Ethernet function, if it provides one
     #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, link: super::ethernet::EthernetLinkType) -> Result<()>;
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType>;
-    #[cfg(feature = "ethernet")]
-    fn eth_start_capture(&mut self, _filename: &Path) -> Result<()> {
-        anyhow::bail!("Not an ethernet device")
-    }
-    #[cfg(feature = "ethernet")]
-    fn eth_stop_capture(&mut self) -> Option<(std::path::PathBuf, usize)> {
-        None
-    }
-    #[cfg(feature = "ethernet")]
-    fn eth_capture_status(&self) -> Option<crate::emulator::comm::EthernetCaptureStatus> {
+    fn ethernet(&self) -> Option<&dyn crate::emulator::devices::Ethernet> {
         None
     }
 
-    // For block devices
+    #[cfg(feature = "ethernet")]
+    fn ethernet_mut(&mut self) -> Option<&mut dyn crate::emulator::devices::Ethernet> {
+        None
+    }
+
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult>;
