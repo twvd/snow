@@ -26,9 +26,7 @@ pub enum NubusCard<TRenderer: Renderer> {
 }
 
 /// What a NuBus slot sees of a card
-pub trait NubusSlot<TRenderer>:
-    for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display
-{
+pub trait NubusSlot: for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the
     /// size, right-justified as the 68k sees them. `addr` is the NuBus address
     /// with the digit of the slot cleared (see [`card_address`]): $F0xx_xxxx
@@ -41,6 +39,10 @@ pub trait NubusSlot<TRenderer>:
 
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
+}
+
+/// What the machine sees of a video card, with the renderer it owns
+pub trait VideoCard<TRenderer> {
     fn blank(&mut self) -> Result<()>;
     fn render(&mut self) -> Result<()>;
     /// Reinstalls the renderer, which is not serialized
@@ -62,12 +64,21 @@ impl<TRenderer> NubusCard<TRenderer>
 where
     TRenderer: Renderer,
 {
-    pub fn slot(&mut self) -> &mut dyn NubusSlot<TRenderer> {
+    pub fn slot(&mut self) -> &mut dyn NubusSlot {
         with_card!(self, c => c)
     }
 
-    pub fn slot_ref(&self) -> &dyn NubusSlot<TRenderer> {
+    pub fn slot_ref(&self) -> &dyn NubusSlot {
         with_card!(self, c => c)
+    }
+
+    /// The card as a video card, if it is one
+    pub fn video(&mut self) -> Option<&mut dyn VideoCard<TRenderer>> {
+        match self {
+            Self::MDC12(c) => Some(c),
+            Self::SE30Video(c) => Some(c),
+            Self::Toby(c) => Some(c),
+        }
     }
 
     // Statically dispatched, for the paths run on every bus tick and access
@@ -201,10 +212,10 @@ fn read_cycle(
 ///
 /// This is what the NuChip of the Mac II, IIx and IIcx does. A 68040 makes only
 /// cycles that are NuBus transactions already, and they go through unchanged.
-pub fn card_access<B, TRenderer, C>(acc: BusAccess<B>, waits: Ticks, card: &mut C) -> BusResponse
+pub fn card_access<B, C>(acc: BusAccess<B>, waits: Ticks, card: &mut C) -> BusResponse
 where
     B: CpuBus,
-    C: NubusSlot<TRenderer> + ?Sized,
+    C: NubusSlot + ?Sized,
 {
     // The helpers want a sized device: the card's reference is one
     let mut card = card;

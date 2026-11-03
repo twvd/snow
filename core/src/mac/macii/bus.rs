@@ -237,16 +237,20 @@ where
                 model
             );
             let idx = (cfg.slot - 0x9) as usize;
-            // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
+            // Only video cards take a renderer
+            let mut renderer = || {
+                renderers
+                    .pop()
+                    .expect("not enough renderers for the video cards")
+            };
             nubus_devices[idx] = Some(match cfg.kind {
-                NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
-                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer)),
+                NubusDeviceKind::Mdc12 => {
+                    NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor))
+                }
+                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer())),
                 NubusDeviceKind::SE30Video => {
-                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer))
+                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer()))
                 }
             });
         }
@@ -314,13 +318,11 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-            let slot = card.slot();
-            slot.set_renderer(renderer);
-            slot.render().unwrap();
-        }
+        // TODO multiple video cards
+        let mut cards = self.nubus_devices.iter_mut().flatten();
+        let video = cards.find_map(|card| card.video()).expect("no video card");
+        video.set_renderer(renderer);
+        video.render().unwrap();
 
         self.asc.after_deserialize();
     }
@@ -770,7 +772,9 @@ where
 
     pub fn video_blank(&mut self) -> Result<()> {
         for d in self.nubus_devices.iter_mut().flatten() {
-            d.slot().blank()?;
+            if let Some(video) = d.video() {
+                video.blank()?;
+            }
         }
         Ok(())
     }
