@@ -28,6 +28,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::CompactMacBus;
+use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
@@ -84,6 +85,12 @@ impl fmt::Display for MouseMode {
     }
 }
 
+/// A target on the bus of the machine, or else on the CPU
+macro_rules! machine_target {
+    ($cpu:ident, $get:ident, bus . $($rest:tt)*) => { $cpu.bus.$get().$($rest)* };
+    ($cpu:ident, $get:ident, $($rest:tt)*) => { $cpu.$($rest)* };
+}
+
 macro_rules! dispatch {
     (
         // Immutable references (&self -> &Type)
@@ -114,13 +121,13 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &inner.$($ref_target)*,
                         Self::Portable(inner) => &inner.$($ref_target)*,
-                        Self::MacII(inner) => &inner.$($ref_target)*,
-                        Self::MacII30(inner) => &inner.$($ref_target)*,
-                        Self::MacLC(inner) => &inner.$($ref_target)*,
-                        Self::MacLCII(inner) => &inner.$($ref_target)*,
-                        Self::MacLCIII(inner) => &inner.$($ref_target)*,
-                        Self::Quadra700(inner) => &inner.$($ref_target)*,
-                        Self::LC475(inner) => &inner.$($ref_target)*,
+                        Self::MacII(inner) => &machine_target!(inner, macii, $($ref_target)*),
+                        Self::MacII30(inner) => &machine_target!(inner, macii, $($ref_target)*),
+                        Self::MacLC(inner) => &machine_target!(inner, lc_i, $($ref_target)*),
+                        Self::MacLCII(inner) => &machine_target!(inner, lc_i, $($ref_target)*),
+                        Self::MacLCIII(inner) => &machine_target!(inner, lc_iii, $($ref_target)*),
+                        Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
+                        Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
                     }
                 }
             )*
@@ -131,13 +138,13 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
                         Self::Portable(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::MacLC(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::MacLCII(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::MacLCIII(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::Quadra700(inner) => &mut inner.$($mut_ref_target)*,
-                        Self::LC475(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacII(inner) => &mut machine_target!(inner, macii_mut, $($mut_ref_target)*),
+                        Self::MacII30(inner) => &mut machine_target!(inner, macii_mut, $($mut_ref_target)*),
+                        Self::MacLC(inner) => &mut machine_target!(inner, lc_i_mut, $($mut_ref_target)*),
+                        Self::MacLCII(inner) => &mut machine_target!(inner, lc_i_mut, $($mut_ref_target)*),
+                        Self::MacLCIII(inner) => &mut machine_target!(inner, lc_iii_mut, $($mut_ref_target)*),
+                        Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
+                        Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
                     }
                 }
             )*
@@ -148,13 +155,13 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
                         Self::Portable(inner) => inner.$($immut_call_target)*,
-                        Self::MacII(inner) => inner.$($immut_call_target)*,
-                        Self::MacII30(inner) => inner.$($immut_call_target)*,
-                        Self::MacLC(inner) => inner.$($immut_call_target)*,
-                        Self::MacLCII(inner) => inner.$($immut_call_target)*,
-                        Self::MacLCIII(inner) => inner.$($immut_call_target)*,
-                        Self::Quadra700(inner) => inner.$($immut_call_target)*,
-                        Self::LC475(inner) => inner.$($immut_call_target)*,
+                        Self::MacII(inner) => machine_target!(inner, macii, $($immut_call_target)*),
+                        Self::MacII30(inner) => machine_target!(inner, macii, $($immut_call_target)*),
+                        Self::MacLC(inner) => machine_target!(inner, lc_i, $($immut_call_target)*),
+                        Self::MacLCII(inner) => machine_target!(inner, lc_i, $($immut_call_target)*),
+                        Self::MacLCIII(inner) => machine_target!(inner, lc_iii, $($immut_call_target)*),
+                        Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
+                        Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
                     }
                 }
             )*
@@ -165,13 +172,13 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
                         Self::Portable(inner) => inner.$($mut_call_target)*,
-                        Self::MacII(inner) => inner.$($mut_call_target)*,
-                        Self::MacII30(inner) => inner.$($mut_call_target)*,
-                        Self::MacLC(inner) => inner.$($mut_call_target)*,
-                        Self::MacLCII(inner) => inner.$($mut_call_target)*,
-                        Self::MacLCIII(inner) => inner.$($mut_call_target)*,
-                        Self::Quadra700(inner) => inner.$($mut_call_target)*,
-                        Self::LC475(inner) => inner.$($mut_call_target)*,
+                        Self::MacII(inner) => machine_target!(inner, macii_mut, $($mut_call_target)*),
+                        Self::MacII30(inner) => machine_target!(inner, macii_mut, $($mut_call_target)*),
+                        Self::MacLC(inner) => machine_target!(inner, lc_i_mut, $($mut_call_target)*),
+                        Self::MacLCII(inner) => machine_target!(inner, lc_i_mut, $($mut_call_target)*),
+                        Self::MacLCIII(inner) => machine_target!(inner, lc_iii_mut, $($mut_call_target)*),
+                        Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
+                        Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
                     }
                 }
             )*
@@ -278,19 +285,19 @@ enum EmulatorConfig {
     /// Macintosh Portable
     Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
     /// Macintosh II, with the AMU or a 68851
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
+    MacII(Box<CpuM68020<MachineBus020>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
-    MacII30(Box<CpuM68030<MacIIBus<ChannelRenderer>>>),
+    MacII30(Box<CpuM68030<MachineBus020>>),
     /// Macintosh LC, with or without its FPU card
-    MacLC(Box<CpuM68020<LcIBus<ChannelRenderer>>>),
+    MacLC(Box<CpuM68020<MachineBus020>>),
     /// Macintosh LC II, with or without an FPU
-    MacLCII(Box<CpuM68030<LcIBus<ChannelRenderer>>>),
+    MacLCII(Box<CpuM68030<MachineBus020>>),
     /// Macintosh LC III, with or without an FPU
-    MacLCIII(Box<CpuM68030<LcIIIBus<ChannelRenderer>>>),
+    MacLCIII(Box<CpuM68030<MachineBus020>>),
     /// Macintosh Quadra 700 (68040)
-    Quadra700(Box<CpuM68040<Quadra700Bus<ChannelRenderer>>>),
+    Quadra700(Box<CpuM68040<MachineBus040>>),
     /// Macintosh LC 475: a 68LC040, or a 68040 in its socket
-    LC475(Box<CpuM68040<Lc475Bus<ChannelRenderer>>>),
+    LC475(Box<CpuM68040<MachineBus040>>),
 }
 
 dispatch! {
@@ -519,7 +526,7 @@ impl Emulator {
                     ram_size,
                     !pmmu_enabled,
                 );
-                let mut cpu = Box::new(CpuM68020::new(bus, FPU_M68881));
+                let mut cpu = Box::new(CpuM68020::new(MachineBus020::MacII(bus), FPU_M68881));
                 if pmmu_enabled {
                     cpu.add_68851();
                 }
@@ -562,7 +569,7 @@ impl Emulator {
                     ram_size,
                     false,
                 );
-                let cpu = Box::new(CpuM68030::new(bus, FPU_M68882));
+                let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::MacII30(cpu)
@@ -601,7 +608,7 @@ impl Emulator {
                     ram_size,
                     false,
                 );
-                let cpu = Box::new(CpuM68030::new(bus, FPU_M68882));
+                let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::MacII30(cpu)
@@ -616,7 +623,7 @@ impl Emulator {
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
-                EmulatorConfig::MacLC(Box::new(CpuM68020::new(bus, fpu)))
+                EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCII => {
                 assert!(override_fdd_type.is_none());
@@ -627,7 +634,7 @@ impl Emulator {
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
-                EmulatorConfig::MacLCII(Box::new(CpuM68030::new(bus, fpu)))
+                EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCIII => {
                 assert!(override_fdd_type.is_none());
@@ -638,7 +645,7 @@ impl Emulator {
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
-                EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(bus, fpu)))
+                EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
             }
             MacModel::Quadra700 => {
                 assert!(override_fdd_type.is_none());
@@ -659,7 +666,7 @@ impl Emulator {
                     mouse_mode,
                     ram_size,
                 );
-                let cpu = Box::new(CpuM68040::new(bus, FPU_M68040));
+                let cpu = Box::new(CpuM68040::new(MachineBus040::Quadra700(bus), FPU_M68040));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Quadra700(cpu)
@@ -678,7 +685,7 @@ impl Emulator {
                 );
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
-                EmulatorConfig::LC475(Box::new(CpuM68040::new(bus, fpu)))
+                EmulatorConfig::LC475(Box::new(CpuM68040::new(MachineBus040::Lc475(bus), fpu)))
             }
         };
 
