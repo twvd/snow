@@ -609,6 +609,13 @@ where
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
 
+    /// CPU cycles the bus may be behind at the start of an instruction. An
+    /// access to a device still brings the bus up to it first, through
+    /// BusResponse::Stall, so what can be late is an interrupt, by that many
+    /// cycles at most. Not on the 68000: the RAM contention of the compact Macs
+    /// looks at the video as the bus was last ticked.
+    const TICK_BATCH: Ticks = if CPU_TYPE >= M68020 { 32 } else { 1 };
+
     /// A CPU with the FPU `fpu_type`, or FPU_NONE. The 68030 and the 68040 have
     /// their MMU, a 68020 gets a 68851 from add_68851().
     pub fn new(bus: TBus, fpu_type: FpuM68kType) -> Self {
@@ -923,7 +930,9 @@ where
     pub fn step(&mut self) -> Result<()> {
         debug_assert_eq!(self.prefetch.len(), 2);
 
-        self.sync_bus()?;
+        if self.cycles - self.last_bus_sync >= Self::TICK_BATCH {
+            self.sync_bus()?;
+        }
 
         self.step_ea_addr = None;
         self.step_exception = false;
