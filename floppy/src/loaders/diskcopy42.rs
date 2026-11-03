@@ -27,11 +27,17 @@ enum Dc42Encoding {
     /// 03 = MFM CAV dshd (1440k)
     #[brw(magic = 3u8)]
     MfmCavDsHd,
+    /// $54 = Twiggy, as in the images of the Lisa 1 and the Twiggy Mac in circulation
+    #[brw(magic = 0x54u8)]
+    Twiggy,
 }
 
 #[binrw]
 #[derive(Debug, Clone, Copy)]
 enum Dc42Format {
+    /// $01 = Lisa, as in the Twiggy images in circulation
+    #[brw(magic = 0x01u8)]
+    Lisa,
     /// $02 = Mac 400k
     #[brw(magic = 0x02u8)]
     Mac400K,
@@ -81,6 +87,7 @@ impl Dc42Raw {
             (Dc42Encoding::GcrClvDsDd, Dc42Format::Mac800K) => Ok(FloppyType::Mac800K),
             (Dc42Encoding::GcrClvDsDd, Dc42Format::Prodos800K) => Ok(FloppyType::Mac800K),
             (Dc42Encoding::MfmCavDsHd, _) => Ok(FloppyType::Mfm144M),
+            (Dc42Encoding::Twiggy, _) => Ok(FloppyType::Twiggy),
             _ => bail!(
                 "Unknown type, encoding: {:?} format: {:?}",
                 self.encoding,
