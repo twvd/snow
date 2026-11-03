@@ -16,7 +16,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
-use crate::mac::nubus::{self, NubusCard};
+use crate::mac::nubus::{self, NubusCard, NubusSlot, VideoCard};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -157,6 +157,10 @@ pub struct MacIIBus<TRenderer: Renderer> {
     /// NuBus cards (base address: $9)
     nubus_devices: [Option<NubusCard<TRenderer>>; 6],
 
+    /// The SE/30's video, which answers in slot $E like a card but is
+    /// hard-wired
+    se30_video: Option<SE30Video<TRenderer>>,
+
     /// Mouse mode
     mouse_mode: MouseMode,
 }
@@ -229,6 +233,7 @@ where
     ) -> Self {
         // Build the NuBus cards from the provided configuration.
         let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
+        let mut se30_video = None;
         for cfg in nubus {
             assert!(
                 model.nubus_slots().contains(&cfg.slot),
@@ -244,15 +249,16 @@ where
                     .pop()
                     .expect("not enough renderers for the video cards")
             };
-            nubus_devices[idx] = Some(match cfg.kind {
+            nubus_devices[idx] = match cfg.kind {
                 NubusDeviceKind::Mdc12 => {
-                    NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor))
+                    Some(NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor)))
                 }
-                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer())),
+                NubusDeviceKind::Toby => Some(NubusCard::Toby(Toby::new(cfg.rom, renderer()))),
                 NubusDeviceKind::SE30Video => {
-                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer()))
+                    se30_video = Some(SE30Video::new(cfg.rom, renderer()));
+                    None
                 }
-            });
+            };
         }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let ram_config = Self::RAM_CONFIG
@@ -304,6 +310,7 @@ where
             progkey_pressed: LatchingEvent::default(),
 
             nubus_devices,
+            se30_video,
             mouse_mode,
         };
 
@@ -319,8 +326,15 @@ where
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         // TODO multiple video cards
-        let mut cards = self.nubus_devices.iter_mut().flatten();
-        let video = cards.find_map(|card| card.video()).expect("no video card");
+        let video = match self.se30_video.as_mut() {
+            Some(video) => video as &mut dyn VideoCard<TRenderer>,
+            None => self
+                .nubus_devices
+                .iter_mut()
+                .flatten()
+                .find_map(|card| card.video())
+                .expect("no video card"),
+        };
         video.set_renderer(renderer);
         video.render().unwrap();
 
@@ -466,10 +480,6 @@ where
         Some(())
     }
 
-    fn slot_card(&mut self, addr: Address) -> Option<&mut NubusCard<TRenderer>> {
-        self.nubus_devices[(addr >> 24) as usize - 0xF9].as_mut()
-    }
-
     fn via1_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
         Some(Self::dev_read(addr, self.via1.read(addr)).into())
     }
@@ -477,10 +487,7 @@ where
     fn via1_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         Self::dev_write(addr, val as Byte, self.via1.write(addr, val as Byte));
         self.sync_via1_pa();
-        if self.model == MacModel::SE30 {
-            let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
-                unreachable!()
-            };
+        if let Some(d) = self.se30_video.as_mut() {
             d.vblank_enable = !self.via1.pb().se30_vblank_enable();
             d.fb_select = self.via1.pa().page2();
         }
@@ -771,6 +778,9 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
+        if let Some(video) = self.se30_video.as_mut() {
+            video.blank()?;
+        }
         for d in self.nubus_devices.iter_mut().flatten() {
             if let Some(video) = d.video() {
                 video.blank()?;
@@ -836,19 +846,23 @@ where
                 Self::superslot_write,
             ),
             Region::Slot => {
-                let se30 = self.model == MacModel::SE30;
-                match self.slot_card(acc.addr) {
+                let slot = (acc.addr >> 24) as usize - 0xF9;
+                if let Some(card) = self.nubus_devices[slot].as_mut() {
+                    nubus::card_access(acc, NUBUS_WAITS, card)
+                } else if let Some(video) = self.se30_video.as_mut().filter(|_| slot == 5) {
                     // The SE/30's video isn't on a NuBus and takes the CPU's cycles
                     // as they are
-                    Some(card) if se30 => bus_access_long(
+                    bus_access_long(
                         acc,
                         NUBUS_WAITS,
-                        card,
-                        |c, a, len| c.read_sized(nubus::card_address(a), len),
-                        |c, a, len, v| c.write_sized(nubus::card_address(a), len, v),
-                    ),
-                    Some(card) => nubus::card_access(acc, NUBUS_WAITS, card.slot()),
-                    None => BusResponse::BusError,
+                        video,
+                        |v, a, len| v.read_sized(crate::mac::nubus::card_address(a), len),
+                        |v, a, len, val| {
+                            v.write_sized(crate::mac::nubus::card_address(a), len, val)
+                        },
+                    )
+                } else {
+                    BusResponse::BusError
                 }
             }
             Region::None => BusResponse::BusError,
@@ -887,7 +901,10 @@ where
         self.scc = Scc::new(RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
-            d.slot().reset();
+            d.reset();
+        }
+        if let Some(video) = self.se30_video.as_mut() {
+            video.reset();
         }
         self.asc.reset();
 
@@ -1009,6 +1026,13 @@ where
                 }
             }
         }
+        if let Some(video) = self.se30_video.as_mut() {
+            video.tick(native_ticks, ctx)?;
+            if video.get_irq() {
+                // Slot $E
+                slot_irqs |= 1 << 5;
+            }
+        }
         self.via2.a_in.set_v2irqs(!slot_irqs);
         // The GLUE combines the slot interrupts into /SLOTIRQ
         self.via2.set_line(
@@ -1115,6 +1139,10 @@ where
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
+        if let Some(video) = self.se30_video.as_ref() {
+            result.push(dbgprop_nest!("SE/30 video", video));
+            return result;
+        }
         for (i, slot) in self.nubus_devices.iter().enumerate() {
             if let Some(dev) = slot.as_ref() {
                 result.push(dbgprop_nest!(
