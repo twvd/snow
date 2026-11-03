@@ -1686,6 +1686,7 @@ impl Debuggable for ScsiTargetCdrom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::scsi::ASC_PARAMETER_LIST_LENGTH_ERROR;
     use std::io::Write;
 
     /// Creates a fresh, uniquely-named temporary directory for a test.
@@ -1889,5 +1890,40 @@ mod tests {
 
             fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    fn mode_select(cd: &mut ScsiTargetCdrom, data: &[u8]) -> u8 {
+        let cmd = [0x15, 0, 0, 0, data.len() as u8, 0];
+        match cd.cmd(&cmd, Some(data)).unwrap() {
+            ScsiCmdResult::Status(status) => status,
+            _ => panic!("MODE SELECT(6) did not end in the status phase"),
+        }
+    }
+
+    #[test]
+    fn mode_select_without_block_descriptor() {
+        // Vendor specific data after a header with no block descriptor, as the
+        // Apple CD-ROM driver sends it
+        let mut cd = ScsiTargetCdrom::new(None);
+        let data = [0, 0, 0, 0, 0x31, 0x02, 0xFF, 0];
+        assert_eq!(mode_select(&mut cd, &data), STATUS_GOOD);
+        assert_eq!(cd.blocksize(), Some(2048));
+    }
+
+    #[test]
+    fn mode_select_block_descriptor_sets_block_size() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        let data = [0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0x02, 0x00];
+        assert_eq!(mode_select(&mut cd, &data), STATUS_GOOD);
+        assert_eq!(cd.blocksize(), Some(512));
+    }
+
+    #[test]
+    fn mode_select_truncated_block_descriptor() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        let data = [0, 0, 0, 8, 0, 0, 0, 0];
+        assert_eq!(mode_select(&mut cd, &data), STATUS_CHECK_CONDITION);
+        let sense = (CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
+        assert_eq!(cd.common().req_sense(), sense);
     }
 }
