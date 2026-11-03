@@ -620,6 +620,19 @@ impl FdcSim {
             return;
         };
         let index = disk.first_sector(track.min(TRACKS - 1), side) + sector;
+        if matches!(
+            op,
+            RWTS_READ | RWTS_READ_BRUTE | RWTS_WRITE | RWTS_WRITE_BRUTE
+        ) {
+            // The ROM copies the format byte of every sector header it reads to DISKID,
+            // for writes too ($12C4 in ROM $88). An image doesn't hold it: this is the
+            // one the ROM writes when formatting, FMTTYPE for the sides of the disk.
+            self.ram[DISKID] = if disk.sides == 2 {
+                FMTTYPE_SIDE_BIT | 0x02
+            } else {
+                0x02
+            };
+        }
         match op {
             RWTS_READ | RWTS_READ_BRUTE => {
                 self.ram[CURTRACK] = track;
@@ -966,6 +979,7 @@ mod tests {
         fdc.ram_write(SIDE, 0);
         fdc.perform(RWTS_READ);
         assert_eq!(fdc.ram_read(DATA), 0x10);
+        assert_eq!(fdc.ram_read(DISKID), 0x22);
         fdc.ram_write(SIDE, 1);
         assert_eq!(fdc.validate(RWTS_READ), ERR_OK);
         fdc.perform(RWTS_READ);
@@ -989,5 +1003,9 @@ mod tests {
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(SIDE, 1);
         assert_eq!(fdc.validate(RWTS_READ), ERR_READ);
+        fdc.ram_write(SIDE, 0);
+        fdc.ram[DISKID] = 0;
+        fdc.perform(RWTS_WRITE);
+        assert_eq!(fdc.ram_read(DISKID), 0x02);
     }
 }
