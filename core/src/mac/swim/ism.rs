@@ -491,7 +491,8 @@ impl Swim {
     fn ism_tick_bit(&mut self) -> Result<()> {
         if self.get_selected_drive().floppy.get_track_type(
             self.get_active_head(),
-            self.get_selected_drive().get_active_track(),
+            self.get_selected_drive()
+                .get_head_track(self.get_active_head()),
         ) == TrackType::Flux
         {
             error!("TODO flux track on ISM");

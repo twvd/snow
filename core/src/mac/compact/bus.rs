@@ -274,7 +274,7 @@ where
     /// Makes the ROM skip its memory test
     fn disable_memtest(&mut self) {
         let (addr, value) = match self.model {
-            MacModel::Early128K | MacModel::Early512K => return,
+            MacModel::Early128K | MacModel::TwiggyMac | MacModel::Early512K => return,
             MacModel::Early512Ke | MacModel::Plus => (0x0002AE, 0x0040_0000),
             _ => WARM_START_SIGNATURE,
         };

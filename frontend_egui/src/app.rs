@@ -1393,6 +1393,7 @@ impl SnowGui {
                             matches!(
                                 self.emu.get_model(),
                                 Some(MacModel::Early128K)
+                                    | Some(MacModel::TwiggyMac)
                                     | Some(MacModel::Early512K)
                                     | Some(MacModel::Early512Ke)
                                     | Some(MacModel::Plus)

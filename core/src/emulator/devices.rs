@@ -116,6 +116,7 @@ pub enum DeviceModel {
     Mac800KDrive,
     Mac800KPwmDrive,
     MacSuperDrive,
+    MacTwiggyDrive,
     UniDisk35,
     Apple525Drive,
     DisplayCard824,
@@ -222,6 +223,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::swim::drive::INFO_800K,
     &crate::mac::swim::drive::INFO_800K_PWM,
     &crate::mac::swim::drive::INFO_SUPERDRIVE,
+    &crate::mac::swim::drive::INFO_TWIGGY,
     &crate::mac::maclc::pds_iie::unidisk::INFO,
     &crate::mac::maclc::pds_iie::disk::INFO,
     &crate::mac::nubus::mdc12::INFO,
@@ -297,6 +299,7 @@ impl DeviceModel {
             DriveType::GCR800K => Some(Self::Mac800KDrive),
             DriveType::GCR800KPWM => Some(Self::Mac800KPwmDrive),
             DriveType::SuperDrive => Some(Self::MacSuperDrive),
+            DriveType::Twiggy => Some(Self::MacTwiggyDrive),
         }
     }
 
@@ -306,6 +309,7 @@ impl DeviceModel {
             Self::Mac800KDrive => Some(DriveType::GCR800K),
             Self::Mac800KPwmDrive => Some(DriveType::GCR800KPWM),
             Self::MacSuperDrive => Some(DriveType::SuperDrive),
+            Self::MacTwiggyDrive => Some(DriveType::Twiggy),
             _ => None,
         }
     }
@@ -821,12 +825,14 @@ impl MacModel {
                 .iter()
                 .map(|&(i, model)| Slot::fixed((i + 1).to_string(), model))
                 .collect();
-            // HD20s chain on the external drive port
-            slots.extend((1..=MAX_DCDS).map(|i| Slot {
-                name: Some("HD20".to_owned()),
-                hint: Some(self.hd20_hint().to_owned()),
-                ..Slot::empty(format!("{}{}", HD20_SLOT, i))
-            }));
+            // HD20s chain on the external drive port, where the Twiggy Mac has a Twiggy
+            if self != Self::TwiggyMac {
+                slots.extend((1..=MAX_DCDS).map(|i| Slot {
+                    name: Some("HD20".to_owned()),
+                    hint: Some(self.hd20_hint().to_owned()),
+                    ..Slot::empty(format!("{}{}", HD20_SLOT, i))
+                }));
+            }
             buses.push(Bus {
                 kind: BusKind::Swim,
                 id: bus_id::SWIM.to_owned(),
@@ -2258,6 +2264,10 @@ impl Floppy for FloppyDrive {
         if self.drive_type == DriveType::SuperDrive {
             blank_formats.push(FloppyType::Mfm144M);
         }
+        // Unformatted Twiggy disks aren't made
+        if self.drive_type == DriveType::Twiggy {
+            blank_formats.clear();
+        }
         let new = FloppyStatus {
             settings: FloppySettings {
                 read_only: media.is_some() && self.media_read_only,
@@ -2346,6 +2356,8 @@ mod tests {
             ["1", "2", "HD20.1", "HD20.2", "HD20.3", "HD20.4"]
         );
         assert_eq!(slots(MacModel::Plus, bus_id::SCSI).len(), 7);
+        // The Twiggy Mac has a Twiggy where an HD20 would go
+        assert_eq!(slots(MacModel::TwiggyMac, bus_id::SWIM), ["1", "2"]);
         assert!(slots(MacModel::Early128K, bus_id::SCSI).is_empty());
         assert_eq!(slots(MacModel::LC, bus_id::PDS_LC), ["0"]);
         assert_eq!(slots(MacModel::SE30, bus_id::PDS_SE30), ["0"]);

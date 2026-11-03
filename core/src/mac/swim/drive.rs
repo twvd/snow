@@ -34,13 +34,16 @@ pub enum DriveType {
     /// PWM-controlled 800K drive for use in the 128K/512K
     GCR800KPWM,
     SuperDrive,
+    /// Apple FileWare ("Twiggy") 5.25" drive, of the Twiggy Mac. It doesn't have the Sony
+    /// drives' registers: the IWM's phase lines drive its stepper, see `twiggy_phases`.
+    Twiggy,
 }
 
 impl DriveType {
     pub const fn io_superdrive(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::Twiggy => false,
             Self::SuperDrive => true,
         }
     }
@@ -48,7 +51,7 @@ impl DriveType {
     pub const fn io_present(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K => false,
+            Self::GCR400K | Self::Twiggy => false,
             Self::GCR800K | Self::GCR800KPWM => true,
             Self::SuperDrive => unreachable!(),
         }
@@ -57,7 +60,7 @@ impl DriveType {
     pub const fn io_mfm(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::Twiggy => false,
             Self::SuperDrive => true,
         }
     }
@@ -65,7 +68,7 @@ impl DriveType {
     pub const fn io_rddata1(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::Twiggy => false,
             Self::SuperDrive => true,
         }
     }
@@ -73,7 +76,9 @@ impl DriveType {
     pub const fn io_ready(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive | Self::Twiggy => {
+                false
+            }
         }
     }
 
@@ -81,7 +86,7 @@ impl DriveType {
         match self {
             Self::None => true,
             Self::GCR400K => false,
-            Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => true,
+            Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive | Self::Twiggy => true,
         }
     }
 
@@ -91,6 +96,7 @@ impl DriveType {
             Self::GCR400K => true,
             Self::GCR800KPWM => true,
             Self::GCR800K | Self::SuperDrive => false,
+            Self::Twiggy => true,
         }
     }
 
@@ -105,6 +111,59 @@ impl DriveType {
                 FloppyType::Mac800K,
                 FloppyType::Mfm144M,
             ],
+            Self::Twiggy => &[FloppyType::Twiggy],
+        }
+    }
+}
+
+/// The Twiggy drive, as the Twiggy Mac's disk driver (Twiggy.ROM, `.Disk` at $16E4) uses
+/// it. No documentation of the drive is known.
+///
+/// Its actuator moves by half steps of its stepper: two phases on hold it on a step, one on
+/// half way to the next. The driver counts 8 steps a track and ends every move holding one
+/// phase ($401CA2), half a step past its count. The heads face each other: side 0's is
+/// over track (count - 8) / 8, side 1's over (368 - count) / 8 (the driver's seek,
+/// $401CE0). It calibrates by stepping down 4 at a time until the track 0 sensor (CAL)
+/// goes low, and takes that as count 368 ($401BEE). Moving well past track 0 of side 0,
+/// where side 1's head is past its last track, ejects the disk (the driver's eject,
+/// $401B5E, and ESFloppy, which emulates the drive for a Lisa 1).
+///
+/// Positions here are in half steps: twice the driver's count, plus 1 at rest.
+mod twiggy {
+    pub const HALF_STEPS_PER_TRACK: i32 = 16;
+    pub const SIDE_0_TRACK_0: i32 = 2 * 8 + 1;
+    pub const SIDE_1_TRACK_0: i32 = 2 * 368 + 1;
+    /// CAL is high from here: between counts 368 and 372 at rest
+    pub const CAL: i32 = 2 * 370 + 1;
+    pub const EJECT: i32 = 2 * -52;
+    /// Where the actuator starts: on a step, above CAL
+    pub const PARKED: i32 = 2 * 376;
+    /// The speed follows the PWM from the sound buffer, as on the 400K drive, but the
+    /// driver's speed values (0 to 399, $4021A0) are 399 minus the PWM index the IWM code
+    /// decodes. It measures the tachometer at two values, then sets for each zone the value
+    /// that gives its speed ($40231A). Its speeds go from about 216 rpm (zone 0) to 317 rpm
+    /// (zone 7): only the sign of the slope and the range matter.
+    pub const RPM_AT_SPEED_0: u64 = 150;
+    pub const RPM_AT_SPEED_399: u64 = 400;
+    /// Tachometer pulses a turn. The driver's speeds for the zones are tachometer periods
+    /// ($402304: 4.21 ms for zone 0), and it checks that a turn of a zone 0 track takes
+    /// 0.279 s ($402488): about 66 pulses a turn.
+    pub const TACH_PULSES: u64 = 66;
+
+    /// Where the phases on hold the stepper, in half steps modulo 8. Stepping up goes
+    /// through the pairs in this order ($401C66: $5A, $69, $A5, $96), and a phase alone
+    /// holds it between the two pairs it is in ($401CA2: $6A, $A9, $A6, $9A).
+    pub fn hold(phases: [bool; 4]) -> Option<i32> {
+        match phases {
+            [true, true, false, false] => Some(0),
+            [true, false, false, false] => Some(1),
+            [true, false, false, true] => Some(2),
+            [false, false, false, true] => Some(3),
+            [false, false, true, true] => Some(4),
+            [false, false, true, false] => Some(5),
+            [false, true, true, false] => Some(6),
+            [false, true, false, false] => Some(7),
+            _ => None,
         }
     }
 }
@@ -262,6 +321,13 @@ pub(crate) struct FloppyDrive {
     /// Noise source for garbage read while the drive is not ready
     pub(super) weak_bit_rng: WeakBitRng,
 
+    /// Twiggy: where the actuator is, in eighths of a track
+    twiggy_position: i32,
+    /// Twiggy: the head the IWM reads, whose track sets the bit rate
+    twiggy_head: usize,
+    /// The speed the PWM asks for, from 0 to 399
+    pub(super) pwm_index: Ticks,
+
     /// Source file path of the currently inserted image, if it was loaded
     /// from a writeback-capable file. Cleared on eject.
     #[serde(skip)]
@@ -328,6 +394,9 @@ impl FloppyDrive {
             rpm_adjustment: 0,
             ticks_per_bit: Ticks::MAX,
             weak_bit_rng: WeakBitRng::default(),
+            twiggy_position: twiggy::PARKED,
+            twiggy_head: 0,
+            pwm_index: 0,
 
             image_path: None,
             media_path: None,
@@ -364,6 +433,9 @@ impl FloppyDrive {
     // inverse signals.
     #[allow(clippy::nonminimal_bool)]
     pub(super) fn read_sense(&self, regraw: u8) -> bool {
+        if self.drive_type == DriveType::Twiggy {
+            return self.twiggy_sense(regraw);
+        }
         let reg = DriveReg::from_u8(regraw).unwrap_or(DriveReg::UNKNOWN);
 
         let result = match reg {
@@ -406,6 +478,73 @@ impl FloppyDrive {
         }
 
         result
+    }
+
+    /// The Twiggy's sense line. What it says depends on PH0, PH2 and SEL, as the Twiggy
+    /// Mac's driver reads it: disk in place ($401B9C, $4022AE), CAL ($401BA4), write protect
+    /// ($4022AE, then $4018D4) and the tachometer ($402398). ESFloppy has write protect with
+    /// PH0 and SEL low too, as the Lisa 1 reads it. The rest reads low.
+    fn twiggy_sense(&self, regraw: u8) -> bool {
+        let sel = regraw & 0b0001 != 0;
+        let ph0 = regraw & 0b0010 != 0;
+        let ph2 = regraw & 0b1000 != 0;
+        match (ph0, ph2, sel) {
+            (true, false, true) => self.floppy_inserted,
+            (true, false, false) => self.twiggy_position >= twiggy::CAL,
+            (true, true, true) | (false, false, false) => {
+                self.floppy_inserted && self.floppy.get_write_protect()
+            }
+            (false, true, _) => self.get_tacho(),
+            _ => false,
+        }
+    }
+
+    /// The IWM's phase lines, PH0 to PH3, on a Twiggy: the stepper goes to the nearest
+    /// place the phases on hold it. None, or three, or two opposite ones don't move it.
+    pub(super) fn twiggy_phases(&mut self, phases: [bool; 4]) {
+        let Some(hold) = twiggy::hold(phases) else {
+            return;
+        };
+        let before = self.twiggy_position;
+        match (hold - before).rem_euclid(8) {
+            delta @ 1..=3 => self.twiggy_position += delta,
+            delta @ 5..=7 => self.twiggy_position -= 8 - delta,
+            _ => return,
+        }
+        self.update_ticks_per_bit();
+        if self.floppy_inserted && before >= twiggy::EJECT && self.twiggy_position < twiggy::EJECT {
+            self.eject();
+        }
+    }
+
+    /// The Twiggy's motor runs while the IWM enables it
+    pub(super) fn set_twiggy_motor(&mut self, on: bool) {
+        self.motor = on;
+    }
+
+    /// The head the IWM reads from: on a Twiggy, the bit rate is that of its track
+    pub(super) fn set_twiggy_head(&mut self, head: usize) {
+        if self.twiggy_head != head {
+            self.twiggy_head = head;
+            self.update_ticks_per_bit();
+        }
+    }
+
+    /// The track under a head: on a Twiggy, the nearest one to its head
+    pub(super) fn get_head_track(&self, head: usize) -> usize {
+        if self.drive_type != DriveType::Twiggy {
+            return self.track;
+        }
+        let from_track_0 = if head == 0 {
+            self.twiggy_position - twiggy::SIDE_0_TRACK_0
+        } else {
+            twiggy::SIDE_1_TRACK_0 - self.twiggy_position
+        };
+        let last = snow_floppy::twiggy::TRACKS as i32 - 1;
+        let track = from_track_0 + twiggy::HALF_STEPS_PER_TRACK / 2;
+        track
+            .div_euclid(twiggy::HALF_STEPS_PER_TRACK)
+            .clamp(0, last) as usize
     }
 
     /// Moves the drive head one step in the selected position
@@ -547,6 +686,11 @@ impl FloppyDrive {
 
     /// Gets the spindle motor speed in rounds/minute for the currently selected track
     pub fn get_track_rpm(&self) -> Ticks {
+        if self.drive_type == DriveType::Twiggy {
+            let speed = 399 - self.pwm_index.min(399);
+            return twiggy::RPM_AT_SPEED_0
+                + speed * (twiggy::RPM_AT_SPEED_399 - twiggy::RPM_AT_SPEED_0) / 399;
+        }
         if self.mfm {
             // SuperDrive in MFM mode, fixed speed (CAV)
             // TODO DD spins at 600rpm!
@@ -595,7 +739,11 @@ impl FloppyDrive {
     }
 
     pub(crate) fn update_ticks_per_bit(&mut self) {
-        self.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
+        self.ticks_per_bit = if self.drive_type == DriveType::Twiggy {
+            let track = self.get_head_track(self.twiggy_head);
+            let bits = snow_floppy::twiggy::track_bits(track) as Ticks;
+            (self.base_frequency * 60 / self.get_track_rpm() / bits).max(1)
+        } else if self.get_track_rpm() == 0 || !self.floppy_inserted {
             Ticks::MAX
         } else {
             ((self.base_frequency * 60)
@@ -613,16 +761,16 @@ impl FloppyDrive {
 
         // The disk spins at 390-605rpm
         // Each rotation produces 60 tacho pulses (= 120 edges)
-        let pulses_per_min = self.get_track_rpm() * Self::TACHO_SPEED;
+        let pulses = if self.drive_type == DriveType::Twiggy {
+            twiggy::TACH_PULSES
+        } else {
+            Self::TACHO_SPEED
+        };
+        let pulses_per_min = self.get_track_rpm() * pulses;
         let edges_per_min = pulses_per_min * 2;
         let ticks_per_min = self.base_frequency * 60;
         let ticks_per_edge = ticks_per_min / edges_per_min;
         !(self.cycles / ticks_per_edge).is_multiple_of(2)
-    }
-
-    /// Gets the active selected track offset
-    pub(super) fn get_active_track(&self) -> usize {
-        self.track
     }
 
     /// Gets the length of a track on the loaded floppy
@@ -632,7 +780,7 @@ impl FloppyDrive {
 
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
-        let track = self.get_active_track();
+        let track = self.get_head_track(head);
 
         // Garbage if drive is not yet ready
         if self.not_ready > self.cycles {
@@ -655,7 +803,8 @@ impl FloppyDrive {
 
     /// Advances to the next bit on the track (bitstream tracks)
     pub(super) fn next_bit(&mut self, head: usize) -> bool {
-        let TrackLength::Bits(tracklen) = self.get_track_len(head, self.get_active_track()) else {
+        let TrackLength::Bits(tracklen) = self.get_track_len(head, self.get_head_track(head))
+        else {
             unreachable!()
         };
         self.track_position = (self.track_position + 1) % tracklen;
@@ -666,7 +815,7 @@ impl FloppyDrive {
     /// Writes a bit to the current track position
     pub(super) fn write_bit(&mut self, head: usize, bit: bool) {
         self.floppy
-            .set_track_bit(head, self.track, self.track_position, bit);
+            .set_track_bit(head, self.get_head_track(head), self.track_position, bit);
     }
 
     /// Ejects the disk
@@ -717,6 +866,7 @@ impl Debuggable for FloppyDrive {
                 self.not_ready.saturating_sub(self.cycles)
             ),
             dbgprop_udec!("Track", self.track),
+            dbgprop_sdec!("Twiggy actuator", self.twiggy_position.into()),
             dbgprop_udec!("Track position", self.track_position),
             dbgprop_bool!("Index signal", self.mfm && self.at_index()),
             dbgprop_udec!("Track RPM", self.get_track_rpm()),
@@ -787,6 +937,21 @@ pub const INFO_800K_PWM: crate::emulator::devices::ModelInfo =
         create: None,
     };
 
+pub const INFO_TWIGGY: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::MacTwiggyDrive,
+    name: "Twiggy drive",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: never_chosen,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
 pub const INFO_SUPERDRIVE: crate::emulator::devices::ModelInfo =
     crate::emulator::devices::ModelInfo {
         model: crate::emulator::devices::DeviceModel::MacSuperDrive,
@@ -856,6 +1021,68 @@ mod tests {
 
         // Roughly is good enough..
         assert_eq!(result / 10, DISK_RPM_INNER * 120 / 10);
+    }
+
+    /// Pairs of phases, as the Twiggy Mac's driver steps up through them
+    const TWIGGY_STEPS: [[bool; 4]; 4] = [
+        [true, true, false, false],
+        [true, false, false, true],
+        [false, false, true, true],
+        [false, true, true, false],
+    ];
+
+    fn twiggy() -> FloppyDrive {
+        let mut drv = FloppyDrive::new(0, DriveType::Twiggy, BASE_FREQUENCY);
+        drv.disk_insert(FloppyImage::new(FloppyType::Twiggy, ""))
+            .unwrap();
+        drv
+    }
+
+    #[test]
+    fn twiggy_steps_by_half_steps() {
+        let mut drv = twiggy();
+        let start = drv.twiggy_position;
+        // Up a step, up half a step on one phase, and back
+        drv.twiggy_phases(TWIGGY_STEPS[1]);
+        assert_eq!(drv.twiggy_position, start + 2);
+        drv.twiggy_phases([false, false, false, true]);
+        assert_eq!(drv.twiggy_position, start + 3);
+        drv.twiggy_phases(TWIGGY_STEPS[1]);
+        assert_eq!(drv.twiggy_position, start + 2);
+        // Nothing on, or opposite phases: no move
+        drv.twiggy_phases([false; 4]);
+        drv.twiggy_phases(TWIGGY_STEPS[3]);
+        assert_eq!(drv.twiggy_position, start + 2);
+    }
+
+    #[test]
+    fn twiggy_heads_face_each_other() {
+        let mut drv = twiggy();
+        // Where the driver calibrates: side 1's track 0, side 0's last
+        drv.twiggy_position = twiggy::SIDE_1_TRACK_0;
+        assert_eq!(drv.get_head_track(1), 0);
+        assert_eq!(drv.get_head_track(0), 45);
+        assert!(!drv.read_sense(0b0010));
+        // CAL, with PH0 on and SEL off
+        drv.twiggy_position += 8;
+        assert!(drv.read_sense(0b0010));
+        drv.twiggy_position = twiggy::SIDE_0_TRACK_0 + 3 * twiggy::HALF_STEPS_PER_TRACK;
+        assert_eq!(drv.get_head_track(0), 3);
+        assert_eq!(drv.get_head_track(1), 42);
+        // Disk in place, with PH0 and SEL on
+        assert!(drv.read_sense(0b0011));
+    }
+
+    #[test]
+    fn twiggy_ejects_past_side_0_track_0() {
+        let mut drv = twiggy();
+        let mut step = 0;
+        while drv.floppy_inserted {
+            step = (step + 3) % 4;
+            drv.twiggy_phases(TWIGGY_STEPS[step]);
+            assert!(drv.twiggy_position >= twiggy::EJECT - 2);
+        }
+        assert!(!drv.read_sense(0b0011));
     }
 
     #[test]
