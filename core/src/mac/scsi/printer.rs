@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::FunctionMut;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
@@ -414,23 +415,8 @@ impl ScsiTarget for ScsiTargetPrinter {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Printer
     }
 
     /// Handle LaserWriter IISC SCSI commands for now, maybe others later

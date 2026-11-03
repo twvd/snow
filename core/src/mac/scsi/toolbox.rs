@@ -18,14 +18,15 @@ use anyhow::{Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 
-use super::disk_image::DiskImage;
 use super::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use super::{
     ASC_INVALID_COMMAND, ASC_MEDIUM_NOT_PRESENT, ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_NOT_READY, STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::devices::FileTransfer;
+use crate::emulator::devices::{
+    FileTransfer, FileTransferSettings, FileTransferStatus, FunctionMut, replace_status,
+};
 use crate::util::mac::{macroman_to_utf8, utf8_to_macroman};
 
 const MAX_FILE_PATH: usize = 32; // Max Macintosh File name length
@@ -424,6 +425,15 @@ impl ScsiTargetBlueScsi {
 }
 
 impl FileTransfer for ScsiTargetBlueScsi {
+    fn update_status(&mut self, status: &mut FileTransferStatus) -> bool {
+        let new = FileTransferStatus {
+            settings: FileTransferSettings {
+                media: self.folder().map(Path::to_path_buf),
+            },
+        };
+        replace_status(status, new)
+    }
+
     fn folder(&self) -> Option<&Path> {
         self.toolbox.shared_dir()
     }
@@ -507,12 +517,8 @@ impl ScsiTarget for ScsiTargetBlueScsi {
         self.devices = *devices;
     }
 
-    fn file_transfer(&self) -> Option<&dyn FileTransfer> {
-        Some(self)
-    }
-
-    fn file_transfer_mut(&mut self) -> Option<&mut dyn FileTransfer> {
-        Some(self)
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::FileTransfer(self)
     }
 
     fn blocksize(&self) -> Option<usize> {
@@ -528,22 +534,6 @@ impl ScsiTarget for ScsiTargetBlueScsi {
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {}
-
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, path: &Path) -> Result<()> {
-        self.load(path)
-    }
-
-    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
-        bail!("A BlueSCSI takes a folder, not an image");
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("A BlueSCSI has no image to branch");
-    }
 
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {

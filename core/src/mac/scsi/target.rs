@@ -1,5 +1,6 @@
 //! SCSI target generic/shared code
 
+#[cfg(feature = "savestates")]
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::mac::scsi::disk_image::DiskImage;
+use crate::emulator::devices::FunctionMut;
 use crate::mac::scsi::{
     ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT,
     ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_NOT_READY,
@@ -107,25 +108,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         Ok(())
     }
 
-    /// This target's Ethernet function, if it provides one
-    #[cfg(feature = "ethernet")]
-    fn ethernet(&self) -> Option<&dyn crate::emulator::devices::Ethernet> {
-        None
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn ethernet_mut(&mut self) -> Option<&mut dyn crate::emulator::devices::Ethernet> {
-        None
-    }
-
-    /// This target's FileTransfer function, if it provides one
-    fn file_transfer(&self) -> Option<&dyn crate::emulator::devices::FileTransfer> {
-        None
-    }
-
-    fn file_transfer_mut(&mut self) -> Option<&mut dyn crate::emulator::devices::FileTransfer> {
-        None
-    }
+    /// The function this target provides, which the frontend works through
+    fn function(&mut self) -> FunctionMut<'_>;
 
     /// The BlueSCSI device type at each SCSI ID on the bus, for the Toolbox's LIST_DEVICES
     fn set_device_map(&mut self, _devices: &[u8; 8]) {}
@@ -134,16 +118,6 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn blocks(&self) -> Option<usize>;
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult>;
     fn write(&mut self, block_offset: usize, data: &[u8]);
-    fn image_fn(&self) -> Option<&Path>;
-    fn load_media(&mut self, path: &Path) -> Result<()>;
-    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()>;
-    fn branch_media(&mut self, path: &Path) -> Result<()>;
-
-    /// For folder-backed ("Toolbox managed") CD-ROM drives: the folder of images
-    /// exposed to the guest via the BlueSCSI Toolbox CD commands. None otherwise.
-    fn cdrom_image_dir(&self) -> Option<&Path> {
-        None
-    }
 
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;

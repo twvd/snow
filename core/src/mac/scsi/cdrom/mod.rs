@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::emulator::devices::{Cdrom, CdromSettings, CdromStatus, FunctionMut, replace_status};
 use crate::{
     debuggable::Debuggable,
     emulator::{EmuContext, comm::EmulatorSpeed},
@@ -901,12 +902,7 @@ impl ScsiTargetCdrom {
     }
 }
 
-#[typetag::serde]
-impl ScsiTarget for ScsiTargetCdrom {
-    fn common(&mut self) -> &mut ScsiTargetCommon {
-        &mut self.common
-    }
-
+impl ScsiTargetCdrom {
     /// Try to load a disk image, given the filename of the image.
     ///
     /// This locks the file on disk and memory maps the file for use by
@@ -923,15 +919,53 @@ impl ScsiTarget for ScsiTargetCdrom {
             self.load_cue(path)
         } else {
             // Assume image is iso or toast
-            self.load_image(Box::new(FileDiskImage::open(path, false)?))
+            self.insert_image(Box::new(FileDiskImage::open(path, false)?))
         }
     }
 
-    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
+    fn insert_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
         self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
+    }
+}
+
+impl Cdrom for ScsiTargetCdrom {
+    fn update_status(&mut self, status: &mut CdromStatus) -> bool {
+        let image = self
+            .backend
+            .as_ref()
+            .and_then(|backend| backend.image_path())
+            .map(Path::to_path_buf);
+        let folder = self.image_dir.clone();
+        let new = CdromStatus {
+            settings: CdromSettings {
+                media: folder.clone().or_else(|| image.clone()),
+            },
+            image,
+            folder,
+        };
+        replace_status(status, new)
+    }
+
+    fn load(&mut self, path: &Path) -> Result<()> {
+        self.load_media(path)
+    }
+
+    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
+        self.insert_image(image)
+    }
+}
+
+#[typetag::serde]
+impl ScsiTarget for ScsiTargetCdrom {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Cdrom(self)
     }
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
@@ -1173,16 +1207,6 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
         log::error!("Write command to CD-ROM");
-    }
-
-    fn image_fn(&self) -> Option<&Path> {
-        self.backend
-            .as_ref()
-            .and_then(|backend| backend.image_path())
-    }
-
-    fn cdrom_image_dir(&self) -> Option<&Path> {
-        self.image_dir.as_deref()
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -1636,10 +1660,6 @@ impl ScsiTarget for ScsiTargetCdrom {
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
         self.load_media(imgfn)?;
         Ok(())
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("Unsupported on CD-ROM");
     }
 
     fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {

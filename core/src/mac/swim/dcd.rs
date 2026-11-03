@@ -8,13 +8,14 @@
 //! See docs/HD20.md for the protocol and its sources.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::{HardDisk, HardDiskSettings, HardDiskStatus, replace_status};
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_udec};
@@ -213,6 +214,8 @@ enum RxStep {
 pub struct DcdDevice {
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
+    /// The image the user gave: a restored machine runs on a copy
+    media: Option<PathBuf>,
     /// Size of the whole image file in bytes, for save states
     image_len: usize,
 
@@ -283,6 +286,7 @@ impl DcdDevice {
 
         Ok(Self {
             image_len: image.byte_len(),
+            media: image.image_path().map(Path::to_path_buf),
             backend: Some(image),
             first_block,
             blocks,
@@ -711,6 +715,25 @@ impl DcdDevice {
         }
         backend.write_bytes((self.first_block + block) * DCD_BLOCKSIZE, data);
         true
+    }
+}
+
+/// The HardDisk function of an HD20
+impl HardDisk for DcdDevice {
+    fn update_status(&mut self, status: &mut HardDiskStatus) -> bool {
+        let new = HardDiskStatus {
+            settings: HardDiskSettings {
+                media: self.media.clone().unwrap_or_default(),
+                read_only: !self.writable,
+            },
+            capacity: Some(self.blocks * DCD_BLOCKSIZE),
+            can_branch: false,
+        };
+        replace_status(status, new)
+    }
+
+    fn branch(&mut self, _path: &Path) -> Result<()> {
+        bail!("An HD20's image can't be branched off yet")
     }
 }
 
