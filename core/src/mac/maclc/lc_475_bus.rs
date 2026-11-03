@@ -1064,6 +1064,8 @@ where
         };
 
         let mut resp = match region {
+            // Everything but RAM and ROM sees the devices up to date, as they are ticked
+            Region::CpuId | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
             Region::Ram => {
                 let now = self.native_clock.native_ticks() + acc.pending;
                 let waits = waits
