@@ -591,6 +591,8 @@ where
         let tr = self.translate(&acc)?;
         let paddr = tr.paddr;
         let cacr = self.regs.cacr;
+        // The bus controller finishes the last write first
+        self.write_credit = 0;
         let mut ticks = 0;
         let line = self.caches.line_access(
             &mut bus_transaction!(self, &mut ticks),

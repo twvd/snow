@@ -293,6 +293,13 @@ where
                     waits,
                     burst_reject,
                 } => break (width, data, waits, burst_reject),
+                // Only for the bus to catch up: tick it through the cycles of
+                // the access so far, which stay the access's own, then retry
+                BusResponse::Stall(0) => {
+                    let ticks = *self.cycles + *self.ticks - *self.last_bus_sync;
+                    *self.last_bus_sync += ticks;
+                    self.bus.tick(ticks, ())?;
+                }
                 // Wait with the bus ticked through the stall, then retry
                 BusResponse::Stall(stall) => {
                     self.history.waitstates = true;
