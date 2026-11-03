@@ -5,10 +5,10 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::regs::Register;
-use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68040, FPU_M68040, M68040_ADDRESS_MASK};
 use crate::types::Word;
 
-type Cpu040 = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
+type Cpu040 = CpuM68040<Testbus<Address, u8, Bus68020>>;
 
 /// Code that gets replaced
 const CODE: Address = 0x2000;
@@ -28,7 +28,7 @@ fn run_at(cpu: &mut Cpu040, pc: Address) {
 /// Runs MOVEQ #1,D0 from the instruction cache, replaces it with MOVEQ #2,D0
 /// by a data write, flushes the data cache and runs it again: returns D0
 fn run_replaced_code(workaround: bool, reset: bool) -> u32 {
-    let mut cpu = Cpu040::new(Testbus::new(M68040_ADDRESS_MASK));
+    let mut cpu = Cpu040::new(Testbus::new(M68040_ADDRESS_MASK), FPU_M68040);
     cpu.set_cache_flush_workaround(workaround);
     if reset {
         cpu.reset().unwrap();
