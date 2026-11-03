@@ -121,7 +121,7 @@ fn test_ptest_levels() {
 
     // Once the ATC has it, with the M bit
     write_long(&mut cpu, page_desc(0x5000), 0x5000 | 1 << 4 | 0b01);
-    cpu.pmmu_translate(FC, 0x5000, false).unwrap().paddr;
+    cpu.pmmu_translate(FC, 0x5000, false).unwrap();
     cpu.set_pc(INITIAL_PC).unwrap();
     cpu.prefetch_refill().unwrap();
     cpu.step().unwrap();

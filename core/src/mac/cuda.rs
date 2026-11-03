@@ -502,9 +502,11 @@ mod tests {
 
     #[test]
     fn sync() {
-        let mut host = Host::default();
+        let mut host = Host {
+            tack: true,
+            ..Default::default()
+        };
 
-        host.tack = true;
         host.wait_shift();
         assert!(host.cuda.treq());
         host.tack = false;
