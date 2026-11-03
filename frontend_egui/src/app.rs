@@ -1692,12 +1692,16 @@ impl SnowGui {
         }
     }
 
-    /// Whether a device's function has anything in the devices menu. A video card or the Apple
-    /// IIe Card has nothing to do while the machine runs, so its slot isn't listed.
+    /// Whether a device's function has anything in the devices menu. A video card, the Apple
+    /// IIe Card or a PFG has nothing to do while the machine runs, so its slot isn't listed.
     fn has_menu(status: Option<&FunctionStatus>) -> bool {
         !matches!(
             status,
-            Some(FunctionStatus::Video | FunctionStatus::AppleIIe)
+            Some(
+                FunctionStatus::Video
+                    | FunctionStatus::AppleIIe
+                    | FunctionStatus::FrequencyGenerator
+            )
         )
     }
 
@@ -1993,6 +1997,7 @@ impl SnowGui {
                 FunctionStatus::Floppy(floppy) => self.draw_floppy_menu(ui, addr, label, floppy),
                 FunctionStatus::Video
                 | FunctionStatus::AppleIIe
+                | FunctionStatus::FrequencyGenerator
                 | FunctionStatus::SerialLink(_)
                 | FunctionStatus::LocalTalk(_) => (),
             }

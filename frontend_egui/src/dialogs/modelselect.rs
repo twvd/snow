@@ -823,6 +823,12 @@ impl ModelSelectionDialog {
                                 "Use an 800K floppy drive, for MacWorks Plus",
                             );
                         }
+                        if self.selected_model.is_lisa() {
+                            ui.checkbox(
+                                &mut self.init_args.lisa_pfg,
+                                "X/Lisa PFG in the SCC socket, for MacWorks Plus II",
+                            );
+                        }
                         ui.checkbox(
                             &mut self.init_args.audio_disabled,
                             "Disable audio (sync to video)",
