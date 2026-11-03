@@ -11,6 +11,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use super::cops_sim::CopsSim;
+use super::fdc_sim::FdcSim;
 use super::mmu::{LisaMmu, Space};
 use super::via::{KeyboardVia, ParallelVia};
 use super::video::LisaVideo;
@@ -85,6 +86,7 @@ pub struct LisaBus<TRenderer: Renderer> {
     keyboard_via: KeyboardVia,
     parallel_via: ParallelVia,
     cops: CopsSim,
+    fdc: FdcSim,
 
     pub(crate) scc: Scc,
     /// Not on the machine: the emulator expects one on every machine
@@ -146,6 +148,7 @@ where
             keyboard_via: KeyboardVia::new(),
             parallel_via: ParallelVia::new(),
             cops: CopsSim::new(),
+            fdc: FdcSim::new(),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new(&[], false, BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -369,8 +372,35 @@ where
         }
     }
 
+    /// The shared RAM of the floppy controller is on the lower byte lane
+    fn fdc_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        Some(u32::from(self.fdc.ram_read((addr as usize & 0xFFF) >> 1)))
+    }
+
+    fn fdc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.fdc
+            .ram_write((addr as usize & 0xFFF) >> 1, val as Byte);
+        Some(())
+    }
+
+    /// The floppy controller, with its drive
+    pub fn fdc(&self) -> &FdcSim {
+        &self.fdc
+    }
+
+    pub fn fdc_mut(&mut self) -> &mut FdcSim {
+        &mut self.fdc
+    }
+
     fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
         match acc.addr {
+            0xC000..=0xCFFF => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                waits,
+                self,
+                Self::fdc_read,
+                Self::fdc_write,
+            ),
             0xD000..=0xD3FF => bus_access_byte_lane::<2, 1, _, _>(
                 acc,
                 waits,
@@ -510,6 +540,7 @@ where
         self.keyboard_via = KeyboardVia::new();
         self.parallel_via = ParallelVia::new();
         self.cops.machine_reset();
+        self.fdc.reset();
         self.soft_error_masked = true;
         self.hard_error_masked = true;
         self.force_bad_parity = false;
@@ -536,6 +567,10 @@ where
                 self.parallel_via.tick(1, ())?;
             }
         }
+
+        self.fdc.tick(ticks);
+        self.keyboard_via.b_in.set_fdir(self.fdc.fdir());
+        self.parallel_via.b_in.set_disk_diag(self.fdc.diag());
 
         let port = self.cops_port();
         self.cops.tick(ticks, port);
@@ -582,7 +617,7 @@ where
         if self.keyboard_via.irq() {
             return Some(2);
         }
-        if self.video.irq() || self.parallel_via.irq() {
+        if self.video.irq() || self.parallel_via.irq() || self.fdc.fdir() {
             return Some(1);
         }
         None
