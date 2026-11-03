@@ -29,13 +29,27 @@ pub enum DafbKind {
     MemcJr,
 }
 
-/// Monitors which the DAFB supports. The 16" RGB monitor doesn't work yet.
+/// Monitors which the DAFB of the Quadra 700 supports
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::RGB16,
     MacMonitor::RGB21,
     MacMonitor::PortraitBW,
     MacMonitor::TwoPageBW,
+    MacMonitor::VGA,
+];
+
+/// Monitors which the DAFB II cell of MEMCjr supports, the same and the 19" RGB
+pub const MONITORS_MEMCJR: &[MacMonitor] = &[
+    MacMonitor::RGB12,
+    MacMonitor::HiRes14,
+    MacMonitor::RGB16,
+    MacMonitor::RGB19,
+    MacMonitor::RGB21,
+    MacMonitor::PortraitBW,
+    MacMonitor::TwoPageBW,
+    MacMonitor::VGA,
 ];
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr, Serialize, Deserialize)]

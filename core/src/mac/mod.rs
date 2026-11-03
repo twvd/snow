@@ -581,6 +581,8 @@ pub enum MacMonitor {
     TwoPageBW,
     /// VGA monitor (640x480)
     VGA,
+    /// Macintosh 19" RGB monitor (1024x768)
+    RGB19,
 }
 
 impl Display for MacMonitor {
@@ -596,6 +598,7 @@ impl Display for MacMonitor {
                 Self::PortraitBW => "Macintosh 15\" Portrait monitor",
                 Self::TwoPageBW => "Macintosh 21\" Two-Page monitor",
                 Self::VGA => "VGA monitor",
+                Self::RGB19 => "Macintosh 19\" RGB monitor",
             },
             self.width(),
             self.height()
@@ -610,13 +613,13 @@ impl MacMonitor {
             Self::HiRes14 => [6, 2, 4, 6],
             /* RGB15 => [5, 1, 0, 1] according to TN HW30, detected as RGB16 */
             Self::RGB16 => [7, 2, 5, 2],
-            /* RGB19 => [7, 3, 4, 4] according to TN HW30, not detected */
             Self::RGB21 => [0, 0, 0, 0],
             Self::PortraitBW => [1, 1, 1, 0],
             Self::TwoPageBW => [3, 1, 0, 0],
             // 111 then 01 01 11 in the LC III Developer Note, which the LC III
             // ROM only takes with lines 0 and 2 the other way round
             Self::VGA => [7, 1, 1, 6],
+            Self::RGB19 => [7, 3, 4, 4],
         }
     }
 
@@ -629,6 +632,7 @@ impl MacMonitor {
             Self::PortraitBW => 640,
             Self::TwoPageBW => 1152,
             Self::VGA => 640,
+            Self::RGB19 => 1024,
         }
     }
 
@@ -641,12 +645,15 @@ impl MacMonitor {
             Self::PortraitBW => 870,
             Self::TwoPageBW => 870,
             Self::VGA => 480,
+            Self::RGB19 => 768,
         }
     }
 
     pub fn has_color(self) -> bool {
         match self {
-            Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB21 | Self::VGA => true,
+            Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB19 | Self::RGB21 | Self::VGA => {
+                true
+            }
             Self::PortraitBW | Self::TwoPageBW => false,
         }
     }

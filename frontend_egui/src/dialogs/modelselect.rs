@@ -564,15 +564,14 @@ impl ModelSelectionDialog {
 
                 // Monitors dropdown
                 if self.monitor_selectable() {
-                    let monitors: Vec<MacMonitor> =
-                        if matches!(self.selected_model, MacModel::Quadra700 | MacModel::LC475) {
-                            dafb::MONITORS.to_vec()
-                        } else {
-                            // VGA monitors are only known to work on the LC III
-                            MacMonitor::iter()
-                                .filter(|&m| m != MacMonitor::VGA)
-                                .collect()
-                        };
+                    let monitors: Vec<MacMonitor> = match self.selected_model {
+                        MacModel::Quadra700 => dafb::MONITORS.to_vec(),
+                        MacModel::LC475 => dafb::MONITORS_MEMCJR.to_vec(),
+                        // VGA and 19" monitors are not known to work with the video cards
+                        _ => MacMonitor::iter()
+                            .filter(|&m| m != MacMonitor::VGA && m != MacMonitor::RGB19)
+                            .collect(),
+                    };
                     if !monitors.contains(&self.selected_monitor) {
                         self.selected_monitor = MacMonitor::default();
                     }
