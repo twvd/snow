@@ -40,6 +40,11 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     fn cpu_tick(&mut self, _ticks: Ticks) -> Result<()> {
         Ok(())
     }
+
+    /// Whether the SCC wants the LocalTalk bridge polled now
+    fn localtalk_poll_needed(&self) -> bool {
+        false
+    }
 }
 
 /// Inspectable provides an interface to debugging/memory views.

@@ -699,6 +699,11 @@ impl Scc {
         self.get_irq_pending().is_some()
     }
 
+    /// Check the LocalTalk poll needed flag for a channel, without clearing it
+    pub fn localtalk_poll_needed(&self, ch: SccCh) -> bool {
+        self.ch[ch.to_usize().unwrap()].localtalk_poll_needed
+    }
+
     /// Check and clear the LocalTalk poll needed flag for a channel.
     /// Returns true if the flag was set (meaning we should poll the bridge immediately).
     pub fn take_localtalk_poll_needed(&mut self, ch: SccCh) -> bool {

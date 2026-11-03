@@ -926,6 +926,21 @@ where
         Ok(())
     }
 
+    /// Runs up to `steps` instructions in one go. Stops after an instruction
+    /// that asked for a reset of the machine, hit a breakpoint, or made the
+    /// LocalTalk bridge want a poll. Returns how many instructions ran, and
+    /// whether a reset was asked for.
+    pub fn run_steps(&mut self, steps: u32) -> Result<(u32, bool)> {
+        for done in 1..=steps {
+            self.step()?;
+            let reset = self.bus.take_reset_request();
+            if reset || self.breakpoint_hit.peek() || self.bus.localtalk_poll_needed() {
+                return Ok((done, reset));
+            }
+        }
+        Ok((steps, false))
+    }
+
     /// Executes a single CPU step.
     pub fn step(&mut self) -> Result<()> {
         debug_assert_eq!(self.prefetch.len(), 2);

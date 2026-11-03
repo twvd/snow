@@ -79,6 +79,13 @@ macro_rules! machine_bus {
             }
 
             #[inline(always)]
+            fn localtalk_poll_needed(&self) -> bool {
+                match self {
+                    $(Self::$variant(bus) => bus.localtalk_poll_needed(),)+
+                }
+            }
+
+            #[inline(always)]
             fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
                 match self {
                     $(Self::$variant(bus) => bus.cpu_tick(ticks),)+

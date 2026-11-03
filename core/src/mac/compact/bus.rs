@@ -793,6 +793,10 @@ where
         // All compact Macs have RESET and HALT tied together
         Ok(true)
     }
+
+    fn localtalk_poll_needed(&self) -> bool {
+        self.scc.localtalk_poll_needed(SccCh::B)
+    }
 }
 
 impl<TRenderer> Tickable for CompactMacBus<TRenderer>
