@@ -120,6 +120,9 @@ pub struct EmulatorInitArgs {
 
     /// Overclock
     pub overclock: Option<u64>,
+
+    /// A data cache flush also clears the instruction cache (68040)
+    pub cache_flush_workaround: bool,
 }
 
 /// Id of the memory notifier of the disassembly
@@ -288,6 +291,9 @@ impl EmulatorState {
         }
 
         cmd.send(EmulatorCommand::SetOverclock(args.overclock))?;
+        cmd.send(EmulatorCommand::SetCacheFlushWorkaround(
+            args.cache_flush_workaround,
+        ))?;
 
         if model.has_scsi() {
             for id in 0..7 {

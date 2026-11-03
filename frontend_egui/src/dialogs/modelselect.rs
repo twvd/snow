@@ -8,6 +8,7 @@ use crate::settings::AppSettings;
 use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
+use snow_core::cpu_m68k::M68040;
 use snow_core::emulator::MouseMode;
 use snow_core::mac::maclc::lc_475_bus;
 use snow_core::mac::maclc::video as lc_video;
@@ -762,6 +763,20 @@ impl ModelSelectionDialog {
                             self.init_args.overclock = Some(overclock_mhz);
                         } else {
                             self.init_args.overclock = None;
+                        }
+                        if self.selected_model.cpu_type() == M68040 {
+                            ui.checkbox(
+                                &mut self.init_args.cache_flush_workaround,
+                                "Cache flush workaround",
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "A data cache flush also clears the instruction cache.\n\
+                                     Needed to boot the Mac OS 8.1 CD.",
+                                )
+                                .small()
+                                .weak(),
+                            );
                         }
                         if self.selected_model == MacModel::SE30 {
                             let mut x = false;

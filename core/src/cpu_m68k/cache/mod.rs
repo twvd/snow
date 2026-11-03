@@ -163,6 +163,11 @@ pub trait CpuCaches: Default {
         val
     }
 
+    /// Makes CPUSH of the data cache also invalidate the instruction cache
+    /// (68040), for guest code that only flushes the data cache before it
+    /// runs code it has loaded
+    fn set_flush_workaround(&mut self, _on: bool) {}
+
     /// CINV and CPUSH (68040): invalidates, and for CPUSH first writes
     /// back, the lines of `scope` at physical address `paddr`
     fn invalidate<TBus, const CPU_TYPE: CpuM68kType>(

@@ -129,6 +129,10 @@ impl Cache040 {
 pub struct Caches040 {
     icache: Cache040,
     dcache: Cache040,
+    /// CPUSH of the data cache also invalidates the instruction cache, see
+    /// invalidate()
+    #[serde(default)]
+    flush_workaround: bool,
 }
 
 impl Caches040 {
@@ -418,7 +422,15 @@ impl CpuCaches for Caches040 {
             CacheScope::Page(size) => !(size - 1),
             CacheScope::All => 0,
         };
-        if caches != CacheSelect::Data {
+        // CPUSH of the data cache leaves the instruction cache alone (M68000PRM
+        // CPUSH), which doesn't see data accesses either (MC68040UM 4.5). The
+        // patch loader of the Mac OS 8.1 CD flushes only the data cache
+        // (_HWPriv FlushDataCache) before it runs code loaded where other code
+        // ran just before, so it runs stale lines or not depending on the
+        // replacement counter: it crashes at boot on the Quadra 700 and LC 475
+        // with some RAM sizes. The workaround invalidates the instruction
+        // cache lines in scope too.
+        if caches != CacheSelect::Data || (push && self.flush_workaround) {
             Self::invalidate_cache(bus, &mut self.icache, paddr, mask, false)?;
         }
         if caches != CacheSelect::Instruction {
@@ -479,8 +491,16 @@ impl CpuCaches for Caches040 {
         longs
     }
 
+    fn set_flush_workaround(&mut self, on: bool) {
+        self.flush_workaround = on;
+    }
+
     fn reset(&mut self) {
-        *self = Self::default();
+        // The workaround is a setting, not cache state
+        *self = Self {
+            flush_workaround: self.flush_workaround,
+            ..Self::default()
+        };
     }
 }
 

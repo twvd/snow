@@ -110,6 +110,8 @@ pub enum EmulatorCommand {
     #[serde(skip)]
     SetSpeed(EmulatorSpeed),
     SetOverclock(Option<u64>),
+    /// Makes a data cache flush also clear the instruction cache (68040)
+    SetCacheFlushWorkaround(bool),
     ProgKey,
     #[serde(skip)]
     WriteRegister(Register, u32),
