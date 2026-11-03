@@ -539,6 +539,27 @@ impl ModelSelectionDialog {
                         if prev_card != self.selected_video_card {
                             self.do_card_changed(prev_card);
                         }
+
+                        let slots = self.selected_model.nubus_slots();
+                        if !slots.contains(&self.init_args.video_card_slot)
+                            && let Some(first) = slots.first()
+                        {
+                            self.init_args.video_card_slot = *first;
+                        }
+                        ui.label("In NuBus slot");
+                        egui::ComboBox::new(egui::Id::new("Select video card slot"), "")
+                            .selected_text(format!("{:X}", self.init_args.video_card_slot))
+                            .show_ui(ui, |ui| {
+                                for &slot in slots {
+                                    ui.selectable_value(
+                                        &mut self.init_args.video_card_slot,
+                                        slot,
+                                        format!("{:X}", slot),
+                                    );
+                                }
+                            });
+                        ui.label("");
+                        ui.end_row();
                     }
 
                     ui.label(self.video_rom_description());
