@@ -739,6 +739,8 @@ where
     /// as its port, so the device callbacks get the address of the cycle.
     fn access(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
         let resp = match self.decode(acc.addr) {
+            // Everything but RAM and ROM sees the devices up to date, as they are ticked
+            Some(Region::Vram(_)) if acc.pending > 0 => BusResponse::Stall(0),
             // During the boot overlay, reads of the RAM area go to the ROM
             Some(Region::Ram(_)) if self.overlay && !acc.write => {
                 let port = self.port(&Region::Rom, false);

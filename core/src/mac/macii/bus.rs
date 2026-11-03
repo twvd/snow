@@ -821,6 +821,8 @@ where
         let overlay = self.overlay && !amu;
         let mem_waits = self.mem_waits();
         let resp = match MAP[usize::from(overlay)][(acc.addr >> 24) as usize] {
+            // Everything but RAM and ROM sees the devices up to date, as they are ticked
+            Region::SuperSlot | Region::Slot if acc.pending > 0 => BusResponse::Stall(0),
             Region::Ram => bus_access_long(acc, mem_waits, self, Self::ram_read, Self::ram_write),
             Region::Rom => {
                 bus_access_long(acc, mem_waits, self, Self::rom_read, Self::ignore_write)

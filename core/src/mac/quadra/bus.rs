@@ -747,6 +747,8 @@ where
         };
 
         let mut resp = match region {
+            // Everything but RAM and ROM sees the devices up to date, as they are ticked
+            Region::SuperSlot | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
             Region::Ram => bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
