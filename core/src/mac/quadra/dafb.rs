@@ -67,6 +67,19 @@ struct Geometry {
     stride: usize,
     /// Offset of the first visible pixel in VRAM, in bytes
     base: usize,
+    /// Offset of the second line from the first, in bytes
+    second_line: usize,
+}
+
+impl Geometry {
+    /// Offset in VRAM of the first pixel of a line, in bytes
+    fn line_start(&self, line: usize) -> usize {
+        if line == 0 {
+            self.base
+        } else {
+            self.base + self.second_line + (line - 1) * self.stride
+        }
+    }
 }
 
 /// Apple DAFB video controller
@@ -345,11 +358,22 @@ where
             return None;
         }
 
+        // On the 12" monitor at 1 bpp, the video driver of the Quadra 700 ROM programs the base
+        // 512 bytes before the screen and one more line at the top, which it fills with black,
+        // probably to work around an issue of the chip. Show that line from the base, then the
+        // screen.
+        let second_line = if self.kind == DafbKind::Dafb && self.bpp() == Bpp::One && width == 512 {
+            512
+        } else {
+            stride
+        };
+
         Some(Geometry {
             width,
             height,
             stride,
             base,
+            second_line,
         })
     }
 
@@ -395,7 +419,7 @@ where
         };
 
         for y in 0..geo.height {
-            let row = geo.base + y * geo.stride;
+            let row = geo.line_start(y);
             let out = y * geo.width;
 
             if row + rowbytes > self.vram.len() {
@@ -921,5 +945,39 @@ mod tests {
         dafb.write(SENSE, 0).unwrap();
         dafb.reset();
         assert_eq!(dafb.read(SENSE), Some(0));
+    }
+
+    /// The 12" mode at 1 bpp, as the Quadra 700 ROM programs it: 385 lines, the
+    /// first from the base, the others from the screen 512 bytes after it
+    #[test]
+    fn twelve_inch_1bpp_top_line() {
+        type D = Dafb<NullRenderer>;
+        for kind in [DafbKind::Dafb, DafbKind::MemcJr] {
+            let mut dafb = dafb(kind);
+            dafb.base_hi = Field32(0xE00 >> 9);
+            dafb.stride = Field32(1024 >> 2);
+            dafb.hparams[D::HAL] = Field32(0x68);
+            dafb.hparams[D::HFP] = Field32(0x268);
+            dafb.hparams[D::HPIX] = Field32(0x27E);
+            dafb.vparams[D::VAL] = Field32(0x28);
+            dafb.vparams[D::VFP] = Field32(0x32A);
+            dafb.vparams[D::VFPEQ] = Field32(0x32B);
+            dafb.pbctrl = 0x80;
+
+            let geo = dafb.geometry().unwrap();
+            assert_eq!((geo.width, geo.height), (512, 385));
+            assert_eq!(geo.line_start(0), 0xE00);
+            let line_1 = if kind == DafbKind::Dafb {
+                0x1000
+            } else {
+                0x1200
+            };
+            assert_eq!(geo.line_start(1), line_1);
+            assert_eq!(geo.line_start(2), line_1 + 1024);
+
+            // 2 bpp
+            dafb.pbctrl = 0x88;
+            assert_eq!(dafb.geometry().unwrap().line_start(1), 0x1200);
+        }
     }
 }
