@@ -126,6 +126,7 @@ pub enum DeviceModel {
     SerialBridge,
     Lisa400KDrive,
     Lisa800KDrive,
+    LisaTwiggyDrive,
     ProFile,
     Widget,
     LisaVideo,
@@ -231,6 +232,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::serial_bridge::INFO,
     &crate::lisa::fdc_sim::INFO_400K,
     &crate::lisa::fdc_sim::INFO_800K,
+    &crate::lisa::fdc_sim::INFO_TWIGGY,
     &crate::lisa::profile_sim::INFO_PROFILE,
     &crate::lisa::profile_sim::INFO_WIDGET,
     &crate::lisa::video::INFO,
@@ -403,6 +405,13 @@ impl Slot {
                 settings: Map::new(),
             }),
             ..Self::empty(id)
+        }
+    }
+
+    fn fixed_named(id: impl Into<String>, name: &str, model: DeviceModel) -> Self {
+        Self {
+            name: Some(name.to_owned()),
+            ..Self::fixed(id, model)
         }
     }
 }
@@ -827,11 +836,19 @@ impl MacModel {
         }
 
         if self.is_lisa() {
+            let drives = if self == Self::Lisa1 {
+                vec![
+                    Slot::fixed_named("1", "upper", DeviceModel::LisaTwiggyDrive),
+                    Slot::fixed_named("2", "lower", DeviceModel::LisaTwiggyDrive),
+                ]
+            } else {
+                vec![Slot::fixed("1", DeviceModel::Lisa400KDrive)]
+            };
             buses.push(Bus {
                 kind: BusKind::LisaFdc,
                 id: bus_id::LISA_FDC.to_owned(),
                 title: "Floppy".to_owned(),
-                slots: vec![Slot::fixed("1", DeviceModel::Lisa400KDrive)],
+                slots: drives,
             });
             buses.push(Bus {
                 kind: BusKind::LisaParallel,
@@ -1111,7 +1128,9 @@ impl BuildPlan {
                 self.cards.push(config.clone());
                 Ok(false)
             }
-            DeviceModel::Lisa400KDrive | DeviceModel::Lisa800KDrive => {
+            DeviceModel::Lisa400KDrive
+            | DeviceModel::Lisa800KDrive
+            | DeviceModel::LisaTwiggyDrive => {
                 if config.bus != bus_id::LISA_FDC || !fits(BusKind::LisaFdc) {
                     bail!("This machine can't take a {}", device.name());
                 }
@@ -1220,7 +1239,8 @@ enum SlotTarget {
     Card,
     IieDrive(usize),
     Serial(SccCh),
-    LisaDrive,
+    /// The upper drive first on a Lisa 1
+    LisaDrive(usize),
     LisaParallel,
 }
 
@@ -1236,7 +1256,7 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
         BusKind::Serial if slot.id == "A" => SlotTarget::Serial(SccCh::A),
         BusKind::Serial => SlotTarget::Serial(SccCh::B),
         BusKind::Nubus | BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => SlotTarget::Card,
-        BusKind::LisaFdc => SlotTarget::LisaDrive,
+        BusKind::LisaFdc => SlotTarget::LisaDrive(number(1)),
         BusKind::LisaParallel => SlotTarget::LisaParallel,
     }
 }
@@ -1668,7 +1688,10 @@ impl Emulator {
                     _ => FunctionMut::SerialLink(link),
                 }
             }
-            SlotTarget::LisaDrive => FunctionMut::Floppy(self.lisa_bus_mut()?.fdc_mut()),
+            SlotTarget::LisaDrive(i) => {
+                let mut drive = self.lisa_bus_mut()?.fdc_mut().drive(i)?;
+                return Some(f(FunctionMut::Floppy(&mut drive)));
+            }
             SlotTarget::LisaParallel => FunctionMut::HardDisk(self.lisa_bus_mut()?.profile_mut()?),
         };
         Some(f(function))
@@ -2208,7 +2231,11 @@ impl Emulator {
                 ),
                 SerialBridgeConfig::LocalTalk => device(DeviceModel::LocalTalkAdapter, Map::new()),
             },
-            SlotTarget::LisaDrive => match self.lisa_bus()?.fdc().double_sided() {
+            SlotTarget::LisaDrive(i) if i >= self.lisa_bus()?.fdc().drive_count() => None,
+            SlotTarget::LisaDrive(_) if self.lisa_bus()?.fdc().lisa_1() => {
+                device(DeviceModel::LisaTwiggyDrive, Map::new())
+            }
+            SlotTarget::LisaDrive(_) => match self.lisa_bus()?.fdc().double_sided() {
                 true => device(DeviceModel::Lisa800KDrive, Map::new()),
                 false => device(DeviceModel::Lisa400KDrive, Map::new()),
             },
@@ -2326,6 +2353,7 @@ mod tests {
         assert!(slots(MacModel::SE30, bus_id::PDS_LC).is_empty());
         // The Lisa's floppy controller is its own
         assert_eq!(slots(MacModel::Lisa25, bus_id::LISA_FDC), ["1"]);
+        assert_eq!(slots(MacModel::Lisa1, bus_id::LISA_FDC), ["1", "2"]);
         assert_eq!(slots(MacModel::Lisa210, bus_id::LISA_PARALLEL), ["0"]);
         assert!(slots(MacModel::Lisa25, bus_id::SWIM).is_empty());
         assert!(slots(MacModel::Lisa210, bus_id::SCSI).is_empty());
@@ -2842,6 +2870,30 @@ mod tests {
             assert_round_trip(MacModel::Lisa25, vec![config.clone()]),
             vec![config]
         );
+    }
+
+    #[test]
+    fn a_lisa_1_has_two_twiggy_drives() {
+        let files = TestFiles::new("lisa_1");
+        let floppy = |slot: &str, name: &str, size: usize| {
+            DeviceConfig::existing(
+                bus_id::LISA_FDC,
+                slot,
+                &FloppySettings {
+                    media: Some(files.file(name, size)),
+                    read_only: true,
+                },
+            )
+            .unwrap()
+        };
+        let lower = floppy("2", "twiggy.image", 1702 * 512);
+        assert_eq!(
+            assert_round_trip(MacModel::Lisa1, vec![lower.clone()]),
+            vec![lower]
+        );
+        // A Sony disk doesn't fit
+        let (_, refused) = build(MacModel::Lisa1, vec![floppy("1", "sony.image", 800 * 512)]);
+        assert_eq!(refused.len(), 1, "{:?}", refused);
     }
 
     #[test]

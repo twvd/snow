@@ -306,11 +306,16 @@ impl Default for Pfg {
     }
 }
 
+/// MacWorks Plus II runs on a Lisa 2
+fn fits_pfg(mac: MacModel) -> bool {
+    matches!(mac, MacModel::Lisa25 | MacModel::Lisa210)
+}
+
 pub const INFO: ModelInfo = ModelInfo {
     model: DeviceModel::Pfg,
     name: "X/Lisa PFG",
     bus: BusKind::BuiltIn,
-    fits: MacModel::is_lisa,
+    fits: fits_pfg,
     function: FunctionKind::FrequencyGenerator,
     fixed: true,
     one_per_bus: true,

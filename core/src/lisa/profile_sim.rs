@@ -590,7 +590,7 @@ fn create_widget(config: &DeviceConfig) -> Result<ProfileSim> {
 }
 
 fn fits_profile(mac: MacModel) -> bool {
-    mac == MacModel::Lisa25
+    matches!(mac, MacModel::Lisa1 | MacModel::Lisa25)
 }
 
 /// The 2/10 has one inside, on its parallel port
