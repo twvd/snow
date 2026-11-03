@@ -23,6 +23,7 @@ use super::comm::EmulatorEvent;
 #[cfg(feature = "savestates")]
 use super::save::{RestoredSlot, SavedSlot, SlotState};
 use super::{Emulator, EmulatorConfig, MouseMode};
+use crate::lisa::bus::LisaBus;
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
@@ -36,6 +37,7 @@ use crate::mac::swim::dcd::DcdDevice;
 use crate::mac::swim::drive::{DriveType, FloppyDrive};
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::DisplayBuffer;
+use crate::renderer::channel::ChannelRenderer;
 use log::info;
 
 /// The ids of the buses. They are in the workspace files: they must not change.
@@ -49,6 +51,8 @@ pub mod bus_id {
     pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
     pub const SERIAL: &str = "Serial";
     pub const BUILT_IN: &str = "Built-in";
+    /// The Lisa's floppy disk controller
+    pub const LISA_FDC: &str = "LisaFDC";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,8 @@ pub enum BusKind {
     Serial,
     /// Devices on the logic board with no real bus behind them
     BuiltIn,
+    /// The Lisa's floppy disk controller and its drive
+    LisaFdc,
 }
 
 /// What a device does, as far as the frontend is concerned. A new one needs frontend code.
@@ -114,6 +120,7 @@ pub enum DeviceModel {
     AppleIIePdsCard,
     LocalTalkAdapter,
     SerialBridge,
+    Lisa400KDrive,
     LisaVideo,
 }
 
@@ -211,6 +218,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::maclc::pds_iie::INFO,
     &crate::mac::localtalk_bridge::INFO,
     &crate::mac::serial_bridge::INFO,
+    &crate::lisa::fdc_sim::INFO_400K,
     &crate::lisa::video::INFO,
 ];
 
@@ -814,6 +822,12 @@ impl MacModel {
 
         if self.is_lisa() {
             buses.push(Bus {
+                kind: BusKind::LisaFdc,
+                id: bus_id::LISA_FDC.to_owned(),
+                title: "Floppy".to_owned(),
+                slots: vec![Slot::fixed("1", DeviceModel::Lisa400KDrive)],
+            });
+            buses.push(Bus {
                 kind: BusKind::BuiltIn,
                 id: bus_id::BUILT_IN.to_owned(),
                 title: "Built-in".to_owned(),
@@ -1067,6 +1081,12 @@ impl BuildPlan {
                 self.cards.push(config.clone());
                 Ok(false)
             }
+            DeviceModel::Lisa400KDrive => {
+                if config.bus != bus_id::LISA_FDC || !fits(BusKind::LisaFdc) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                Ok(true)
+            }
             _ => {
                 // A drive other than the machine's own
                 if config.bus != bus_id::SWIM {
@@ -1147,6 +1167,7 @@ enum SlotTarget {
     Card,
     IieDrive(usize),
     Serial(SccCh),
+    LisaDrive,
 }
 
 fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
@@ -1161,6 +1182,7 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
         BusKind::Serial if slot.id == "A" => SlotTarget::Serial(SccCh::A),
         BusKind::Serial => SlotTarget::Serial(SccCh::B),
         BusKind::Nubus | BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => SlotTarget::Card,
+        BusKind::LisaFdc => SlotTarget::LisaDrive,
     }
 }
 
@@ -1493,6 +1515,8 @@ impl Emulator {
                     }
                 }
                 BusKind::Scsi => (),
+                // The machine's state has the disk
+                BusKind::LisaFdc => (),
                 BusKind::Serial => {
                     // The host's side of a link isn't in the state: it starts again
                     self.rebuild_bus_list();
@@ -1587,6 +1611,7 @@ impl Emulator {
                     _ => FunctionMut::SerialLink(link),
                 }
             }
+            SlotTarget::LisaDrive => FunctionMut::Floppy(self.lisa_bus_mut()?.fdc_mut()),
         };
         Some(f(function))
     }
@@ -1993,6 +2018,20 @@ impl Emulator {
         }
     }
 
+    fn lisa_bus(&self) -> Option<&LisaBus<ChannelRenderer>> {
+        match &self.config {
+            EmulatorConfig::Lisa(lisa) => Some(&lisa.bus),
+            _ => None,
+        }
+    }
+
+    fn lisa_bus_mut(&mut self) -> Option<&mut LisaBus<ChannelRenderer>> {
+        match &mut self.config {
+            EmulatorConfig::Lisa(lisa) => Some(&mut lisa.bus),
+            _ => None,
+        }
+    }
+
     /// Plugs a host link in a serial port
     fn serial_bridge_enable(&mut self, ch: SccCh, config: SerialBridgeConfig) -> Result<()> {
         let bridge = serial_device(&config)?;
@@ -2064,6 +2103,10 @@ impl Emulator {
                 ),
                 SerialBridgeConfig::LocalTalk => device(DeviceModel::LocalTalkAdapter, Map::new()),
             },
+            SlotTarget::LisaDrive => {
+                self.lisa_bus()?;
+                device(DeviceModel::Lisa400KDrive, Map::new())
+            }
         }
     }
 }
@@ -2172,6 +2215,9 @@ mod tests {
         assert_eq!(slots(MacModel::SE30, bus_id::PDS_SE30), ["0"]);
         assert!(slots(MacModel::SE30, bus_id::NUBUS).is_empty());
         assert!(slots(MacModel::SE30, bus_id::PDS_LC).is_empty());
+        // The Lisa's floppy controller is its own
+        assert_eq!(slots(MacModel::Lisa25, bus_id::LISA_FDC), ["1"]);
+        assert!(slots(MacModel::Lisa25, bus_id::SWIM).is_empty());
     }
 
     #[test]
