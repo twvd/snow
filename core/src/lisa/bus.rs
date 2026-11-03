@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::cops_sim::CopsSim;
 use super::fdc_sim::FdcSim;
 use super::mmu::{LisaMmu, Space};
+use super::profile_sim::ProfileSim;
 use super::via::{KeyboardVia, ParallelVia};
 use super::video::LisaVideo;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
@@ -87,6 +88,13 @@ pub struct LisaBus<TRenderer: Renderer> {
     parallel_via: ParallelVia,
     cops: CopsSim,
     fdc: FdcSim,
+    /// The drive on the parallel port. A save state has it apart, by its slot.
+    #[serde(skip)]
+    profile: Option<ProfileSim>,
+    /// CRES as the drive last saw it
+    profile_not_reset: bool,
+    /// BSY as the VIA last saw it
+    profile_not_busy: bool,
 
     pub(crate) scc: Scc,
     /// Not on the machine: the emulator expects one on every machine
@@ -155,6 +163,9 @@ where
             parallel_via: ParallelVia::new(),
             cops: CopsSim::new(),
             fdc: FdcSim::new(),
+            profile: None,
+            profile_not_reset: true,
+            profile_not_busy: true,
             scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new(&[], false, BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -322,18 +333,74 @@ where
         }
         self.cops
             .set_keyboard_reset(!self.keyboard_via.pb().not_reset());
+        let not_cres = self.keyboard_via.pb().not_cres();
+        if !not_cres
+            && self.profile_not_reset
+            && let Some(profile) = &mut self.profile
+        {
+            profile.reset();
+            self.sync_profile();
+        }
+        self.profile_not_reset = not_cres;
         Some(())
     }
 
     fn parallel_via_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
         let reg = ParallelVia::register(addr >> 3);
-        Some(u32::from(self.parallel_via.read(reg)))
+        let val = self.parallel_via.read(reg);
+        // CA2 pulses, which clocks a byte
+        if reg == ViaReg::A
+            && let Some(profile) = &mut self.profile
+        {
+            profile.strobe_read();
+            self.sync_profile();
+        }
+        Some(u32::from(val))
     }
 
     fn parallel_via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         let reg = ParallelVia::register(addr >> 3);
         self.parallel_via.write(reg, val as Byte);
+        let ddra = self.parallel_via.read(ViaReg::DDRA);
+        let port = self.parallel_via.pa() | !ddra;
+        let cmd = !self.parallel_via.pb().not_cmd();
+        if let Some(profile) = &mut self.profile {
+            if reg == ViaReg::A {
+                profile.strobe_write(val as Byte);
+            }
+            profile.set_cmd(cmd, port);
+        }
+        self.sync_profile();
         Some(())
+    }
+
+    /// The lines from the drive into the parallel port VIA
+    fn sync_profile(&mut self) {
+        let profile = self.profile.as_ref();
+        self.parallel_via.b_in.set_ocd(profile.is_none());
+        let not_busy = profile.is_none_or(ProfileSim::not_busy);
+        self.parallel_via.b_in.set_not_bsy(not_busy);
+        self.parallel_via.a_in = profile.map_or(0xFF, ProfileSim::port);
+        if not_busy != self.profile_not_busy {
+            self.profile_not_busy = not_busy;
+            self.parallel_via
+                .set_line(ViaLine::CA1, LineState::from(not_busy));
+        }
+    }
+
+    /// The drive on the parallel port
+    pub fn profile(&self) -> Option<&ProfileSim> {
+        self.profile.as_ref()
+    }
+
+    pub fn profile_mut(&mut self) -> Option<&mut ProfileSim> {
+        self.profile.as_mut()
+    }
+
+    /// Plugs a drive in the parallel port, or unplugs it
+    pub fn plug_profile(&mut self, profile: Option<ProfileSim>) {
+        self.profile = profile;
+        self.sync_profile();
     }
 
     /// The SCC: A/B on A1 and control/data on A2
@@ -541,6 +608,10 @@ where
         self.parallel_via = ParallelVia::new();
         self.cops.machine_reset();
         self.fdc.reset();
+        if let Some(profile) = &mut self.profile {
+            profile.reset();
+        }
+        self.profile_not_reset = true;
         self.soft_error_masked = true;
         self.hard_error_masked = true;
         self.force_bad_parity = false;
@@ -569,6 +640,10 @@ where
         }
 
         self.fdc.tick(ticks);
+        if let Some(profile) = &mut self.profile {
+            profile.tick(ticks);
+        }
+        self.sync_profile();
         self.scc.tick(ticks, BUS_FREQUENCY);
         self.keyboard_via.b_in.set_fdir(self.fdc.fdir());
         self.parallel_via.b_in.set_disk_diag(self.fdc.diag());

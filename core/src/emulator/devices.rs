@@ -24,6 +24,7 @@ use super::comm::EmulatorEvent;
 use super::save::{RestoredSlot, SavedSlot, SlotState};
 use super::{Emulator, EmulatorConfig, MouseMode};
 use crate::lisa::bus::LisaBus;
+use crate::lisa::profile_sim::ProfileSim;
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
@@ -53,6 +54,7 @@ pub mod bus_id {
     pub const BUILT_IN: &str = "Built-in";
     /// The Lisa's floppy disk controller
     pub const LISA_FDC: &str = "LisaFDC";
+    pub const LISA_PARALLEL: &str = "LisaParallel";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,8 @@ pub enum BusKind {
     BuiltIn,
     /// The Lisa's floppy disk controller and its drive
     LisaFdc,
+    /// The Lisa's built-in parallel port
+    LisaParallel,
 }
 
 /// What a device does, as far as the frontend is concerned. A new one needs frontend code.
@@ -121,6 +125,7 @@ pub enum DeviceModel {
     LocalTalkAdapter,
     SerialBridge,
     Lisa400KDrive,
+    ProFile,
     LisaVideo,
 }
 
@@ -162,6 +167,7 @@ pub(crate) enum CreateFn {
     Hd20(fn(&DeviceConfig) -> Result<DcdDevice>),
     /// The host link a serial device opens
     Serial(fn(&DeviceConfig) -> Result<SerialBridgeConfig>),
+    LisaParallel(fn(&DeviceConfig) -> Result<ProfileSim>),
 }
 
 /// A ROM a device model needs
@@ -219,6 +225,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::localtalk_bridge::INFO,
     &crate::mac::serial_bridge::INFO,
     &crate::lisa::fdc_sim::INFO_400K,
+    &crate::lisa::profile_sim::INFO_PROFILE,
     &crate::lisa::video::INFO,
 ];
 
@@ -828,6 +835,12 @@ impl MacModel {
                 slots: vec![Slot::fixed("1", DeviceModel::Lisa400KDrive)],
             });
             buses.push(Bus {
+                kind: BusKind::LisaParallel,
+                id: bus_id::LISA_PARALLEL.to_owned(),
+                title: "Parallel port".to_owned(),
+                slots: vec![Slot::empty("0")],
+            });
+            buses.push(Bus {
                 kind: BusKind::BuiltIn,
                 id: bus_id::BUILT_IN.to_owned(),
                 title: "Built-in".to_owned(),
@@ -1168,6 +1181,7 @@ enum SlotTarget {
     IieDrive(usize),
     Serial(SccCh),
     LisaDrive,
+    LisaParallel,
 }
 
 fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
@@ -1183,6 +1197,7 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
         BusKind::Serial => SlotTarget::Serial(SccCh::B),
         BusKind::Nubus | BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => SlotTarget::Card,
         BusKind::LisaFdc => SlotTarget::LisaDrive,
+        BusKind::LisaParallel => SlotTarget::LisaParallel,
     }
 }
 
@@ -1514,7 +1529,7 @@ impl Emulator {
                         drive.media_path = media.media;
                     }
                 }
-                BusKind::Scsi => (),
+                BusKind::Scsi | BusKind::LisaParallel => (),
                 // The machine's state has the disk
                 BusKind::LisaFdc => (),
                 BusKind::Serial => {
@@ -1612,6 +1627,7 @@ impl Emulator {
                 }
             }
             SlotTarget::LisaDrive => FunctionMut::Floppy(self.lisa_bus_mut()?.fdc_mut()),
+            SlotTarget::LisaParallel => FunctionMut::HardDisk(self.lisa_bus_mut()?.profile_mut()?),
         };
         Some(f(function))
     }
@@ -1638,6 +1654,15 @@ impl Emulator {
                             bail!("HD20 image cannot be saved in a save state");
                         };
                         (postcard::to_allocvec(dcd)?, Some(media))
+                    }
+                    SlotTarget::LisaParallel => {
+                        let Some(profile) = self.lisa_bus().and_then(LisaBus::profile) else {
+                            continue;
+                        };
+                        (
+                            postcard::to_allocvec(profile)?,
+                            Some(profile.savestate_media()),
+                        )
                     }
                     _ => continue,
                 };
@@ -1684,6 +1709,17 @@ impl Emulator {
                         .context("The save state has no image for this HD20")?;
                     dcd.after_restore(media)?;
                     self.config.swim_mut().attach_dcd(dcd)?;
+                }
+                SlotTarget::LisaParallel => {
+                    let mut profile: ProfileSim = postcard::from_bytes(&state.state)?;
+                    let media = restored
+                        .media
+                        .as_deref()
+                        .context("The save state has no image for this drive")?;
+                    profile.after_restore(media)?;
+                    self.lisa_bus_mut()
+                        .context("This machine has no parallel port")?
+                        .plug_profile(Some(profile));
                 }
                 t => log::warn!("{:?} has no saved device to restore", t),
             }
@@ -1841,6 +1877,11 @@ impl Emulator {
             SlotTarget::Hd20(i) => {
                 self.config.swim_mut().detach_dcd(i)?;
             }
+            SlotTarget::LisaParallel => {
+                self.lisa_bus_mut()
+                    .context("This machine has no parallel port")?
+                    .plug_profile(None);
+            }
             t => bail!("{:?} doesn't take removable devices", t),
         }
         info!("{} #{}: device removed", bus.id, slot.id);
@@ -1884,6 +1925,12 @@ impl Emulator {
             }
             (SlotTarget::Serial(ch), CreateFn::Serial(create)) => {
                 self.serial_bridge_enable(ch, create(config)?)?;
+            }
+            (SlotTarget::LisaParallel, CreateFn::LisaParallel(create)) => {
+                let profile = create(config)?;
+                self.lisa_bus_mut()
+                    .context("This machine has no parallel port")?
+                    .plug_profile(Some(profile));
             }
             (t, _) => bail!("{:?} can't take a {}", t, model.name()),
         }
@@ -2106,6 +2153,10 @@ impl Emulator {
             SlotTarget::LisaDrive => {
                 self.lisa_bus()?;
                 device(DeviceModel::Lisa400KDrive, Map::new())
+            }
+            SlotTarget::LisaParallel => {
+                self.lisa_bus()?.profile()?;
+                device(DeviceModel::ProFile, Map::new())
             }
         }
     }
