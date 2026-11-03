@@ -749,6 +749,11 @@ where
         self.systrap_history.clear();
     }
 
+    /// Makes CPUSH of the data cache also invalidate the instruction cache
+    pub fn set_cache_flush_workaround(&mut self, on: bool) {
+        self.caches.set_flush_workaround(on);
+    }
+
     /// Gets the instruction history, if enabled
     pub fn read_history(&mut self) -> Option<&[HistoryEntry]> {
         if self.history_enabled {
