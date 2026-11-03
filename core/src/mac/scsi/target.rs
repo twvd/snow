@@ -261,13 +261,21 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             0x15 => {
                 // MODE SELECT(6)
                 if let Some(od) = outdata {
-                    if od.len() < 12 {
+                    // [SPC-3] 7.4.3, Table 239: the 4-byte mode parameter header
+                    // gives the length of the block descriptors that follow it,
+                    // which may be zero
+                    if od.len() < 4 || od.len() < 4 + usize::from(od[3]) {
                         log::error!("Outdata for MODE SELECT(6) too short: {}", od.len());
+                        // [SPC-3] 6.7: truncated header or block descriptors
+                        self.common()
+                            .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
+                    let pages_start = 4 + usize::from(od[3]);
 
-                    // FIXME: does MODE SELECT(6) have the DBD bit?
-                    if let Some(current_blocksize) = self.blocksize() {
+                    if pages_start >= 12
+                        && let Some(current_blocksize) = self.blocksize()
+                    {
                         let blocksize = (usize::from(od[9]) << 16)
                             | (usize::from(od[10]) << 8)
                             | usize::from(od[11]);
@@ -285,7 +293,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         return Ok(ScsiCmdResult::Status(STATUS_GOOD));
                     }
 
-                    let mut pages = &od[12..];
+                    let mut pages = &od[pages_start..];
                     while let Some([page, page_len]) = pages.get(..2) {
                         pages = &pages[2..];
 
