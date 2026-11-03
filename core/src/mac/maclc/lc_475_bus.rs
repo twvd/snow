@@ -180,6 +180,10 @@ const MAP: [[Region; 256]; 2] = {
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Lc475Bus<TRenderer: Renderer> {
+    /// Interrupt level, until a tick of the bus or an access to the I/O area
+    #[serde(skip)]
+    irq: Option<Option<u8>>,
+
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -284,6 +288,7 @@ where
         cuda.adb_add_device(AdbKeyboard::new());
 
         let mut bus = Self {
+            irq: None,
             model,
 
             rom: Vec::from(rom),
@@ -640,6 +645,7 @@ where
     /// to the 53C96 and the SCC, which it bridges to the I/O bus. MEMCjr is on
     /// the CPU bus.
     fn io_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        self.irq = None;
         match acc.addr & Self::IO_MASK {
             // VIA 1. VIA 2 has no timers, and doesn't take the VIA clock either:
             // its reads take the same time at any spacing.
@@ -1090,6 +1096,7 @@ where
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
+        self.irq = None;
         if hard {
             // Clear RAM
             self.ram.fill(0);
@@ -1131,6 +1138,7 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        self.irq = None;
         struct BusEmuContext {
             speed: EmulatorSpeed,
             bus_frequency: Ticks,
@@ -1256,11 +1264,11 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Lc475Bus<TRenderer>
+impl<TRenderer> Lc475Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn get_irq(&mut self) -> Option<u8> {
+    fn compute_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
         }
@@ -1276,6 +1284,20 @@ where
         }
 
         None
+    }
+}
+
+impl<TRenderer> IrqSource for Lc475Bus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn get_irq(&mut self) -> Option<u8> {
+        if let Some(irq) = self.irq {
+            return irq;
+        }
+        let irq = self.compute_irq();
+        self.irq = Some(irq);
+        irq
     }
 }
 

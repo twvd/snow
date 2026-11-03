@@ -100,6 +100,10 @@ const MAP: [[Region; 256]; 2] = {
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Quadra700Bus<TRenderer: Renderer> {
+    /// Interrupt level, until a tick of the bus or an access to the I/O area
+    #[serde(skip)]
+    irq: Option<Option<u8>>,
+
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -183,6 +187,7 @@ where
         }
 
         let mut bus = Self {
+            irq: None,
             model,
 
             rom: Vec::from(rom),
@@ -451,6 +456,7 @@ where
     /// Relayer; the 53C96, the DAFB and the MCU are on the system bus
     /// (Quadra 700 Developer Note, chapter 1).
     fn io_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        self.irq = None;
         match acc.addr & Self::IO_MASK {
             // VIA 1 and VIA 2
             0x0000_0000..=0x0000_3FFF => self.via_cycle(acc),
@@ -766,6 +772,7 @@ where
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
+        self.irq = None;
         if hard {
             // Clear RAM
             self.ram.fill(0);
@@ -799,6 +806,7 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        self.irq = None;
         struct BusEmuContext {
             speed: EmulatorSpeed,
             bus_frequency: Ticks,
@@ -910,11 +918,11 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Quadra700Bus<TRenderer>
+impl<TRenderer> Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn get_irq(&mut self) -> Option<u8> {
+    fn compute_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
         }
@@ -974,6 +982,20 @@ where
         }
 
         None
+    }
+}
+
+impl<TRenderer> IrqSource for Quadra700Bus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn get_irq(&mut self) -> Option<u8> {
+        if let Some(irq) = self.irq {
+            return irq;
+        }
+        let irq = self.compute_irq();
+        self.irq = Some(irq);
+        irq
     }
 }
 
