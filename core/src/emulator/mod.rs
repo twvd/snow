@@ -644,7 +644,7 @@ impl Emulator {
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
-            MacModel::Lisa25 | MacModel::Lisa210 => {
+            MacModel::Lisa1 | MacModel::Lisa25 | MacModel::Lisa210 => {
                 // Without a dump, the PROM of the Lisa's own monitor
                 let video_prom = match extra_roms.iter().find_map(|p| match p {
                     ExtraROMs::LisaVideoProm(data) => Some(*data),

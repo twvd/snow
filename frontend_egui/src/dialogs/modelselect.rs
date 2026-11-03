@@ -324,6 +324,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIx
                 | MacModel::MacIIcx
                 | MacModel::SE30
+                | MacModel::Lisa1
                 | MacModel::Lisa25
                 | MacModel::Lisa210
         );

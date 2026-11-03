@@ -12,7 +12,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use super::cops_sim::CopsSim;
-use super::fdc_sim::{FdcSim, LisaDisk, ROM_ID_2_5, ROM_ID_2_10};
+use super::fdc_sim::{FdcSim, LisaDisk, ROM_ID_2_5, ROM_ID_2_10, ROM_ID_LISA_1};
 use super::mmu::{LisaMmu, Space};
 use super::pfg::Pfg;
 use super::profile_sim::ProfileSim;
@@ -186,10 +186,10 @@ where
             parallel_via: ParallelVia::new(),
             cops: CopsSim::new(),
             fdc: FdcSim::new(
-                if model == MacModel::Lisa210 {
-                    ROM_ID_2_10
-                } else {
-                    ROM_ID_2_5
+                match model {
+                    MacModel::Lisa1 => ROM_ID_LISA_1,
+                    MacModel::Lisa210 => ROM_ID_2_10,
+                    _ => ROM_ID_2_5,
                 },
                 double_sided_drive,
             ),
