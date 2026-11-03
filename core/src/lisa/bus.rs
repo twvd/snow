@@ -11,7 +11,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use super::cops_sim::CopsSim;
-use super::fdc_sim::FdcSim;
+use super::fdc_sim::{FdcSim, LisaDisk};
 use super::mmu::{LisaMmu, Space};
 use super::profile_sim::ProfileSim;
 use super::via::{KeyboardVia, ParallelVia};
@@ -482,6 +482,11 @@ where
 
     pub fn fdc_mut(&mut self) -> &mut FdcSim {
         &mut self.fdc
+    }
+
+    /// The floppy that left the drive
+    pub fn disk_take_ejected(&mut self) -> Option<LisaDisk> {
+        self.fdc.take_ejected()
     }
 
     fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
