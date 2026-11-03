@@ -1713,25 +1713,8 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::SetFloppyWriteback(addr, enabled) => {
-                        let Ok(drive) = self.drive_at(addr) else {
-                            continue;
-                        };
-                        let ok = {
-                            let drv = &mut self.config.swim_mut().drives[drive];
-                            if enabled
-                                && (drv.image_path.is_none() || !drv.floppy.supports_writeback())
-                            {
-                                false
-                            } else {
-                                drv.writeback_enabled = enabled;
-                                drv.pending_writeback = false;
-                                true
-                            }
-                        };
-                        if !ok {
-                            self.user_error(
-                                "Writeback unavailable: image was not loaded from a writeback-capable file",
-                            );
+                        if let Err(e) = self.set_floppy_writeback(addr, enabled) {
+                            self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
