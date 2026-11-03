@@ -137,7 +137,13 @@ where
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let (ram_low, ram_high) = ram_range(ram_size);
+        let video = LisaVideo::new(video_prom, renderer);
+        // MacWorks on a Screen Kit machine has its screen and boot in low memory
+        let (ram_low, ram_high) = if video.is_screen_kit() {
+            (0, ram_size as Address)
+        } else {
+            ram_range(ram_size)
+        };
         Self {
             model,
             rom: rom.to_vec(),
@@ -155,7 +161,7 @@ where
             rtc: Rtc::default(),
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(BUS_FREQUENCY),
-            video: LisaVideo::new(video_prom, renderer),
+            video,
             soft_error_masked: true,
             hard_error_masked: true,
             force_bad_parity: false,
