@@ -24,9 +24,11 @@ use super::{Emulator, EmulatorConfig, MouseMode};
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
+use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::target::ScsiTargetType;
-use crate::mac::serial_bridge::serial_device;
-use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
+use crate::mac::serial_bridge::{
+    SerialBridgeConfig, SerialBridgeStatus, SerialDevice, serial_device,
+};
 use crate::mac::swim::drive::{DriveType, FloppyDrive};
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::DisplayBuffer;
@@ -259,14 +261,49 @@ pub trait Floppy {
     fn eject(&mut self);
 }
 
+/// The HardDisk function
+pub trait HardDisk {
+    /// Fills in the status from the disk's state; true if anything changed
+    fn update_status(&mut self, status: &mut HardDiskStatus) -> bool;
+    /// Carries on from a copy of the image in a new file
+    fn branch(&mut self, path: &Path) -> Result<()>;
+}
+
+/// The Cdrom function
+pub trait Cdrom {
+    /// Fills in the status from the drive's state; true if anything changed
+    fn update_status(&mut self, status: &mut CdromStatus) -> bool;
+    /// Loads an image from a file
+    fn load(&mut self, path: &Path) -> Result<()>;
+    /// Loads an image already in memory
+    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()>;
+}
+
 /// The Ethernet function. Any device model providing it looks the same to the frontend.
 #[cfg(feature = "ethernet")]
 pub trait Ethernet {
+    /// Fills in the status from the adapter's state; true if anything changed
+    fn update_status(&mut self, status: &mut EthernetStatus) -> bool;
     fn link(&self) -> crate::mac::scsi::ethernet::EthernetLinkType;
     fn set_link(&mut self, link: crate::mac::scsi::ethernet::EthernetLinkType) -> Result<()>;
     fn start_capture(&mut self, filename: &Path) -> Result<()>;
     fn stop_capture(&mut self) -> Option<(PathBuf, usize)>;
     fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
+}
+
+/// A device seen through its function, which is all the emulator and the frontend use
+pub enum FunctionMut<'a> {
+    HardDisk(&'a mut dyn HardDisk),
+    Cdrom(&'a mut dyn Cdrom),
+    Floppy(&'a mut dyn Floppy),
+    #[cfg(feature = "ethernet")]
+    Ethernet(&'a mut dyn Ethernet),
+    SerialLink(&'a dyn SerialDevice),
+    LocalTalk(&'a dyn SerialDevice),
+    /// Functions with nothing for the frontend to do yet
+    Printer,
+    Video,
+    AppleIIe,
 }
 
 /// A place on a bus
@@ -383,13 +420,13 @@ impl FunctionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HardDiskStatus {
     pub settings: HardDiskSettings,
     pub capacity: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CdromStatus {
     /// The image, or the folder of images of a Toolbox managed drive
     pub settings: CdromSettings,
@@ -439,6 +476,16 @@ impl Default for FloppyStatus {
 pub struct EthernetStatus {
     pub link: crate::mac::scsi::ethernet::EthernetLinkType,
     pub capture: Option<super::comm::EthernetCaptureStatus>,
+}
+
+#[cfg(feature = "ethernet")]
+impl Default for EthernetStatus {
+    fn default() -> Self {
+        Self {
+            link: crate::mac::scsi::ethernet::EthernetLinkType::Down,
+            capture: None,
+        }
+    }
 }
 
 /// The status of every device, shared with the frontend
@@ -569,7 +616,7 @@ pub trait DeviceSettings: Serialize + DeserializeOwned {
 }
 
 /// What the hard disk function needs, whichever the device model
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HardDiskSettings {
     pub media: PathBuf,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -769,8 +816,6 @@ pub(super) struct DeviceBook {
     /// The Apple IIe Card's drives, in chain order
     pub(super) iie_chain: Vec<DeviceModel>,
     pub(super) serial: [Option<SerialBridgeConfig>; 2],
-    /// The images a restored machine's SCSI devices came from: it runs on copies
-    pub(super) restored_media: [Option<PathBuf>; 7],
 }
 
 impl DeviceBook {
@@ -1139,16 +1184,76 @@ impl Floppy for IieDrive<'_> {
     }
 }
 
-/// The floppy status in a slot's status, made one if it wasn't
-fn floppy_status(status: &mut Option<FunctionStatus>) -> (&mut FloppyStatus, bool) {
-    let fresh = !matches!(status, Some(FunctionStatus::Floppy(_)));
-    if fresh {
-        *status = Some(FunctionStatus::Floppy(FloppyStatus::default()));
+/// A slot's status as this function's, made one if it was another's: the status and
+/// whether it was made
+macro_rules! status_as {
+    ($status:expr, $variant:ident) => {{
+        let fresh = !matches!($status, Some(FunctionStatus::$variant(_)));
+        if fresh {
+            *$status = Some(FunctionStatus::$variant(Default::default()));
+        }
+        let Some(FunctionStatus::$variant(inner)) = $status else {
+            unreachable!()
+        };
+        (inner, fresh)
+    }};
+}
+
+/// Lets a device fill in its slot's status through its function. True if it changed.
+fn update_status(function: FunctionMut<'_>, status: &mut Option<FunctionStatus>) -> bool {
+    // The functions whose status is a plain value
+    fn set(status: &mut Option<FunctionStatus>, new: FunctionStatus) -> bool {
+        if status.as_ref() == Some(&new) {
+            return false;
+        }
+        *status = Some(new);
+        true
     }
-    let Some(FunctionStatus::Floppy(floppy)) = status else {
-        unreachable!()
-    };
-    (floppy, fresh)
+    match function {
+        FunctionMut::HardDisk(disk) => {
+            let (s, fresh) = status_as!(status, HardDisk);
+            disk.update_status(s) | fresh
+        }
+        FunctionMut::Cdrom(cdrom) => {
+            let (s, fresh) = status_as!(status, Cdrom);
+            cdrom.update_status(s) | fresh
+        }
+        FunctionMut::Floppy(floppy) => {
+            let (s, fresh) = status_as!(status, Floppy);
+            floppy.update_status(s) | fresh
+        }
+        #[cfg(feature = "ethernet")]
+        FunctionMut::Ethernet(ethernet) => {
+            let (s, fresh) = status_as!(status, Ethernet);
+            ethernet.update_status(s) | fresh
+        }
+        FunctionMut::SerialLink(link) => {
+            set(status, FunctionStatus::SerialLink(Some(link.status())))
+        }
+        FunctionMut::LocalTalk(link) => set(status, FunctionStatus::LocalTalk(Some(link.status()))),
+        FunctionMut::Printer => set(status, FunctionStatus::Printer),
+        FunctionMut::Video => set(status, FunctionStatus::Video),
+        FunctionMut::AppleIIe => set(status, FunctionStatus::AppleIIe),
+    }
+}
+
+/// Puts media in a device, through its function
+fn load_function(function: FunctionMut<'_>, path: &Path, read_only: bool) -> Result<()> {
+    match function {
+        FunctionMut::Floppy(floppy) => floppy.load(path, read_only),
+        FunctionMut::Cdrom(cdrom) => cdrom.load(path),
+        _ => bail!("This device takes no media"),
+    }
+}
+
+/// Fills in a status by comparison, for the devices whose status is cheap to make: true if
+/// it changed
+pub(crate) fn replace_status<T: PartialEq>(status: &mut T, new: T) -> bool {
+    if *status == new {
+        return false;
+    }
+    *status = new;
+    true
 }
 
 impl Emulator {
@@ -1257,14 +1362,8 @@ impl Emulator {
                         drive.media_path = media.media;
                     }
                 }
-                BusKind::Scsi => {
-                    let Ok(id) = config.slot.parse::<usize>() else {
-                        continue;
-                    };
-                    if let Some(media) = media.and_then(|m| m.media) {
-                        self.device_book.restored_media[id] = Some(media);
-                    }
-                }
+                // A SCSI device knows where its media came from
+                BusKind::Scsi => (),
                 BusKind::Serial => {
                     // The host's side of a link isn't in the state: it starts again
                     self.rebuild_bus_list();
@@ -1314,7 +1413,7 @@ impl Emulator {
         }
     }
 
-    /// Slot -> real object -> function -> its status. True if it changed.
+    /// Slot -> device -> function -> its status. True if it changed.
     fn update_slot_status(
         &mut self,
         bus: &Bus,
@@ -1324,51 +1423,73 @@ impl Emulator {
         let Some(device) = &slot.device else {
             return status.take().is_some();
         };
-        match slot_target(bus, slot) {
-            SlotTarget::Drive(i) => {
-                let (floppy, fresh) = floppy_status(status);
-                let Some(drive) = self.config.swim_mut().drives.get_mut(i) else {
-                    return fresh;
-                };
-                drive.update_status(floppy) | fresh
-            }
-            SlotTarget::IieDrive(i) => {
-                let (floppy, fresh) = floppy_status(status);
-                let Some(mut drive) = self.iie_drive(i) else {
-                    return fresh;
-                };
-                drive.update_status(floppy) | fresh
-            }
-            target => {
-                let new = self.computed_status(target, device);
-                if *status == new {
-                    return false;
-                }
-                *status = new;
-                true
-            }
+        match self.with_function(slot_target(bus, slot), device.model, |f| {
+            update_status(f, status)
+        }) {
+            Some(changed) => changed,
+            // Its object is gone, such as a serial link that couldn't open
+            None => status.take().is_some(),
         }
     }
 
-    /// The status of the devices that don't implement their function's trait yet
-    fn computed_status(&self, target: SlotTarget, device: &Device) -> Option<FunctionStatus> {
-        match target {
-            SlotTarget::Scsi(id) => self.scsi_status(id),
-            SlotTarget::Card => Some(match device.model.function() {
-                FunctionKind::AppleIIe => FunctionStatus::AppleIIe,
-                _ => FunctionStatus::Video,
-            }),
-            SlotTarget::Serial(ch) => {
-                let bridge = self.serial_bridges[ch as usize]
-                    .as_ref()
-                    .map(|b| b.status());
-                Some(match device.model.function() {
-                    FunctionKind::LocalTalk => FunctionStatus::LocalTalk(bridge),
-                    _ => FunctionStatus::SerialLink(bridge),
-                })
+    /// Runs `f` on the device in a slot, through its function
+    fn with_function<R>(
+        &mut self,
+        target: SlotTarget,
+        model: DeviceModel,
+        f: impl FnOnce(FunctionMut<'_>) -> R,
+    ) -> Option<R> {
+        let function = match target {
+            SlotTarget::Drive(i) => FunctionMut::Floppy(self.config.swim_mut().drives.get_mut(i)?),
+            SlotTarget::IieDrive(i) => {
+                let mut drive = self.iie_drive(i)?;
+                return Some(f(FunctionMut::Floppy(&mut drive)));
             }
-            SlotTarget::Drive(_) | SlotTarget::IieDrive(_) => None,
-        }
+            SlotTarget::Scsi(id) => self.config.scsi_mut().targets[id].as_mut()?.function(),
+            SlotTarget::Card => match model.function() {
+                FunctionKind::AppleIIe => FunctionMut::AppleIIe,
+                _ => FunctionMut::Video,
+            },
+            SlotTarget::Serial(ch) => {
+                let link = self.serial_bridges[ch as usize].as_deref()?;
+                match model.function() {
+                    FunctionKind::LocalTalk => FunctionMut::LocalTalk(link),
+                    _ => FunctionMut::SerialLink(link),
+                }
+            }
+        };
+        Some(f(function))
+    }
+
+    /// Runs `f` on the Ethernet adapter in a slot
+    #[cfg(feature = "ethernet")]
+    pub(super) fn ethernet_at<R>(
+        &mut self,
+        addr: SlotAddr,
+        f: impl FnOnce(&mut dyn Ethernet) -> R,
+    ) -> Result<R> {
+        self.with_function_at(addr, |function| match function {
+            FunctionMut::Ethernet(ethernet) => Ok(f(ethernet)),
+            _ => bail!("This device is not an Ethernet adapter"),
+        })?
+    }
+
+    /// Runs `f` on the device in a slot, through its function
+    pub(super) fn with_function_at<R>(
+        &mut self,
+        addr: SlotAddr,
+        f: impl FnOnce(FunctionMut<'_>) -> R,
+    ) -> Result<R> {
+        let bus = self.bus_list.get(addr.bus).context("No such bus")?;
+        let slot = bus.slots.get(addr.slot).context("No such slot")?;
+        let model = slot
+            .device
+            .as_ref()
+            .context("There is no device in this slot")?
+            .model;
+        let target = slot_target(bus, slot);
+        self.with_function(target, model, f)
+            .context("The device in this slot is gone")
     }
 
     /// The drive at this position of the Apple IIe Card's chain
@@ -1477,10 +1598,7 @@ impl Emulator {
             bail!("A {} can't be removed", device.model.name());
         }
         match slot_target(bus, slot) {
-            SlotTarget::Scsi(id) => {
-                self.config.scsi_mut().detach_target(id);
-                self.device_book.restored_media[id] = None;
-            }
+            SlotTarget::Scsi(id) => self.config.scsi_mut().detach_target(id),
             SlotTarget::Serial(ch) => self.serial_bridge_disable(ch)?,
             t => bail!("{:?} doesn't take removable devices", t),
         }
@@ -1519,7 +1637,7 @@ impl Emulator {
                     Some(dir) if dir.is_dir() => self.attach_cdrom_folder(id, dir),
                     Some(image) => {
                         self.attach_cdrom(id);
-                        self.scsi_load_media(id, &image)
+                        self.load_target(SlotTarget::Scsi(id), model, &image, false)
                     }
                     None => {
                         self.attach_cdrom(id);
@@ -1562,32 +1680,32 @@ impl Emulator {
         model: DeviceModel,
         config: &DeviceConfig,
     ) -> Result<()> {
-        match target {
-            SlotTarget::Drive(_) | SlotTarget::IieDrive(_) => {
+        match model.function() {
+            FunctionKind::Floppy => {
                 let settings: FloppySettings = config.parse()?;
                 match settings.media {
-                    Some(media) => self.load_target(target, &media, settings.read_only),
+                    Some(media) => self.load_target(target, model, &media, settings.read_only),
                     None => Ok(()),
                 }
             }
             #[cfg(feature = "ethernet")]
-            SlotTarget::Scsi(id) if model == DeviceModel::DaynaPortScsiLink => {
+            FunctionKind::Ethernet => {
                 // A link this build doesn't have shouldn't cost the device
-                if let Some(link) = config.settings.get("link") {
-                    let link = serde_json::from_value(link.clone())
-                        .map_err(|_| anyhow!("Unknown Ethernet link {}", link))?;
-                    self.config.scsi_mut().targets[id]
-                        .as_mut()
-                        .and_then(|t| t.ethernet_mut())
-                        .context("No Ethernet device attached")?
-                        .set_link(link)?;
-                }
-                Ok(())
+                let Some(link) = config.settings.get("link") else {
+                    return Ok(());
+                };
+                let link = serde_json::from_value(link.clone())
+                    .map_err(|_| anyhow!("Unknown Ethernet link {}", link))?;
+                self.with_function(target, model, |f| match f {
+                    FunctionMut::Ethernet(ethernet) => ethernet.set_link(link),
+                    _ => bail!("This device has no Ethernet link"),
+                })
+                .context("The device in this slot is gone")?
             }
-            SlotTarget::Scsi(id) if model == DeviceModel::ScsiCdrom => {
+            FunctionKind::Cdrom => {
                 let settings: CdromSettings = config.parse()?;
                 match settings.media {
-                    Some(media) => self.scsi_load_media(id, &media),
+                    Some(media) => self.load_target(target, model, &media, false),
                     None => Ok(()),
                 }
             }
@@ -1610,6 +1728,7 @@ impl Emulator {
     }
 
     /// The SCSI ID of a slot
+    #[cfg(feature = "ethernet")]
     pub(super) fn scsi_id_at(&self, addr: SlotAddr) -> Result<usize> {
         match self.target_at(addr)? {
             SlotTarget::Scsi(id) => Ok(id),
@@ -1618,13 +1737,10 @@ impl Emulator {
     }
 
     pub(super) fn branch_disk(&mut self, addr: SlotAddr, path: &Path) -> Result<()> {
-        let id = self.scsi_id_at(addr)?;
-        self.config.scsi_mut().targets[id]
-            .as_mut()
-            .context("No target attached")?
-            .branch_media(path)?;
-        self.device_book.restored_media[id] = None;
-        Ok(())
+        self.with_function_at(addr, |f| match f {
+            FunctionMut::HardDisk(disk) => disk.branch(path),
+            _ => bail!("This device is not a hard disk"),
+        })?
     }
 
     /// Puts an image in the drive in a slot
@@ -1634,56 +1750,33 @@ impl Emulator {
         path: &Path,
         read_only: bool,
     ) -> Result<()> {
-        let target = self.target_at(addr)?;
-        self.load_target(target, path, read_only)
+        self.with_function_at(addr, |f| load_function(f, path, read_only))?
     }
 
-    fn load_target(&mut self, target: SlotTarget, path: &Path, read_only: bool) -> Result<()> {
-        match target {
-            SlotTarget::Drive(i) => {
-                let drive = self
-                    .config
-                    .swim_mut()
-                    .drives
-                    .get_mut(i)
-                    .context("No such drive")?;
-                Floppy::load(drive, path, read_only)
-            }
-            SlotTarget::IieDrive(i) => self
-                .iie_drive(i)
-                .context("No such drive")?
-                .load(path, read_only),
-            SlotTarget::Scsi(id) => {
-                self.scsi_load_media(id, path)?;
-                self.device_book.restored_media[id] = None;
-                Ok(())
-            }
-            t => bail!("{:?} doesn't take media", t),
-        }
+    fn load_target(
+        &mut self,
+        target: SlotTarget,
+        model: DeviceModel,
+        path: &Path,
+        read_only: bool,
+    ) -> Result<()> {
+        self.with_function(target, model, |f| load_function(f, path, read_only))
+            .context("The device in this slot is gone")?
     }
 
     /// Takes the image out of the drive in a slot
     pub(super) fn eject_media(&mut self, addr: SlotAddr) -> Result<()> {
-        match self.target_at(addr)? {
-            SlotTarget::Drive(i) => {
-                // The writes since the last save must not be lost
-                self.try_writeback(i);
-                Floppy::eject(&mut self.config.swim_mut().drives[i]);
-                Ok(())
-            }
-            SlotTarget::IieDrive(i) => {
-                self.iie_drive(i).context("No such drive")?.eject();
-                Ok(())
-            }
-            t => bail!("{:?} can't eject from here", t),
+        // The writes to a Mac disk since the last save must not be lost
+        if let SlotTarget::Drive(i) = self.target_at(addr)? {
+            self.try_writeback(i);
         }
-    }
-
-    fn scsi_load_media(&mut self, id: usize, path: &Path) -> Result<()> {
-        self.config.scsi_mut().targets[id]
-            .as_mut()
-            .context("No target attached")?
-            .load_media(path)
+        self.with_function_at(addr, |f| match f {
+            FunctionMut::Floppy(floppy) => {
+                floppy.eject();
+                Ok(())
+            }
+            _ => bail!("This device has nothing to eject from here"),
+        })?
     }
 
     pub(super) fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
@@ -1762,43 +1855,6 @@ impl Emulator {
                 ),
                 SerialBridgeConfig::LocalTalk => device(DeviceModel::LocalTalkAdapter, Map::new()),
             },
-        }
-    }
-
-    fn scsi_status(&self, id: usize) -> Option<FunctionStatus> {
-        let scsi = self.config.scsi();
-        // A restored machine runs on copies: what matters is where they came from
-        let image = self.device_book.restored_media[id]
-            .clone()
-            .or_else(|| scsi.get_disk_imagefn(id).map(|p| p.to_path_buf()));
-        match scsi.get_target_type(id)? {
-            ScsiTargetType::Disk => Some(FunctionStatus::HardDisk(HardDiskStatus {
-                settings: HardDiskSettings {
-                    media: image?,
-                    read_only: false,
-                },
-                capacity: scsi.get_disk_capacity(id),
-            })),
-            ScsiTargetType::Cdrom => {
-                let folder = scsi.get_cdrom_folder(id).map(|p| p.to_path_buf());
-                Some(FunctionStatus::Cdrom(CdromStatus {
-                    settings: CdromSettings {
-                        media: folder.clone().or_else(|| image.clone()),
-                    },
-                    image,
-                    folder,
-                }))
-            }
-            #[cfg(feature = "ethernet")]
-            ScsiTargetType::Ethernet => {
-                let ethernet = scsi.targets[id].as_ref()?.ethernet()?;
-                Some(FunctionStatus::Ethernet(EthernetStatus {
-                    link: ethernet.link(),
-                    capture: ethernet.capture_status(),
-                }))
-            }
-            #[cfg(feature = "printer")]
-            ScsiTargetType::Printer => Some(FunctionStatus::Printer),
         }
     }
 }

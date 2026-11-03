@@ -50,8 +50,6 @@ use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-#[cfg(feature = "ethernet")]
-use anyhow::Context;
 use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
@@ -1768,25 +1766,15 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetSetLink(addr, link) => {
-                        let Ok(idx) = self.scsi_id_at(addr) else {
-                            continue;
-                        };
-                        self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .and_then(|t| t.ethernet_mut())
-                            .context("Setting link on non-ethernet device")?
-                            .set_link(link)?;
+                        self.ethernet_at(addr, |ethernet| ethernet.set_link(link))??;
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(addr, filename) => {
                         let Ok(idx) = self.scsi_id_at(addr) else {
                             continue;
                         };
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .and_then(|t| t.ethernet_mut())
-                            .context("No ethernet device attached")?
-                            .start_capture(&filename)
+                        match self
+                            .ethernet_at(addr, |ethernet| ethernet.start_capture(&filename))?
                         {
                             Ok(_) => {
                                 self.user_success(&format!(
@@ -1809,12 +1797,7 @@ impl Tickable for Emulator {
                         let Ok(idx) = self.scsi_id_at(addr) else {
                             continue;
                         };
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .and_then(|t| t.ethernet_mut())
-                            .context("No ethernet device attached")?
-                            .stop_capture()
-                        {
+                        match self.ethernet_at(addr, |ethernet| ethernet.stop_capture())? {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
                                     "SCSI #{}: Stopped capture, wrote {} packets to '{}'",

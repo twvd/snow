@@ -1,10 +1,13 @@
 //! SCSI hard disk drive (block device)
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::{
+    FunctionMut, HardDisk, HardDiskSettings, HardDiskStatus, replace_status,
+};
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
@@ -22,12 +25,16 @@ pub(super) struct ScsiTargetDisk {
 
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
+
+    /// The image the user gave: a restored machine runs on a copy
+    media: Option<PathBuf>,
 }
 
 impl ScsiTargetDisk {
     pub fn new(backend: Box<dyn DiskImage>) -> Self {
         Self {
             common: Default::default(),
+            media: backend.image_path().map(Path::to_path_buf),
             backend: Some(backend),
         }
     }
@@ -62,12 +69,8 @@ impl ScsiTarget for ScsiTargetDisk {
         &mut self.common
     }
 
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("load_media on non-removable disk");
-    }
-
-    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
-        bail!("load_image on non-removable disk");
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::HardDisk(self)
     }
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
@@ -222,10 +225,6 @@ impl ScsiTarget for ScsiTargetDisk {
         self.backend_mut().write_bytes(offset, data);
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        self.backend().image_path()
-    }
-
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         log::error!("Unknown command {:02X}h", cmd[0]);
         self.common
@@ -268,9 +267,24 @@ impl ScsiTarget for ScsiTargetDisk {
     fn savestate_img_data(&self) -> Option<&[u8]> {
         self.backend().media_bytes()
     }
+}
 
-    fn branch_media(&mut self, path: &Path) -> Result<()> {
-        self.backend_mut().branch_media(path)
+impl HardDisk for ScsiTargetDisk {
+    fn update_status(&mut self, status: &mut HardDiskStatus) -> bool {
+        let new = HardDiskStatus {
+            settings: HardDiskSettings {
+                media: self.media.clone().unwrap_or_default(),
+                read_only: false,
+            },
+            capacity: self.capacity(),
+        };
+        replace_status(status, new)
+    }
+
+    fn branch(&mut self, path: &Path) -> Result<()> {
+        self.backend_mut().branch_media(path)?;
+        self.media = Some(path.to_path_buf());
+        Ok(())
     }
 }
 

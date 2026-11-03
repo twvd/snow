@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
 use crate::emulator::EmuContext;
+use crate::emulator::devices::FunctionMut;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
@@ -96,11 +97,6 @@ impl ScsiBus {
         }
     }
 
-    /// Returns the capacity of a target or None if detached or no media
-    pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
-        self.targets[id].as_ref().and_then(|t| t.capacity())
-    }
-
     /// Returns the length of image data to write to savestates or None if no data
     #[cfg(feature = "savestates")]
     pub fn get_savestate_img_len(&self, id: usize) -> Option<usize> {
@@ -109,20 +105,9 @@ impl ScsiBus {
             .and_then(|t| t.savestate_img_len())
     }
 
-    /// Returns the image filename of a target or None if detached or no media
-    pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.image_fn())
-    }
-
     /// Gets the target type (if attached) of an ID
     pub fn get_target_type(&self, id: usize) -> Option<ScsiTargetType> {
         self.targets[id].as_ref().map(|t| t.target_type())
-    }
-
-    /// Returns the Toolbox-managed image folder of a folder-backed CD-ROM at the
-    /// given ID, or None if the ID has no folder-backed CD-ROM attached.
-    pub fn get_cdrom_folder(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.cdrom_image_dir())
     }
 
     /// Builds the BlueSCSI Toolbox device-type map (one byte per SCSI ID) returned
@@ -220,7 +205,10 @@ impl ScsiBus {
         let Some(target) = self.targets[scsi_id].as_mut() else {
             bail!("No target attached at SCSI ID {}", scsi_id);
         };
-        target.load_image(image)
+        match target.function() {
+            FunctionMut::Cdrom(cdrom) => cdrom.load_image(image),
+            _ => bail!("No CD-ROM drive at SCSI ID {}", scsi_id),
+        }
     }
 
     /// Attaches an Ethernet adapter at the given SCSI ID
