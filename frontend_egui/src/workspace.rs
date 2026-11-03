@@ -496,6 +496,7 @@ impl Workspace {
                 Some(DeviceModel::Lisa800KDrive) => {
                     args.override_fdd_type = Some(DriveType::GCR800KPWM);
                 }
+                Some(DeviceModel::Pfg) => args.lisa_pfg = true,
                 // The PROM file is found with the cards' ROMs
                 _ if self.model.and_then(|mac| config.model_on(mac))
                     == Some(DeviceModel::LisaVideo) =>
@@ -645,6 +646,10 @@ pub fn card_entries(
         if args.override_fdd_type.is_some() {
             let drive = DeviceModel::Lisa800KDrive.key();
             entries.push(old_entry(bus_id::LISA_FDC, "1", Some(drive), json!({})));
+        }
+        if args.lisa_pfg {
+            let pfg = DeviceModel::Pfg.key();
+            entries.push(old_entry(bus_id::BUILT_IN, "1", Some(pfg), json!({})));
         }
     } else if let Some(drive) = args
         .override_fdd_type

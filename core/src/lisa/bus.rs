@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::cops_sim::CopsSim;
 use super::fdc_sim::{FdcSim, LisaDisk, ROM_ID_2_5, ROM_ID_2_10};
 use super::mmu::{LisaMmu, Space};
+use super::pfg::Pfg;
 use super::profile_sim::ProfileSim;
 use super::speaker::{Speaker, SpeakerInputs};
 use super::via::{KeyboardVia, ParallelVia};
@@ -30,7 +31,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::compact::audio::AudioState;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::Scc;
+use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine, ViaReg};
@@ -42,6 +43,8 @@ use crate::types::Byte;
 
 /// The clock the SCC's baud rate generators can run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
+/// Channel A's control port, which a PFG watches
+const SCC_A_CONTROL: Address = 1;
 
 /// CPU clock: the 20.37504 MHz dot clock divided by 4
 const BUS_FREQUENCY: Ticks = 5_093_760;
@@ -108,6 +111,8 @@ pub struct LisaBus<TRenderer: Renderer> {
     profile_not_busy: bool,
 
     pub(crate) scc: Scc,
+    /// In the SCC's socket, with the SCC on it
+    pfg: Option<Pfg>,
     /// Not on the machine: the emulator expects one on every machine
     pub(crate) swim: Swim,
     /// Not on the machine: the emulator expects one on every machine
@@ -192,6 +197,7 @@ where
             profile_not_reset: true,
             profile_not_busy: true,
             scc: Scc::new(SCC_RTXC_FREQUENCY),
+            pfg: None,
             swim: Swim::new(&[], false, BUS_FREQUENCY),
             scsi: ScsiController::new(),
             rtc: Rtc::default(),
@@ -221,6 +227,15 @@ where
 
     pub fn model(&self) -> MacModel {
         self.model
+    }
+
+    /// Puts a PFG in the SCC's socket
+    pub fn fit_pfg(&mut self) {
+        self.pfg = Some(Pfg::new());
+    }
+
+    pub fn has_pfg(&self) -> bool {
+        self.pfg.is_some()
     }
 
     /// Holds the frame until it is due. With no sound to pace by, this is what
@@ -488,11 +503,27 @@ where
 
     /// The SCC: A/B on A1 and control/data on A2
     fn scc_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
-        self.scc.read((addr >> 1) & 3).map(u32::from)
+        let reg = (addr >> 1) & 3;
+        if reg == SCC_A_CONTROL
+            && let Some(pfg) = &mut self.pfg
+        {
+            pfg.control_read();
+        }
+        self.scc.read(reg).map(u32::from)
     }
 
     fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
-        self.scc.write((addr >> 1) & 3, val as Byte)
+        let reg = (addr >> 1) & 3;
+        let result = self.scc.write(reg, val as Byte);
+        if reg == SCC_A_CONTROL
+            && let Some(pfg) = &mut self.pfg
+        {
+            pfg.control_write(val as Byte);
+            // Nothing else drives it: the Lisa's serial ports have no DCD here
+            self.scc.set_dcd(SccCh::B, pfg.dcd());
+            self.fdc.set_clock(pfg.fdc_clock());
+        }
+        result
     }
 
     /// An access to a VIA is a 68000 VPA cycle, on the lower byte lane, and lasts a
@@ -555,14 +586,22 @@ where
         self.fdc.take_ejected()
     }
 
-    /// Keeps parameter memory in a file from now on
+    /// Keeps parameter memory in a file from now on, and a PFG's EEPROM after it
     pub fn persist_parameter_memory(&mut self, path: &Path) -> Result<()> {
-        self.fdc.persist_parameter_memory(path)
+        self.fdc.persist_parameter_memory(path)?;
+        if let Some(pfg) = &mut self.pfg {
+            pfg.persist_eeprom(path)?;
+        }
+        Ok(())
     }
 
-    /// Writes parameter memory to its file if the guest changed it
+    /// Writes parameter memory and a PFG's EEPROM to their file if the guest changed them
     pub fn save_parameter_memory(&mut self) -> Result<()> {
-        self.fdc.save_parameter_memory()
+        self.fdc.save_parameter_memory()?;
+        if let Some(pfg) = &mut self.pfg {
+            pfg.save_eeprom()?;
+        }
+        Ok(())
     }
 
     fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
@@ -723,6 +762,10 @@ where
         self.force_bad_parity = false;
         self.hard_error = false;
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
+        if let Some(pfg) = &mut self.pfg {
+            pfg.reset();
+        }
+        self.fdc.set_clock(None);
         Ok(false)
     }
 }

@@ -89,6 +89,7 @@ pub enum FunctionKind {
     AppleIIe,
     SerialLink,
     LocalTalk,
+    FrequencyGenerator,
 }
 
 /// Everything Snow can put in a slot. A new device model of a known function only touches the
@@ -130,6 +131,7 @@ pub enum DeviceModel {
     ProFile,
     Widget,
     LisaVideo,
+    Pfg,
 }
 
 /// One static record per device model, in that device model's source code file. The frontend
@@ -232,6 +234,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::lisa::profile_sim::INFO_PROFILE,
     &crate::lisa::profile_sim::INFO_WIDGET,
     &crate::lisa::video::INFO,
+    &crate::lisa::pfg::INFO,
 ];
 
 /// What a slot on this kind of bus can take, on this Mac model
@@ -371,6 +374,7 @@ pub enum FunctionMut<'a> {
     Printer,
     Video,
     AppleIIe,
+    FrequencyGenerator,
 }
 
 /// A place on a bus
@@ -469,6 +473,7 @@ pub enum FunctionStatus {
     AppleIIe,
     SerialLink(Option<SerialBridgeStatus>),
     LocalTalk(Option<SerialBridgeStatus>),
+    FrequencyGenerator,
 }
 
 impl FunctionStatus {
@@ -857,7 +862,10 @@ impl MacModel {
                 kind: BusKind::BuiltIn,
                 id: bus_id::BUILT_IN.to_owned(),
                 title: "Built-in".to_owned(),
-                slots: vec![Slot::fixed("0", DeviceModel::LisaVideo)],
+                slots: vec![
+                    Slot::fixed("0", DeviceModel::LisaVideo),
+                    Slot::named("1", "SCC socket"),
+                ],
             });
         }
 
@@ -1010,6 +1018,7 @@ struct BuildPlan {
     video: Option<(u8, DeviceModel, Vec<u8>)>,
     iie_card: Option<IieCardSettings>,
     override_drive: Option<DriveType>,
+    pfg: bool,
     cards: Vec<DeviceConfig>,
     /// What to hand to the machine once it's built
     rest: Vec<DeviceConfig>,
@@ -1120,6 +1129,20 @@ impl BuildPlan {
                     self.override_drive = Some(DriveType::GCR800K);
                 }
                 Ok(true)
+            }
+            DeviceModel::Pfg => {
+                if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                if config.slot != "1" {
+                    bail!("A {} goes in the SCC socket", device.name());
+                }
+                self.pfg = true;
+                self.cards.push(DeviceConfig {
+                    model: Some(device.key().to_owned()),
+                    ..config.clone()
+                });
+                Ok(false)
             }
             _ => {
                 // A drive other than the machine's own
@@ -1421,6 +1444,7 @@ fn update_status(function: FunctionMut<'_>, status: &mut Option<FunctionStatus>)
         FunctionMut::Printer => set(status, FunctionStatus::Printer),
         FunctionMut::Video => set(status, FunctionStatus::Video),
         FunctionMut::AppleIIe => set(status, FunctionStatus::AppleIIe),
+        FunctionMut::FrequencyGenerator => set(status, FunctionStatus::FrequencyGenerator),
     }
 }
 
@@ -1641,6 +1665,7 @@ impl Emulator {
             SlotTarget::Scsi(id) => self.config.scsi_mut().targets[id].as_mut()?.function(),
             SlotTarget::Card => match model.function() {
                 FunctionKind::AppleIIe => FunctionMut::AppleIIe,
+                FunctionKind::FrequencyGenerator => FunctionMut::FrequencyGenerator,
                 _ => FunctionMut::Video,
             },
             SlotTarget::Serial(ch) => {
@@ -1832,6 +1857,11 @@ impl Emulator {
             plan.iie_card,
             video_slot,
         )?;
+        if plan.pfg {
+            emu.lisa_bus_mut()
+                .context("Only a Lisa takes a PFG")?
+                .fit_pfg();
+        }
         emu.device_book.cards = plan.cards;
         emu.rebuild_bus_list();
 
@@ -2829,6 +2859,27 @@ mod tests {
             assert_round_trip(MacModel::Lisa25, vec![config.clone()]),
             vec![config]
         );
+    }
+
+    #[test]
+    fn a_pfg_goes_in_the_scc_socket() {
+        let pfg = DeviceConfig::of_model(bus_id::BUILT_IN, "1", DeviceModel::Pfg, &()).unwrap();
+        assert_eq!(
+            assert_round_trip(MacModel::Lisa25, vec![pfg.clone()]),
+            vec![pfg.clone()]
+        );
+        let (emu, _) = build(MacModel::Lisa25, vec![pfg.clone()]);
+        assert!(emu.lisa_bus().unwrap().has_pfg());
+
+        let elsewhere = DeviceConfig {
+            slot: "0".to_owned(),
+            ..pfg.clone()
+        };
+        let (emu, refused) = build(MacModel::Lisa25, vec![elsewhere]);
+        assert_eq!(refused.len(), 1, "{:?}", refused);
+        assert!(!emu.lisa_bus().unwrap().has_pfg());
+        let (_, refused) = build(MacModel::Plus, vec![pfg]);
+        assert_eq!(refused.len(), 1, "{:?}", refused);
     }
 
     #[test]

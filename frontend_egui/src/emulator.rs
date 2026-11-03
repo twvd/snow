@@ -115,6 +115,10 @@ pub struct EmulatorInitArgs {
     #[serde(skip_serializing)]
     pub lisa_video: LisaVideoSettings,
 
+    /// A PFG in the Lisa's SCC socket. In the devices of a workspace.
+    #[serde(skip_serializing)]
+    pub lisa_pfg: bool,
+
     /// Overclock
     pub overclock: Option<u64>,
 
@@ -141,6 +145,7 @@ impl Default for EmulatorInitArgs {
             video_card: Default::default(),
             video_card_slot: 0x9,
             lisa_video: Default::default(),
+            lisa_pfg: false,
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
         }
