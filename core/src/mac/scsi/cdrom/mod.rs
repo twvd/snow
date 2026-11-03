@@ -1917,3 +1917,16 @@ mod tests {
         assert_eq!(cd.common().req_sense(), sense);
     }
 }
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::ScsiCdrom,
+    name: "CD-ROM drive",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Cdrom,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+};

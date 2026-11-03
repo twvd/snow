@@ -868,3 +868,16 @@ mod fd_close_tests {
         let _ = fs::remove_dir_all(&d);
     }
 }
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::BlueScsi,
+    name: "BlueSCSI file sharing",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::FileSharing,
+    fixed: false,
+    one_per_bus: true,
+    rom: None,
+    path_keys: &["shared_dir"],
+    adds_buses: &[],
+};

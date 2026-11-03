@@ -1,19 +1,23 @@
 //! The machine as a frontend and a workspace see it
 //!
 //! A machine is a flat list of buses. A bus is a collection of slots, a slot may hold a device,
-//! and a device is a specific model that provides one function. A device's settings belong to its
-//! model, and travel as a dictionary so that a workspace can pass through code that doesn't know
-//! them. Code that knows a model uses its typed settings struct.
+//! and a device is an instance of a device model, which provides one function. The function is
+//! what the frontend deals with: the attributes every device model providing it has, such as a
+//! disk image, and a status the device fills in. A device model's own attributes, such as a
+//! card's ROM, travel as a dictionary so that a workspace can pass through code that doesn't
+//! know them. Code that knows a device model uses its typed settings struct.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use snow_floppy::Floppy;
+use sha2::{Digest, Sha256};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, TwoImg};
+use snow_floppy::{Floppy as _, FloppyType};
 
 use super::comm::EmulatorEvent;
 use super::{Emulator, EmulatorConfig, MouseMode};
@@ -21,9 +25,9 @@ use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
 use crate::mac::scsi::target::ScsiTargetType;
-use crate::mac::serial_bridge::SccBridge;
+use crate::mac::serial_bridge::serial_device;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
-use crate::mac::swim::drive::DriveType;
+use crate::mac::swim::drive::{DriveType, FloppyDrive};
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::DisplayBuffer;
 use log::info;
@@ -67,10 +71,11 @@ pub enum FunctionKind {
     Video,
     AppleIIe,
     SerialLink,
+    LocalTalk,
 }
 
-/// Everything Snow can put in a slot. A new model of a known function only touches the core.
-/// A model is what the guest sees: how the host backs it is a setting.
+/// Everything Snow can put in a slot. A new device model of a known function only touches the
+/// core. A device model is what the guest sees: how the host backs it is a setting.
 #[derive(
     Debug,
     Clone,
@@ -104,6 +109,86 @@ pub enum DeviceModel {
     SerialBridge,
 }
 
+/// What a device model's file registers about it
+pub struct ModelInfo {
+    pub model: DeviceModel,
+    /// In the menus: free to change
+    pub name: &'static str,
+    /// The bus type it fits, so the slot trait it implements
+    pub bus: BusKind,
+    /// The Mac models it fits, among those with that bus
+    pub fits: fn(MacModel) -> bool,
+    pub function: FunctionKind,
+    /// Created with the machine, never added or removed while it runs
+    pub fixed: bool,
+    /// A second one on the same bus is refused, and greyed in the menus
+    pub one_per_bus: bool,
+    pub rom: Option<RomInfo>,
+    /// The settings holding paths, which a workspace keeps relative to its file
+    pub path_keys: &'static [&'static str],
+    /// The buses a device of this model adds
+    pub adds_buses: &'static [BusKind],
+}
+
+/// A ROM a device model needs
+pub struct RomInfo {
+    /// In the menus: "Display Card 8-24 ROM"
+    pub label: &'static str,
+    /// SHA-256 of each ROM known to work, in hex
+    pub digests: &'static [&'static str],
+}
+
+impl ModelInfo {
+    pub const fn fits_all(_mac: MacModel) -> bool {
+        true
+    }
+
+    pub const fn needs_rom(&self) -> bool {
+        self.rom.is_some()
+    }
+
+    /// Whether this is a ROM the device model is known to work with
+    pub fn validate_rom(&self, rom: &[u8]) -> bool {
+        let Some(info) = &self.rom else {
+            return false;
+        };
+        let digest = hex::encode(Sha256::digest(rom));
+        info.digests.contains(&digest.as_str())
+    }
+}
+
+/// One line per device model, with its feature gate beside it. Rust has no initcall, so a
+/// device model's file can't add itself.
+pub static MODELS: &[&ModelInfo] = &[
+    &crate::mac::scsi::disk::INFO,
+    &crate::mac::scsi::cdrom::INFO,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::scsi::ethernet::INFO,
+    #[cfg(feature = "printer")]
+    &crate::mac::scsi::printer::INFO,
+    &crate::mac::scsi::toolbox::INFO,
+    &crate::mac::swim::drive::INFO_400K,
+    &crate::mac::swim::drive::INFO_800K,
+    &crate::mac::swim::drive::INFO_800K_PWM,
+    &crate::mac::swim::drive::INFO_SUPERDRIVE,
+    &crate::mac::maclc::pds_iie::unidisk::INFO,
+    &crate::mac::maclc::pds_iie::disk::INFO,
+    &crate::mac::nubus::mdc12::INFO,
+    &crate::mac::nubus::toby::INFO,
+    &crate::mac::nubus::se30video::INFO,
+    &crate::mac::maclc::pds_iie::INFO,
+    &crate::mac::localtalk_bridge::INFO,
+    &crate::mac::serial_bridge::INFO,
+];
+
+/// What a slot on this kind of bus can take, on this Mac model
+pub fn models_for(bus: BusKind, mac: MacModel) -> impl Iterator<Item = &'static ModelInfo> {
+    MODELS
+        .iter()
+        .copied()
+        .filter(move |info| info.bus == bus && (info.fits)(mac))
+}
+
 impl DeviceModel {
     /// In the workspace files: must not change
     pub fn key(self) -> &'static str {
@@ -114,92 +199,36 @@ impl DeviceModel {
         key.parse().ok()
     }
 
-    /// In the menus: free to change
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::ScsiHardDisk => "Hard disk",
-            Self::ScsiCdrom => "CD-ROM drive",
-            #[cfg(feature = "ethernet")]
-            Self::DaynaPortScsiLink => "DaynaPORT SCSI/Link",
-            #[cfg(feature = "printer")]
-            Self::LaserWriterIISC => "LaserWriter IISC",
-            Self::BlueScsi => "BlueSCSI file sharing",
-            Self::Mac400KDrive => "400K drive",
-            Self::Mac800KDrive => "800K drive",
-            Self::Mac800KPwmDrive => "800K drive (PWM)",
-            Self::MacSuperDrive => "SuperDrive",
-            Self::UniDisk35 => "UniDisk 3.5",
-            Self::Apple525Drive => "Apple 5.25 Drive",
-            Self::DisplayCard824 => "Display Card 8-24",
-            Self::MacIIVideoCard => "Macintosh II Video Card",
-            Self::SE30Video => "SE/30 video",
-            Self::AppleIIePdsCard => "Apple IIe Card",
-            Self::LocalTalkAdapter => "LocalTalk adapter",
-            Self::SerialBridge => "Serial bridge",
-        }
+    /// What its file registered
+    pub fn info(self) -> &'static ModelInfo {
+        MODELS
+            .iter()
+            .find(|info| info.model == self)
+            .expect("every device model is in the table")
     }
 
-    pub const fn function(self) -> FunctionKind {
-        match self {
-            Self::ScsiHardDisk => FunctionKind::HardDisk,
-            Self::ScsiCdrom => FunctionKind::Cdrom,
-            #[cfg(feature = "ethernet")]
-            Self::DaynaPortScsiLink => FunctionKind::Ethernet,
-            #[cfg(feature = "printer")]
-            Self::LaserWriterIISC => FunctionKind::Printer,
-            Self::BlueScsi => FunctionKind::FileSharing,
-            Self::Mac400KDrive
-            | Self::Mac800KDrive
-            | Self::Mac800KPwmDrive
-            | Self::MacSuperDrive
-            | Self::UniDisk35
-            | Self::Apple525Drive => FunctionKind::Floppy,
-            Self::DisplayCard824 | Self::MacIIVideoCard | Self::SE30Video => FunctionKind::Video,
-            Self::AppleIIePdsCard => FunctionKind::AppleIIe,
-            Self::LocalTalkAdapter | Self::SerialBridge => FunctionKind::SerialLink,
-        }
+    /// In the menus: free to change
+    pub fn name(self) -> &'static str {
+        self.info().name
+    }
+
+    pub fn function(self) -> FunctionKind {
+        self.info().function
     }
 
     /// Created with the machine, never added or removed while it runs
-    pub const fn fixed(self) -> bool {
-        matches!(
-            self,
-            Self::Mac400KDrive
-                | Self::Mac800KDrive
-                | Self::Mac800KPwmDrive
-                | Self::MacSuperDrive
-                | Self::UniDisk35
-                | Self::Apple525Drive
-                | Self::DisplayCard824
-                | Self::MacIIVideoCard
-                | Self::SE30Video
-                | Self::AppleIIePdsCard
-        )
+    pub fn fixed(self) -> bool {
+        self.info().fixed
     }
 
     /// The settings holding paths, which a workspace keeps relative to its file
-    pub const fn path_keys(self) -> &'static [&'static str] {
-        match self {
-            Self::ScsiHardDisk
-            | Self::ScsiCdrom
-            | Self::Mac400KDrive
-            | Self::Mac800KDrive
-            | Self::Mac800KPwmDrive
-            | Self::MacSuperDrive
-            | Self::UniDisk35
-            | Self::Apple525Drive => &["media"],
-            Self::BlueScsi => &["shared_dir"],
-            Self::DisplayCard824 | Self::MacIIVideoCard | Self::SE30Video => &["rom"],
-            _ => &[],
-        }
+    pub fn path_keys(self) -> &'static [&'static str] {
+        self.info().path_keys
     }
 
     /// The buses a device of this model adds
-    pub const fn buses(self) -> &'static [BusKind] {
-        match self {
-            Self::AppleIIePdsCard => &[BusKind::IieDisk],
-            _ => &[],
-        }
+    pub fn buses(self) -> &'static [BusKind] {
+        self.info().adds_buses
     }
 
     /// The drive of a machine
@@ -224,7 +253,16 @@ impl DeviceModel {
     }
 }
 
-/// The Ethernet function. Any model providing it looks the same to the frontend.
+/// The Floppy function. Mac and Apple IIe Card drives look the same to the frontend: what
+/// differs is what each can do, which the status says.
+pub trait Floppy {
+    /// Fills in the status from the drive's state; true if anything changed
+    fn update_status(&mut self, status: &mut FloppyStatus) -> bool;
+    fn load(&mut self, media: &Path, read_only: bool) -> Result<()>;
+    fn eject(&mut self);
+}
+
+/// The Ethernet function. Any device model providing it looks the same to the frontend.
 #[cfg(feature = "ethernet")]
 pub trait Ethernet {
     fn link(&self) -> crate::mac::scsi::ethernet::EthernetLinkType;
@@ -232,23 +270,6 @@ pub trait Ethernet {
     fn start_capture(&mut self, filename: &Path) -> Result<()>;
     fn stop_capture(&mut self) -> Option<(PathBuf, usize)>;
     fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
-}
-
-/// Something that can go in a slot
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Offer {
-    pub model: DeviceModel,
-    /// Unavailable right now, so shown greyed
-    pub blocked: bool,
-}
-
-impl Offer {
-    const fn free(model: DeviceModel) -> Self {
-        Self {
-            model,
-            blocked: false,
-        }
-    }
 }
 
 /// A place on a bus
@@ -261,8 +282,6 @@ pub struct Slot {
     pub blocked: bool,
     pub hidden_by_default: bool,
     pub hint: Option<String>,
-    /// What this machine has here unless told otherwise
-    pub default_model: Option<DeviceModel>,
     pub device: Option<Device>,
 }
 
@@ -274,7 +293,6 @@ impl Slot {
             blocked: false,
             hidden_by_default: false,
             hint: None,
-            default_model: None,
             device: None,
         }
     }
@@ -282,6 +300,17 @@ impl Slot {
     fn named(id: impl Into<String>, name: &str) -> Self {
         Self {
             name: Some(name.to_owned()),
+            ..Self::empty(id)
+        }
+    }
+
+    /// A slot with what the machine has in it
+    fn fixed(id: impl Into<String>, model: DeviceModel) -> Self {
+        Self {
+            device: Some(Device {
+                model,
+                settings: Map::new(),
+            }),
             ..Self::empty(id)
         }
     }
@@ -295,8 +324,21 @@ pub struct Bus {
     pub id: String,
     /// In the menus: free to change
     pub title: String,
-    pub offers: Vec<Offer>,
     pub slots: Vec<Slot>,
+}
+
+impl Bus {
+    /// Whether a device of this model is on the bus
+    pub fn has(&self, model: DeviceModel) -> bool {
+        self.slots
+            .iter()
+            .any(|s| s.device.as_ref().is_some_and(|d| d.model == model))
+    }
+
+    /// Whether a device of this model can go in an empty slot of this bus right now
+    pub fn can_take(&self, info: &ModelInfo) -> bool {
+        !info.fixed && (!info.one_per_bus || !self.has(info.model))
+    }
 }
 
 /// Where a slot is on the running machine. Never saved: it changes when a bus is added.
@@ -310,70 +352,123 @@ pub struct SlotAddr {
 #[derive(Debug, Clone)]
 pub struct Device {
     pub model: DeviceModel,
-    /// What gets saved, and what can create this device again
+    /// The device model's own attributes, such as a card's ROM. The function's are in the status.
     pub settings: Map<String, Value>,
-    pub state: FunctionState,
 }
 
-/// What the menus show of a device, with what changes as it runs. Never saved.
-#[derive(Debug, Clone)]
-pub enum FunctionState {
-    HardDisk(HardDiskState),
-    Cdrom(CdromState),
-    Floppy(FloppyState),
-    IieFloppy(IieFloppyState),
+/// What a function shows of a device, filled in by the device. Never saved, except for the
+/// function's attributes in `settings`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionStatus {
+    HardDisk(HardDiskStatus),
+    Cdrom(CdromStatus),
+    Floppy(FloppyStatus),
     #[cfg(feature = "ethernet")]
-    Ethernet(EthernetState),
+    Ethernet(EthernetStatus),
     Printer,
-    FileSharing(FileSharingState),
+    FileSharing(FileSharingStatus),
     Video,
     AppleIIe,
     SerialLink(Option<SerialBridgeStatus>),
+    LocalTalk(Option<SerialBridgeStatus>),
 }
 
-#[derive(Debug, Clone)]
-pub struct HardDiskState {
-    pub media: Option<PathBuf>,
+impl FunctionStatus {
+    /// The function's attributes, which a workspace saves
+    pub fn settings(&self) -> Map<String, Value> {
+        match self {
+            Self::HardDisk(s) => settings_map(&s.settings),
+            Self::Cdrom(s) => settings_map(&s.settings),
+            Self::Floppy(s) => settings_map(&s.settings),
+            #[cfg(feature = "ethernet")]
+            Self::Ethernet(s) => settings_map(&serde_json::json!({ "link": s.link })),
+            _ => Map::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardDiskStatus {
+    pub settings: HardDiskSettings,
     pub capacity: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CdromState {
-    pub media: Option<PathBuf>,
-    /// The folder of images of a Toolbox managed drive
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CdromStatus {
+    /// The image, or the folder of images of a Toolbox managed drive
+    pub settings: CdromSettings,
+    pub image: Option<PathBuf>,
     pub folder: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FloppyState {
-    pub media: Option<PathBuf>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloppyStatus {
+    pub settings: FloppySettings,
+    pub title: String,
     pub ejected: bool,
-    pub motor: bool,
-    pub writing: bool,
-    pub track: usize,
-    pub image_title: String,
     pub dirty: bool,
-    pub drive_type: DriveType,
+    /// The image can be saved to a file, and the drive remembers the last one ejected
+    pub can_save: bool,
     /// The image can be written back to the file it came from
     pub writeback_supported: bool,
     pub writeback_enabled: bool,
+    /// The blank disks the drive can take
+    pub blank_formats: Vec<FloppyType>,
+    /// For the file dialog: what the images are, and their extensions
+    pub image_label: &'static str,
+    pub image_types: Vec<&'static str>,
+    pub rpm_control: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct IieFloppyState {
-    pub media: Option<PathBuf>,
+impl Default for FloppyStatus {
+    fn default() -> Self {
+        Self {
+            settings: FloppySettings::default(),
+            title: String::new(),
+            ejected: true,
+            dirty: false,
+            can_save: false,
+            writeback_supported: false,
+            writeback_enabled: false,
+            blank_formats: vec![],
+            image_label: "",
+            image_types: vec![],
+            rpm_control: false,
+        }
+    }
 }
 
 #[cfg(feature = "ethernet")]
-#[derive(Debug, Clone)]
-pub struct EthernetState {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EthernetStatus {
     pub link: crate::mac::scsi::ethernet::EthernetLinkType,
     pub capture: Option<super::comm::EthernetCaptureStatus>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FileSharingState {
-    pub shared_dir: Option<PathBuf>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSharingStatus {
+    pub shared_dir: PathBuf,
+}
+
+/// The status of every device, shared with the frontend
+pub struct StatusBlock {
+    /// Bumped when a status changed, so the frontend only copies them then
+    pub generation: AtomicU64,
+    /// By `SlotAddr`, in the shape of the bus list
+    pub statuses: Mutex<Vec<Vec<Option<FunctionStatus>>>>,
+}
+
+impl StatusBlock {
+    pub(super) fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            statuses: Mutex::new(vec![]),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
 }
 
 /// One device, as a workspace stores it and as a machine is told about it
@@ -442,7 +537,8 @@ impl DeviceConfig {
         }
         let buses = mac.buses();
         let bus = buses.iter().find(|b| b.id == self.bus)?;
-        bus.slots.iter().find(|s| s.id == self.slot)?.default_model
+        let slot = bus.slots.iter().find(|s| s.id == self.slot)?;
+        Some(slot.device.as_ref()?.model)
     }
 
     /// The settings as what a model expects
@@ -481,7 +577,7 @@ pub trait DeviceSettings: Serialize + DeserializeOwned {
     const MODEL: DeviceModel;
 }
 
-/// What the hard disk function needs, whichever the model
+/// What the hard disk function needs, whichever the device model
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HardDiskSettings {
     pub media: PathBuf,
@@ -498,7 +594,7 @@ impl DeviceSettings for ScsiHardDiskSettings {
     const MODEL: DeviceModel = DeviceModel::ScsiHardDisk;
 }
 
-/// What the CD-ROM function needs, whichever the model
+/// What the CD-ROM function needs, whichever the device model
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdromSettings {
     /// An image, or a folder of images the guest swaps with the BlueSCSI Toolbox
@@ -527,15 +623,13 @@ impl DeviceSettings for LaserWriterIISCSettings {
     const MODEL: DeviceModel = DeviceModel::LaserWriterIISC;
 }
 
+/// What the file sharing function needs, whichever the device model
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlueScsiSettings {
+pub struct FileSharingSettings {
     pub shared_dir: PathBuf,
 }
-impl DeviceSettings for BlueScsiSettings {
-    const MODEL: DeviceModel = DeviceModel::BlueScsi;
-}
 
-/// What the floppy function needs, whichever the model
+/// What the floppy function needs, whichever the device model
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FloppySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -577,18 +671,17 @@ impl DeviceSettings for AppleIIePdsCardSettings {
     const MODEL: DeviceModel = DeviceModel::AppleIIePdsCard;
 }
 
+/// What the serial link function needs, whichever the device model
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerialBridgeSettings {
+pub struct SerialLinkSettings {
     /// None for a PTY
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tcp_port: Option<u16>,
 }
-impl DeviceSettings for SerialBridgeSettings {
-    const MODEL: DeviceModel = DeviceModel::SerialBridge;
-}
 
 impl MacModel {
-    /// The buses every machine of this model has, with nothing plugged in. Cards add theirs.
+    /// The buses every machine of this model has, with its fixed devices in their slots. Cards
+    /// add theirs.
     pub fn buses(self) -> Vec<Bus> {
         let mut buses = vec![];
 
@@ -603,37 +696,18 @@ impl MacModel {
                 kind: BusKind::Swim,
                 id: bus_id::SWIM.to_owned(),
                 title: "Floppy".to_owned(),
-                offers: self
-                    .drive_options()
-                    .iter()
-                    .copied()
-                    .map(Offer::free)
-                    .collect(),
                 slots: drives
                     .iter()
-                    .map(|&(i, model)| Slot {
-                        default_model: Some(model),
-                        ..Slot::empty((i + 1).to_string())
-                    })
+                    .map(|&(i, model)| Slot::fixed((i + 1).to_string(), model))
                     .collect(),
             });
         }
 
         if self.has_scsi() {
-            let mut offers = vec![
-                Offer::free(DeviceModel::ScsiHardDisk),
-                Offer::free(DeviceModel::ScsiCdrom),
-            ];
-            #[cfg(feature = "ethernet")]
-            offers.push(Offer::free(DeviceModel::DaynaPortScsiLink));
-            #[cfg(feature = "printer")]
-            offers.push(Offer::free(DeviceModel::LaserWriterIISC));
-            offers.push(Offer::free(DeviceModel::BlueScsi));
             buses.push(Bus {
                 kind: BusKind::Scsi,
                 id: bus_id::SCSI.to_owned(),
                 title: "SCSI".to_owned(),
-                offers,
                 slots: (0..7).map(|i| Slot::empty(i.to_string())).collect(),
             });
         }
@@ -643,17 +717,12 @@ impl MacModel {
                 kind: BusKind::BuiltIn,
                 id: bus_id::BUILT_IN.to_owned(),
                 title: "Built-in".to_owned(),
-                offers: vec![],
-                slots: vec![Slot {
-                    default_model: Some(DeviceModel::SE30Video),
-                    ..Slot::empty("0")
-                }],
+                slots: vec![Slot::fixed("0", DeviceModel::SE30Video)],
             });
             buses.push(Bus {
                 kind: BusKind::Se30Pds,
                 id: bus_id::PDS_SE30.to_owned(),
                 title: "SE/30 PDS".to_owned(),
-                offers: vec![],
                 slots: vec![Slot::empty("0")],
             });
         } else if !self.nubus_slots().is_empty() {
@@ -661,12 +730,6 @@ impl MacModel {
                 kind: BusKind::Nubus,
                 id: bus_id::NUBUS.to_owned(),
                 title: "NuBus".to_owned(),
-                offers: self
-                    .nubus_cards()
-                    .iter()
-                    .copied()
-                    .map(Offer::free)
-                    .collect(),
                 slots: self
                     .nubus_slots()
                     .iter()
@@ -680,7 +743,6 @@ impl MacModel {
                 kind: BusKind::LcPds,
                 id: bus_id::PDS_LC.to_owned(),
                 title: "LC PDS".to_owned(),
-                offers: vec![Offer::free(DeviceModel::AppleIIePdsCard)],
                 slots: vec![Slot::empty("0")],
             });
         }
@@ -689,10 +751,6 @@ impl MacModel {
             kind: BusKind::Serial,
             id: bus_id::SERIAL.to_owned(),
             title: "Serial".to_owned(),
-            offers: vec![
-                Offer::free(DeviceModel::SerialBridge),
-                Offer::free(DeviceModel::LocalTalkAdapter),
-            ],
             slots: vec![Slot::named("A", "Modem"), Slot::named("B", "Printer")],
         });
 
@@ -700,36 +758,16 @@ impl MacModel {
     }
 
     /// The bus the Apple IIe Card adds, with the drives on its chain
-    pub fn iie_disk_bus(chain: usize) -> Bus {
+    pub fn iie_disk_bus(chain: &[DeviceModel]) -> Bus {
         Bus {
             kind: BusKind::IieDisk,
             id: bus_id::IIE_DISK.to_owned(),
             title: "Floppy (Apple IIe Card)".to_owned(),
-            offers: vec![
-                Offer::free(DeviceModel::UniDisk35),
-                Offer::free(DeviceModel::Apple525Drive),
-            ],
-            slots: (1..=chain).map(|i| Slot::empty(i.to_string())).collect(),
-        }
-    }
-
-    /// The drives this model's machines can be built with, in place of its own
-    pub const fn drive_options(self) -> &'static [DeviceModel] {
-        match self {
-            Self::Early128K | Self::Early512K => {
-                &[DeviceModel::Mac400KDrive, DeviceModel::Mac800KPwmDrive]
-            }
-            _ => &[],
-        }
-    }
-
-    /// The cards this model's NuBus slots can take
-    pub const fn nubus_cards(self) -> &'static [DeviceModel] {
-        match self {
-            Self::MacII | Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx => {
-                &[DeviceModel::DisplayCard824, DeviceModel::MacIIVideoCard]
-            }
-            _ => &[],
+            slots: chain
+                .iter()
+                .enumerate()
+                .map(|(i, &model)| Slot::fixed((i + 1).to_string(), model))
+                .collect(),
         }
     }
 
@@ -745,11 +783,11 @@ pub(super) struct DeviceBook {
     pub(super) cards: Vec<DeviceConfig>,
     /// The Apple IIe Card's drives, in chain order
     pub(super) iie_chain: Vec<DeviceModel>,
-    /// The image in each of those drives
-    pub(super) iie_media: Vec<Option<PathBuf>>,
     pub(super) serial: [Option<SerialBridgeConfig>; 2],
     /// The SCSI ID the shared folder sits at, and the folder
     pub(super) blue_scsi: Option<(usize, PathBuf)>,
+    /// The images a restored machine's SCSI devices came from: it runs on copies
+    pub(super) restored_media: [Option<PathBuf>; 7],
 }
 
 impl DeviceBook {
@@ -763,7 +801,6 @@ impl DeviceBook {
                 IieDiskDevice::UniDisk35 => Some(DeviceModel::UniDisk35),
             })
             .collect();
-        self.iie_media = vec![None; self.iie_chain.len()];
     }
 }
 
@@ -817,7 +854,8 @@ impl BuildPlan {
             let device = config.known_model().or_else(|| {
                 let bus = layout.iter().find(|b| b.id == config.bus)?;
                 let slot = bus.slots.iter().find(|s| s.id == config.slot)?;
-                slot.default_model.filter(|_| config.model.is_none())
+                let device = slot.device.as_ref().filter(|_| config.model.is_none())?;
+                Some(device.model)
             });
             match device.filter(|m| m.fixed()) {
                 Some(DeviceModel::UniDisk35 | DeviceModel::Apple525Drive) => {
@@ -854,9 +892,10 @@ impl BuildPlan {
         device: DeviceModel,
         config: &DeviceConfig,
     ) -> Result<bool> {
+        let fits = |kind| models_for(kind, model).any(|i| i.model == device);
         match device {
             DeviceModel::DisplayCard824 | DeviceModel::MacIIVideoCard => {
-                if config.bus != bus_id::NUBUS || !model.nubus_cards().contains(&device) {
+                if config.bus != bus_id::NUBUS || !fits(BusKind::Nubus) {
                     bail!("This machine can't take a {}", device.name());
                 }
                 let slot = u8::from_str_radix(&config.slot, 16)
@@ -868,7 +907,7 @@ impl BuildPlan {
                 Ok(false)
             }
             DeviceModel::SE30Video => {
-                if model != MacModel::SE30 || config.bus != bus_id::BUILT_IN {
+                if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
                     bail!("This machine can't take a {}", device.name());
                 }
                 let rom: SE30VideoSettings = config.parse()?;
@@ -876,7 +915,7 @@ impl BuildPlan {
                 Ok(false)
             }
             DeviceModel::AppleIIePdsCard => {
-                if config.bus != bus_id::PDS_LC || !model.has_lc_pds() {
+                if config.bus != bus_id::PDS_LC || !fits(BusKind::LcPds) {
                     bail!("This machine can't take a {}", device.name());
                 }
                 let settings: AppleIIePdsCardSettings = config.parse()?;
@@ -895,7 +934,7 @@ impl BuildPlan {
                 let own = model.fdd_drives().first().copied();
                 let wanted = device.drive_type();
                 if wanted != own {
-                    if !model.drive_options().contains(&device) {
+                    if !fits(BusKind::Swim) {
                         bail!("This machine can't take a {}", device.name());
                     }
                     // A machine has one kind of drive for now
@@ -983,40 +1022,199 @@ fn settings_map(settings: &impl Serialize) -> Map<String, Value> {
     to_map(settings).unwrap_or_default()
 }
 
-/// The list a machine with these buses can be created from
-pub fn device_configs(buses: &[Bus]) -> Vec<DeviceConfig> {
+/// The list a machine with these buses can be created from. `statuses` has the function's
+/// attributes, such as `media`, in the shape of `buses`.
+pub fn device_configs(
+    buses: &[Bus],
+    statuses: &[Vec<Option<FunctionStatus>>],
+    mac: MacModel,
+) -> Vec<DeviceConfig> {
+    // What the machine has without being told, so need not be saved
+    let layout = mac.buses();
+    let default_model = |bus: &Bus, slot: &Slot| {
+        let bus = layout.iter().find(|b| b.id == bus.id)?;
+        let slot = bus.slots.iter().find(|s| s.id == slot.id)?;
+        Some(slot.device.as_ref()?.model)
+    };
     let mut configs = vec![];
-    for bus in buses {
-        for slot in &bus.slots {
+    for (bus_idx, bus) in buses.iter().enumerate() {
+        for (slot_idx, slot) in bus.slots.iter().enumerate() {
             let Some(device) = &slot.device else {
                 continue;
             };
-            let is_default = slot.default_model == Some(device.model);
-            if is_default && device.settings.is_empty() {
+            let mut settings = device.settings.clone();
+            if let Some(Some(status)) = statuses.get(bus_idx).and_then(|b| b.get(slot_idx)) {
+                settings.extend(status.settings());
+            }
+            let is_default = default_model(bus, slot) == Some(device.model);
+            if is_default && settings.is_empty() {
                 continue;
             }
             configs.push(DeviceConfig {
                 bus: bus.id.clone(),
                 slot: slot.id.clone(),
                 model: (!is_default).then(|| device.model.key().to_owned()),
-                settings: device.settings.clone(),
+                settings,
             });
         }
     }
     configs
 }
 
+/// A drive on the Apple IIe Card's chain, as the Floppy function sees it
+struct IieDrive<'a> {
+    card: &'a mut PdsIIeCard,
+    model: DeviceModel,
+    /// Its position on the chain
+    position: usize,
+    /// The card numbers the 5.25" drives among themselves
+    number: usize,
+}
+
+impl IieDrive<'_> {
+    const DISK_TYPES: &'static [&'static str] = &["dsk", "do", "po", "2mg", "woz"];
+    const UNIDISK_TYPES: &'static [&'static str] = &["po", "2mg"];
+}
+
+impl Floppy for IieDrive<'_> {
+    fn update_status(&mut self, status: &mut FloppyStatus) -> bool {
+        let media = self.card.chain_media[self.position].clone();
+        let (image_label, image_types) = if self.model == DeviceModel::UniDisk35 {
+            ("Apple II 3.5\" disks", Self::UNIDISK_TYPES)
+        } else {
+            ("Apple II 5.25\" disks", Self::DISK_TYPES)
+        };
+        let new = FloppyStatus {
+            title: media
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ejected: media.is_none(),
+            settings: FloppySettings {
+                read_only: media.is_some() && self.card.chain_read_only[self.position],
+                media,
+            },
+            image_label,
+            image_types: image_types.to_vec(),
+            ..FloppyStatus::default()
+        };
+        if *status == new {
+            return false;
+        }
+        *status = new;
+        true
+    }
+
+    fn load(&mut self, media: &Path, read_only: bool) -> Result<()> {
+        let bytes = std::fs::read(media)?;
+        if self.model == DeviceModel::UniDisk35 {
+            // A 2IMG header carries the lock flag; a raw image is the blocks alone
+            let (data, locked) = if TwoImg::detect(&bytes) {
+                let img = TwoImg::parse(&bytes)?;
+                (img.data.to_vec(), img.locked)
+            } else {
+                (bytes, false)
+            };
+            let locked = locked || read_only;
+            self.card.insert_unidisk(data, locked)?;
+            self.card.chain_read_only[self.position] = locked;
+        } else {
+            // A 2IMG header names the sector order, else the extension does
+            let (bytes, order) = if TwoImg::detect(&bytes) {
+                let img = TwoImg::parse(&bytes)?;
+                let order = if img.format == TwoImg::FORMAT_PRODOS {
+                    DskOrder::Prodos
+                } else {
+                    DskOrder::Dos
+                };
+                (img.data, order)
+            } else if media
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("po"))
+            {
+                (&bytes[..], DskOrder::Prodos)
+            } else {
+                (&bytes[..], DskOrder::Dos)
+            };
+            self.card.insert_disk(self.number, bytes, order)?;
+            // The card's 5.25" drives don't write yet
+            self.card.chain_read_only[self.position] = true;
+        }
+        self.card.chain_media[self.position] = Some(media.to_path_buf());
+        Ok(())
+    }
+
+    fn eject(&mut self) {
+        if self.model == DeviceModel::UniDisk35 {
+            self.card.eject_unidisk();
+        } else {
+            self.card.eject_disk(self.number);
+        }
+        self.card.chain_media[self.position] = None;
+        self.card.chain_read_only[self.position] = false;
+    }
+}
+
+/// The floppy status in a slot's status, made one if it wasn't
+fn floppy_status(status: &mut Option<FunctionStatus>) -> (&mut FloppyStatus, bool) {
+    let fresh = !matches!(status, Some(FunctionStatus::Floppy(_)));
+    if fresh {
+        *status = Some(FunctionStatus::Floppy(FloppyStatus::default()));
+    }
+    let Some(FunctionStatus::Floppy(floppy)) = status else {
+        unreachable!()
+    };
+    (floppy, fresh)
+}
+
 impl Emulator {
-    /// The machine as it is now
-    pub fn buses(&self) -> Vec<Bus> {
+    /// The machine as it is now. It only changes when a device is added or removed.
+    pub fn buses(&self) -> Arc<Vec<Bus>> {
+        Arc::clone(&self.bus_list)
+    }
+
+    /// The status of every device, which the frontend reads
+    pub fn status_block(&self) -> Arc<StatusBlock> {
+        Arc::clone(&self.status_block)
+    }
+
+    /// The list a machine like this one can be created from
+    pub fn devices(&mut self) -> Vec<DeviceConfig> {
+        let buses = self.buses();
+        let statuses: Vec<Vec<_>> = buses
+            .iter()
+            .map(|bus| {
+                bus.slots
+                    .iter()
+                    .map(|slot| {
+                        let mut status = None;
+                        self.update_slot_status(bus, slot, &mut status);
+                        status
+                    })
+                    .collect()
+            })
+            .collect();
+        device_configs(&buses, &statuses, self.model)
+    }
+
+    /// Finds a slot from what a workspace knows of it
+    pub fn find_slot(&self, bus: &str, slot: &str) -> Option<SlotAddr> {
+        let bus_idx = self.bus_list.iter().position(|b| b.id == bus)?;
+        let slot = self.bus_list[bus_idx]
+            .slots
+            .iter()
+            .position(|s| s.id == slot)?;
+        Some(SlotAddr { bus: bus_idx, slot })
+    }
+
+    /// Builds the bus list again, after a device came or went, and tells the frontend
+    pub(super) fn rebuild_bus_list(&mut self) {
         let mut buses = self.model.buses();
         if !self.device_book.iie_chain.is_empty()
             && let Some(pds) = buses.iter().position(|b| b.kind == BusKind::LcPds)
         {
-            buses.insert(
-                pds + 1,
-                MacModel::iie_disk_bus(self.device_book.iie_chain.len()),
-            );
+            buses.insert(pds + 1, MacModel::iie_disk_bus(&self.device_book.iie_chain));
         }
         for bus in &mut buses {
             let mut slots = std::mem::take(&mut bus.slots);
@@ -1024,22 +1222,192 @@ impl Emulator {
                 slot.device = self.device_in(bus, slot);
             }
             bus.slots = slots;
-            self.block_offers(bus);
         }
-        buses
+        self.bus_list = Arc::new(buses);
+        let _ = self
+            .event_sender
+            .send(EmulatorEvent::Buses(Arc::clone(&self.bus_list)));
+        // A new device's first status shows, whatever the devices say
+        self.status_block.generation.fetch_add(1, Ordering::Release);
     }
 
-    /// The list a machine like this one can be created from
-    pub fn devices(&self) -> Vec<DeviceConfig> {
-        device_configs(&self.buses())
+    /// After a state is restored: the state has the devices but not where they came from, so
+    /// this takes it from the list saved with it
+    pub(super) fn reinstate_devices(&mut self, devices: Vec<DeviceConfig>) {
+        let layout = self.model.buses();
+        let mut chain = vec![];
+        for config in devices {
+            let in_layout = || {
+                let bus = layout.iter().find(|b| b.id == config.bus)?;
+                bus.slots
+                    .iter()
+                    .find(|s| s.id == config.slot)?
+                    .device
+                    .clone()
+            };
+            let Some(model) = config
+                .known_model()
+                .or_else(|| in_layout().map(|d| d.model))
+            else {
+                continue;
+            };
+            let media = config.parse::<FloppySettings>().ok();
+            match model.info().bus {
+                BusKind::Nubus | BusKind::BuiltIn | BusKind::LcPds | BusKind::Se30Pds => {
+                    self.device_book.cards.push(DeviceConfig {
+                        model: Some(model.key().to_owned()),
+                        ..config
+                    });
+                }
+                BusKind::IieDisk => {
+                    chain.push((config.slot.clone(), model, media));
+                }
+                BusKind::Swim => {
+                    let Ok(drive) = config.slot.parse::<usize>() else {
+                        continue;
+                    };
+                    let media = media.unwrap_or_default();
+                    if let Some(drive) = self.config.swim_mut().drives.get_mut(drive - 1)
+                        && drive.floppy_inserted
+                    {
+                        drive.media_read_only = media.read_only;
+                        drive.media_path = media.media;
+                    }
+                }
+                BusKind::Scsi => {
+                    let Ok(id) = config.slot.parse::<usize>() else {
+                        continue;
+                    };
+                    if model == DeviceModel::BlueScsi {
+                        if let Ok(settings) = config.parse::<FileSharingSettings>() {
+                            self.config
+                                .scsi_mut()
+                                .set_shared_dir(Some(settings.shared_dir.clone()));
+                            self.device_book.blue_scsi = Some((id, settings.shared_dir));
+                        }
+                    } else if let Some(media) = media.and_then(|m| m.media) {
+                        self.device_book.restored_media[id] = Some(media);
+                    }
+                }
+                BusKind::Serial => {
+                    // The host's side of a link isn't in the state: it starts again
+                    self.rebuild_bus_list();
+                    if let Err(e) = self.add_device(&config) {
+                        log::warn!("{}: {:#}", config.label(), e);
+                    }
+                }
+            }
+        }
+        chain.sort_by(|a, b| a.0.cmp(&b.0));
+        self.device_book.iie_chain = chain.iter().map(|(_, model, _)| *model).collect();
+        if let Some(card) = self.iie_card_mut() {
+            for (position, (_, _, media)) in chain.into_iter().enumerate().take(2) {
+                let media = media.unwrap_or_default();
+                card.chain_read_only[position] = media.read_only;
+                card.chain_media[position] = media.media;
+            }
+        }
+        self.rebuild_bus_list();
     }
 
-    /// Finds a slot from what a workspace knows of it
-    pub fn find_slot(&self, bus: &str, slot: &str) -> Option<SlotAddr> {
+    /// Gives every device its turn to update its status. The frontend may be copying the block:
+    /// the next pass catches up then.
+    pub(super) fn publish_status(&mut self) {
+        let block = Arc::clone(&self.status_block);
+        let Ok(mut statuses) = block.statuses.try_lock() else {
+            return;
+        };
         let buses = self.buses();
-        let bus_idx = buses.iter().position(|b| b.id == bus)?;
-        let slot = buses[bus_idx].slots.iter().position(|s| s.id == slot)?;
-        Some(SlotAddr { bus: bus_idx, slot })
+        let mut changed = false;
+        let same_shape = statuses.len() == buses.len()
+            && statuses
+                .iter()
+                .zip(buses.iter())
+                .all(|(s, b)| s.len() == b.slots.len());
+        if !same_shape {
+            *statuses = buses.iter().map(|b| vec![None; b.slots.len()]).collect();
+            changed = true;
+        }
+        for (bus_idx, bus) in buses.iter().enumerate() {
+            for (slot_idx, slot) in bus.slots.iter().enumerate() {
+                changed |= self.update_slot_status(bus, slot, &mut statuses[bus_idx][slot_idx]);
+            }
+        }
+        if changed {
+            block.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Slot -> real object -> function -> its status. True if it changed.
+    fn update_slot_status(
+        &mut self,
+        bus: &Bus,
+        slot: &Slot,
+        status: &mut Option<FunctionStatus>,
+    ) -> bool {
+        let Some(device) = &slot.device else {
+            return status.take().is_some();
+        };
+        match slot_target(bus, slot) {
+            SlotTarget::Drive(i) => {
+                let (floppy, fresh) = floppy_status(status);
+                let Some(drive) = self.config.swim_mut().drives.get_mut(i) else {
+                    return fresh;
+                };
+                drive.update_status(floppy) | fresh
+            }
+            SlotTarget::IieDrive(i) => {
+                let (floppy, fresh) = floppy_status(status);
+                let Some(mut drive) = self.iie_drive(i) else {
+                    return fresh;
+                };
+                drive.update_status(floppy) | fresh
+            }
+            target => {
+                let new = self.computed_status(target, device);
+                if *status == new {
+                    return false;
+                }
+                *status = new;
+                true
+            }
+        }
+    }
+
+    /// The status of the devices that don't implement their function's trait yet
+    fn computed_status(&self, target: SlotTarget, device: &Device) -> Option<FunctionStatus> {
+        match target {
+            SlotTarget::Scsi(id) => self.scsi_status(id),
+            SlotTarget::Card => Some(match device.model.function() {
+                FunctionKind::AppleIIe => FunctionStatus::AppleIIe,
+                _ => FunctionStatus::Video,
+            }),
+            SlotTarget::Serial(ch) => {
+                let bridge = self.serial_bridges[ch as usize]
+                    .as_ref()
+                    .map(|b| b.status());
+                Some(match device.model.function() {
+                    FunctionKind::LocalTalk => FunctionStatus::LocalTalk(bridge),
+                    _ => FunctionStatus::SerialLink(bridge),
+                })
+            }
+            SlotTarget::Drive(_) | SlotTarget::IieDrive(_) => None,
+        }
+    }
+
+    /// The drive at this position of the Apple IIe Card's chain
+    fn iie_drive(&mut self, position: usize) -> Option<IieDrive<'_>> {
+        let model = *self.device_book.iie_chain.get(position)?;
+        let number = self.device_book.iie_chain[..position]
+            .iter()
+            .filter(|m| **m == DeviceModel::Apple525Drive)
+            .count();
+        Some(IieDrive {
+            card: self.iie_card_mut()?,
+            model,
+            position,
+            number,
+        })
     }
 
     /// Builds a machine with these devices: the ones it can't use are returned
@@ -1077,6 +1445,7 @@ impl Emulator {
             video_slot,
         )?;
         emu.device_book.cards = plan.cards;
+        emu.rebuild_bus_list();
 
         let mut refused = plan.refused;
         for config in plan.rest {
@@ -1112,7 +1481,11 @@ impl Emulator {
                 }
                 self.configure_device(slot_target(bus, slot), device.model, config)
             }
-            None => self.create_device(bus, slot, config),
+            None => {
+                self.create_device(bus, slot, config)?;
+                self.rebuild_bus_list();
+                Ok(())
+            }
         }
     }
 
@@ -1133,11 +1506,15 @@ impl Emulator {
                 self.device_book.blue_scsi = None;
                 self.config.scsi_mut().set_shared_dir(None);
             }
-            SlotTarget::Scsi(id) => self.config.scsi_mut().detach_target(id),
+            SlotTarget::Scsi(id) => {
+                self.config.scsi_mut().detach_target(id);
+                self.device_book.restored_media[id] = None;
+            }
             SlotTarget::Serial(ch) => self.serial_bridge_disable(ch)?,
             t => bail!("{:?} doesn't take removable devices", t),
         }
         info!("{} #{}: device removed", bus.id, slot.id);
+        self.rebuild_bus_list();
         Ok(())
     }
 
@@ -1148,28 +1525,26 @@ impl Emulator {
             .context("This slot is empty, and the entry doesn't say what to put in it")?;
         let model =
             DeviceModel::from_key(key).with_context(|| format!("Unknown device {}", key))?;
-        if model.fixed() {
+        let info = models_for(bus.kind, self.model)
+            .find(|i| i.model == model)
+            .with_context(|| format!("{} doesn't take a {}", bus.id, model.name()))?;
+        if info.fixed {
             bail!("A {} can only be chosen with the machine", model.name());
         }
-        let offer = bus
-            .offers
-            .iter()
-            .find(|o| o.model == model)
-            .with_context(|| format!("{} doesn't take a {}", bus.id, model.name()))?;
-        if offer.blocked || slot.blocked {
+        if !bus.can_take(info) || slot.blocked {
             bail!("A {} can't go here right now", model.name());
         }
         match (slot_target(bus, slot), model) {
             (SlotTarget::Scsi(id), DeviceModel::ScsiHardDisk) => {
-                let settings: ScsiHardDiskSettings = config.parse()?;
-                if settings.disk.read_only {
+                let settings: HardDiskSettings = config.parse()?;
+                if settings.read_only {
                     bail!("SCSI disks can't be read-only yet");
                 }
-                self.load_hdd_image(&settings.disk.media, id)
+                self.load_hdd_image(&settings.media, id)
             }
             (SlotTarget::Scsi(id), DeviceModel::ScsiCdrom) => {
-                let settings: ScsiCdromSettings = config.parse()?;
-                match settings.cdrom.media {
+                let settings: CdromSettings = config.parse()?;
+                match settings.media {
                     Some(dir) if dir.is_dir() => self.attach_cdrom_folder(id, dir),
                     Some(image) => {
                         self.attach_cdrom(id);
@@ -1193,7 +1568,7 @@ impl Emulator {
                 Ok(())
             }
             (SlotTarget::Scsi(id), DeviceModel::BlueScsi) => {
-                let settings: BlueScsiSettings = config.parse()?;
+                let settings: FileSharingSettings = config.parse()?;
                 if !settings.shared_dir.is_dir() {
                     bail!("{} is not a folder", settings.shared_dir.display());
                 }
@@ -1204,7 +1579,7 @@ impl Emulator {
                 Ok(())
             }
             (SlotTarget::Serial(ch), DeviceModel::SerialBridge) => {
-                let settings: SerialBridgeSettings = config.parse()?;
+                let settings: SerialLinkSettings = config.parse()?;
                 self.serial_bridge_enable(
                     ch,
                     match settings.tcp_port {
@@ -1228,17 +1603,10 @@ impl Emulator {
         config: &DeviceConfig,
     ) -> Result<()> {
         match target {
-            SlotTarget::Drive(i) => {
+            SlotTarget::Drive(_) | SlotTarget::IieDrive(_) => {
                 let settings: FloppySettings = config.parse()?;
                 match settings.media {
-                    Some(media) => self.insert_floppy_file(i, &media, settings.read_only),
-                    None => Ok(()),
-                }
-            }
-            SlotTarget::IieDrive(i) => {
-                let settings: FloppySettings = config.parse()?;
-                match settings.media {
-                    Some(media) => self.insert_iie_media(i, &media),
+                    Some(media) => self.load_target(target, &media, settings.read_only),
                     None => Ok(()),
                 }
             }
@@ -1257,8 +1625,8 @@ impl Emulator {
                 Ok(())
             }
             SlotTarget::Scsi(id) if model == DeviceModel::ScsiCdrom => {
-                let settings: ScsiCdromSettings = config.parse()?;
-                match settings.cdrom.media {
+                let settings: CdromSettings = config.parse()?;
+                match settings.media {
                     Some(media) => self.scsi_load_media(id, &media),
                     None => Ok(()),
                 }
@@ -1268,8 +1636,7 @@ impl Emulator {
     }
 
     fn target_at(&self, addr: SlotAddr) -> Result<SlotTarget> {
-        let buses = self.buses();
-        let bus = buses.get(addr.bus).context("No such bus")?;
+        let bus = self.bus_list.get(addr.bus).context("No such bus")?;
         let slot = bus.slots.get(addr.slot).context("No such slot")?;
         Ok(slot_target(bus, slot))
     }
@@ -1295,36 +1662,61 @@ impl Emulator {
         self.config.scsi_mut().targets[id]
             .as_mut()
             .context("No target attached")?
-            .branch_media(path)
+            .branch_media(path)?;
+        self.device_book.restored_media[id] = None;
+        Ok(())
     }
 
     /// Puts an image in the drive in a slot
-    pub(super) fn load_media(&mut self, addr: SlotAddr, path: &Path) -> Result<()> {
-        match self.target_at(addr)? {
-            SlotTarget::Scsi(id) => self.scsi_load_media(id, path),
-            SlotTarget::IieDrive(i) => self.insert_iie_media(i, path),
+    pub(super) fn load_media(
+        &mut self,
+        addr: SlotAddr,
+        path: &Path,
+        read_only: bool,
+    ) -> Result<()> {
+        let target = self.target_at(addr)?;
+        self.load_target(target, path, read_only)
+    }
+
+    fn load_target(&mut self, target: SlotTarget, path: &Path, read_only: bool) -> Result<()> {
+        match target {
+            SlotTarget::Drive(i) => {
+                let drive = self
+                    .config
+                    .swim_mut()
+                    .drives
+                    .get_mut(i)
+                    .context("No such drive")?;
+                Floppy::load(drive, path, read_only)
+            }
+            SlotTarget::IieDrive(i) => self
+                .iie_drive(i)
+                .context("No such drive")?
+                .load(path, read_only),
+            SlotTarget::Scsi(id) => {
+                self.scsi_load_media(id, path)?;
+                self.device_book.restored_media[id] = None;
+                Ok(())
+            }
             t => bail!("{:?} doesn't take media", t),
         }
     }
 
     /// Takes the image out of the drive in a slot
     pub(super) fn eject_media(&mut self, addr: SlotAddr) -> Result<()> {
-        let SlotTarget::IieDrive(i) = self.target_at(addr)? else {
-            bail!("This drive can't eject from here");
-        };
-        let model = *self.device_book.iie_chain.get(i).context("No such drive")?;
-        let drive = self.device_book.iie_chain[..i]
-            .iter()
-            .filter(|m| **m == DeviceModel::Apple525Drive)
-            .count();
-        let card = self.iie_card_mut().context("No Apple IIe Card installed")?;
-        if model == DeviceModel::UniDisk35 {
-            card.eject_unidisk();
-        } else {
-            card.eject_disk(drive);
+        match self.target_at(addr)? {
+            SlotTarget::Drive(i) => {
+                // The writes since the last save must not be lost
+                self.try_writeback(i);
+                Floppy::eject(&mut self.config.swim_mut().drives[i]);
+                Ok(())
+            }
+            SlotTarget::IieDrive(i) => {
+                self.iie_drive(i).context("No such drive")?.eject();
+                Ok(())
+            }
+            t => bail!("{:?} can't eject from here", t),
         }
-        self.device_book.iie_media[i] = None;
-        Ok(())
     }
 
     fn scsi_load_media(&mut self, id: usize, path: &Path) -> Result<()> {
@@ -1332,24 +1724,6 @@ impl Emulator {
             .as_mut()
             .context("No target attached")?
             .load_media(path)
-    }
-
-    fn insert_floppy_file(&mut self, drive: usize, path: &Path, read_only: bool) -> Result<()> {
-        let filename = path.to_string_lossy();
-        let mut image = Autodetect::load_file(&filename)
-            .with_context(|| format!("Cannot load {}", path.display()))?;
-        if read_only {
-            image.set_force_wp();
-        }
-        let writeback_path = image.supports_writeback().then(|| path.to_path_buf());
-        self.config.swim_mut().disk_insert(drive, image)?;
-        let drv = &mut self.config.swim_mut().drives[drive];
-        drv.media_path = Some(path.to_path_buf());
-        drv.media_read_only = read_only;
-        drv.image_path = writeback_path;
-        drv.writeback_enabled = false;
-        drv.pending_writeback = false;
-        Ok(())
     }
 
     pub(super) fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
@@ -1362,88 +1736,9 @@ impl Emulator {
         }
     }
 
-    /// Puts an image in the drive at this position of the card's chain
-    fn insert_iie_media(&mut self, position: usize, path: &Path) -> Result<()> {
-        let chain = &self.device_book.iie_chain;
-        match chain.get(position) {
-            Some(DeviceModel::UniDisk35) => self.insert_iie_unidisk(path),
-            Some(_) => {
-                // The IIe numbers the 5.25" drives among themselves
-                let drive = chain[..position]
-                    .iter()
-                    .filter(|m| **m == DeviceModel::Apple525Drive)
-                    .count();
-                self.insert_iie_disk(drive, path)
-            }
-            None => bail!("No drive at this position of the chain"),
-        }
-    }
-
-    /// Inserts an image in one of the card's 5.25" drives
-    fn insert_iie_disk(&mut self, drive: usize, path: &Path) -> Result<()> {
-        let bytes = std::fs::read(path)?;
-        // A 2IMG header names the sector order, else the extension does
-        let (bytes, order) = if TwoImg::detect(&bytes) {
-            let img = TwoImg::parse(&bytes)?;
-            let order = if img.format == TwoImg::FORMAT_PRODOS {
-                DskOrder::Prodos
-            } else {
-                DskOrder::Dos
-            };
-            (img.data, order)
-        } else if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-        {
-            (&bytes[..], DskOrder::Prodos)
-        } else {
-            (&bytes[..], DskOrder::Dos)
-        };
-        self.iie_card_mut()
-            .context("No Apple IIe Card installed")?
-            .insert_disk(drive, bytes, order)?;
-        // Back from the card's numbering to the position in the chain
-        let position = self
-            .device_book
-            .iie_chain
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| **m == DeviceModel::Apple525Drive)
-            .nth(drive)
-            .map(|(i, _)| i);
-        if let Some(position) = position {
-            self.device_book.iie_media[position] = Some(path.to_path_buf());
-        }
-        Ok(())
-    }
-
-    /// Inserts an image in the card's UniDisk 3.5
-    fn insert_iie_unidisk(&mut self, path: &Path) -> Result<()> {
-        let bytes = std::fs::read(path)?;
-        // A 2IMG header carries the lock flag; a raw image is the blocks alone
-        let (data, locked) = if TwoImg::detect(&bytes) {
-            let img = TwoImg::parse(&bytes)?;
-            (img.data.to_vec(), img.locked)
-        } else {
-            (bytes, false)
-        };
-        self.iie_card_mut()
-            .context("No Apple IIe Card installed")?
-            .insert_unidisk(data, locked)?;
-        let position = self
-            .device_book
-            .iie_chain
-            .iter()
-            .position(|m| *m == DeviceModel::UniDisk35);
-        if let Some(position) = position {
-            self.device_book.iie_media[position] = Some(path.to_path_buf());
-        }
-        Ok(())
-    }
-
     /// Plugs a host link in a serial port
     fn serial_bridge_enable(&mut self, ch: SccCh, config: SerialBridgeConfig) -> Result<()> {
-        let bridge = SccBridge::new(&config)?;
+        let bridge = serial_device(&config)?;
         let status = bridge.status();
         info!("SCC bridge enabled on channel {:?}: {}", ch, status);
         match &status {
@@ -1457,8 +1752,6 @@ impl Emulator {
         }
         self.serial_bridges[ch as usize] = Some(bridge);
         self.device_book.serial[ch as usize] = Some(config);
-        self.event_sender
-            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
         Ok(())
     }
 
@@ -1467,185 +1760,161 @@ impl Emulator {
         self.device_book.serial[ch as usize] = None;
         if self.serial_bridges[ch as usize].take().is_some() {
             info!("Serial bridge disabled on channel {:?}", ch);
-            self.event_sender
-                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
         }
         Ok(())
     }
 
-    /// One of each on a bus: the frontend has offered no more than that so far
-    fn block_offers(&self, bus: &mut Bus) {
-        if bus.kind != BusKind::Scsi {
-            return;
-        }
-        let has = |model| {
-            bus.slots
-                .iter()
-                .any(|s| s.device.as_ref().is_some_and(|d| d.model == model))
-        };
-        let mut offers = std::mem::take(&mut bus.offers);
-        for offer in &mut offers {
-            offer.blocked = match offer.model {
-                #[cfg(feature = "ethernet")]
-                DeviceModel::DaynaPortScsiLink => has(offer.model),
-                #[cfg(feature = "printer")]
-                DeviceModel::LaserWriterIISC => has(offer.model),
-                DeviceModel::BlueScsi => has(offer.model),
-                _ => false,
-            };
-        }
-        bus.offers = offers;
-    }
-
+    /// What is in a slot, with the device model's own attributes
     fn device_in(&self, bus: &Bus, slot: &Slot) -> Option<Device> {
+        let device = |model, settings| Some(Device { model, settings });
         match slot_target(bus, slot) {
-            SlotTarget::Drive(i) => self.drive_device(i),
-            SlotTarget::Scsi(i) => self.scsi_device(i),
+            SlotTarget::Drive(i) => {
+                let drive = self.config.swim().drives.get(i)?;
+                device(DeviceModel::from_drive_type(drive.drive_type)?, Map::new())
+            }
+            SlotTarget::Scsi(id) => {
+                if let Some((blue_id, dir)) = &self.device_book.blue_scsi
+                    && *blue_id == id
+                {
+                    return device(
+                        DeviceModel::BlueScsi,
+                        settings_map(&FileSharingSettings {
+                            shared_dir: dir.clone(),
+                        }),
+                    );
+                }
+                let model = match self.config.scsi().get_target_type(id)? {
+                    ScsiTargetType::Disk => DeviceModel::ScsiHardDisk,
+                    ScsiTargetType::Cdrom => DeviceModel::ScsiCdrom,
+                    #[cfg(feature = "ethernet")]
+                    ScsiTargetType::Ethernet => DeviceModel::DaynaPortScsiLink,
+                    #[cfg(feature = "printer")]
+                    ScsiTargetType::Printer => DeviceModel::LaserWriterIISC,
+                };
+                device(model, Map::new())
+            }
             SlotTarget::Card => {
                 let config = self
                     .device_book
                     .cards
                     .iter()
                     .find(|c| c.bus == bus.id && c.slot == slot.id)?;
-                let model = config.known_model()?;
-                Some(Device {
-                    model,
-                    settings: config.settings.clone(),
-                    state: match model.function() {
-                        FunctionKind::AppleIIe => FunctionState::AppleIIe,
-                        _ => FunctionState::Video,
-                    },
-                })
+                device(config.known_model()?, config.settings.clone())
             }
-            SlotTarget::IieDrive(i) => {
-                let media = self.device_book.iie_media.get(i).cloned().flatten();
-                Some(Device {
-                    model: *self.device_book.iie_chain.get(i)?,
-                    settings: settings_map(&FloppySettings {
-                        media: media.clone(),
-                        read_only: false,
+            SlotTarget::IieDrive(i) => device(*self.device_book.iie_chain.get(i)?, Map::new()),
+            SlotTarget::Serial(ch) => match self.device_book.serial[ch as usize].as_ref()? {
+                SerialBridgeConfig::Pty => device(DeviceModel::SerialBridge, Map::new()),
+                SerialBridgeConfig::Tcp(port) => device(
+                    DeviceModel::SerialBridge,
+                    settings_map(&SerialLinkSettings {
+                        tcp_port: Some(*port),
                     }),
-                    state: FunctionState::IieFloppy(IieFloppyState { media }),
-                })
-            }
-            SlotTarget::Serial(ch) => {
-                let (model, settings) = match self.device_book.serial[ch as usize].as_ref()? {
-                    SerialBridgeConfig::Pty => (
-                        DeviceModel::SerialBridge,
-                        settings_map(&SerialBridgeSettings::default()),
-                    ),
-                    SerialBridgeConfig::Tcp(port) => (
-                        DeviceModel::SerialBridge,
-                        settings_map(&SerialBridgeSettings {
-                            tcp_port: Some(*port),
-                        }),
-                    ),
-                    SerialBridgeConfig::LocalTalk => (DeviceModel::LocalTalkAdapter, Map::new()),
-                };
-                Some(Device {
-                    model,
-                    settings,
-                    state: FunctionState::SerialLink(
-                        self.serial_bridges[ch as usize]
-                            .as_ref()
-                            .map(|b| b.status()),
-                    ),
-                })
-            }
+                ),
+                SerialBridgeConfig::LocalTalk => device(DeviceModel::LocalTalkAdapter, Map::new()),
+            },
         }
     }
 
-    fn drive_device(&self, i: usize) -> Option<Device> {
-        let swim = self.config.swim();
-        let drive = swim.drives.get(i)?;
-        let model = DeviceModel::from_drive_type(drive.drive_type)?;
-        let media = drive
-            .floppy_inserted
-            .then(|| drive.media_path.clone())
-            .flatten();
-        Some(Device {
-            model,
-            settings: settings_map(&FloppySettings {
-                media: media.clone(),
-                read_only: media.is_some() && drive.media_read_only,
-            }),
-            state: FunctionState::Floppy(FloppyState {
-                media,
-                ejected: !drive.floppy_inserted,
-                motor: drive.motor,
-                writing: drive.motor && swim.is_writing(),
-                track: drive.track,
-                image_title: drive.floppy.get_title().to_owned(),
-                dirty: drive.floppy.is_dirty(),
-                drive_type: drive.drive_type,
-                writeback_supported: drive.image_path.is_some()
-                    && drive.floppy.supports_writeback(),
-                writeback_enabled: drive.writeback_enabled,
-            }),
-        })
-    }
-
-    fn scsi_device(&self, id: usize) -> Option<Device> {
+    fn scsi_status(&self, id: usize) -> Option<FunctionStatus> {
         if let Some((blue_id, dir)) = &self.device_book.blue_scsi
             && *blue_id == id
         {
-            return Some(Device {
-                model: DeviceModel::BlueScsi,
-                settings: settings_map(&BlueScsiSettings {
-                    shared_dir: dir.clone(),
-                }),
-                state: FunctionState::FileSharing(FileSharingState {
-                    shared_dir: Some(dir.clone()),
-                }),
-            });
+            return Some(FunctionStatus::FileSharing(FileSharingStatus {
+                shared_dir: dir.clone(),
+            }));
         }
         let scsi = self.config.scsi();
-        let image = scsi.get_disk_imagefn(id).map(|p| p.to_path_buf());
+        // A restored machine runs on copies: what matters is where they came from
+        let image = self.device_book.restored_media[id]
+            .clone()
+            .or_else(|| scsi.get_disk_imagefn(id).map(|p| p.to_path_buf()));
         match scsi.get_target_type(id)? {
-            ScsiTargetType::Disk => Some(Device {
-                model: DeviceModel::ScsiHardDisk,
-                settings: settings_map(&HardDiskSettings {
-                    media: image.clone()?,
+            ScsiTargetType::Disk => Some(FunctionStatus::HardDisk(HardDiskStatus {
+                settings: HardDiskSettings {
+                    media: image?,
                     read_only: false,
-                }),
-                state: FunctionState::HardDisk(HardDiskState {
-                    media: image,
-                    capacity: scsi.get_disk_capacity(id),
-                }),
-            }),
+                },
+                capacity: scsi.get_disk_capacity(id),
+            })),
             ScsiTargetType::Cdrom => {
                 let folder = scsi.get_cdrom_folder(id).map(|p| p.to_path_buf());
-                Some(Device {
-                    model: DeviceModel::ScsiCdrom,
-                    settings: settings_map(&CdromSettings {
+                Some(FunctionStatus::Cdrom(CdromStatus {
+                    settings: CdromSettings {
                         media: folder.clone().or_else(|| image.clone()),
-                    }),
-                    state: FunctionState::Cdrom(CdromState {
-                        media: image,
-                        folder,
-                    }),
-                })
+                    },
+                    image,
+                    folder,
+                }))
             }
             #[cfg(feature = "ethernet")]
             ScsiTargetType::Ethernet => {
                 let ethernet = scsi.targets[id].as_ref()?.ethernet()?;
-                let link = ethernet.link();
-                Some(Device {
-                    model: DeviceModel::DaynaPortScsiLink,
-                    settings: settings_map(&serde_json::json!({ "link": link })),
-                    state: FunctionState::Ethernet(EthernetState {
-                        link,
-                        capture: ethernet.capture_status(),
-                    }),
-                })
+                Some(FunctionStatus::Ethernet(EthernetStatus {
+                    link: ethernet.link(),
+                    capture: ethernet.capture_status(),
+                }))
             }
             #[cfg(feature = "printer")]
-            ScsiTargetType::Printer => Some(Device {
-                model: DeviceModel::LaserWriterIISC,
-                settings: Map::new(),
-                state: FunctionState::Printer,
-            }),
+            ScsiTargetType::Printer => Some(FunctionStatus::Printer),
         }
+    }
+}
+
+/// The Floppy function of a Mac floppy drive
+impl Floppy for FloppyDrive {
+    fn update_status(&mut self, status: &mut FloppyStatus) -> bool {
+        let media = self
+            .floppy_inserted
+            .then(|| self.media_path.clone())
+            .flatten();
+        let mut blank_formats = vec![FloppyType::Mac800K];
+        if self.drive_type == DriveType::SuperDrive {
+            blank_formats.push(FloppyType::Mfm144M);
+        }
+        let new = FloppyStatus {
+            settings: FloppySettings {
+                read_only: media.is_some() && self.media_read_only,
+                media,
+            },
+            title: self.floppy.get_title().to_owned(),
+            ejected: !self.floppy_inserted,
+            dirty: self.floppy.is_dirty(),
+            can_save: true,
+            writeback_supported: self.image_path.is_some() && self.floppy.supports_writeback(),
+            writeback_enabled: self.writeback_enabled,
+            blank_formats,
+            image_label: "Floppy images",
+            image_types: snow_floppy::loaders::ImageType::all_extensions(),
+            rpm_control: self.drive_type.has_pwm_control(),
+        };
+        if *status == new {
+            return false;
+        }
+        *status = new;
+        true
+    }
+
+    fn load(&mut self, media: &Path, read_only: bool) -> Result<()> {
+        if !self.is_present() {
+            bail!("No drive here");
+        }
+        let mut image = Autodetect::load_file(&media.to_string_lossy())
+            .with_context(|| format!("Cannot load {}", media.display()))?;
+        if read_only {
+            image.set_force_wp();
+        }
+        let writeback_path = image.supports_writeback().then(|| media.to_path_buf());
+        self.disk_insert(image)?;
+        self.media_path = Some(media.to_path_buf());
+        self.media_read_only = read_only;
+        self.image_path = writeback_path;
+        self.writeback_enabled = false;
+        self.pending_writeback = false;
+        Ok(())
+    }
+
+    fn eject(&mut self) {
+        Self::eject(self);
     }
 }
 
@@ -1757,8 +2026,16 @@ mod tests {
         for slot in &swim.slots {
             let device = slot.device.as_ref().unwrap();
             assert_eq!(device.model, DeviceModel::Mac800KDrive);
-            assert!(matches!(&device.state, FunctionState::Floppy(f) if f.ejected));
         }
+        let mut emu = emu;
+        emu.status_update().unwrap();
+        let block = emu.status_block();
+        let statuses = block.statuses.lock().unwrap();
+        let swim_idx = buses.iter().position(|b| b.id == bus_id::SWIM).unwrap();
+        for status in &statuses[swim_idx] {
+            assert!(matches!(status, Some(FunctionStatus::Floppy(f)) if f.ejected));
+        }
+        drop(statuses);
         let scsi = buses.iter().find(|b| b.id == bus_id::SCSI).unwrap();
         assert!(scsi.slots.iter().all(|s| s.device.is_none()));
         assert_eq!(emu.devices(), vec![]);
@@ -1823,11 +2100,11 @@ mod tests {
 
     /// What a machine reports must create the same machine
     fn assert_round_trip(model: MacModel, devices: Vec<DeviceConfig>) -> Vec<DeviceConfig> {
-        let (emu, refused) = build(model, devices);
+        let (mut emu, refused) = build(model, devices);
         assert!(refused.is_empty(), "{:?}", refused);
         let reported = emu.devices();
         drop(emu);
-        let (again, refused) = build(model, reported.clone());
+        let (mut again, refused) = build(model, reported.clone());
         assert!(refused.is_empty(), "{:?}", refused);
         assert_eq!(again.devices(), reported);
         reported
@@ -1908,10 +2185,11 @@ mod tests {
     #[test]
     fn blue_scsi_holds_its_slot() {
         let files = TestFiles::new("blue");
-        let blue = DeviceConfig::new(
+        let blue = DeviceConfig::of_model(
             bus_id::SCSI,
             "1",
-            &BlueScsiSettings {
+            DeviceModel::BlueScsi,
+            &FileSharingSettings {
                 shared_dir: files.dir("shared"),
             },
         )
@@ -1922,7 +2200,7 @@ mod tests {
         );
 
         // Its slot is taken, and there's one to a bus
-        let (emu, refused) = build(
+        let (mut emu, refused) = build(
             MacModel::Plus,
             vec![
                 blue.clone(),
@@ -1951,7 +2229,7 @@ mod tests {
         )
         .unwrap();
         for model in [MacModel::Plus, MacModel::SE, MacModel::MacIIx] {
-            let (emu, refused) = if model == MacModel::MacIIx {
+            let (mut emu, refused) = if model == MacModel::MacIIx {
                 let rom = files.file("card.rom", 32 * 1024);
                 build(
                     model,
@@ -2012,7 +2290,7 @@ mod tests {
         );
 
         // There is no slot E on a IIcx, and a machine has one card for now
-        let (emu, refused) = build(
+        let (mut emu, refused) = build(
             MacModel::MacIIcx,
             vec![
                 card.clone(),
@@ -2078,9 +2356,10 @@ mod tests {
                 bus_id::IIE_DISK,
                 "2",
                 DeviceModel::Apple525Drive,
+                // The card's 5.25" drives don't write yet, so they say so
                 &FloppySettings {
                     media: Some(files.file("b.dsk", 143_360)),
-                    read_only: false,
+                    read_only: true,
                 },
             )
             .unwrap(),
@@ -2092,6 +2371,36 @@ mod tests {
         assert_eq!(at(bus_id::IIE_DISK), at(bus_id::PDS_LC) + 1);
         drop(emu);
         assert_eq!(assert_round_trip(MacModel::LC, devices.clone()), devices);
+    }
+
+    #[cfg(feature = "savestates")]
+    #[test]
+    fn a_restored_machine_reports_its_devices() {
+        let files = TestFiles::new("state");
+        let devices = vec![
+            DeviceConfig::new(bus_id::PDS_LC, "0", &AppleIIePdsCardSettings::default()).unwrap(),
+            DeviceConfig::of_model(
+                bus_id::IIE_DISK,
+                "1",
+                DeviceModel::UniDisk35,
+                &FloppySettings {
+                    media: Some(files.file("a.po", 800 * 1024)),
+                    read_only: false,
+                },
+            )
+            .unwrap(),
+            scsi_disk("2", files.file("hd.img", 1024 * 1024)),
+        ];
+        let (mut emu, refused) = build(MacModel::LC, devices);
+        assert!(refused.is_empty(), "{:?}", refused);
+        let reported = emu.devices();
+        let state = files.0.join("machine.snows");
+        emu.save_state(&state, None).unwrap();
+        drop(emu);
+
+        // It runs on a copy of the disk, and still says where it came from
+        let (mut restored, _) = Emulator::load_state(&state, files.dir("tmp")).unwrap();
+        assert_eq!(restored.devices(), reported);
     }
 
     #[test]
@@ -2167,7 +2476,7 @@ mod tests {
                 .iter()
                 .map(|c| serde_json::from_value(c.clone()).unwrap()),
         );
-        let (emu, refused) = build(MacModel::Plus, devices);
+        let (mut emu, refused) = build(MacModel::Plus, devices);
         assert_eq!(refused.len(), cases.len(), "{:#?}", refused);
         assert_eq!(emu.devices(), [good]);
         // The drive is still there
@@ -2177,10 +2486,11 @@ mod tests {
 
     #[test]
     fn a_serial_link_round_trips() {
-        let bridge = DeviceConfig::new(
+        let bridge = DeviceConfig::of_model(
             bus_id::SERIAL,
             "A",
-            &SerialBridgeSettings { tcp_port: Some(0) },
+            DeviceModel::SerialBridge,
+            &SerialLinkSettings { tcp_port: Some(0) },
         )
         .unwrap();
         assert_eq!(
