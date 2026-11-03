@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
-use crate::emulator::devices::FunctionMut;
+use crate::emulator::devices::{CreateContext, DeviceConfig, FunctionMut, LaserWriterIISCSettings};
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
@@ -574,6 +574,14 @@ impl Debuggable for ScsiTargetPrinter {
     }
 }
 
+/// Makes a LaserWriter IISC from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: LaserWriterIISCSettings = config.parse()?;
+    Ok(Box::new(ScsiTargetPrinter::new(
+        settings.output_dir.unwrap_or_else(std::env::temp_dir),
+    )))
+}
+
 pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
     model: crate::emulator::devices::DeviceModel::LaserWriterIISC,
     name: "LaserWriter IISC",
@@ -585,4 +593,5 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: None,
     path_keys: &[],
     adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
 };

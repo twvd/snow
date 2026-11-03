@@ -25,7 +25,8 @@ use super::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::devices::{
-    FileTransfer, FileTransferSettings, FileTransferStatus, FunctionMut, replace_status,
+    CreateContext, DeviceConfig, FileTransfer, FileTransferSettings, FileTransferStatus,
+    FunctionMut, replace_status,
 };
 use crate::util::mac::{macroman_to_utf8, utf8_to_macroman};
 
@@ -564,6 +565,31 @@ impl Debuggable for ScsiTargetBlueScsi {
     }
 }
 
+/// Makes a BlueSCSI from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: FileTransferSettings = config.parse()?;
+    if let Some(folder) = &settings.media
+        && !folder.is_dir()
+    {
+        bail!("{} is not a folder", folder.display());
+    }
+    Ok(Box::new(ScsiTargetBlueScsi::new(settings.media)))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::BlueScsi,
+    name: "BlueSCSI",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::FileTransfer,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -1067,16 +1093,3 @@ mod fd_close_tests {
         let _ = fs::remove_dir_all(&d);
     }
 }
-
-pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
-    model: crate::emulator::devices::DeviceModel::BlueScsi,
-    name: "BlueSCSI",
-    bus: crate::emulator::devices::BusKind::Scsi,
-    fits: crate::emulator::devices::ModelInfo::fits_all,
-    function: crate::emulator::devices::FunctionKind::FileTransfer,
-    fixed: false,
-    one_per_bus: false,
-    rom: None,
-    path_keys: &["media"],
-    adds_buses: &[],
-};

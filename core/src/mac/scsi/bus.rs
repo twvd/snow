@@ -3,7 +3,6 @@
 //! This models a SCSI bus independently from a controller.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use log::*;
@@ -13,16 +12,10 @@ use serde_big_array::BigArray;
 use crate::emulator::EmuContext;
 use crate::emulator::devices::FunctionMut;
 use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::ScsiTargetEthernet;
-#[cfg(feature = "printer")]
-use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
-use crate::mac::scsi::toolbox::ScsiTargetBlueScsi;
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
@@ -135,15 +128,16 @@ impl ScsiBus {
         self.device_map_sent = false;
     }
 
-    /// Loads a disk image (filename) and attaches a hard drive at the given SCSI ID
-    pub fn attach_hdd_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
+    /// Puts a device at the given SCSI ID
+    pub(crate) fn attach_target_at(
+        &mut self,
+        scsi_id: usize,
+        target: Box<dyn ScsiTarget>,
+    ) -> Result<()> {
         if scsi_id >= Self::MAX_TARGETS {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
-        if !Path::new(filename).exists() {
-            bail!("File {} does not exist", filename.to_string_lossy());
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
+        self.targets[scsi_id] = Some(target);
         self.targets_changed();
         Ok(())
     }
@@ -154,45 +148,7 @@ impl ScsiBus {
         image: Box<dyn DiskImage>,
         scsi_id: usize,
     ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
-        self.targets_changed();
-        Ok(())
-    }
-
-    /// Attaches a CD-ROM drive at the given SCSI ID
-    pub fn attach_cdrom_at(
-        &mut self,
-        scsi_id: usize,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
-        self.targets_changed();
-    }
-
-    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
-    /// SCSI ID. The folder's images are exposed to the guest through the BlueSCSI
-    /// Toolbox CD commands (LIST_CDS / SET_NEXT_CD / COUNT_CDS) and the first
-    /// image found is mounted automatically.
-    pub fn attach_cdrom_folder_at(
-        &mut self,
-        scsi_id: usize,
-        dir: PathBuf,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        let mut cdrom = ScsiTargetCdrom::new(audio_provider);
-        cdrom.set_image_dir(Some(dir));
-        if let Err(e) = cdrom.mount_first_image() {
-            log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
-        }
-        self.targets[scsi_id] = Some(Box::new(cdrom));
-        self.targets_changed();
-        Ok(())
+        self.attach_target_at(scsi_id, Box::new(ScsiTargetDisk::new(image)))
     }
 
     /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.
@@ -211,34 +167,6 @@ impl ScsiBus {
             FunctionMut::Cdrom(cdrom) => cdrom.load_image(image),
             _ => bail!("No CD-ROM drive at SCSI ID {}", scsi_id),
         }
-    }
-
-    /// Attaches an Ethernet adapter at the given SCSI ID
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
-        self.targets_changed();
-    }
-
-    /// Attaches a LaserWriter IISC printer at the given SCSI ID
-    #[cfg(feature = "printer")]
-    pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
-        self.targets_changed();
-    }
-
-    /// Attaches a BlueSCSI sharing a folder, or none yet, at the given SCSI ID
-    pub fn attach_bluescsi_at(
-        &mut self,
-        scsi_id: usize,
-        shared_dir: Option<PathBuf>,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetBlueScsi::new(shared_dir)));
-        self.targets_changed();
-        Ok(())
     }
 
     /// Detaches a target from the given SCSI ID

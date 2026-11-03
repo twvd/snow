@@ -1,12 +1,13 @@
 //! SCSI hard disk drive (block device)
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
 use crate::emulator::devices::{
-    FunctionMut, HardDisk, HardDiskSettings, HardDiskStatus, replace_status,
+    CreateContext, DeviceConfig, FunctionMut, HardDisk, HardDiskSettings, HardDiskStatus,
+    replace_status,
 };
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
@@ -287,6 +288,15 @@ impl Debuggable for ScsiTargetDisk {
     }
 }
 
+/// Makes a SCSI hard disk from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: HardDiskSettings = config.parse()?;
+    if settings.read_only {
+        bail!("SCSI disks can't be read-only yet");
+    }
+    Ok(Box::new(ScsiTargetDisk::load_disk(&settings.media)?))
+}
+
 pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
     model: crate::emulator::devices::DeviceModel::ScsiHardDisk,
     name: "Hard disk",
@@ -298,4 +308,5 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: None,
     path_keys: &["media"],
     adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
 };
