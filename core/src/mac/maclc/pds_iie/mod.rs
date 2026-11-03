@@ -103,6 +103,7 @@ use log::{Level, log_enabled};
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
 use disk::{DiskII, DskImage, DskOrder};
+use snow_floppy::loaders::Woz;
 
 /// A device on the card's external disk port (the Y-cable's floppy
 /// connector)
@@ -2009,10 +2010,15 @@ impl PdsIIeCard {
         }
     }
 
-    /// Inserts a 16-sector DSK image into a 5.25" drive (0 or 1).
+    /// Inserts a WOZ image, or a 16-sector DSK image in `order`, into a
+    /// 5.25" drive (0 or 1).
     pub fn insert_disk(&mut self, drive: usize, bytes: &[u8], order: DskOrder) -> Result<()> {
-        let img = DskImage::load(bytes, order)
-            .ok_or_else(|| anyhow::anyhow!("not a 143 360-byte 16-sector DSK image"))?;
+        let img = if Woz::detect(bytes) {
+            DskImage::from_woz(&Woz::parse(bytes)?)?
+        } else {
+            DskImage::load(bytes, order)
+                .ok_or_else(|| anyhow::anyhow!("not a 143 360-byte 16-sector DSK image"))?
+        };
         if !self
             .cpu
             .bus

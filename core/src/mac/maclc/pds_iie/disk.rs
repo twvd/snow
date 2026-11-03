@@ -1,5 +1,6 @@
 //! The card's 5.25" Disk II: two 35-track drives behind the
-//! `$C0E0`–`$C0EF` soft switches, with 16-sector DSK image support.
+//! `$C0E0`–`$C0EF` soft switches, with 16-sector DSK and WOZ image
+//! support.
 //!
 //! Read-only for now: the selected drive streams the nibblized track
 //! through an IWM-style shift register, and the Q6L/Q6H (`$C0EC`/
@@ -18,8 +19,13 @@
 //! physical positions), the data comes from the file chunk the skew
 //! table maps there, and the 6-and-2 data field uses the running-XOR
 //! checksum nibble.
+//!
+//! A WOZ image brings its own tracks and map, and the rate its bits come
+//! at: the cell clock follows it.
 
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use snow_floppy::loaders::{Woz, WozData};
 
 use super::unidisk::{UniDisk, bus_enabled};
 use crate::tickable::Ticks;
@@ -35,6 +41,9 @@ pub const CELLS: usize = TRACK_BYTES * 8;
 /// Quarter-track positions of the head: 40 tracks, as in a WOZ image's
 /// map.
 pub const QUARTERS: usize = 160;
+/// The rate of the bits of a standard disk, in 125 ns units: one every
+/// 4 µs
+const STANDARD_BIT_TIMING: u8 = 32;
 
 /// The DOS 3.3 16-sector order: the logical sector at each physical
 /// position (MAME `ap2_dsk.cpp`).
@@ -85,6 +94,8 @@ pub struct DskImage {
     /// The index in `tracks` of the track under each quarter-track, or
     /// None where there is none.
     map: [Option<u8>; QUARTERS],
+    /// The rate the drive delivers the bits at, in 125 ns units.
+    bit_timing: u8,
 }
 
 impl DskImage {
@@ -105,6 +116,38 @@ impl DskImage {
         Some(Self {
             tracks,
             map: whole_track_map(TRACKS),
+            bit_timing: STANDARD_BIT_TIMING,
+        })
+    }
+
+    /// Builds the image from a 5.25" WOZ image. Its FLUX tracks are not
+    /// read: the quarter-tracks that only have one stay empty.
+    pub fn from_woz(woz: &WozData) -> Result<Self> {
+        if woz.disk_type != Woz::DISK_525 {
+            bail!("not a 5.25\" WOZ image");
+        }
+        if (0..QUARTERS).any(|q| woz.track(q).is_none() && woz.flux_track(q).is_some()) {
+            log::warn!("WOZ flux tracks are not supported, they read as empty");
+        }
+        let tracks = woz
+            .tracks
+            .iter()
+            .map(|t| Track {
+                // Only the tracks of the map are checked, and read
+                bits: t.data.get(..t.count.div_ceil(8)).unwrap_or_default().into(),
+                len: t.count,
+            })
+            .collect();
+        let mut map = [None; QUARTERS];
+        for (quarter, entry) in map.iter_mut().enumerate() {
+            if woz.track(quarter).is_some() {
+                *entry = Some(woz.tmap[quarter]);
+            }
+        }
+        Ok(Self {
+            tracks,
+            map,
+            bit_timing: woz.bit_timing,
         })
     }
 
@@ -678,11 +721,26 @@ impl DiskII {
         if !self.active(motor) {
             return;
         }
-        self.acc += cycles * CELL_ADVANCE;
+        self.acc += cycles * self.cell_advance();
         let n = self.acc >> 16;
         self.acc &= 0xFFFF;
         for _ in 0..n {
             self.cell();
+        }
+    }
+
+    /// The bit-cell clock per 65C02 cycle: a 5.25" disk delivers its bits
+    /// at its own rate (a WOZ image's optimal bit timing), the UniDisk at
+    /// the IWM's.
+    fn cell_advance(&self) -> Ticks {
+        let bus = self.unidisk.is_some() && bus_enabled(self.phase);
+        match &self.drives[self.selected as usize] {
+            Some(Drive5 {
+                image: Some(img), ..
+            }) if !bus => {
+                CELL_ADVANCE * Ticks::from(STANDARD_BIT_TIMING) / Ticks::from(img.bit_timing)
+            }
+            _ => CELL_ADVANCE,
         }
     }
 
@@ -756,6 +814,7 @@ impl DiskII {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snow_floppy::loaders::WozTrack;
 
     /// The inverse of the 6-and-2 forward table (index = nibble).
     fn gcr62_inv() -> [u8; 256] {
@@ -875,6 +934,69 @@ mod tests {
         drive.set_phase(0x4);
         assert_eq!(drive.pos, 4);
         assert_eq!(drive.cell, CELLS / 4);
+    }
+
+    /// A 5.25" WOZ image with two tracks, under quarter-tracks 0-1 and 5
+    fn woz(bits: &[u8], bit_timing: u8) -> WozData<'_> {
+        let mut tmap = [Woz::NO_TRACK; QUARTERS];
+        tmap[0] = 0;
+        tmap[1] = 0;
+        tmap[5] = 1;
+        WozData {
+            disk_type: Woz::DISK_525,
+            write_protected: false,
+            sides: 1,
+            bit_timing,
+            tmap,
+            flux_map: None,
+            tracks: vec![
+                WozTrack {
+                    data: bits,
+                    count: 20,
+                },
+                WozTrack {
+                    data: bits,
+                    count: 24,
+                },
+            ],
+            metadata: Default::default(),
+        }
+    }
+
+    #[test]
+    fn woz_tracks_are_read_under_their_map() {
+        let bits = [0xD5, 0xAA, 0x96];
+        let img = DskImage::from_woz(&woz(&bits, 32)).unwrap();
+        assert_eq!(img.track_at(1).unwrap().len, 20);
+        assert!(img.track_at(2).is_none());
+        assert_eq!(img.track_at(5).unwrap().len, 24);
+
+        // The turn is the track's length
+        let mut drive = Drive5::new();
+        drive.image = Some(img);
+        let turn: Vec<bool> = (0..20).map(|_| drive.next_bit()).collect();
+        assert_eq!(
+            &turn[..8],
+            &[true, true, false, true, false, true, false, true]
+        );
+        assert_eq!(drive.cell, 0);
+    }
+
+    #[test]
+    fn a_woz_disk_sets_the_bit_rate() {
+        let bits = [0xFF; 3];
+        let mut disk = DiskII::new(1, false);
+        assert_eq!(disk.cell_advance(), CELL_ADVANCE);
+        disk.insert(0, Some(DskImage::from_woz(&woz(&bits, 31)).unwrap()));
+        assert_eq!(disk.cell_advance(), CELL_ADVANCE * 32 / 31);
+    }
+
+    #[test]
+    fn a_35_woz_is_refused() {
+        let bits = [0xFF; 3];
+        let mut img = woz(&bits, 16);
+        img.disk_type = Woz::DISK_35;
+        assert!(DskImage::from_woz(&img).is_err());
     }
 
     #[test]

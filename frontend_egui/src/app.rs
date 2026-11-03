@@ -461,7 +461,7 @@ impl SnowGui {
             joy_capture: None,
             iie_disk_dialog_drive: 0,
             iie_disk_dialog: SnowFileDialog::new()
-                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
+                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg", "woz"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_floppy.clone()),

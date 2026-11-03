@@ -622,6 +622,12 @@ cannot set the flags and the PWRUP slot scan never ends.
 - The bit-cell clock runs whenever the IWM is enabled, with or
   without a drive: the send's waits for ready and underrun have no
   time limit (§9.0.1). [FW][INF]
+- **Images** (Snow): a 16-sector DSK image (DOS or ProDOS order, raw
+  or 2IMG) becomes one 51 200-cell track per whole track. A WOZ image
+  brings its own tracks, each of its own length, and the quarter-tracks
+  they lie under; its optimal bit timing sets the bit-cell clock while
+  a 5.25" drive is read. Not modelled: FLUX tracks, and the MC3470's
+  random bits after three zeros. [WOZ]
 
 ### 9.0.1 The UniDisk probe
 
@@ -1104,6 +1110,9 @@ the card itself. Facts about the Mega II come from the Apple IIGS
   <https://gitlab.com/nyankat/smartportsd>.
 - [BMOW] Big Mess o' Wires, SmartPort daisy chaining (pin 16):
   <https://www.bigmessowires.com/?p=4941>
+- [WOZ] Applesauce, *WOZ 2.1 Disk Image Reference*:
+  <https://applesaucefdc.com/woz/reference2/> (WOZ 1.0:
+  <https://applesaucefdc.com/woz/reference/>)
 - [ROM] The Macintosh LC III ROM (1993, checksum `ECBBC41C`):
   `SwapMMUMode` variants, the base-address table, MMU templates, and
   the MMU tables built at boot.
