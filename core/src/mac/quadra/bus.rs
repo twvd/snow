@@ -14,7 +14,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::Scc;
+use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
 use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
@@ -798,6 +798,10 @@ where
         self.overlay = true;
         self.sync_via1_pa();
         Ok(false)
+    }
+
+    fn localtalk_poll_needed(&self) -> bool {
+        self.scc.localtalk_poll_needed(SccCh::B)
     }
 }
 

@@ -18,7 +18,7 @@ use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::{RTXC_FREQUENCY, Scc};
+use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
@@ -887,6 +887,10 @@ where
         self.overlay = true;
         self.sync_via1_pa();
         Ok(false)
+    }
+
+    fn localtalk_poll_needed(&self) -> bool {
+        self.scc.localtalk_poll_needed(SccCh::B)
     }
 }
 

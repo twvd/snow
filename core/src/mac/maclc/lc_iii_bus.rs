@@ -21,7 +21,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::egret::Egret;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::{RTXC_FREQUENCY, Scc};
+use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
@@ -777,6 +777,10 @@ where
         self.overlay = true;
         self.mouse_ready = false;
         Ok(false)
+    }
+
+    fn localtalk_poll_needed(&self) -> bool {
+        self.scc.localtalk_poll_needed(SccCh::B)
     }
 }
 

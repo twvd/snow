@@ -346,6 +346,7 @@ dispatch! {
         fn cpu_get_clr_breakpoint_hit(&mut self) -> bool { get_clr_breakpoint_hit() }
         fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> { read_history() }
         fn cpu_read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> { read_systrap_history() }
+        fn cpu_run_steps(&mut self, steps: u32) -> Result<(u32, bool)> { run_steps(steps) }
         fn cpu_prefetch_refill(&mut self) -> Result<()> { prefetch_refill() }
         fn cpu_reset(&mut self) -> Result<()> { reset() }
 
@@ -1069,9 +1070,14 @@ impl Emulator {
 
     /// Steps the emulator by one instruction.
     fn step(&mut self) -> Result<()> {
+        let (_, reset) = self.config.cpu_run_steps(1)?;
+        self.after_steps(reset)
+    }
+
+    /// What follows the instructions of EmulatorConfig::cpu_run_steps()
+    fn after_steps(&mut self, reset: bool) -> Result<()> {
         let mut stop_break = false;
-        self.config.cpu_tick(1)?;
-        if self.config.bus_take_reset_request() {
+        if reset {
             // As for the reset command: the bus first, for the overlay
             self.config.bus_reset()?;
             self.config.cpu_reset()?;
@@ -1260,21 +1266,78 @@ impl Emulator {
         }
     }
 
+    fn poll_localtalk_bridge(&mut self) {
+        // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
+        // Only poll if RX is enabled and no character is available (ready for new packet)
+        if self
+            .config
+            .scc_mut()
+            .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
+            && self
+                .config
+                .scc()
+                .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
+            && let Some(ref mut bridge) = self.serial_bridges[1]
+            && bridge.is_localtalk()
+        {
+            // Propagate SCC state to LocalTalk bridge
+            let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
+            bridge.set_node_address(sdlc_addr);
+            bridge.set_address_search_mode(
+                self.config
+                    .scc()
+                    .is_address_search_mode(crate::mac::scc::SccCh::B),
+            );
+
+            // Prefer SDLC frame-boundary path if frames are ready
+            let frames = self
+                .config
+                .scc_mut()
+                .take_tx_frames(crate::mac::scc::SccCh::B);
+            if !frames.is_empty() {
+                for frame in &frames {
+                    bridge.send_frame(frame);
+                }
+                // Drain tx_queue to avoid double-sending
+                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+            }
+
+            // Byte-stream TX path (fallback when no frame boundaries detected)
+            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
+                let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                bridge.write_from_scc(&tx_data);
+            }
+
+            // Now poll for incoming data and pending CTS
+            bridge.poll();
+            let rx_data = bridge.read_to_scc();
+            if !rx_data.is_empty() {
+                self.config
+                    .scc_mut()
+                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+            }
+        }
+    }
+
     #[inline(always)]
     fn try_step(&mut self) {
         if let Err(e) = self.step() {
-            self.run = false;
-            self.user_error(&format!(
-                "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
-                self.config.cpu_regs().pc,
-            ));
-            log::error!(
-                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {}",
-                self.config.cpu_regs().pc,
-                e
-            );
-            let _ = self.status_update();
+            self.step_failed(&e);
         }
+    }
+
+    fn step_failed(&mut self, e: &anyhow::Error) {
+        self.run = false;
+        self.user_error(&format!(
+            "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
+            self.config.cpu_regs().pc,
+        ));
+        log::error!(
+            "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {}",
+            self.config.cpu_regs().pc,
+            e
+        );
+        let _ = self.status_update();
     }
 
     pub fn get_cycles(&self) -> Ticks {
@@ -1901,62 +1964,18 @@ impl Tickable for Emulator {
             }
 
             // Batch 10000 steps for performance reasons
-            for _ in 0..10000 {
-                if !self.run {
-                    break;
-                }
-                self.try_step();
-
-                // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
-                // Only poll if RX is enabled and no character is available (ready for new packet)
-                if self
-                    .config
-                    .scc_mut()
-                    .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
-                    && self
-                        .config
-                        .scc()
-                        .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
-                    && let Some(ref mut bridge) = self.serial_bridges[1]
-                    && bridge.is_localtalk()
-                {
-                    // Propagate SCC state to LocalTalk bridge
-                    let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
-                    bridge.set_node_address(sdlc_addr);
-                    bridge.set_address_search_mode(
-                        self.config
-                            .scc()
-                            .is_address_search_mode(crate::mac::scc::SccCh::B),
-                    );
-
-                    // Prefer SDLC frame-boundary path if frames are ready
-                    let frames = self
-                        .config
-                        .scc_mut()
-                        .take_tx_frames(crate::mac::scc::SccCh::B);
-                    if !frames.is_empty() {
-                        for frame in &frames {
-                            bridge.send_frame(frame);
+            let mut steps = 10000;
+            while steps > 0 && self.run {
+                match self.config.cpu_run_steps(steps) {
+                    Ok((done, reset)) => {
+                        steps -= done;
+                        if let Err(e) = self.after_steps(reset) {
+                            self.step_failed(&e);
                         }
-                        // Drain tx_queue to avoid double-sending
-                        self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
                     }
-
-                    // Byte-stream TX path (fallback when no frame boundaries detected)
-                    if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
-                        let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                        bridge.write_from_scc(&tx_data);
-                    }
-
-                    // Now poll for incoming data and pending CTS
-                    bridge.poll();
-                    let rx_data = bridge.read_to_scc();
-                    if !rx_data.is_empty() {
-                        self.config
-                            .scc_mut()
-                            .push_rx(crate::mac::scc::SccCh::B, &rx_data);
-                    }
+                    Err(e) => self.step_failed(&e),
                 }
+                self.poll_localtalk_bridge();
             }
 
             // Honour any writeback requests raised during this tick batch

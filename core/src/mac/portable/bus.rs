@@ -16,7 +16,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::{RTXC_FREQUENCY, Scc};
+use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
@@ -697,6 +697,10 @@ where
         self.mouse_ready = false;
         self.overlay = true;
         Ok(false)
+    }
+
+    fn localtalk_poll_needed(&self) -> bool {
+        self.scc.localtalk_poll_needed(SccCh::B)
     }
 
     fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
