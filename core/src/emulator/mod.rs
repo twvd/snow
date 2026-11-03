@@ -299,11 +299,11 @@ enum EmulatorConfig {
     /// Macintosh Portable
     Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
     /// Macintosh II (AMU)
-    MacII(Box<CpuM68020Fpu<MacIIBus<ChannelRenderer, true>>>),
+    MacII(Box<CpuM68020Fpu<MacIIBus<ChannelRenderer>>>),
     /// Macintosh II (PMMU)
-    MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
+    MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer>>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
-    MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
+    MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer>>>),
     /// Macintosh LC
     MacLC(Box<CpuM68020<LcIBus<ChannelRenderer>>>),
     /// Macintosh LC with FPU card
@@ -549,6 +549,7 @@ impl Emulator {
                         monitor.unwrap_or_default(),
                         mouse_mode,
                         ram_size,
+                        true,
                     );
                     let cpu = Box::new(CpuM68020Fpu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
@@ -565,6 +566,7 @@ impl Emulator {
                         monitor.unwrap_or_default(),
                         mouse_mode,
                         ram_size,
+                        false,
                     );
                     let cpu = Box::new(CpuM68020Pmmu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
@@ -605,6 +607,7 @@ impl Emulator {
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
+                    false,
                 );
                 let cpu = Box::new(CpuM68030Fpu::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
@@ -643,6 +646,7 @@ impl Emulator {
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
+                    false,
                 );
                 let cpu = Box::new(CpuM68030Fpu::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());

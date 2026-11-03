@@ -109,7 +109,7 @@ const MAP: [[Region; 256]; 2] = {
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
+pub struct MacIIBus<TRenderer: Renderer> {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -134,6 +134,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     rom_mask: usize,
 
     overlay: bool,
+    /// The Mac II has an AMU for the 24-bit addresses, unless a 68851 takes its place
+    amu: bool,
     amu_active: bool,
 
     /// Emulation speed setting
@@ -159,7 +161,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer, const AMU: bool> MacIIBus<TRenderer, AMU>
+impl<TRenderer> MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -223,6 +225,7 @@ where
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        amu: bool,
     ) -> Self {
         // Build the NuBus cards from the provided configuration.
         let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
@@ -279,6 +282,7 @@ where
             rom_mask: rom.len() - 1,
 
             overlay: true,
+            amu,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(BUS_FREQUENCY),
@@ -745,7 +749,7 @@ where
     }
 
     fn amu_translate(&self, addr: Address) -> Address {
-        if !AMU {
+        if !self.amu {
             return addr;
         }
 
@@ -787,7 +791,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -799,7 +803,7 @@ where
 
     #[inline(always)]
     fn access(&mut self, mut acc: BusAccess<Bus68020>) -> Result<BusResponse> {
-        let amu = AMU && self.amu_active;
+        let amu = self.amu && self.amu_active;
         let vaddr = acc.addr;
         if amu {
             acc.addr = self.amu_translate(acc.addr);
@@ -877,7 +881,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Tickable for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Tickable for MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -902,7 +906,7 @@ where
             bus_frequency: self.bus_frequency(),
         };
 
-        if AMU {
+        if self.amu {
             self.amu_active = !self.via2.pb().vfc3();
         }
 
@@ -1010,7 +1014,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> IrqSource for MacIIBus<TRenderer, AMU>
+impl<TRenderer> IrqSource for MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -1032,7 +1036,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> InspectableBus<Address, Byte> for MacIIBus<TRenderer, AMU>
+impl<TRenderer> InspectableBus<Address, Byte> for MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -1074,7 +1078,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Debuggable for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Debuggable for MacIIBus<TRenderer>
 where
     TRenderer: Renderer,
 {
