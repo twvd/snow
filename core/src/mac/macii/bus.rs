@@ -13,10 +13,10 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::nubus::NubusCard;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
+use crate::mac::nubus::{self, NubusCard};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -461,23 +461,6 @@ where
         self.nubus_devices[(addr >> 24) as usize - 0xF9].as_mut()
     }
 
-    /// The cards are reached a byte at a time
-    fn slot_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        let card = self.slot_card(addr)?;
-        Some((addr..addr + len).fold(0, |v, a| {
-            (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
-        }))
-    }
-
-    fn slot_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
-        let card = self.slot_card(addr)?;
-        for a in addr..addr + len {
-            let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
-            Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val));
-        }
-        Some(())
-    }
-
     fn via1_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
         Some(Self::dev_read(addr, self.via1.read(addr)).into())
     }
@@ -842,7 +825,20 @@ where
                 Self::superslot_write,
             ),
             Region::Slot => {
-                bus_access_long(acc, NUBUS_WAITS, self, Self::slot_read, Self::slot_write)
+                let se30 = self.model == MacModel::SE30;
+                match self.slot_card(acc.addr) {
+                    // The SE/30's video isn't on a NuBus and takes the CPU's cycles
+                    // as they are
+                    Some(card) if se30 => bus_access_long(
+                        acc,
+                        NUBUS_WAITS,
+                        card,
+                        |c, a, len| c.read_sized(a & 0xFF_FFFF, len),
+                        |c, a, len, v| c.write_sized(a & 0xFF_FFFF, len, v),
+                    ),
+                    Some(card) => nubus::nuchip_access(acc, NUBUS_WAITS, card.slot()),
+                    None => BusResponse::BusError,
+                }
             }
             Region::None => BusResponse::BusError,
         };

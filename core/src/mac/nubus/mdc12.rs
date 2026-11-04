@@ -4,8 +4,8 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
-use crate::bus::{Address, BusMember};
+use super::{NubusSlot, bus_long, lanes};
+use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::MacMonitor;
@@ -253,6 +253,94 @@ impl<TRenderer> NubusSlot<TRenderer> for Mdc12<TRenderer>
 where
     TRenderer: Renderer,
 {
+    // VRAM, below the registers at $20_0000, is memory and answers every size.
+    // A register is one to a long word, and the card decodes only its address:
+    // a write takes the low bits of what the CPU drives, whatever its size, and
+    // a read gives the register in the low bits of the long. So MAME models the
+    // card (nubus_48gc.cpp: "lane select is ignored and firmware relies on
+    // smearing").
+    fn read_sized(&mut self, offset: Address, size: u32) -> Option<u32> {
+        if let Some(bytes) = self.vram.get(offset as usize..(offset + size) as usize) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+        }
+        let long = match offset & !3 {
+            // Control, with the monitor sense lines
+            0x20_0000 => u32::from(self.read_ctrl().0),
+            0x20_0008 => self.base.0,
+            0x20_000C => self.stride.0,
+            // CRTC beam position
+            0x20_01C0 => {
+                self.toggle = !self.toggle;
+                if self.toggle { 0 } else { 4 }
+            }
+            // This has to read 0
+            0x20_01C4 | 0x20_01C8 | 0x20_01CC => 0,
+            // RAMDAC
+            0x20_0200 => self.palette_addr.0,
+            0x20_0208 => u32::from(self.ramdac_ctrl.0),
+            // ROM, on byte lane 3
+            a @ 0xFE_0000..=0xFF_FFFC => self
+                .rom
+                .get(((a - 0xFE_0000) / 4) as usize)
+                .map_or(0, |&b| u32::from(b)),
+            a => {
+                log::warn!("{}: read from unimplemented register {:06X}", self, a);
+                0
+            }
+        };
+        Some(lanes(long, offset, size))
+    }
+
+    fn write_sized(&mut self, offset: Address, size: u32, val: u32) -> Option<()> {
+        if let Some(bytes) = self.vram.get_mut(offset as usize..(offset + size) as usize) {
+            bytes.copy_from_slice(&val.to_be_bytes()[4 - size as usize..]);
+            return Some(());
+        }
+        let data = bus_long(val, size, offset);
+        match offset & !3 {
+            // The control, base and stride registers are 16 bits wide
+            0x20_0000 => {
+                self.ctrl.0 = data as Word;
+                self.ctrl.set_reset(false);
+            }
+            0x20_0008 => self.base.0 = data & 0xFFFF,
+            0x20_000C => self.stride.0 = data & 0xFFFF,
+            // CRTC: bit 1 disables the VBL interrupt
+            0x20_013C => self.vblank_enable = data & (1 << 1) == 0,
+            // Clears the interrupt
+            0x20_0148 => self.vblank_irq = false,
+            // RAMDAC, 8 bits wide: the address starts a new colour
+            0x20_0200 => {
+                self.palette_addr.0 = data & 0xFF;
+                self.palette_wr.0 = 0;
+                self.palette_cnt = 0;
+            }
+            // Palette data, red, green then blue
+            0x20_0204 => {
+                self.palette_wr.0 >>= 8;
+                self.palette_wr.0 |= (data & 0xFF) << 24;
+                self.palette_cnt += 1;
+                if self.palette_cnt == 3 {
+                    self.palette[(self.palette_addr.0 % 256) as usize] = self.palette_wr.0 >> 8;
+                    self.palette_wr.0 = 0;
+                    self.palette_addr.0 += 1;
+                    self.palette_cnt = 0;
+                }
+            }
+            0x20_0208 => self.ramdac_ctrl.0 = data as u8,
+            // Not modelled: the RAMDAC clock preload, the CRTC timings and the
+            // clock synthesiser
+            0x20_0004 | 0x20_0100..=0x20_01FC | 0x20_0300..=0x20_033C => {}
+            a => log::warn!(
+                "{}: write to unimplemented register {:06X} {:08X}",
+                self,
+                a,
+                data
+            ),
+        }
+        Some(())
+    }
+
     fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
@@ -281,117 +369,6 @@ where
 
     fn set_renderer(&mut self, renderer: TRenderer) {
         self.renderer = Some(renderer);
-    }
-}
-
-impl<TRenderer> BusMember<Address> for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    fn read(&mut self, addr: Address) -> Option<u8> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]),
-            0x20_0002 => Some(self.read_ctrl().high()),
-            0x20_0003 => Some(self.read_ctrl().low()),
-            0x20_0008 => Some(self.base.be0()),
-            0x20_0009 => Some(self.base.be1()),
-            0x20_000A => Some(self.base.be2()),
-            0x20_000B => Some(self.base.be3()),
-            0x20_000C => Some(self.stride.be0()),
-            0x20_000D => Some(self.stride.be1()),
-            0x20_000E => Some(self.stride.be2()),
-            0x20_000F => Some(self.stride.be3()),
-
-            // CRTC beam position
-            0x20_01C0..=0x20_01C3 => {
-                if addr == 0x20_01C3 {
-                    self.toggle = !self.toggle;
-                }
-                if self.toggle { Some(0) } else { Some(4) }
-            }
-            // This has to read 0
-            0x20_01C4..=0x20_01CF => Some(0),
-
-            // RAMDAC
-            0x20_0200 => Some(self.palette_addr.be0()),
-            0x20_0201 => Some(self.palette_addr.be1()),
-            0x20_0202 => Some(self.palette_addr.be2()),
-            0x20_0203 => Some(self.palette_addr.be3()),
-            0x20_020B => Some(self.ramdac_ctrl.0),
-
-            // ROM (byte lane 3)
-            0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
-                self.rom.get(((addr - 0xFE_0000) / 4) as usize).copied()
-            }
-            _ => None,
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => {
-                self.vram[addr as usize] = val;
-                Some(())
-            }
-            0x20_0002 => {
-                self.ctrl.set_high(val);
-                self.ctrl.set_reset(false);
-                Some(())
-            }
-            0x20_0003 => {
-                self.ctrl.set_low(val);
-                self.ctrl.set_reset(false);
-                Some(())
-            }
-            // Screen base address
-            0x20_0008 => Some(self.base.set_be0(val)),
-            0x20_0009 => Some(self.base.set_be1(val)),
-            0x20_000A => Some(self.base.set_be2(val)),
-            0x20_000B => Some(self.base.set_be3(val)),
-
-            // Scanline width
-            0x20_000C => Some(self.stride.set_be0(val)),
-            0x20_000D => Some(self.stride.set_be1(val)),
-            0x20_000E => Some(self.stride.set_be2(val)),
-            0x20_000F => Some(self.stride.set_be3(val)),
-
-            // CRTC. VBL disable is bit 1 of the long, so in its bottom byte
-            0x20_013C..=0x20_013E => Some(()),
-            0x20_013F => {
-                self.vblank_enable = val & (1 << 1) == 0;
-                Some(())
-            }
-            // IRQ clear
-            0x20_0148 => {
-                self.vblank_irq = false;
-                Some(())
-            }
-            0x20_0149..=0x20_014B => Some(()),
-            // RAMDAC
-            0x20_0200 => Some(self.palette_addr.set_be0(val)),
-            0x20_0201 => Some(self.palette_addr.set_be1(val)),
-            0x20_0202 => Some(self.palette_addr.set_be2(val)),
-            0x20_0203 => Some(self.palette_addr.set_be3(val)),
-
-            // Palette memory. Written in full word/long but only the bottom byte is relevant
-            0x20_0204..=0x20_0206 => Some(()),
-            0x20_0207 => {
-                self.palette_wr.0 >>= 8;
-                self.palette_wr.0 |= (val as u32) << 24;
-                self.palette_cnt += 1;
-                if self.palette_cnt == 3 {
-                    self.palette[(self.palette_addr.0 % 256) as usize] = self.palette_wr.0 >> 8;
-                    self.palette_wr.0 = 0;
-                    self.palette_addr.0 += 1;
-                    self.palette_cnt = 0;
-                }
-                Some(())
-            }
-            0x20_020B => Some(self.ramdac_ctrl.0 = val),
-            _ => None,
-        }
     }
 }
 
