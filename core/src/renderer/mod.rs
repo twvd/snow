@@ -171,6 +171,36 @@ impl DerefMut for DisplayBuffer {
     }
 }
 
+/// The RGBA pixels of a monochrome display, white for 0 and black for 1
+pub const MONOCHROME_LUT: [[u8; 4]; 2] = [[0xEE, 0xEE, 0xEE, 0xFF], [0x22, 0x22, 0x22, 0xFF]];
+
+/// Renders packed pixels, most significant first, as RGBA pixels through a
+/// lookup table of their N values, so of log2(N) bits each. Fills `out`
+/// whole, from the first bytes of `fb`.
+#[inline]
+pub fn render_packed<const N: usize>(fb: &[u8], out: &mut [u8], lut: &[[u8; 4]; N]) {
+    let bits = N.trailing_zeros() as usize;
+    let per_byte = 8 / bits;
+    let expand = |chunk: &mut [u8], byte: u8| {
+        for (i, px) in chunk.chunks_exact_mut(4).enumerate() {
+            let shift = 8 - bits * (i + 1);
+            // Masked to the table size, which takes the bounds check away
+            px.copy_from_slice(&lut[usize::from(byte >> shift) & (N - 1)]);
+        }
+    };
+
+    let fb = &fb[..(out.len() / 4).div_ceil(per_byte)];
+    let mut chunks = out.chunks_exact_mut(per_byte * 4);
+    for (chunk, &byte) in (&mut chunks).zip(fb) {
+        expand(chunk, byte);
+    }
+    // Pixels in a last, partly used byte
+    let rest = chunks.into_remainder();
+    if !rest.is_empty() {
+        expand(rest, fb[fb.len() - 1]);
+    }
+}
+
 pub trait Renderer {
     /// Creates a new renderer with a screen of the given size
     fn new(width: u16, height: u16) -> Result<Self>

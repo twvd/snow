@@ -56,7 +56,7 @@
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
-use crate::renderer::Renderer;
+use crate::renderer::{Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -211,26 +211,21 @@ where
         white: u8,
         black: u8,
     ) {
-        for i in 0..FRAME_VISIBLE_DOTS {
-            let scanline = i / H_VISIBLE_DOTS;
-            let byte = i / 8;
-            let bit = i % 8;
-            let out_offset = if LINE_LIMIT > 0 {
-                ((scanline * (LINE_LIMIT * 2)) + LINE_OFFSET + (i % LINE_LIMIT)) * 4
-            } else {
-                i * 4
-            };
-
-            if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[out_offset] = white;
-                buf[out_offset + 1] = white;
-                buf[out_offset + 2] = white;
-            } else {
-                buf[out_offset] = black;
-                buf[out_offset + 1] = black;
-                buf[out_offset + 2] = black;
-            }
-            buf[out_offset + 3] = 0xFF;
+        // A line limit puts the lines side by side with those of another
+        // framebuffer, in a buffer twice as wide
+        const { assert!(LINE_LIMIT == 0 || LINE_LIMIT == H_VISIBLE_DOTS) };
+        let out_width = if LINE_LIMIT > 0 {
+            LINE_LIMIT * 2
+        } else {
+            H_VISIBLE_DOTS
+        };
+        let lut = [[white, white, white, 0xFF], [black, black, black, 0xFF]];
+        for (line, fb_line) in fb[..FRAME_VISIBLE_DOTS / 8]
+            .chunks_exact(H_VISIBLE_DOTS / 8)
+            .enumerate()
+        {
+            let start = (line * out_width + LINE_OFFSET) * 4;
+            render_packed(fb_line, &mut buf[start..start + H_VISIBLE_DOTS * 4], &lut);
         }
     }
 

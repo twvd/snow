@@ -7,7 +7,7 @@ use super::NubusSlot;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -68,20 +68,11 @@ where
         let fb = self.framebuffer();
         buf.set_size(Self::H_VISIBLE_DOTS, Self::V_VISIBLE_LINES);
 
-        for idx in 0..Self::FRAME_VISIBLE_DOTS {
-            let byte = idx / 8;
-            let bit = idx % 8;
-            if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[idx * 4] = 0xEE;
-                buf[idx * 4 + 1] = 0xEE;
-                buf[idx * 4 + 2] = 0xEE;
-            } else {
-                buf[idx * 4] = 0x22;
-                buf[idx * 4 + 1] = 0x22;
-                buf[idx * 4 + 2] = 0x22;
-            }
-            buf[idx * 4 + 3] = 0xFF;
-        }
+        render_packed(
+            fb,
+            &mut buf[..Self::FRAME_VISIBLE_DOTS * 4],
+            &MONOCHROME_LUT,
+        );
     }
 }
 

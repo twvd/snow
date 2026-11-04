@@ -1,5 +1,5 @@
 use crate::emulator::EmuContext;
-use crate::renderer::Renderer;
+use crate::renderer::{MONOCHROME_LUT, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -42,20 +42,7 @@ where
         let buf = renderer.buffer_mut();
         buf.set_size(Self::DISPLAY_WIDTH, Self::DISPLAY_HEIGHT);
 
-        for idx in 0..Self::DISPLAY_SIZE {
-            let byte = idx / 8;
-            let bit = idx % 8;
-            if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[idx * 4] = 0xEE;
-                buf[idx * 4 + 1] = 0xEE;
-                buf[idx * 4 + 2] = 0xEE;
-            } else {
-                buf[idx * 4] = 0x22;
-                buf[idx * 4 + 1] = 0x22;
-                buf[idx * 4 + 2] = 0x22;
-            }
-            buf[idx * 4 + 3] = 0xFF;
-        }
+        render_packed(fb, &mut buf[..Self::DISPLAY_SIZE * 4], &MONOCHROME_LUT);
 
         renderer.update()?;
 

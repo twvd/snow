@@ -16,7 +16,7 @@ use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::MacMonitor;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayBuffer, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Field32;
 
@@ -391,17 +391,19 @@ where
         })
     }
 
-    #[inline(always)]
-    fn write_pixel(&self, buf: &mut DisplayBuffer, idx: usize, color: u32) {
-        if self.monitor.has_color() {
-            buf[idx * 4] = color as u8;
-            buf[idx * 4 + 1] = (color >> 8) as u8;
-        } else {
-            buf[idx * 4] = (color >> 16) as u8;
-            buf[idx * 4 + 1] = (color >> 16) as u8;
-        }
-        buf[idx * 4 + 2] = (color >> 16) as u8;
-        buf[idx * 4 + 3] = 0xFF;
+    /// The RGBA pixel of each of the first N palette entries, in grayscale
+    /// (the blue channel) on a monochrome monitor
+    fn palette_lut<const N: usize>(&self) -> [[u8; 4]; N] {
+        let color = self.monitor.has_color();
+        std::array::from_fn(|i| {
+            let c = self.palette[i];
+            if color {
+                [c as u8, (c >> 8) as u8, (c >> 16) as u8, 0xFF]
+            } else {
+                let b = (c >> 16) as u8;
+                [b, b, b, 0xFF]
+            }
+        })
     }
 
     /// Renders the currently displayed frame to the target DisplayBuffer
@@ -432,62 +434,52 @@ where
             Bpp::TwentyFour => geo.width * 4,
         };
 
-        for y in 0..geo.height {
-            let row = geo.line_start(y);
-            let out = y * geo.width;
+        match bpp {
+            Bpp::One => self.render_indexed::<2>(&geo, rowbytes, buf),
+            Bpp::Two => self.render_indexed::<4>(&geo, rowbytes, buf),
+            Bpp::Four => self.render_indexed::<16>(&geo, rowbytes, buf),
+            Bpp::Eight => self.render_indexed::<256>(&geo, rowbytes, buf),
+            Bpp::Sixteen => self.render_lines(&geo, rowbytes, buf, |fb, line| {
+                let expand = |v: u16| ((v & 0x1F) as u8) << 3 | ((v & 0x1F) as u8) >> 2;
+                for (px, src) in line.chunks_exact_mut(4).zip(fb.chunks_exact(2)) {
+                    let c = u16::from_be_bytes([src[0], src[1]]);
+                    px.copy_from_slice(&[expand(c >> 10), expand(c >> 5), expand(c), 0xFF]);
+                }
+            }),
+            Bpp::TwentyFour => self.render_lines(&geo, rowbytes, buf, |fb, line| {
+                for (px, src) in line.chunks_exact_mut(4).zip(fb.chunks_exact(4)) {
+                    px.copy_from_slice(&[src[1], src[2], src[3], 0xFF]);
+                }
+            }),
+        }
+    }
 
+    /// Renders the visible lines of pixels of log2(N) bits through the palette
+    fn render_indexed<const N: usize>(&self, geo: &Geometry, rowbytes: usize, buf: &mut [u8]) {
+        let lut = self.palette_lut::<N>();
+        self.render_lines(geo, rowbytes, buf, |fb, line| {
+            render_packed(fb, line, &lut);
+        });
+    }
+
+    /// Renders the visible lines, each from the `rowbytes` of VRAM it starts at
+    fn render_lines(
+        &self,
+        geo: &Geometry,
+        rowbytes: usize,
+        buf: &mut [u8],
+        mut render_line: impl FnMut(&[u8], &mut [u8]),
+    ) {
+        if geo.width == 0 {
+            return;
+        }
+        for (y, line) in buf.chunks_exact_mut(geo.width * 4).enumerate() {
+            let row = geo.line_start(y);
             if row + rowbytes > self.vram.len() {
                 // ??? Dunno if this happens
                 break;
             }
-            let fb = &self.vram[row..(row + rowbytes)];
-
-            match bpp {
-                Bpp::One => {
-                    for x in 0..geo.width {
-                        let color = self.palette[usize::from((fb[x / 8] >> (7 - (x % 8))) & 1)];
-                        self.write_pixel(buf, out + x, color);
-                    }
-                }
-                Bpp::Two => {
-                    for x in 0..geo.width {
-                        let color =
-                            self.palette[usize::from((fb[x / 4] >> (6 - (x % 4) * 2)) & 0x03)];
-                        self.write_pixel(buf, out + x, color);
-                    }
-                }
-                Bpp::Four => {
-                    for x in 0..geo.width {
-                        let color =
-                            self.palette[usize::from((fb[x / 2] >> (4 - (x % 2) * 4)) & 0x0F)];
-                        self.write_pixel(buf, out + x, color);
-                    }
-                }
-                Bpp::Eight => {
-                    for (x, &b) in fb.iter().enumerate().take(geo.width) {
-                        let color = self.palette[usize::from(b)];
-                        self.write_pixel(buf, out + x, color);
-                    }
-                }
-                Bpp::Sixteen => {
-                    for x in 0..geo.width {
-                        let c = u16::from_be_bytes([fb[x * 2], fb[x * 2 + 1]]);
-                        let expand = |v: u16| ((v & 0x1F) as u8) << 3 | ((v & 0x1F) as u8) >> 2;
-                        buf[(out + x) * 4] = expand(c >> 10);
-                        buf[(out + x) * 4 + 1] = expand(c >> 5);
-                        buf[(out + x) * 4 + 2] = expand(c);
-                        buf[(out + x) * 4 + 3] = 0xFF;
-                    }
-                }
-                Bpp::TwentyFour => {
-                    for x in 0..geo.width {
-                        buf[(out + x) * 4] = fb[x * 4 + 1];
-                        buf[(out + x) * 4 + 1] = fb[x * 4 + 2];
-                        buf[(out + x) * 4 + 2] = fb[x * 4 + 3];
-                        buf[(out + x) * 4 + 3] = 0xFF;
-                    }
-                }
-            }
+            render_line(&self.vram[row..(row + rowbytes)], line);
         }
     }
 

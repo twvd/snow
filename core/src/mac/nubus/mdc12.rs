@@ -9,7 +9,7 @@ use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::MacMonitor;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
 
@@ -158,94 +158,41 @@ where
     }
 
     /// Renders current dislayed frame to target DisplayBuffer
-    #[allow(clippy::branches_sharing_code)]
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         let fb = self.framebuffer();
-        let palette = &self.palette;
+        let pixels = self.monitor.width() * self.monitor.height();
         buf.set_size(self.monitor.width(), self.monitor.height());
+        let out = &mut buf[..pixels * 4];
         match self.bpp() {
-            Bpp::One => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    let byte = idx / 8;
-                    let bit = idx % 8;
-                    if fb[byte] & (1 << (7 - bit)) == 0 {
-                        buf[idx * 4] = 0xEE;
-                        buf[idx * 4 + 1] = 0xEE;
-                        buf[idx * 4 + 2] = 0xEE;
-                    } else {
-                        buf[idx * 4] = 0x22;
-                        buf[idx * 4 + 1] = 0x22;
-                        buf[idx * 4 + 2] = 0x22;
-                    }
-                    buf[idx * 4 + 3] = 0xFF;
-                }
-            }
-            Bpp::Two => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    let byte = idx / 4;
-                    let shift = 6 - (idx % 4) * 2;
-                    let color = palette[usize::from(fb[byte] >> shift) & 0x03];
-
-                    if self.monitor.has_color() {
-                        buf[idx * 4] = color as u8;
-                        buf[idx * 4 + 1] = (color >> 8) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    } else {
-                        buf[idx * 4] = (color >> 16) as u8;
-                        buf[idx * 4 + 1] = (color >> 16) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    }
-                }
-            }
-            Bpp::Four => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    let byte = idx / 2;
-                    let shift = 4 - (idx % 2) * 4;
-                    let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
-
-                    if self.monitor.has_color() {
-                        buf[idx * 4] = color as u8;
-                        buf[idx * 4 + 1] = (color >> 8) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    } else {
-                        buf[idx * 4] = (color >> 16) as u8;
-                        buf[idx * 4 + 1] = (color >> 16) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    }
-                }
-            }
-            Bpp::Eight => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    let byte = fb[idx];
-                    let color = palette[byte as usize];
-
-                    if self.monitor.has_color() {
-                        buf[idx * 4] = color as u8;
-                        buf[idx * 4 + 1] = (color >> 8) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    } else {
-                        buf[idx * 4] = (color >> 16) as u8;
-                        buf[idx * 4 + 1] = (color >> 16) as u8;
-                        buf[idx * 4 + 2] = (color >> 16) as u8;
-                        buf[idx * 4 + 3] = 0xFF;
-                    }
-                }
-            }
+            Bpp::One => render_packed(fb, out, &MONOCHROME_LUT),
+            Bpp::Two => render_packed(fb, out, &self.palette_lut::<4>()),
+            Bpp::Four => render_packed(fb, out, &self.palette_lut::<16>()),
+            Bpp::Eight => render_packed(fb, out, &self.palette_lut::<256>()),
             Bpp::TwentyFour => {
                 assert!(self.monitor.has_color());
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    buf[idx * 4] = fb[idx * 4 + 1];
-                    buf[idx * 4 + 1] = fb[idx * 4 + 2];
-                    buf[idx * 4 + 2] = fb[idx * 4 + 3];
-                    buf[idx * 4 + 3] = 0xFF;
+                for (px, src) in out
+                    .chunks_exact_mut(4)
+                    .zip(fb[..pixels * 4].chunks_exact(4))
+                {
+                    px.copy_from_slice(&[src[1], src[2], src[3], 0xFF]);
                 }
             }
         }
+    }
+
+    /// The RGBA pixel of each of the first N palette entries, in grayscale
+    /// (the blue channel) on a monochrome monitor
+    fn palette_lut<const N: usize>(&self) -> [[u8; 4]; N] {
+        let color = self.monitor.has_color();
+        std::array::from_fn(|i| {
+            let c = self.palette[i];
+            if color {
+                [c as u8, (c >> 8) as u8, (c >> 16) as u8, 0xFF]
+            } else {
+                let b = (c >> 16) as u8;
+                [b, b, b, 0xFF]
+            }
+        })
     }
 }
 
