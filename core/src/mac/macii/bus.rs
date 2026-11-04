@@ -331,15 +331,30 @@ where
         if self.se30_video.is_some() {
             return vec!["Built-in display".to_string()];
         }
+        self.display_cards()
+            .map(|(slot, card)| format!("Slot ${:X}: {}", slot, card.slot_ref()))
+            .collect()
+    }
+
+    /// The slot of each display, in the order of display_names(): what the
+    /// guest's driver for it has as its slot
+    pub fn display_slots(&self) -> Vec<u8> {
+        if self.se30_video.is_some() {
+            return vec![0xE];
+        }
+        self.display_cards().map(|(slot, _)| slot).collect()
+    }
+
+    /// The video cards with a monitor, and their slots
+    fn display_cards(&self) -> impl Iterator<Item = (u8, &NubusCard<TRenderer>)> {
         self.nubus_devices
             .iter()
             .enumerate()
             .filter_map(|(idx, c)| {
                 c.as_ref()
                     .filter(|card| card.has_display())
-                    .map(|card| format!("Slot ${:X}: {}", idx + 0x9, card.slot_ref()))
+                    .map(|card| (idx as u8 + 0x9, card))
             })
-            .collect()
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
@@ -702,6 +717,10 @@ where
     /// Sets the mouse emulation mode
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
         self.mouse_mode = mode;
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
     }
 
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM

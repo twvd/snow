@@ -18,7 +18,7 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, GuestScreen, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
@@ -184,6 +184,8 @@ pub struct EmulatorState {
     mouse_mode: MouseMode,
     /// The machine's buses. They only change when a device comes or goes.
     buses: Arc<Vec<Bus>>,
+    /// Where the guest puts the displays, when the machine has several
+    screens: Vec<GuestScreen>,
     /// Where the devices' status is, and the copy the menus draw from
     status_block: Option<Arc<StatusBlock>>,
     statuses: Vec<Vec<Option<FunctionStatus>>>,
@@ -345,6 +347,8 @@ impl EmulatorState {
         pause: bool,
         refused: Vec<RefusedDevice>,
     ) -> Result<EmulatorInitResult> {
+        self.screens.clear();
+
         // Initialize audio
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
@@ -445,7 +449,8 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse(&self, abs_p: Option<&egui::Pos2>, rel_p: &egui::Pos2) {
+    /// `abs_p`: the display under the pointer, and where in its pixels
+    pub fn update_mouse(&self, abs_p: Option<(usize, egui::Pos2)>, rel_p: &egui::Pos2) {
         if !self.is_running() {
             return;
         }
@@ -456,11 +461,12 @@ impl EmulatorState {
 
         match self.mouse_mode {
             MouseMode::Absolute => {
-                if let Some(abs_p) = abs_p {
+                if let Some((display, abs_p)) = abs_p {
                     sender
                         .send(EmulatorCommand::MouseUpdateAbsolute {
                             x: abs_p.x as u16,
                             y: abs_p.y as u16,
+                            display,
                         })
                         .unwrap();
                 }
@@ -543,6 +549,7 @@ impl EmulatorState {
                     self.status = Some(*s);
                 }
                 EmulatorEvent::Buses(buses) => self.buses = buses,
+                EmulatorEvent::Screens(screens) => self.screens = screens,
                 EmulatorEvent::FloppyEjected(addr, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
@@ -705,6 +712,11 @@ impl EmulatorState {
     /// The machine as it is now
     pub fn buses(&self) -> &[Bus] {
         &self.buses
+    }
+
+    /// Where the guest puts the displays, when the machine has several
+    pub fn screens(&self) -> &[GuestScreen] {
+        &self.screens
     }
 
     /// What a device in a slot shows
