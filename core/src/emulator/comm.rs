@@ -59,9 +59,12 @@ pub enum EmulatorCommand {
     EthernetStartCapture(SlotAddr, PathBuf),
     #[cfg(feature = "ethernet")]
     EthernetStopCapture(SlotAddr),
+    /// A position on one of the machine's displays, in its pixels
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
+        #[serde(default)]
+        display: usize,
     },
     MouseUpdateRelative {
         relx: i16,
@@ -220,4 +223,23 @@ pub enum EmulatorEvent {
     SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
     /// The Apple IIe Card came to the front (true) or left it
     IieInFront(bool),
+    /// Where the guest puts the displays, when that changes
+    Screens(Vec<GuestScreen>),
+}
+
+/// Where the guest puts one of the machine's displays on its desktop
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestScreen {
+    /// The display, numbered as the machine gives them
+    pub display: usize,
+    /// Its bounds in the guest's global coordinates, where the top left of
+    /// the main screen is (0, 0)
+    pub left: i16,
+    pub top: i16,
+    pub right: i16,
+    pub bottom: i16,
+    /// It has the menu bar
+    pub main: bool,
+    /// The guest uses it: until then, the cursor can't go there
+    pub active: bool,
 }

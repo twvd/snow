@@ -331,6 +331,15 @@ where
         self.nubus.display_names().collect()
     }
 
+    /// The slot of each display, in the order of display_names(): the slot
+    /// whose address space its framebuffer is in
+    pub fn display_slots(&self) -> Vec<u8> {
+        if self.se30_video.is_some() {
+            return vec![0xE];
+        }
+        self.nubus.display_slots().collect()
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
         // Renderers are matched to displays in the order display_names() reports them
@@ -684,6 +693,10 @@ where
     /// Sets the mouse emulation mode
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
         self.mouse_mode = mode;
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
     }
 
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM

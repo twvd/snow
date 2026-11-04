@@ -309,6 +309,13 @@ where
         })
     }
 
+    /// The slot of each card with a display, in the order of display_names()
+    pub fn display_slots(&self) -> impl Iterator<Item = u8> + '_ {
+        (0x9..)
+            .zip(&self.cards)
+            .filter_map(|(slot, card)| card.as_ref().filter(|c| c.has_display()).map(|_| slot))
+    }
+
     /// Gives the cards with a display their renderers, which a save state
     /// doesn't hold, in the order of display_names()
     pub fn set_renderers(&mut self, renderers: &mut impl Iterator<Item = TRenderer>) {
