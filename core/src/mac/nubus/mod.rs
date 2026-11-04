@@ -68,6 +68,14 @@ where
     }
 
     /// The card as a video card, if it is one
+    /// Whether the card shows a screen: a video card with a monitor
+    pub fn has_display(&self) -> bool {
+        match self {
+            Self::MDC12(c) => c.has_monitor(),
+            Self::Toby(_) => true,
+        }
+    }
+
     pub fn video(&mut self) -> Option<&mut dyn VideoCard<TRenderer>> {
         match self {
             Self::MDC12(c) => Some(c),

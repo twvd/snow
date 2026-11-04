@@ -13,11 +13,11 @@ use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use snow_core::emulator::devices::{
-    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, FunctionKind, bus_id,
+    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, DisplayCard824Settings, bus_id,
 };
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
-use snow_core::mac::{MacModel, NubusDeviceKind, PdsCardKind};
+use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
 fn deserialize_shader_configs_lenient<'de, D>(
@@ -443,15 +443,35 @@ impl Workspace {
             }
         }
 
+        let mut video = vec![];
         if let Some(rom) = self.display_card_rom_path.take() {
-            self.devices.extend(card_entries(
-                self.model.or_else(|| self.detect_model()),
-                Some(&rom),
-                &self.init_args,
-            ));
-        } else {
-            self.devices
-                .extend(card_entries(self.model, None, &self.init_args));
+            let model = self.model.or_else(|| self.detect_model());
+            video.push(if model == Some(MacModel::SE30) {
+                VideoCardEntry {
+                    slot: 0xE,
+                    kind: NubusDeviceKind::SE30Video,
+                    rom,
+                    monitor: None,
+                }
+            } else {
+                VideoCardEntry {
+                    slot: self.init_args.video_card_slot,
+                    kind: self.init_args.video_card,
+                    rom,
+                    monitor: Some(self.init_args.monitor.unwrap_or_default()),
+                }
+            });
+        }
+        self.devices.extend(card_entries(&video, &self.init_args));
+
+        // The monitor of an 8-24 used to be the machine's
+        let monitor = self.init_args.monitor.unwrap_or_default();
+        for config in &mut self.devices {
+            if config.known_model() == Some(DeviceModel::DisplayCard824)
+                && !config.settings.contains_key("monitor")
+            {
+                config.settings.insert("monitor".to_owned(), json!(monitor));
+            }
         }
     }
 
@@ -466,14 +486,6 @@ impl Workspace {
         let args = &mut self.init_args;
         for config in &self.devices {
             match config.known_model() {
-                Some(DeviceModel::DisplayCard824) => {
-                    args.video_card = NubusDeviceKind::Mdc12;
-                    args.video_card_slot = u8::from_str_radix(&config.slot, 16).unwrap_or(0x9);
-                }
-                Some(DeviceModel::MacIIVideoCard) => {
-                    args.video_card = NubusDeviceKind::Toby;
-                    args.video_card_slot = u8::from_str_radix(&config.slot, 16).unwrap_or(0x9);
-                }
                 Some(DeviceModel::AppleIIePdsCard) => {
                     args.pds_card = PdsCardKind::AppleIIe;
                     if let Ok(settings) = config.parse::<AppleIIePdsCardSettings>() {
@@ -496,11 +508,15 @@ impl Workspace {
         }
     }
 
-    /// The ROM of the machine's video card
-    pub fn get_display_card_rom_path(&self) -> Option<PathBuf> {
+    /// The machine's video cards, or the SE/30's video, for the Load ROM dialog
+    pub fn video_cards(&self) -> Vec<VideoCardEntry> {
+        let Some(mac) = self.model else {
+            return vec![];
+        };
         self.devices
             .iter()
-            .find_map(|config| card_rom(config, self.model?))
+            .filter_map(|config| video_card(config, mac))
+            .collect()
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {
@@ -568,33 +584,42 @@ fn old_entry(
     }
 }
 
+/// A video card in a NuBus slot, or the SE/30's video in its slot $E, as the Load ROM dialog
+/// chooses them
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoCardEntry {
+    pub slot: u8,
+    pub kind: NubusDeviceKind,
+    pub rom: PathBuf,
+    /// What's on an 8-24's connector, None for nothing
+    pub monitor: Option<MacMonitor>,
+}
+
 /// The entries for what the Load ROM dialog chooses: the cards, and the kind of floppy drive
-pub fn card_entries(
-    model: Option<MacModel>,
-    display_rom: Option<&Path>,
-    args: &EmulatorInitArgs,
-) -> Vec<DeviceConfig> {
+pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> Vec<DeviceConfig> {
     let mut entries = vec![];
-    if let Some(rom) = display_rom {
-        if model == Some(MacModel::SE30) {
-            entries.push(old_entry(
+    for card in video_cards {
+        let slot = format!("{:X}", card.slot);
+        entries.push(match card.kind {
+            NubusDeviceKind::SE30Video => old_entry(
                 bus_id::BUILT_IN,
                 "0",
-                Some("SE30Video"),
-                json!({ "rom": rom }),
-            ));
-        } else {
-            let device = match args.video_card {
-                NubusDeviceKind::Toby => "MacIIVideoCard",
-                _ => "DisplayCard824",
-            };
-            entries.push(old_entry(
+                Some(DeviceModel::SE30Video.key()),
+                json!({ "rom": card.rom }),
+            ),
+            NubusDeviceKind::Toby => old_entry(
                 bus_id::NUBUS,
-                &format!("{:X}", args.video_card_slot),
-                Some(device),
-                json!({ "rom": rom }),
-            ));
-        }
+                &slot,
+                Some(DeviceModel::MacIIVideoCard.key()),
+                json!({ "rom": card.rom }),
+            ),
+            NubusDeviceKind::Mdc12 => old_entry(
+                bus_id::NUBUS,
+                &slot,
+                Some(DeviceModel::DisplayCard824.key()),
+                json!({ "rom": card.rom, "monitor": card.monitor }),
+            ),
+        });
     }
     if args.pds_card == PdsCardKind::AppleIIe {
         let settings = &args.iie_card_settings;
@@ -627,10 +652,29 @@ pub fn card_entries(
     entries
 }
 
-/// The ROM of a video card, or of the machine's own video
-fn card_rom(config: &DeviceConfig, mac: MacModel) -> Option<PathBuf> {
-    match config.model_on(mac)?.function() {
-        FunctionKind::Video => config.settings.get("rom")?.as_str().map(PathBuf::from),
+/// A video card, or the machine's own video, as the Load ROM dialog has it
+fn video_card(config: &DeviceConfig, mac: MacModel) -> Option<VideoCardEntry> {
+    let rom = PathBuf::from(config.settings.get("rom")?.as_str()?);
+    let slot = u8::from_str_radix(&config.slot, 16).ok();
+    match config.model_on(mac)? {
+        DeviceModel::SE30Video => Some(VideoCardEntry {
+            slot: 0xE,
+            kind: NubusDeviceKind::SE30Video,
+            rom,
+            monitor: None,
+        }),
+        DeviceModel::MacIIVideoCard => Some(VideoCardEntry {
+            slot: slot?,
+            kind: NubusDeviceKind::Toby,
+            rom,
+            monitor: None,
+        }),
+        DeviceModel::DisplayCard824 => Some(VideoCardEntry {
+            slot: slot?,
+            kind: NubusDeviceKind::Mdc12,
+            rom,
+            monitor: config.parse::<DisplayCard824Settings>().ok()?.monitor,
+        }),
         _ => None,
     }
 }
@@ -749,7 +793,34 @@ mod tests {
         let rom = dir.file("v.rom");
         let ws = dir.load(r#"{"model":"SE30","display_card_rom_path":"v.rom"}"#);
         assert_eq!(entry(&ws, "Built-in", "0").settings["rom"], json!(rom));
-        assert_eq!(ws.get_display_card_rom_path(), Some(rom));
+        assert_eq!(ws.video_cards()[0].rom, rom);
+    }
+
+    #[test]
+    fn the_monitor_of_the_machine_goes_to_its_824() {
+        let dir = TestDir::new("824");
+        let rom = dir.file("card.rom");
+        let ws = dir.load(
+            r#"{"model":"MacIIx","display_card_rom_path":"card.rom",
+                "init_args":{"monitor":"RGB12","video_card":"Mdc12","video_card_slot":10}}"#,
+        );
+        assert_eq!(
+            ws.video_cards(),
+            [VideoCardEntry {
+                slot: 0xA,
+                kind: NubusDeviceKind::Mdc12,
+                rom: rom.clone(),
+                monitor: Some(MacMonitor::RGB12),
+            }]
+        );
+
+        // Saved before a card had its own
+        let ws = dir.load(&format!(
+            r#"{{"model":"MacIIx","init_args":{{"monitor":"RGB16"}},
+                "devices":[{{"bus":"NuBus","slot":"9","device":"DisplayCard824","rom":{}}}]}}"#,
+            json!(rom)
+        ));
+        assert_eq!(ws.video_cards()[0].monitor, Some(MacMonitor::RGB16));
     }
 
     #[test]
@@ -761,7 +832,7 @@ mod tests {
             r#"{{"model":"SE30","devices":[{{"bus":"Built-in","slot":"0","rom":{}}}]}}"#,
             json!(rom)
         ));
-        assert_eq!(ws.get_display_card_rom_path(), Some(rom));
+        assert_eq!(ws.video_cards()[0].rom, rom);
     }
 
     #[test]
@@ -896,7 +967,8 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                json!({"bus":"NuBus","slot":"9","device":"DisplayCard824","rom":"card.rom"}),
+                json!({"bus":"NuBus","slot":"9","device":"DisplayCard824","rom":"card.rom",
+                       "monitor":"HiRes14"}),
                 json!({"bus":"SCSI","slot":"0","device":"ScsiHardDisk","media":"a.img"}),
                 json!({"bus":"SCSI","slot":"3","device":"ScsiCdrom"}),
                 json!({"bus":"SCSI","slot":"5","device":"SomeFutureDisk","media":"x.img"}),

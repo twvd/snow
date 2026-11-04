@@ -71,7 +71,8 @@ pub struct Mdc12<TRenderer: Renderer> {
     #[serde(skip)]
     pub renderer: Option<TRenderer>,
 
-    monitor: MacMonitor,
+    /// None: nothing on the connector
+    monitor: Option<MacMonitor>,
     rom: Vec<u8>,
     ctrl: CtrlReg,
     ramdac_ctrl: RamdacCtrlReg,
@@ -93,9 +94,14 @@ impl<TRenderer> Mdc12<TRenderer>
 where
     TRenderer: Renderer,
 {
-    pub fn new(rom: &[u8], renderer: TRenderer, monitor: MacMonitor) -> Self {
+    /// What the sense lines read with nothing on the connector: none grounded, and in the
+    /// extended (type-7) protocol, only the line the card pulls low reads low (TN HW30)
+    const NO_MONITOR_SENSE: [u8; 4] = [7, 3, 5, 6];
+
+    /// A card without a monitor has no renderer
+    pub fn new(rom: &[u8], renderer: Option<TRenderer>, monitor: Option<MacMonitor>) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer,
             monitor,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
@@ -115,8 +121,14 @@ where
         }
     }
 
+    pub fn has_monitor(&self) -> bool {
+        self.monitor.is_some()
+    }
+
     fn read_ctrl(&self) -> CtrlReg {
-        let msense = self.monitor.sense();
+        let msense = self
+            .monitor
+            .map_or(Self::NO_MONITOR_SENSE, MacMonitor::sense);
         let mut sense = msense[0];
         if self.ctrl.sense_in0() {
             sense &= msense[1];
@@ -145,7 +157,9 @@ where
     pub fn framebuffer(&self) -> &[u8] {
         let base_offset = match self.bpp() {
             // ??? not sure why this is off by 2 scanlines
-            Bpp::TwentyFour => ((self.base.0 as usize) * 64 * 4) - (self.monitor.width() * 8),
+            Bpp::TwentyFour => {
+                ((self.base.0 as usize) * 64 * 4) - (self.monitor.map_or(0, MacMonitor::width) * 8)
+            }
 
             _ => (self.base.0 as usize) * 32,
         };
@@ -160,12 +174,15 @@ where
     /// Renders current dislayed frame to target DisplayBuffer
     #[allow(clippy::branches_sharing_code)]
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
+        let Some(monitor) = self.monitor else {
+            return;
+        };
         let fb = self.framebuffer();
         let palette = &self.palette;
-        buf.set_size(self.monitor.width(), self.monitor.height());
+        buf.set_size(monitor.width(), monitor.height());
         match self.bpp() {
             Bpp::One => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..(monitor.width() * monitor.height()) {
                     let byte = idx / 8;
                     let bit = idx % 8;
                     if fb[byte] & (1 << (7 - bit)) == 0 {
@@ -181,12 +198,12 @@ where
                 }
             }
             Bpp::Two => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..(monitor.width() * monitor.height()) {
                     let byte = idx / 4;
                     let shift = 6 - (idx % 4) * 2;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x03];
 
-                    if self.monitor.has_color() {
+                    if monitor.has_color() {
                         buf[idx * 4] = color as u8;
                         buf[idx * 4 + 1] = (color >> 8) as u8;
                         buf[idx * 4 + 2] = (color >> 16) as u8;
@@ -200,12 +217,12 @@ where
                 }
             }
             Bpp::Four => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..(monitor.width() * monitor.height()) {
                     let byte = idx / 2;
                     let shift = 4 - (idx % 2) * 4;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
 
-                    if self.monitor.has_color() {
+                    if monitor.has_color() {
                         buf[idx * 4] = color as u8;
                         buf[idx * 4 + 1] = (color >> 8) as u8;
                         buf[idx * 4 + 2] = (color >> 16) as u8;
@@ -219,11 +236,11 @@ where
                 }
             }
             Bpp::Eight => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..(monitor.width() * monitor.height()) {
                     let byte = fb[idx];
                     let color = palette[byte as usize];
 
-                    if self.monitor.has_color() {
+                    if monitor.has_color() {
                         buf[idx * 4] = color as u8;
                         buf[idx * 4 + 1] = (color >> 8) as u8;
                         buf[idx * 4 + 2] = (color >> 16) as u8;
@@ -237,8 +254,8 @@ where
                 }
             }
             Bpp::TwentyFour => {
-                assert!(self.monitor.has_color());
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                assert!(monitor.has_color());
+                for idx in 0..(monitor.width() * monitor.height()) {
                     buf[idx * 4] = fb[idx * 4 + 1];
                     buf[idx * 4 + 1] = fb[idx * 4 + 2];
                     buf[idx * 4 + 2] = fb[idx * 4 + 3];
@@ -365,7 +382,9 @@ where
 
     fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let Some(mut renderer) = self.renderer.take() else {
+            return Ok(());
+        };
         self.render_to(renderer.buffer_mut());
         self.renderer = Some(renderer);
         self.renderer.as_mut().unwrap().update()?;
@@ -384,7 +403,7 @@ where
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.as_ref().is_some_and(|r| r.frame_wanted()) {
                 self.render()?;
             }
 
@@ -404,7 +423,7 @@ where
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_group};
-        use crate::{dbgprop_byte_bin, dbgprop_enum, dbgprop_long, dbgprop_word_bin};
+        use crate::{dbgprop_byte_bin, dbgprop_enum, dbgprop_long, dbgprop_str, dbgprop_word_bin};
 
         vec![
             dbgprop_group!(
@@ -417,7 +436,7 @@ where
                     dbgprop_long!("Palette write index", self.palette_addr.0)
                 ]
             ),
-            dbgprop_enum!("Monitor", self.monitor),
+            dbgprop_str!("Monitor", self.monitor.map_or("None", |m| m.into())),
             dbgprop_enum!("BPP", self.bpp()),
             dbgprop_bool!("VBlank enable", self.vblank_enable),
             dbgprop_bool!("VBlank IRQ", self.vblank_irq),
@@ -457,5 +476,14 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     }),
     path_keys: &["rom"],
     adds_buses: &[],
+    monitors: &[
+        None,
+        Some(MacMonitor::RGB12),
+        Some(MacMonitor::HiRes14),
+        Some(MacMonitor::RGB16),
+        Some(MacMonitor::RGB21),
+        Some(MacMonitor::PortraitBW),
+        Some(MacMonitor::TwoPageBW),
+    ],
     create: None,
 };

@@ -228,5 +228,6 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     }),
     path_keys: &["rom"],
     adds_buses: &[],
+    monitors: &[],
     create: None,
 };

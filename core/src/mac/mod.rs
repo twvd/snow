@@ -579,6 +579,7 @@ impl Display for PdsCardKind {
 
 /// Configuration for a single NuBus slot: which card, in which slot, with which
 /// declaration ROM.
+#[derive(Clone, Copy)]
 pub struct NubusCardConfig<'a> {
     /// Slot number ($9-$E)
     pub slot: u8,
@@ -586,6 +587,15 @@ pub struct NubusCardConfig<'a> {
     pub kind: NubusDeviceKind,
     /// Declaration ROM for the card
     pub rom: &'a [u8],
+    /// The monitor on an 8-24's connector, None for nothing
+    pub monitor: Option<MacMonitor>,
+}
+
+impl NubusCardConfig<'_> {
+    /// Whether the card shows a screen, so needs a renderer
+    pub fn has_display(&self) -> bool {
+        self.kind != NubusDeviceKind::Mdc12 || self.monitor.is_some()
+    }
 }
 
 /// Definitions of Macintosh monitors

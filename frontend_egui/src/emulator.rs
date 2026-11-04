@@ -35,7 +35,7 @@ use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
-use snow_core::renderer::DisplayBuffer;
+use snow_core::renderer::DisplayHandle;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -50,7 +50,9 @@ use std::{env, fs, thread};
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
-    pub frame_receiver: Arc<Mutex<Option<DisplayBuffer>>>,
+    /// One handle per display output of the machine (one per display card),
+    /// in display install order.
+    pub displays: Vec<DisplayHandle>,
     /// The devices the machine couldn't use
     pub refused: Vec<RefusedDevice>,
 }
@@ -268,7 +270,7 @@ impl EmulatorState {
             Self::add_host_settings(config);
         }
 
-        let (mut emulator, frame_recv, refused) = Emulator::new_with_devices(
+        let (mut emulator, displays, refused) = Emulator::new_with_devices(
             &MachineConfig {
                 rom,
                 model,
@@ -303,14 +305,7 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        self.init_finalize(
-            emulator,
-            frame_recv,
-            cmd,
-            args.audio_disabled,
-            false,
-            refused,
-        )
+        self.init_finalize(emulator, displays, cmd, args.audio_disabled, false, refused)
     }
 
     /// What's up to the host rather than to the machine or the workspace
@@ -336,15 +331,15 @@ impl EmulatorState {
         // Terminate running emulator (if any)
         self.deinit();
 
-        let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
+        let (emulator, displays) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd, false, pause, vec![])
+        self.init_finalize(emulator, displays, cmd, false, pause, vec![])
     }
 
     fn init_finalize(
         &mut self,
         mut emulator: Emulator,
-        frame_recv: Arc<Mutex<Option<DisplayBuffer>>>,
+        displays: Vec<DisplayHandle>,
         cmd: EmulatorCommandSender,
         audio_disabled: bool,
         pause: bool,
@@ -416,10 +411,7 @@ impl EmulatorState {
         // Signal the UI to always update state
         self.force_update.set();
 
-        Ok(EmulatorInitResult {
-            frame_receiver: frame_recv,
-            refused,
-        })
+        Ok(EmulatorInitResult { displays, refused })
     }
 
     pub fn deinit(&mut self) {
