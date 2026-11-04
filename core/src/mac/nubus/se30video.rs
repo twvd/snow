@@ -3,8 +3,8 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
-use crate::bus::{Address, BusMember};
+use super::{NubusSlot, standard_offset};
+use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
@@ -76,10 +76,50 @@ where
     }
 }
 
+impl<TRenderer> SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    /// The VRAM bytes at `offset`, if they're all VRAM
+    fn vram_bytes(&mut self, offset: Address, size: u32) -> Option<&mut [u8]> {
+        let range = offset & 0xFF_0000;
+        if range != 0 && range != 0xE0_0000 {
+            return None;
+        }
+        let a = (offset & 0xFFFF) as usize;
+        self.vram.get_mut(a..a + size as usize)
+    }
+}
+
 impl<TRenderer> NubusSlot<TRenderer> for SE30Video<TRenderer>
 where
     TRenderer: Renderer,
 {
+    // VRAM, at $00_0000 and again at $E0_0000, and the ROM at the top are
+    // memory: they answer any access within a word at once
+    fn read_sized(&mut self, addr: Address, size: u32) -> Option<u32> {
+        let offset = standard_offset(addr)?;
+        if let Some(bytes) = self.vram_bytes(offset, size) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+        }
+        if offset >= 0xFE_0000 {
+            return Some((offset..offset + size).fold(0, |v, a| {
+                (v << 8) | u32::from(self.rom[(a - 0xFE_0000) as usize % self.rom.len()])
+            }));
+        }
+        log::warn!("{}: read from unimplemented offset {:06X}", self, offset);
+        Some(0)
+    }
+
+    fn write_sized(&mut self, addr: Address, size: u32, val: u32) -> Option<()> {
+        let offset = standard_offset(addr)?;
+        match self.vram_bytes(offset, size) {
+            Some(bytes) => bytes.copy_from_slice(&val.to_be_bytes()[4 - size as usize..]),
+            None => log::warn!("{}: write to unimplemented offset {:06X}", self, offset),
+        }
+        Some(())
+    }
+
     fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
@@ -107,34 +147,6 @@ where
 
     fn set_renderer(&mut self, renderer: TRenderer) {
         self.renderer = Some(renderer);
-    }
-}
-
-impl<TRenderer> BusMember<Address> for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    fn read(&mut self, addr: Address) -> Option<u8> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                Some(self.vram[(addr & 0xFFFF) as usize])
-            }
-            // ROM
-            0xFE_0000..=0xFF_FFFF => Some(self.rom[(addr - 0xFE_0000) as usize % self.rom.len()]),
-            _ => None,
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                self.vram[(addr as usize) & 0xFFFF] = val;
-                Some(())
-            }
-            _ => None,
-        }
     }
 }
 
