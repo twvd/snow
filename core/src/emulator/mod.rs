@@ -1,17 +1,17 @@
 pub mod comm;
+pub mod devices;
 
 #[cfg(feature = "savestates")]
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::Floppy;
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof, TwoImg};
+use snow_floppy::loaders::{FloppyImageSaver, Moof};
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
 #[cfg(feature = "savestates")]
 use std::io::Seek;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectRun, InspectableBus};
 use crate::cpu_m68k::bus::InspectView;
-use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
+use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry, is_double_fault};
 use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
@@ -27,6 +27,8 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
+use crate::lisa::bus::LisaBus;
+use crate::lisa::video::build_prom;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
@@ -34,12 +36,11 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
-use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
+use crate::mac::serial_bridge::SerialDevice;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
@@ -50,7 +51,7 @@ use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
@@ -62,7 +63,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange, ScsiTargetStatus,
+    EmulatorStatus, InputRecording, MemoryNotifierRange,
 };
 
 /// Mouse emulation mode
@@ -130,6 +131,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &machine_target!(inner, lc_iii, $($ref_target)*),
                         Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
                         Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
+                        Self::Lisa(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -147,6 +149,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &mut machine_target!(inner, lc_iii_mut, $($mut_ref_target)*),
                         Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
                         Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
+                        Self::Lisa(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -164,6 +167,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii, $($immut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
+                        Self::Lisa(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -181,6 +185,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii_mut, $($mut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
+                        Self::Lisa(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -300,6 +305,8 @@ enum EmulatorConfig {
     Quadra700(Box<CpuM68040<MachineBus040>>),
     /// Macintosh LC 475: a 68LC040, or a 68040 in its socket
     LC475(Box<CpuM68040<MachineBus040>>),
+    /// Apple Lisa
+    Lisa(Box<CpuM68000<LisaBus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -395,7 +402,13 @@ pub struct Emulator {
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
-    serial_bridges: [Option<SccBridge>; 2],
+    serial_bridges: [Option<Box<dyn SerialDevice>>; 2],
+    /// What the machine remembers of its devices
+    device_book: devices::DeviceBook,
+    /// The machine's buses, as the frontend sees them. Built again when a device comes or goes.
+    bus_list: Arc<Vec<devices::Bus>>,
+    /// The status of every device, shared with the frontend
+    status_block: Arc<devices::StatusBlock>,
     audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
     /// Ranges of memory the frontend wants to be told about, by id
     memory_notifiers: BTreeMap<u32, MemoryNotifier>,
@@ -423,7 +436,7 @@ impl Emulator {
             false,
             None,
             None,
-            None,
+            0x9,
         )
     }
 
@@ -439,8 +452,8 @@ impl Emulator {
         pmmu_enabled: bool,
         fpu_enabled: bool,
         vram_size: Option<usize>,
-        shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
+        video_card_slot: u8,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -450,6 +463,7 @@ impl Emulator {
 
         let mut config = match model {
             MacModel::Early128K
+            | MacModel::TwiggyMac
             | MacModel::Early512K
             | MacModel::Early512Ke
             | MacModel::Plus
@@ -508,7 +522,7 @@ impl Emulator {
                     bail!("Macintosh II requires display card ROM")
                 };
                 let nubus = [NubusCardConfig {
-                    slot: 0x9,
+                    slot: video_card_slot,
                     kind,
                     rom: mdcrom,
                 }];
@@ -551,7 +565,7 @@ impl Emulator {
                     bail!("Macintosh II requires display card ROM")
                 };
                 let nubus = [NubusCardConfig {
-                    slot: 0x9,
+                    slot: video_card_slot,
                     kind,
                     rom: mdcrom,
                 }];
@@ -631,6 +645,26 @@ impl Emulator {
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
+            MacModel::Lisa1 | MacModel::Lisa25 | MacModel::Lisa210 => {
+                // Without a dump, the PROM of the Lisa's own monitor
+                let video_prom = match extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::LisaVideoProm(data) => Some(*data),
+                    _ => None,
+                }) {
+                    Some(prom) => prom.to_vec(),
+                    None => build_prom(false, None)?,
+                };
+                let bus = LisaBus::new(
+                    model,
+                    rom,
+                    &video_prom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    override_fdd_type == Some(DriveType::GCR800K),
+                );
+                EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
+            }
             MacModel::LCII => {
                 assert!(override_fdd_type.is_none());
 
@@ -698,8 +732,11 @@ impl Emulator {
             }
         };
 
-        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
+        let mut device_book = devices::DeviceBook::default();
+        if let Some(settings) = iie_card {
+            device_book.set_iie_chain(&settings);
+        }
 
         let mut emu = Self {
             config,
@@ -714,11 +751,15 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book,
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
         };
+        emu.rebuild_bus_list();
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -748,7 +789,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f, tmpdir)?;
+        let (mut config, devices, slots) = load_state_from(f, tmpdir)?;
         config.after_deserialize(renderer);
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
@@ -770,11 +811,22 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book: Default::default(),
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
         };
+        // The state doesn't hold where the devices came from, the list does
+        let devices = serde_json::from_str(&devices).unwrap_or_else(|e| {
+            log::warn!("No device list in the state file: {}", e);
+            vec![]
+        });
+        emu.rebuild_bus_list();
+        emu.restore_slots(slots)?;
+        emu.reinstate_devices(devices);
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -795,6 +847,16 @@ impl Emulator {
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
     /// file is created. The PRAM file is continuously updated.
     pub fn persist_pram(&mut self, pram_path: &Path) {
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+            if let Err(e) = lisa.bus.persist_parameter_memory(pram_path) {
+                self.user_error(&format!(
+                    "Cannot use parameter memory file '{}', changes will not be saved: {}",
+                    pram_path.display(),
+                    e
+                ));
+            }
+            return;
+        }
         self.config.rtc_mut().load_pram(pram_path);
     }
 
@@ -813,31 +875,54 @@ impl Emulator {
     }
 
     fn status_update(&mut self) -> Result<()> {
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config
+            && let Some(disk) = lisa.bus.disk_take_ejected()
+            && disk.writeback
+            && disk.dirty()
+            && let Some(path) = &disk.media
+            && let Err(e) = std::fs::write(path, disk.to_image())
+        {
+            self.user_error(&format!(
+                "Cannot write Lisa floppy '{}': {}",
+                path.display(),
+                e
+            ));
+        }
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config
+            && let Err(e) = lisa.bus.save_parameter_memory()
+        {
+            self.user_error(&format!("Cannot write parameter memory file: {}", e));
+        }
         for i in 0..self.config.swim().drives.len() {
             self.writeback_ejected(i);
         }
-        for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
-            if let Some(img) = drive.take_ejected_image() {
+        for i in 0..self.config.swim().drives.len() {
+            if let Some(img) = self.config.swim_mut().drives[i].take_ejected_image()
+                && let Some(addr) = self.find_slot(devices::bus_id::SWIM, &(i + 1).to_string())
+            {
                 self.event_sender
-                    .send(EmulatorEvent::FloppyEjected(i, img))?;
+                    .send(EmulatorEvent::FloppyEjected(addr, img))?;
             }
         }
-        for (id, target) in self
+        let scsi_events: Vec<_> = self
             .config
             .scsi_mut()
             .targets
             .iter_mut()
             .enumerate()
-            .filter_map(|(i, t)| t.as_mut().map(|t| (i, t)))
-        {
-            match target.take_event() {
-                Some(ScsiTargetEvent::MediaEjected) => {
-                    self.event_sender
-                        .send(EmulatorEvent::ScsiMediaEjected(id))
-                        .unwrap();
+            .filter_map(|(i, t)| Some((i, t.as_mut()?.take_event()?)))
+            .collect();
+        for (id, event) in scsi_events {
+            match event {
+                ScsiTargetEvent::MediaEjected => {
+                    if let Some(addr) = self.find_slot(devices::bus_id::SCSI, &id.to_string()) {
+                        self.event_sender
+                            .send(EmulatorEvent::MediaEjected(addr))
+                            .unwrap();
+                    }
                 }
                 #[cfg(feature = "printer")]
-                Some(ScsiTargetEvent::PageSaved(f)) => {
+                ScsiTargetEvent::PageSaved(f) => {
                     self.event_sender
                         .send(EmulatorEvent::UserMessage(
                             UserMessageType::Notice,
@@ -845,9 +930,10 @@ impl Emulator {
                         ))
                         .unwrap();
                 }
-                None => (),
             }
         }
+
+        self.publish_status();
 
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
@@ -855,48 +941,8 @@ impl Emulator {
                 running: self.run,
                 breakpoints: self.config.cpu_breakpoints().to_vec(),
                 cycles: self.config.cpu_cycles(),
-                fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.config.swim().drives[i].is_present(),
-                    ejected: !self.config.swim().drives[i].floppy_inserted,
-                    motor: self.config.swim().drives[i].motor,
-                    writing: self.config.swim().drives[i].motor && self.config.swim().is_writing(),
-                    track: self.config.swim().drives[i].track,
-                    image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
-                    dirty: self.config.swim().drives[i].floppy.is_dirty(),
-                    drive_type: self.config.swim().drives[i].drive_type,
-                    writeback_supported: self.config.swim().drives[i].image_path.is_some()
-                        && self.config.swim().drives[i].floppy.supports_writeback(),
-                    writeback_enabled: self.config.swim().drives[i].writeback_enabled,
-                }),
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
-                scsi: core::array::from_fn(|i| {
-                    self.config
-                        .scsi()
-                        .get_target_type(i)
-                        .map(|t| ScsiTargetStatus {
-                            target_type: t,
-                            capacity: self.config.scsi().get_disk_capacity(i),
-                            image: self
-                                .config
-                                .scsi()
-                                .get_disk_imagefn(i)
-                                .map(|p| p.to_path_buf()),
-                            cdrom_folder: self
-                                .config
-                                .scsi()
-                                .get_cdrom_folder(i)
-                                .map(|p| p.to_path_buf()),
-                            #[cfg(feature = "ethernet")]
-                            link_type: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_link()),
-                            #[cfg(feature = "ethernet")]
-                            capture_status: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_capture_status()),
-                        })
-                }),
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
@@ -1124,10 +1170,6 @@ impl Emulator {
             .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
     }
 
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
-    }
-
     pub fn attach_disk_image_at(
         &mut self,
         image: Box<dyn DiskImage>,
@@ -1277,52 +1319,31 @@ impl Emulator {
     fn poll_localtalk_bridge(&mut self) {
         // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
         // Only poll if RX is enabled and no character is available (ready for new packet)
-        if self
-            .config
-            .scc_mut()
-            .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
-            && self
-                .config
-                .scc()
-                .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
-            && let Some(ref mut bridge) = self.serial_bridges[1]
-            && bridge.is_localtalk()
+        let ch = crate::mac::scc::SccCh::B;
+        if self.config.scc_mut().take_localtalk_poll_needed(ch)
+            && self.config.scc().is_rx_ready_for_data(ch)
+            && let Some(device) = self.serial_bridges[ch as usize].as_mut()
         {
-            // Propagate SCC state to LocalTalk bridge
-            let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
-            bridge.set_node_address(sdlc_addr);
-            bridge.set_address_search_mode(
-                self.config
-                    .scc()
-                    .is_address_search_mode(crate::mac::scc::SccCh::B),
-            );
-
-            // Prefer SDLC frame-boundary path if frames are ready
-            let frames = self
-                .config
-                .scc_mut()
-                .take_tx_frames(crate::mac::scc::SccCh::B);
+            let scc = self.config.scc();
+            device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+            let frames = self.config.scc_mut().take_tx_frames(ch);
             if !frames.is_empty() {
                 for frame in &frames {
-                    bridge.send_frame(frame);
+                    device.tx_frame(frame);
                 }
-                // Drain tx_queue to avoid double-sending
-                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                // The same bytes are in the byte queue too
+                self.config.scc_mut().take_tx(ch);
             }
-
-            // Byte-stream TX path (fallback when no frame boundaries detected)
-            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
-                let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                bridge.write_from_scc(&tx_data);
+            if self.config.scc().has_tx_data(ch) {
+                let tx_data = self.config.scc_mut().take_tx(ch);
+                device.tx_bytes(&tx_data);
             }
 
             // Now poll for incoming data and pending CTS
-            bridge.poll();
-            let rx_data = bridge.read_to_scc();
+            device.poll();
+            let rx_data = device.rx();
             if !rx_data.is_empty() {
-                self.config
-                    .scc_mut()
-                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+                self.config.scc_mut().push_rx(ch, &rx_data);
             }
         }
     }
@@ -1335,6 +1356,10 @@ impl Emulator {
     }
 
     fn step_failed(&mut self, e: &anyhow::Error) {
+        if matches!(self.config, EmulatorConfig::Lisa(_)) && is_double_fault(e) {
+            self.lisa_halted();
+            return;
+        }
         self.run = false;
         self.user_error(&format!(
             "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
@@ -1348,47 +1373,35 @@ impl Emulator {
         let _ = self.status_update();
     }
 
+    /// On the Lisa, CPU halt starts the reset timer. The Office System restarts
+    /// the machine this way: it fills the vector table with -1 and then does a
+    /// CLR.L (-1).
+    fn lisa_halted(&mut self) {
+        let result = match &mut self.config {
+            EmulatorConfig::Lisa(lisa) => lisa.bus.reset(false).map(|_| ()),
+            _ => Ok(()),
+        }
+        .and_then(|()| self.config.cpu_reset())
+        .and_then(|()| self.config.video_blank());
+        if let Err(e) = result {
+            self.run = false;
+            self.user_error(&format!("Cannot reset after CPU halt: {}", e));
+        }
+    }
+
     pub fn get_cycles(&self) -> Ticks {
         self.config.cpu_cycles()
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom(&mut self, id: usize) {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
-        info!("SCSI ID #{}: CD-ROM drive attached", id);
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config
-            .scsi_mut()
-            .attach_cdrom_folder_at(id, dir, audio_provider)?;
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) {
-        self.config.scsi_mut().attach_ethernet_at(id);
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
-        self.config.scsi_mut().attach_printer_at(id, output_dir);
-        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
-    }
-
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+    fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+        let devices = serde_json::to_string(&self.devices())?;
+        let slots = self.slot_states()?;
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot)?;
+        save_state_to(&f, &self.config, screenshot, devices, &slots)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -1427,287 +1440,89 @@ impl Tickable for Emulator {
                         log::info!("Mouse mode: {:?}", mode);
                         self.config.set_mouse_mode(mode);
                     }
+                    EmulatorCommand::AddDevice(config) => {
+                        if let Err(e) = self.add_device(&config) {
+                            self.user_warning(&format!("{}: {:#}", config.label(), e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::RemoveDevice(addr) => {
+                        if let Err(e) = self.remove_device(addr) {
+                            self.user_warning(&format!("{:#}", e));
+                        }
+                        self.status_update()?;
+                    }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
                         self.flush_pending_writebacks(true);
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(drive, filename, wp) => {
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                if wp {
-                                    img.set_force_wp();
-                                }
-                                let writeback_path =
-                                    img.supports_writeback().then(|| PathBuf::from(&filename));
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                } else {
-                                    let drv = &mut self.config.swim_mut().drives[drive];
-                                    drv.image_path = writeback_path;
-                                    drv.writeback_enabled = false;
-                                    drv.pending_writeback = false;
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {:?}",
-                                    filename, e
-                                ));
+                    EmulatorCommand::LisaOnOffButton => {
+                        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+                            if lisa.bus.powered_on() {
+                                lisa.bus.on_off_button();
+                            } else {
+                                self.config.bus_reset()?;
+                                self.config.cpu_reset()?;
+                                self.config.video_blank()?;
                             }
                         }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::InsertIieDisk(drive, path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header names the sector order, else
-                                // the extension does
-                                let (bytes, order) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
-                                            (img.data, DskOrder::Prodos)
-                                        }
-                                        Ok(img) => (img.data, DskOrder::Dos),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else if path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-                                {
-                                    (&bytes[..], DskOrder::Prodos)
-                                } else {
-                                    (&bytes[..], DskOrder::Dos)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
-                                            self.user_error(&format!(
-                                                "Cannot insert IIe disk '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
                     }
                     EmulatorCommand::SetIieGamePort(port) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
+                        let card = self.iie_card_mut();
                         if let Some(card) = card {
                             card.set_game_port(port);
                         }
                     }
-                    EmulatorCommand::EjectIieDisk(drive) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
+                    EmulatorCommand::InsertFloppyImage(addr, mut img, wp) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
                         };
-                        if let Some(card) = card {
-                            card.eject_disk(drive);
-                        }
-                    }
-                    EmulatorCommand::InsertIieUniDisk(path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header carries the lock flag; a
-                                // raw image is the blocks alone
-                                let (data, locked) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) => (img.data.to_vec(), img.locked),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    (bytes, false)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_unidisk(data, locked) {
-                                            self.user_error(&format!(
-                                                "Cannot insert UniDisk 3.5 image '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::EjectIieUniDisk => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
-                            card.eject_unidisk();
-                        }
-                    }
-                    EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
                         if wp {
                             img.set_force_wp();
                         }
                         if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::EjectFloppy(drive) => {
-                        self.try_writeback(drive);
-                        self.config.swim_mut().drives[drive].eject();
-                    }
-                    EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
-                        let ok = {
+                        } else {
                             let drv = &mut self.config.swim_mut().drives[drive];
-                            if enabled
-                                && (drv.image_path.is_none() || !drv.floppy.supports_writeback())
-                            {
-                                false
-                            } else {
-                                drv.writeback_enabled = enabled;
-                                drv.pending_writeback = false;
-                                true
-                            }
-                        };
-                        if !ok {
-                            self.user_error(
-                                "Writeback unavailable: image was not loaded from a writeback-capable file",
-                            );
+                            drv.media_path = None;
+                            drv.media_read_only = false;
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::ScsiAttachHdd(id, filename) => {
-                        match self.load_hdd_image(&filename, id) {
-                            Ok(_) => {
-                                info!(
-                                    "SCSI ID #{}: hard drive attached, image '{}' loaded",
-                                    id,
-                                    filename.display()
-                                );
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiBranchHdd(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .branch_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: branched to file '{}'", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiLoadMedia(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .load_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdrom(id) => {
-                        self.attach_cdrom(id);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
-                        if let Err(e) = self.attach_cdrom_folder(id, dir) {
-                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                    EmulatorCommand::SetFloppyWriteback(addr, enabled) => {
+                        if let Err(e) = self.set_floppy_writeback(addr, enabled) {
+                            self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::ScsiAttachEthernet(id) => {
-                        self.attach_ethernet(id);
+                    EmulatorCommand::BranchDisk(addr, filename) => {
+                        if let Err(e) = self.branch_disk(addr, &filename) {
+                            self.user_error(&format!("{:#}", e));
+                        }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "printer")]
-                    EmulatorCommand::ScsiAttachPrinter(id, output_dir) => {
-                        self.attach_printer(id, output_dir);
+                    EmulatorCommand::LoadMedia(addr, filename, wp) => {
+                        if let Err(e) = self.load_media(addr, &filename, wp) {
+                            self.user_error(&format!(
+                                "Cannot load '{}': {:#}",
+                                filename.display(),
+                                e
+                            ));
+                        }
                         self.status_update()?;
                     }
-                    EmulatorCommand::DetachScsiTarget(id) => {
-                        self.config.scsi_mut().detach_target(id);
-                        info!("SCSI ID #{}: target detached", id);
+                    EmulatorCommand::EjectMedia(addr) => {
+                        if let Err(e) = self.eject_media(addr) {
+                            self.user_error(&format!("{:#}", e));
+                        }
                         self.status_update()?;
                     }
-                    EmulatorCommand::SaveFloppy(drive, filename) => {
+                    EmulatorCommand::SaveFloppy(addr, filename) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
+                        };
                         if let Err(e) = Moof::save_file(
                             self.config.swim().get_active_image(drive),
                             &filename.to_string_lossy(),
@@ -1914,53 +1729,12 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetSystrapHistory(v) => {
                         self.config.cpu_enable_systrap_history(v);
                     }
-                    EmulatorCommand::SetSharedDir(path) => {
-                        self.config.scsi_mut().set_shared_dir(path);
-                    }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
                         self.status_update()?;
                     }
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
-                    }
-                    EmulatorCommand::SerialBridgeEnable(ch, config) => {
-                        let ch_idx = ch as usize;
-                        match SccBridge::new(&config) {
-                            Ok(bridge) => {
-                                let status = bridge.status();
-                                info!("SCC bridge enabled on channel {:?}: {}", ch, status);
-                                match &status {
-                                    SerialBridgeStatus::Pty(path) => {
-                                        self.user_notice(&format!(
-                                            "Serial bridge PTY: {}",
-                                            path.display()
-                                        ));
-                                    }
-                                    SerialBridgeStatus::LocalTalk(_) => {
-                                        self.user_notice("LocalTalk bridge enabled");
-                                    }
-                                    _ => {}
-                                }
-                                self.serial_bridges[ch_idx] = Some(bridge);
-                                self.event_sender
-                                    .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Failed to enable SCC bridge on channel {:?}: {}",
-                                    ch, e
-                                ));
-                            }
-                        }
-                    }
-                    EmulatorCommand::SerialBridgeDisable(ch) => {
-                        let ch_idx = ch as usize;
-                        if self.serial_bridges[ch_idx].take().is_some() {
-                            info!("Serial bridge disabled on channel {:?}", ch);
-                            self.event_sender
-                                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
-                        }
                     }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
@@ -1976,7 +1750,10 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
                         self.config.swim_mut().seed_weak_bits(seed);
                     }
-                    EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
+                    EmulatorCommand::SetFloppyRpmAdjustment(addr, adjustment) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
+                        };
                         if drive < self.config.swim_mut().drives.len() {
                             let drv = &mut self.config.swim_mut().drives[drive];
                             drv.rpm_adjustment = adjustment;
@@ -1984,18 +1761,16 @@ impl Tickable for Emulator {
                         }
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetSetLink(idx, link) => {
-                        self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("Setting link on non-ethernet device")?
-                            .eth_set_link(link)?;
+                    EmulatorCommand::EthernetSetLink(addr, link) => {
+                        self.ethernet_at(addr, |ethernet| ethernet.set_link(link))??;
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStartCapture(idx, filename) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_start_capture(&filename)
+                    EmulatorCommand::EthernetStartCapture(addr, filename) => {
+                        let Ok(idx) = self.scsi_id_at(addr) else {
+                            continue;
+                        };
+                        match self
+                            .ethernet_at(addr, |ethernet| ethernet.start_capture(&filename))?
                         {
                             Ok(_) => {
                                 self.user_success(&format!(
@@ -2014,12 +1789,11 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStopCapture(idx) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_stop_capture()
-                        {
+                    EmulatorCommand::EthernetStopCapture(addr) => {
+                        let Ok(idx) = self.scsi_id_at(addr) else {
+                            continue;
+                        };
+                        match self.ethernet_at(addr, |ethernet| ethernet.stop_capture())? {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
                                     "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
@@ -2057,50 +1831,42 @@ impl Tickable for Emulator {
             for ch in crate::mac::scc::SccCh::iter() {
                 let ch_idx = ch as usize;
 
-                // Poll bridges for incoming data and status changes
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                    // Propagate SCC state to LocalTalk bridge
-                    if bridge.is_localtalk() {
-                        let sdlc_addr = self.config.scc().sdlc_address(ch);
-                        bridge.set_node_address(sdlc_addr);
-                        bridge
-                            .set_address_search_mode(self.config.scc().is_address_search_mode(ch));
-
-                        // Prefer SDLC frame-boundary path if frames are ready
-                        let frames = self.config.scc_mut().take_tx_frames(ch);
-                        if !frames.is_empty() {
-                            for frame in &frames {
-                                bridge.send_frame(frame);
-                            }
-                            // Drain tx_queue to avoid double-sending via byte-stream
-                            self.config.scc_mut().take_tx(ch);
+                // The SCC's station for a device carrying frames
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                    let scc = self.config.scc();
+                    device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+                    let frames = self.config.scc_mut().take_tx_frames(ch);
+                    if !frames.is_empty() {
+                        for frame in &frames {
+                            device.tx_frame(frame);
                         }
+                        // The same bytes are in the byte queue too
+                        self.config.scc_mut().take_tx(ch);
                     }
                 }
 
-                // Check for TX data from SCC (byte-stream path / fallback)
+                // Check for TX data from SCC
                 if self.config.scc().has_tx_data(ch) {
                     let tx_data = self.config.scc_mut().take_tx(ch);
 
-                    // Route through bridge if active, otherwise send to frontend
-                    if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                        bridge.write_from_scc(&tx_data);
+                    // Route through the device if there is one, otherwise send to frontend
+                    if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                        device.tx_bytes(&tx_data);
                     } else {
                         self.event_sender
                             .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
                     }
                 }
 
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
-                    let has_data = bridge.poll();
-                    if has_data {
+                    if device.poll() {
                         self.event_sender
-                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
+                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(device.status())))?;
                     }
 
-                    // Read incoming data from bridge and send to SCC
-                    let rx_data = bridge.read_to_scc();
+                    // Read incoming data from the device and send to SCC
+                    let rx_data = device.rx();
                     if !rx_data.is_empty() {
                         self.config.scc_mut().push_rx(ch, &rx_data);
                     }

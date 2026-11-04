@@ -7,7 +7,8 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
-use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimMode};
+use super::drive::DriveType;
+use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimMode, dcd};
 use crate::bus::Address;
 use crate::tickable::Ticks;
 use crate::types::Byte;
@@ -106,6 +107,13 @@ impl Swim {
             4 => self.ca2 = false,
             5 => self.ca2 = true,
             6 => self.lstrb = false,
+            7 if self.dcd_selected() => {
+                // A DCD passes the enable on down the chain when CA3 rises
+                if !self.lstrb {
+                    self.dcd_chain_pos += 1;
+                }
+                self.lstrb = true;
+            }
             7 => {
                 // The drive latches its control register on the rising edge of LSTRB,
                 // so touching LSTRBH while it is already high does nothing.
@@ -118,8 +126,11 @@ impl Swim {
                         return;
                     }
 
-                    let reg = self.get_selected_drive_reg_u8();
-                    self.get_selected_drive_mut().write_drive_reg(reg);
+                    // A Twiggy has no registers: LSTRB is its stepper's PH3
+                    if !self.twiggy_selected() {
+                        let reg = self.get_selected_drive_reg_u8();
+                        self.get_selected_drive_mut().write_drive_reg(reg);
+                    }
                 }
             }
             8 => {
@@ -149,6 +160,20 @@ impl Swim {
             15 => self.q7 = true,
             _ => (),
         }
+
+        if self.twiggy_selected() && self.iwm_drive_enabled() {
+            let phases = [self.ca0, self.ca1, self.ca2, self.lstrb];
+            self.get_selected_drive_mut().twiggy_phases(phases);
+        }
+
+        if !self.dcd_port_enabled() {
+            // Dropping !ENBL2 takes the chain back to its first device
+            self.dcd_chain_pos = 0;
+        }
+        let state = self.dcd_state();
+        if let Some(dcd) = self.selected_dcd_mut() {
+            dcd.set_state(state);
+        }
     }
 
     /// Read on the bus
@@ -168,9 +193,12 @@ impl Swim {
             }
             (true, false) => {
                 // Read status register
-                let sense = self
-                    .get_selected_drive()
-                    .read_sense(self.get_selected_drive_reg_u8());
+                let sense = if let Some(dcd) = self.selected_dcd() {
+                    dcd.sense(self.dcd_state())
+                } else {
+                    self.get_selected_drive()
+                        .read_sense(self.get_selected_drive_reg_u8())
+                };
                 self.iwm_status.set_sense(sense);
                 self.iwm_status.set_mode_low(self.iwm_mode.mode_low());
                 self.iwm_status.set_enable(self.iwm_drive_enabled());
@@ -188,6 +216,11 @@ impl Swim {
                 result.set_underrun(!(self.write_pos == 0 && self.write_buffer.is_none()));
                 result.set_ready(self.write_buffer.is_none());
                 result.0
+            }
+            (true, true) if self.dcd_selected() => {
+                // The .Sony DCD code touches Q6H with a read while in write mode;
+                // the value is thrown away
+                0
             }
             _ => {
                 warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
@@ -256,6 +289,7 @@ impl Swim {
                     399,
                 );
                 drv.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
+                drv.pwm_index = idx.try_into()?;
                 drv.update_ticks_per_bit();
                 drv.pwm_avg_sum = 0;
                 drv.pwm_avg_count = 0;
@@ -298,7 +332,7 @@ impl Swim {
 
     fn iwm_tick_flux(&mut self, ticks: Ticks) -> Result<()> {
         let side = self.get_active_head();
-        let track = self.get_selected_drive().get_active_track();
+        let track = self.get_selected_drive().get_head_track(side);
 
         // Run up to each flux transition within the ticks in turn
         let mut left = ticks;
@@ -404,11 +438,58 @@ impl Swim {
         Ok(())
     }
 
+    /// Moves bytes between the IWM and an HD20 (Directly Connected Disk).
+    /// The link runs at the floppy bit rate but carries plain bytes: no weak bits, no
+    /// track to rotate.
+    pub(super) fn dcd_tick(&mut self, ticks: Ticks) {
+        let ticks_per_byte = dcd::ticks_per_byte(self.drives[0].base_frequency);
+        let Some(dcd) = self.dcds.get_mut(self.dcd_chain_pos) else {
+            return;
+        };
+
+        // Writing: a byte takes 8 bit cells to shift out, then the device has it
+        if self.write_pos != 0 {
+            self.dcd_wr_ticks += ticks;
+            if self.dcd_wr_ticks >= ticks_per_byte {
+                dcd.write_byte(self.write_shift);
+                self.write_pos = 0;
+            }
+        }
+        if self.write_pos == 0
+            && let Some(v) = self.write_buffer.take()
+        {
+            self.write_shift = v;
+            self.write_pos = 8;
+            self.dcd_wr_ticks = 0;
+        }
+
+        // Reading
+        if let Some(v) = dcd.tick(ticks, ticks_per_byte) {
+            self.datareg = v;
+        }
+    }
+
+    /// A Twiggy's motor runs while the IWM enables it
+    pub(super) fn update_twiggy_motors(&mut self) {
+        let enabled = self.iwm_drive_enabled();
+        let selected = self.get_selected_drive_idx();
+        for (i, drive) in self.drives.iter_mut().enumerate() {
+            if drive.drive_type == DriveType::Twiggy {
+                drive.set_twiggy_motor(enabled && i == selected);
+            }
+        }
+    }
+
     pub(super) fn iwm_tick(&mut self, ticks: Ticks) -> Result<()> {
-        match self.get_selected_drive().floppy.get_track_type(
-            self.get_active_head(),
-            self.get_selected_drive().get_active_track(),
-        ) {
+        let head = self.get_active_head();
+        if self.twiggy_selected() {
+            self.get_selected_drive_mut().set_twiggy_head(head);
+        }
+        match self
+            .get_selected_drive()
+            .floppy
+            .get_track_type(head, self.get_selected_drive().get_head_track(head))
+        {
             TrackType::Bitstream => self.iwm_tick_bitstream(ticks),
             TrackType::Flux => self.iwm_tick_flux(ticks),
         }

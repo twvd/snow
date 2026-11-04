@@ -83,29 +83,19 @@ where
 {
     #[inline(always)]
     fn fc_data(&self) -> u8 {
-        // The 68020 and up drive their function codes whether there is an
-        // MMU or not: they also show in their bus error frames
-        if CPU_TYPE >= M68020 {
-            if self.regs.sr.supervisor() {
-                FC_SUPERVISOR_DATA
-            } else {
-                FC_USER_DATA
-            }
+        if self.regs.sr.supervisor() {
+            FC_SUPERVISOR_DATA
         } else {
-            FC_UNUSED
+            FC_USER_DATA
         }
     }
 
     #[inline(always)]
     pub(in crate::cpu_m68k) fn fc_program(&self) -> u8 {
-        if CPU_TYPE >= M68020 {
-            if self.regs.sr.supervisor() {
-                FC_SUPERVISOR_PROGRAM
-            } else {
-                FC_USER_PROGRAM
-            }
+        if self.regs.sr.supervisor() {
+            FC_SUPERVISOR_PROGRAM
         } else {
-            FC_UNUSED
+            FC_USER_PROGRAM
         }
     }
 
@@ -274,7 +264,12 @@ where
     }
 
     /// Checks if an access needs to fail and raise bus error on alignment errors
-    fn verify_access_physical<T: CpuSized>(&self, paddr: Address, read: bool) -> Result<()> {
+    fn verify_access_physical<T: CpuSized>(
+        &self,
+        fc: u8,
+        paddr: Address,
+        read: bool,
+    ) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (paddr & 1) != 0 {
             // Unaligned access
             if CPU_TYPE < M68020 {
@@ -282,7 +277,7 @@ where
 
                 // TODO should still happen on 68020+ for PC
                 bail!(CpuError::AddressError(Group0Details {
-                    function_code: 0,
+                    function_code: fc,
                     ir: 0,
                     size: std::mem::size_of::<T>(),
                     atc_fault: false,
@@ -314,6 +309,20 @@ where
         vaddr: Address,
     ) -> Result<T> {
         self.read_ticks_generic::<T>(AccessKind::Fetch, self.fc_program(), vaddr)
+    }
+
+    /// Reads a PC-relative operand from the bus and spends ticks.
+    /// Program space on the 68000, from the MAME-derived test data. The 68020/68030
+    /// stay on the data FC: 68030UM 6.1.2 has these references in the data cache.
+    pub(in crate::cpu_m68k) fn read_ticks_pc_relative<T: CpuSized>(
+        &mut self,
+        vaddr: Address,
+    ) -> Result<T> {
+        if CPU_TYPE == M68000 {
+            self.read_ticks_program(vaddr)
+        } else {
+            self.read_ticks(vaddr)
+        }
     }
 
     /// Reads a value from the bus and spends ticks.
@@ -651,7 +660,7 @@ where
 
                 if CPU_TYPE == M68000 && w == 0 && len > 1 {
                     // Address errors occur AFTER the first Word was accessed
-                    self.verify_access_physical::<T>(o_addr, true)?;
+                    self.verify_access_physical::<T>(fc, o_addr, true)?;
                 }
             }
         } else {
@@ -781,7 +790,13 @@ where
                     })
                 {
                     // Address errors occur AFTER the first Word was accessed
-                    self.verify_access_physical::<T>(o_addr, true)?;
+                    // A long written high to low faults on the low word first
+                    let fault_addr = if TORDER == TORDER_HIGHLOW {
+                        o_addr.wrapping_add(2)
+                    } else {
+                        o_addr
+                    };
+                    self.verify_access_physical::<T>(fc, fault_addr, false)?;
                 }
             }
         } else {

@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength, twiggy};
 
 pub struct MacFormatEncoder<'a> {
     data: &'a [u8],
@@ -173,8 +173,14 @@ impl<'a> MacFormatEncoder<'a> {
         let tsector = tsector & 0x1F;
         self.push_physical_enc(&[tsector as u8]);
         checksum ^= tsector as u8;
-        // Head and track number high
-        let hthigh = ((side as u8) << 5) | (((track as u8) >> 6) & 1);
+        // Head and track number high. A Twiggy disk has the side alone: its 46 tracks need
+        // no high bits, and the Twiggy Mac's driver compares the side with bit 0
+        // (Twiggy.ROM $4019B6).
+        let hthigh = if self.image.floppy_type == FloppyType::Twiggy {
+            side as u8
+        } else {
+            ((side as u8) << 5) | (((track as u8) >> 6) & 1)
+        };
         self.push_physical_enc(&[hthigh]);
         checksum ^= hthigh;
         // Format
@@ -182,6 +188,9 @@ impl<'a> MacFormatEncoder<'a> {
             FloppyType::Mac400K => 0x02,
             FloppyType::Mac800K => 0x22,
             FloppyType::Mfm144M => todo!(),
+            // What the images in circulation have in their header: the Twiggy Mac's
+            // driver doesn't look at it
+            FloppyType::Twiggy => 0x01,
         };
         self.push_physical_enc(&[format]);
         checksum ^= format;
@@ -228,6 +237,10 @@ impl<'a> MacFormatEncoder<'a> {
     }
 
     fn run(&mut self) -> Result<()> {
+        if self.image.floppy_type == FloppyType::Twiggy {
+            self.run_twiggy();
+            return Ok(());
+        }
         let mut sector_offset = 0usize;
 
         for track in 0..self.image.get_track_count() {
@@ -259,6 +272,42 @@ impl<'a> MacFormatEncoder<'a> {
         Ok(())
     }
 
+    /// A Twiggy disk: side 0 has the first half of the sectors, track after track, then
+    /// side 1 the second half, as the images in circulation have them. Tracks are padded
+    /// with self sync bytes to the length of their zone.
+    fn run_twiggy(&mut self) {
+        let mut sector_offset = 0usize;
+        for side in [0, 1] {
+            self.enc_side = side;
+            for track in 0..twiggy::TRACKS {
+                self.enc_track = track;
+                self.image.set_actual_track_length(side, track, 0);
+                let count = twiggy::sectors_on_track(track);
+                for tsector in interleave_2_to_1(count) {
+                    let sector = sector_offset + tsector;
+                    let data = &self.data
+                        [sector * Self::SECTOR_DATA_SIZE..(sector + 1) * Self::SECTOR_DATA_SIZE];
+                    let tag = match self.tags {
+                        Some(t) => {
+                            &t[sector * Self::SECTOR_TAG_SIZE..(sector + 1) * Self::SECTOR_TAG_SIZE]
+                        }
+                        None => &[0; Self::SECTOR_TAG_SIZE],
+                    };
+                    self.push_sector_header(side, track, tsector);
+                    self.push_sector_data(tsector as u8, tag, data);
+                }
+                sector_offset += count;
+                let TrackLength::Bits(bits) = self.image.get_track_length(side, track) else {
+                    unreachable!()
+                };
+                for _ in bits / 8..twiggy::track_bits(track).div_ceil(8) {
+                    self.push_physical(&[0xFF]);
+                }
+                self.image.origtracktype[side][track] = OriginalTrackType::Sector;
+            }
+        }
+    }
+
     fn new(
         format: FloppyType,
         data: &'a [u8],
@@ -266,7 +315,7 @@ impl<'a> MacFormatEncoder<'a> {
         title: &str,
     ) -> Result<Self> {
         match format {
-            FloppyType::Mac400K | FloppyType::Mac800K => (),
+            FloppyType::Mac400K | FloppyType::Mac800K | FloppyType::Twiggy => (),
             _ => bail!("Unsupported disk format: {:?}", format),
         }
         if data.len() != format.get_logical_size() {
@@ -293,5 +342,42 @@ impl<'a> MacFormatEncoder<'a> {
             enc_track: 0,
             enc_side: 0,
         })
+    }
+}
+
+/// Every other sector, then the ones between
+fn interleave_2_to_1(count: usize) -> Vec<usize> {
+    let half = count.div_ceil(2);
+    (0..count)
+        .map(|i| if i % 2 == 0 { i / 2 } else { half + i / 2 })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interleave_takes_every_sector() {
+        let mut order = interleave_2_to_1(21);
+        assert_eq!(order[..4], [0, 11, 1, 12]);
+        order.sort();
+        assert_eq!(order, (0..21).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn twiggy_tracks() {
+        let data = vec![0; FloppyType::Twiggy.get_logical_size()];
+        let image = MacFormatEncoder::encode(FloppyType::Twiggy, &data, None, "t").unwrap();
+        assert_eq!(image.get_track_count(), 46);
+        assert_eq!(image.get_side_count(), 2);
+        for (track, bits) in [(0, 136_840), (45, 93_304)] {
+            assert_eq!(
+                image.get_track_length(1, track),
+                TrackLength::Bits(bits),
+                "track {}",
+                track
+            );
+        }
     }
 }

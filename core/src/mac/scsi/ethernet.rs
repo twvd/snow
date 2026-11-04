@@ -1,6 +1,9 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::emulator::devices::{
+    CreateContext, DeviceConfig, Ethernet, EthernetStatus, FunctionMut, replace_status,
+};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -148,7 +151,6 @@ pub(crate) struct ScsiTargetEthernet {
     rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
 
     /// Link type
-    #[serde(skip)]
     link: EthernetLinkType,
 
     /// NAT engine statistics
@@ -221,7 +223,7 @@ impl ScsiTargetEthernet {
         if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
             // Initialize link
             let link = self.link.clone();
-            if let Err(e) = self.eth_set_link(link) {
+            if let Err(e) = self.set_link(link) {
                 log::error!("Failed to set ethernet link: {}", e);
             }
         }
@@ -711,9 +713,10 @@ impl ScsiTarget for ScsiTargetEthernet {
         &mut self.common
     }
 
+    /// The host side of the link isn't in the state: it opens again
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
-        todo!()
+    fn after_restore(&mut self, _media: Option<&Path>) -> Result<()> {
+        self.set_link(self.link.clone())
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {
@@ -793,23 +796,8 @@ impl ScsiTarget for ScsiTargetEthernet {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Ethernet(self)
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -966,97 +954,6 @@ impl ScsiTarget for ScsiTargetEthernet {
             }
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
         }
-    }
-
-    fn eth_set_link(&mut self, link: EthernetLinkType) -> Result<()> {
-        // Terminate active links
-        // Dropping the senders will cause the channel to close and the receiver threads to terminate
-        self.rx = None;
-        self.tx = None;
-        #[cfg(feature = "ethernet_nat")]
-        {
-            self.nat_stats = None;
-        }
-        #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-        {
-            self.tap_stop
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-
-        match &link {
-            EthernetLinkType::Down => {
-                log::info!("Ethernet link down");
-            }
-            #[cfg(feature = "ethernet_raw")]
-            EthernetLinkType::Bridge(i) => {
-                log::info!("Ethernet link bridge to interface {}", i);
-                self.start_bridge(*i)?;
-            }
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            EthernetLinkType::TapBridge(name) => {
-                log::info!("Ethernet link TAP bridge: {}", name);
-                self.start_tap_bridge(name)?;
-            }
-            #[cfg(feature = "ethernet_nat")]
-            EthernetLinkType::NAT => {
-                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-
-                let mut nat = snow_nat::NatEngine::new(
-                    nat_tx,
-                    nat_rx,
-                    NAT_MAC_ADDRESS,
-                    [10, 0, 0, 1],
-                    8,
-                    #[cfg(feature = "ethernet_nat_https_stripping")]
-                    false,
-                );
-                self.rx = Some(emulator_rx);
-                self.tx = Some(emulator_tx);
-                self.nat_stats = Some(nat.stats());
-                std::thread::spawn(move || {
-                    nat.run();
-                });
-            }
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            EthernetLinkType::NATHttpsStripping => {
-                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-
-                let mut nat = snow_nat::NatEngine::new(
-                    nat_tx,
-                    nat_rx,
-                    NAT_MAC_ADDRESS,
-                    [10, 0, 0, 1],
-                    8,
-                    true, // Enable HTTPS stripping
-                );
-                self.rx = Some(emulator_rx);
-                self.tx = Some(emulator_tx);
-                self.nat_stats = Some(nat.stats());
-                std::thread::spawn(move || {
-                    nat.run();
-                });
-            }
-        }
-        self.link = link;
-        Ok(())
-    }
-
-    fn eth_link(&self) -> Option<EthernetLinkType> {
-        Some(self.link.clone())
-    }
-
-    fn eth_start_capture(&mut self, filename: &Path) -> Result<()> {
-        self.start_pcap_capture(filename)
-    }
-
-    fn eth_stop_capture(&mut self) -> Option<(PathBuf, usize)> {
-        self.stop_pcap_capture()
-    }
-
-    fn eth_capture_status(&self) -> Option<EthernetCaptureStatus> {
-        self.get_capture_status()
     }
 }
 
@@ -1216,6 +1113,134 @@ impl Debuggable for ScsiTargetEthernet {
         result
     }
 }
+
+impl Ethernet for ScsiTargetEthernet {
+    fn update_status(&mut self, status: &mut EthernetStatus) -> bool {
+        let new = EthernetStatus {
+            link: self.link(),
+            capture: self.capture_status(),
+        };
+        replace_status(status, new)
+    }
+
+    fn set_link(&mut self, link: EthernetLinkType) -> Result<()> {
+        // Terminate active links
+        // Dropping the senders will cause the channel to close and the receiver threads to terminate
+        self.rx = None;
+        self.tx = None;
+        #[cfg(feature = "ethernet_nat")]
+        {
+            self.nat_stats = None;
+        }
+        #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+        {
+            self.tap_stop
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+
+        match &link {
+            EthernetLinkType::Down => {
+                log::info!("Ethernet link down");
+            }
+            #[cfg(feature = "ethernet_raw")]
+            EthernetLinkType::Bridge(i) => {
+                log::info!("Ethernet link bridge to interface {}", i);
+                self.start_bridge(*i)?;
+            }
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            EthernetLinkType::TapBridge(name) => {
+                log::info!("Ethernet link TAP bridge: {}", name);
+                self.start_tap_bridge(name)?;
+            }
+            #[cfg(feature = "ethernet_nat")]
+            EthernetLinkType::NAT => {
+                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+
+                let mut nat = snow_nat::NatEngine::new(
+                    nat_tx,
+                    nat_rx,
+                    NAT_MAC_ADDRESS,
+                    [10, 0, 0, 1],
+                    8,
+                    #[cfg(feature = "ethernet_nat_https_stripping")]
+                    false,
+                );
+                self.rx = Some(emulator_rx);
+                self.tx = Some(emulator_tx);
+                self.nat_stats = Some(nat.stats());
+                std::thread::spawn(move || {
+                    nat.run();
+                });
+            }
+            #[cfg(feature = "ethernet_nat_https_stripping")]
+            EthernetLinkType::NATHttpsStripping => {
+                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+
+                let mut nat = snow_nat::NatEngine::new(
+                    nat_tx,
+                    nat_rx,
+                    NAT_MAC_ADDRESS,
+                    [10, 0, 0, 1],
+                    8,
+                    true, // Enable HTTPS stripping
+                );
+                self.rx = Some(emulator_rx);
+                self.tx = Some(emulator_tx);
+                self.nat_stats = Some(nat.stats());
+                std::thread::spawn(move || {
+                    nat.run();
+                });
+            }
+        }
+        self.link = link;
+        Ok(())
+    }
+
+    fn link(&self) -> EthernetLinkType {
+        self.link.clone()
+    }
+
+    fn start_capture(&mut self, filename: &Path) -> Result<()> {
+        self.start_pcap_capture(filename)
+    }
+
+    fn stop_capture(&mut self) -> Option<(PathBuf, usize)> {
+        self.stop_pcap_capture()
+    }
+
+    fn capture_status(&self) -> Option<EthernetCaptureStatus> {
+        self.get_capture_status()
+    }
+}
+
+/// Makes a DaynaPORT from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let mut adapter = ScsiTargetEthernet::default();
+    // A link this build doesn't have shouldn't cost the device
+    if let Some(link) = config.settings.get("link") {
+        match serde_json::from_value(link.clone()) {
+            Ok(link) => adapter.set_link(link)?,
+            Err(_) => log::warn!("Unknown Ethernet link {}", link),
+        }
+    }
+    Ok(Box::new(adapter))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DaynaPortScsiLink,
+    name: "DaynaPORT SCSI/Link",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: false,
+    one_per_bus: true,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};
 
 #[cfg(test)]
 mod tests {

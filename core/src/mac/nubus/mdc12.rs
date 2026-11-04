@@ -4,7 +4,7 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
+use super::{NubusSlot, VideoCard, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -249,7 +249,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for Mdc12<TRenderer>
+impl<TRenderer> NubusSlot for Mdc12<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -259,10 +259,24 @@ where
         self.ctrl.0 = 0;
     }
 
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        // 2 MB of VRAM, below the registers at $20_0000
+        let window = Window {
+            mask: 0xE0_0000,
+            value: 0,
+        };
+        Some((window, &mut self.vram))
+    }
+
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.ctrl.0 = 0;
@@ -451,3 +465,30 @@ where
         write!(f, "Macintosh Display Card 8-24")
     }
 }
+
+/// The Macs whose NuBus slots take this card
+const fn fits_mac_ii(mac: crate::mac::MacModel) -> bool {
+    use crate::mac::MacModel;
+    matches!(
+        mac,
+        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DisplayCard824,
+    name: "Display Card 8-24",
+    bus: crate::emulator::devices::BusKind::Nubus,
+    fits: fits_mac_ii,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Display Card 8-24 ROM",
+        digests: &["e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"],
+        varying_bits: 0,
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+    create: None,
+};

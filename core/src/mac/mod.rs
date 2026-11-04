@@ -61,6 +61,8 @@ pub struct AbsoluteMouse {
 pub enum MacModel {
     /// Macintosh 128K
     Early128K,
+    /// The 1983 prototype of the Macintosh with Twiggy drives: a 128K otherwise
+    TwiggyMac,
     /// Macintosh 512K
     Early512K,
     /// Macintosh 512Ke
@@ -97,14 +99,27 @@ pub enum MacModel {
     LC475,
     /// Macintosh Quadra 700
     Quadra700,
+    /// Apple Lisa 1, with Twiggy drives
+    Lisa1,
+    /// Apple Lisa 2/5
+    Lisa25,
+    Lisa210,
 }
 
 #[allow(clippy::match_like_matches_macro)]
 impl MacModel {
+    pub const fn is_lisa(self) -> bool {
+        matches!(self, Self::Lisa1 | Self::Lisa25 | Self::Lisa210)
+    }
+
     #[rustfmt::skip]
     const ROMS: &[(&str, &[Self])] = &[
         // Macintosh 128K
         ("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c", &[Self::Early128K]),
+        // Twiggy Mac, the "4.4T?" of Adam Goolevitch's machine, from its four EPROMs
+        ("a41053e89908e0912800d24aa67685ab264fa8735622d50aa718b073cd17522d", &[Self::TwiggyMac]),
+        // Twiggy Mac, 4.3T
+        ("c1ac5eff09c83156ba6cbf498e1d940db17854f75ad43e63a9f4d536654421a2", &[Self::TwiggyMac]),
         // Macintosh 512K
         ("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e", &[Self::Early512K]),
         // Macintosh Plus v1
@@ -139,6 +154,12 @@ impl MacModel {
         ("18c3de07ca15cf66dfbaa5984aca34b48a2d7b4d0d8c7656f79533899ccec0a0", &[Self::LCII]),
         // Macintosh LC III
         ("b2a411c1b24c92af8f6b58f745e52e0545cc0d4dcdc1e15a90e0a78937cde61e", &[Self::LCIII]),
+        // Lisa boot ROM rev H, the two halves merged
+        ("4eb245a5a133a202cb07757a7430437a996d91acddfba2c1a3b787e8b5b9d8f5", &[Self::Lisa25, Self::Lisa210, Self::Lisa1]),
+        // Lisa boot ROM rev 3A, for the Screen Kit, the two halves merged
+        ("898d6a0b577c6028c2a627da0cdcb35d13a7cf60fe1de22f6e2fa22ecd0b5c1b", &[Self::Lisa25, Self::Lisa210]),
+        // Lisa boot ROM rev F, the two halves merged
+        ("50c404fe559814324dde6f6c28b577a5115da52babcdc8bd221f9c467060c3e3", &[Self::Lisa25, Self::Lisa210, Self::Lisa1]),
         // Macintosh LC III (older)
         ("00e3b10758b01ba998bb3aba9366c29b15f52c5b0667658ec82ee674dde9b4e2", &[Self::LCIII]),
         // Macintosh Quadra 700
@@ -149,7 +170,14 @@ impl MacModel {
 
     pub const fn has_adb(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => false,
+            Self::Early128K
+            | Self::TwiggyMac
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::Lisa1
+            | Self::Lisa25
+            | Self::Lisa210 => false,
             _ => true,
         }
     }
@@ -157,7 +185,7 @@ impl MacModel {
     /// Default RAM size
     pub const fn ram_size_default(self) -> usize {
         match self {
-            Self::Early128K => 128 * 1024,
+            Self::Early128K | Self::TwiggyMac => 128 * 1024,
             Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::Portable15MB => 15 * 1024 * 1024,
@@ -171,6 +199,7 @@ impl MacModel {
             Self::LCIII => 36 * 1024 * 1024,
             Self::Quadra700 => 8 * 1024 * 1024,
             Self::LC475 => 36 * 1024 * 1024,
+            Self::Lisa1 | Self::Lisa25 | Self::Lisa210 => 1024 * 1024,
         }
     }
 
@@ -179,6 +208,7 @@ impl MacModel {
     pub const fn ram_size_options(self) -> &'static [usize] {
         match self {
             Self::Early128K => &[128 * 1024],
+            Self::TwiggyMac => &[128 * 1024, 512 * 1024],
             Self::Early512K => &[512 * 1024],
             Self::Early512Ke => &[128 * 1024, 512 * 1024],
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
@@ -240,6 +270,7 @@ impl MacModel {
                 8 * 1024 * 1024,
                 10 * 1024 * 1024,
             ],
+            Self::Lisa1 | Self::Lisa25 | Self::Lisa210 => &[512 * 1024, 1024 * 1024, 2048 * 1024],
             Self::LCIII => &[
                 4 * 1024 * 1024,
                 5 * 1024 * 1024,
@@ -271,7 +302,12 @@ impl MacModel {
     /// Supports high-density floppies, implying SWIM controller
     pub const fn fdd_hd(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
+            Self::Early128K
+            | Self::TwiggyMac
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE => false,
             Self::SeFdhd | Self::Classic | Self::Portable | Self::Portable15MB => true,
             Self::MacII => false,
             Self::MacIIFDHD
@@ -283,6 +319,7 @@ impl MacModel {
             | Self::LCIII
             | Self::Quadra700
             | Self::LC475 => true,
+            Self::Lisa1 | Self::Lisa25 | Self::Lisa210 => false,
         }
     }
 
@@ -290,6 +327,7 @@ impl MacModel {
     pub const fn fdd_drives(self) -> &'static [DriveType] {
         match self {
             Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
+            Self::TwiggyMac => &[DriveType::Twiggy, DriveType::Twiggy],
             Self::Early512Ke | Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
             Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
             Self::SeFdhd => &[
@@ -312,19 +350,28 @@ impl MacModel {
             | Self::LCII
             | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
             Self::LCIII | Self::LC475 => &[DriveType::SuperDrive],
+            Self::Lisa1 | Self::Lisa25 | Self::Lisa210 => &[],
         }
     }
 
     pub const fn has_scsi(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke => false,
+            Self::Early128K
+            | Self::TwiggyMac
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Lisa1
+            | Self::Lisa25
+            | Self::Lisa210 => false,
             _ => true,
         }
     }
 
     pub const fn keymap(self) -> Keymap {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => Keymap::AkM0110,
+            Self::Early128K | Self::TwiggyMac | Self::Early512K | Self::Early512Ke | Self::Plus => {
+                Keymap::AkM0110
+            }
             _ => Keymap::AekM0115,
         }
     }
@@ -334,7 +381,9 @@ impl MacModel {
     pub const fn ram_interleave_cpu(self, cycles: Ticks) -> bool {
         match self {
             // 50/50 ratio for early macs
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => cycles % 8 >= 4,
+            Self::Early128K | Self::TwiggyMac | Self::Early512K | Self::Early512Ke | Self::Plus => {
+                cycles % 8 >= 4
+            }
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for Portable, MacII (and probably onwards)
@@ -345,6 +394,7 @@ impl MacModel {
     pub const fn cpu_type(self) -> CpuM68kType {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -352,7 +402,10 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic
             | Self::Portable
-            | Self::Portable15MB => M68000,
+            | Self::Portable15MB
+            | Self::Lisa1
+            | Self::Lisa25
+            | Self::Lisa210 => M68000,
             Self::MacII | Self::MacIIFDHD | Self::LC => M68020,
             Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LCII | Self::LCIII => M68030,
             Self::Quadra700 | Self::LC475 => M68040,
@@ -362,13 +415,17 @@ impl MacModel {
     pub fn via1_a_in(self) -> via::RegisterA {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
             | Self::SE
             | Self::SeFdhd
             | Self::Portable
-            | Self::Portable15MB => via::RegisterA(0xFF),
+            | Self::Portable15MB
+            | Self::Lisa1
+            | Self::Lisa25
+            | Self::Lisa210 => via::RegisterA(0xFF),
             Self::Classic => {
                 // Mac Classic has a pulldown (R79) as model identifier
                 via::RegisterA(0xFF).with_sndpg2(false)
@@ -411,6 +468,7 @@ impl MacModel {
     pub fn via2_b_in(self) -> macii::via2::RegisterB {
         match self {
             Self::Early128K
+            | Self::TwiggyMac
             | Self::Early512K
             | Self::Early512Ke
             | Self::Plus
@@ -421,7 +479,10 @@ impl MacModel {
             | Self::Classic
             | Self::LC
             | Self::LCII
-            | Self::LCIII => panic!("Invalid operation for this model"),
+            | Self::LCIII
+            | Self::Lisa1
+            | Self::Lisa25
+            | Self::Lisa210 => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
             Self::Quadra700 | Self::LC475 => macii::via2::RegisterB(0xCF),
@@ -466,6 +527,7 @@ impl Display for MacModel {
             "{}",
             match self {
                 Self::Early128K => "Macintosh 128K",
+                Self::TwiggyMac => "Macintosh (Twiggy prototype)",
                 Self::Early512K => "Macintosh 512K",
                 Self::Early512Ke => "Macintosh 512Ke",
                 Self::Plus => "Macintosh Plus",
@@ -484,6 +546,9 @@ impl Display for MacModel {
                 Self::LCIII => "Macintosh LC III",
                 Self::Quadra700 => "Macintosh Quadra 700",
                 Self::LC475 => "Macintosh LC 475",
+                Self::Lisa1 => "Apple Lisa 1",
+                Self::Lisa25 => "Apple Lisa 2/5",
+                Self::Lisa210 => "Apple Lisa 2/10",
             }
         )
     }
@@ -499,6 +564,8 @@ pub enum ExtraROMs<'a> {
     SE30Video(&'a [u8]),
     /// Extension ROM
     ExtensionROM(&'a [u8]),
+    /// Lisa video state PROM
+    LisaVideoProm(&'a [u8]),
 }
 
 /// A type of card that can occupy a NuBus slot.

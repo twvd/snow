@@ -811,6 +811,20 @@ impl DiskII {
     }
 }
 
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Apple525Drive,
+    name: "Apple 5.25 Drive",
+    bus: crate::emulator::devices::BusKind::IieDisk,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

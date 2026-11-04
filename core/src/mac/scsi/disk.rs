@@ -2,9 +2,13 @@
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::{
+    CreateContext, DeviceConfig, FunctionMut, HardDisk, HardDiskSettings, HardDiskStatus,
+    replace_status,
+};
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
@@ -22,12 +26,16 @@ pub(super) struct ScsiTargetDisk {
 
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
+
+    /// The image the user gave: a restored machine runs on a copy
+    media: Option<PathBuf>,
 }
 
 impl ScsiTargetDisk {
     pub fn new(backend: Box<dyn DiskImage>) -> Self {
         Self {
             common: Default::default(),
+            media: backend.image_path().map(Path::to_path_buf),
             backend: Some(backend),
         }
     }
@@ -62,12 +70,8 @@ impl ScsiTarget for ScsiTargetDisk {
         &mut self.common
     }
 
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("load_media on non-removable disk");
-    }
-
-    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
-        bail!("load_image on non-removable disk");
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::HardDisk(self)
     }
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
@@ -189,14 +193,6 @@ impl ScsiTarget for ScsiTargetDisk {
 
                 Some(result)
             }
-            0x31 => {
-                // BlueSCSI vendor page
-                let mut result = vec![0; 42];
-                // A joke based on https://www.folklore.org/Stolen_From_Apple.html
-                result[0..42].copy_from_slice(b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\x00");
-
-                Some(result)
-            }
             _ => None,
         }
     }
@@ -220,10 +216,6 @@ impl ScsiTarget for ScsiTargetDisk {
     fn write(&mut self, block_offset: usize, data: &[u8]) {
         let offset = block_offset * DISK_BLOCKSIZE;
         self.backend_mut().write_bytes(offset, data);
-    }
-
-    fn image_fn(&self) -> Option<&Path> {
-        self.backend().image_path()
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -250,9 +242,12 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+    fn after_restore(&mut self, media: Option<&Path>) -> Result<()> {
+        let Some(media) = media else {
+            bail!("The save state has no image for this disk");
+        };
         self.backend = Some(Box::new(FileDiskImage::open_block_sized(
-            imgfn,
+            media,
             true,
             DISK_BLOCKSIZE,
         )?));
@@ -260,27 +255,28 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        self.capacity()
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
+    fn savestate_media(&self) -> Option<&[u8]> {
         self.backend().media_bytes()
     }
+}
 
-    fn branch_media(&mut self, path: &Path) -> Result<()> {
-        self.backend_mut().branch_media(path)
+impl HardDisk for ScsiTargetDisk {
+    fn update_status(&mut self, status: &mut HardDiskStatus) -> bool {
+        let new = HardDiskStatus {
+            settings: HardDiskSettings {
+                media: self.media.clone().unwrap_or_default(),
+                read_only: false,
+            },
+            capacity: self.capacity(),
+            can_branch: true,
+        };
+        replace_status(status, new)
     }
 
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
+    fn branch(&mut self, path: &Path) -> Result<()> {
+        self.backend_mut().branch_media(path)?;
+        self.media = Some(path.to_path_buf());
+        Ok(())
     }
 }
 
@@ -289,3 +285,26 @@ impl Debuggable for ScsiTargetDisk {
         vec![]
     }
 }
+
+/// Makes a SCSI hard disk from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: HardDiskSettings = config.parse()?;
+    if settings.read_only {
+        bail!("SCSI disks can't be read-only yet");
+    }
+    Ok(Box::new(ScsiTargetDisk::load_disk(&settings.media)?))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::ScsiHardDisk,
+    name: "Hard disk",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::HardDisk,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};

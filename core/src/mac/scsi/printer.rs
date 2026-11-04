@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::devices::{CreateContext, DeviceConfig, FunctionMut, LaserWriterIISCSettings};
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
@@ -233,15 +234,15 @@ impl ScsiTarget for ScsiTargetPrinter {
 
     // Restore the trace_flag first from the environnement. Not stored in Snow states
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+    fn after_restore(&mut self, media: Option<&Path>) -> Result<()> {
         self.trace_flag = std::env::var("SNOW_SCSI_TRACE_PRINTER")
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false);
 
         #[cfg(feature = "printer")]
         {
-            let data = std::fs::read(imgfn)?;
-            if data.len() > 1 {
+            if let Some(media) = media {
+                let data = std::fs::read(media)?;
                 if self.trace_flag {
                     log::debug!(
                         "LaserWriter: restoring framebuffer {}x{}, {} bytes",
@@ -269,6 +270,8 @@ impl ScsiTarget for ScsiTargetPrinter {
                 ));
             }
         }
+        #[cfg(not(feature = "printer"))]
+        let _ = media;
         Ok(())
     }
 
@@ -279,31 +282,16 @@ impl ScsiTarget for ScsiTargetPrinter {
      * To avoid bloating the state file, we will be saving the framebuffer only if
      * there is something in here. We will do a non blank-check:
      * a blank framebuffer data is all 0xff (255). Anything else we have data to save
-     *
-     * we need to store a fake framebuffer of size 1 when empty, otherwise there will be
-     * no call to after_deserialize() after a restore
      */
     #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        #[cfg(feature = "printer")]
-        if let Some(ref fb) = self.framebuffer
-            && fb.as_raw().iter().any(|&b| b != 255)
-        {
-            return Some(fb.as_raw().len());
-        }
-        Some(1)
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
+    fn savestate_media(&self) -> Option<&[u8]> {
         #[cfg(feature = "printer")]
         if let Some(ref fb) = self.framebuffer
             && fb.as_raw().iter().any(|&b| b != 255)
         {
             return Some(fb.as_raw());
         }
-        // "random" value that will never be read again
-        Some(b"\x5c")
+        None
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {
@@ -414,23 +402,8 @@ impl ScsiTarget for ScsiTargetPrinter {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Printer
     }
 
     /// Handle LaserWriter IISC SCSI commands for now, maybe others later
@@ -573,16 +546,6 @@ impl ScsiTarget for ScsiTargetPrinter {
             }
         }
     }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
-    }
 }
 
 impl Debuggable for ScsiTargetPrinter {
@@ -597,3 +560,25 @@ impl Debuggable for ScsiTargetPrinter {
         ]
     }
 }
+
+/// Makes a LaserWriter IISC from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: LaserWriterIISCSettings = config.parse()?;
+    Ok(Box::new(ScsiTargetPrinter::new(
+        settings.output_dir.unwrap_or_else(std::env::temp_dir),
+    )))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::LaserWriterIISC,
+    name: "LaserWriter IISC",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::Printer,
+    fixed: false,
+    one_per_bus: true,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};

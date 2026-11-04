@@ -3,7 +3,7 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
+use super::{NubusSlot, VideoCard, Window};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -96,6 +96,8 @@ where
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         buf.set_size(Self::H_VISIBLE, Self::V_VISIBLE);
 
+        // The card inverts the data between NuBus and its VRAM. Here VRAM
+        // holds what the CPU sees, so the pixels are its complement.
         let fb = &self.vram[self.fb_base..];
         // Bytes per scanline: 128 (1bpp), 256 (2bpp), 512 (4bpp), 1024 (8bpp)
         let stride = 128usize << self.mode;
@@ -108,17 +110,17 @@ where
                 let index = match self.mode {
                     0 => {
                         // 1 bpp
-                        let byte = fb[y * stride + x / 8];
+                        let byte = !fb[y * stride + x / 8];
                         usize::from((byte << (x % 8)) & 0x80)
                     }
                     1 => {
                         // 2 bpp
-                        let byte = fb[y * stride + x / 4];
+                        let byte = !fb[y * stride + x / 4];
                         usize::from((byte << ((x % 4) * 2)) & 0xC0)
                     }
                     2 => {
                         // 4 bpp
-                        let byte = fb[y * stride + x / 2];
+                        let byte = !fb[y * stride + x / 2];
                         if x % 2 == 0 {
                             usize::from(byte & 0xF0)
                         } else {
@@ -127,7 +129,7 @@ where
                     }
                     3 => {
                         // 8 bpp
-                        usize::from(fb[y * stride + x])
+                        usize::from(!fb[y * stride + x])
                     }
                     _ => unreachable!(),
                 };
@@ -142,7 +144,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for Toby<TRenderer>
+impl<TRenderer> NubusSlot for Toby<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -151,12 +153,26 @@ where
         self.vblank_enable = false;
     }
 
+    fn window(&mut self) -> Option<(Window, &mut [u8])> {
+        // 512 KB of VRAM, with the 20 address bits the card decodes
+        let window = Window {
+            mask: 0x08_0000,
+            value: 0,
+        };
+        Some((window, &mut self.vram))
+    }
+
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for Toby<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
-        self.vram.fill(0xFF);
+        self.vram.fill(0);
         self.render()?;
         Ok(())
     }
@@ -183,8 +199,8 @@ where
         // The card decodes 20 address bits and mirrors the rest.
         let a = addr & 0x0F_FFFF;
         match a {
-            // Framebuffer (stored inverted)
-            0x0_0000..=0x7_FFFF => Some(!self.vram[a as usize]),
+            // Framebuffer
+            0x0_0000..=0x7_FFFF => Some(self.vram[a as usize]),
 
             // VBlank status: 0 during vertical blanking, 0xFF otherwise.
             0xD_0000..=0xD_FFFF if a & 3 == 3 => Some(if self.in_vblank { 0x00 } else { 0xFF }),
@@ -200,9 +216,9 @@ where
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let a = addr & 0x0F_FFFF;
         match a {
-            // Framebuffer (stored inverted)
+            // Framebuffer
             0x0_0000..=0x7_FFFF => {
-                self.vram[a as usize] = !val;
+                self.vram[a as usize] = val;
                 Some(())
             }
 
@@ -312,3 +328,30 @@ where
         write!(f, "Macintosh II Video Card (Toby)")
     }
 }
+
+/// The Macs whose NuBus slots take this card
+const fn fits_mac_ii(mac: crate::mac::MacModel) -> bool {
+    use crate::mac::MacModel;
+    matches!(
+        mac,
+        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::MacIIVideoCard,
+    name: "Macintosh II Video Card",
+    bus: crate::emulator::devices::BusKind::Nubus,
+    fits: fits_mac_ii,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Macintosh II Video Card ROM",
+        digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
+        varying_bits: 0,
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+    create: None,
+};
