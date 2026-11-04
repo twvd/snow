@@ -4,6 +4,22 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
 use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex};
+
+/// Channel through which a single display output delivers its frames to the
+/// frontend. `None` means the last frame has been consumed and a new one is
+/// wanted.
+pub type FrameReceiver = Arc<Mutex<Option<DisplayBuffer>>>;
+
+/// A single display output exposed by the emulated machine. A machine with
+/// multiple display cards exposes one handle per card.
+pub struct DisplayHandle {
+    /// Human-readable name, including the slot for NuBus cards
+    /// (e.g. "Slot $9: Macintosh Display Card 8-24"), for display in the UI.
+    pub name: String,
+    /// Channel that delivers frames for this output
+    pub receiver: FrameReceiver,
+}
 
 /// Audio frame buffer
 pub type AudioBuffer = Box<[f32]>;

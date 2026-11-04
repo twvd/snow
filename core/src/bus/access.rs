@@ -199,7 +199,7 @@ const WRITE_LANES: [[[u32; 4]; 4]; 4] = [
 /// The lanes of the data bus during a write of the `size` bytes left of an
 /// operand, right-aligned in `data`, at `addr`: D31-D24 in the top byte
 #[inline(always)]
-fn write_lanes(data: u32, size: u32, addr: Address) -> u32 {
+pub(crate) fn write_lanes(data: u32, size: u32, addr: Address) -> u32 {
     WRITE_LANES[size as usize - 1][(addr % 4) as usize]
         .iter()
         .fold(0, |lanes, &op| {

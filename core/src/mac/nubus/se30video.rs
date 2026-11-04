@@ -3,8 +3,8 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
-use crate::bus::{Address, BusMember};
+use super::{NubusSlot, VideoCard};
+use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -85,10 +85,48 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for SE30Video<TRenderer>
+impl<TRenderer> SE30Video<TRenderer>
 where
     TRenderer: Renderer,
 {
+    /// The VRAM bytes at `offset`, if they're all VRAM
+    fn vram_bytes(&mut self, offset: Address, size: u32) -> Option<&mut [u8]> {
+        let range = offset & 0xFF_0000;
+        if range != 0 && range != 0xE0_0000 {
+            return None;
+        }
+        let a = (offset & 0xFFFF) as usize;
+        self.vram.get_mut(a..a + size as usize)
+    }
+}
+
+impl<TRenderer> NubusSlot for SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    // VRAM, at $00_0000 and again at $E0_0000, and the ROM at the top are
+    // memory: they answer any access within a word at once
+    fn read_sized(&mut self, offset: Address, size: u32) -> Option<u32> {
+        if let Some(bytes) = self.vram_bytes(offset, size) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+        }
+        if offset >= 0xFE_0000 {
+            return Some((offset..offset + size).fold(0, |v, a| {
+                (v << 8) | u32::from(self.rom[(a - 0xFE_0000) as usize % self.rom.len()])
+            }));
+        }
+        log::warn!("{}: read from unimplemented offset {:06X}", self, offset);
+        Some(0)
+    }
+
+    fn write_sized(&mut self, offset: Address, size: u32, val: u32) -> Option<()> {
+        match self.vram_bytes(offset, size) {
+            Some(bytes) => bytes.copy_from_slice(&val.to_be_bytes()[4 - size as usize..]),
+            None => log::warn!("{}: write to unimplemented offset {:06X}", self, offset),
+        }
+        Some(())
+    }
+
     fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
@@ -98,7 +136,12 @@ where
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
@@ -116,34 +159,6 @@ where
 
     fn set_renderer(&mut self, renderer: TRenderer) {
         self.renderer = Some(renderer);
-    }
-}
-
-impl<TRenderer> BusMember<Address> for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    fn read(&mut self, addr: Address) -> Option<u8> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                Some(self.vram[(addr & 0xFFFF) as usize])
-            }
-            // ROM
-            0xFE_0000..=0xFF_FFFF => Some(self.rom[(addr - 0xFE_0000) as usize % self.rom.len()]),
-            _ => None,
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        // Assume normal slot, not super slot
-        match addr & 0xFF_FFFF {
-            0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                self.vram[(addr as usize) & 0xFFFF] = val;
-                Some(())
-            }
-            _ => None,
-        }
     }
 }
 
@@ -194,3 +209,25 @@ where
         write!(f, "SE/30 video controller")
     }
 }
+
+const fn fits_se30(mac: crate::mac::MacModel) -> bool {
+    matches!(mac, crate::mac::MacModel::SE30)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::SE30Video,
+    name: "SE/30 video",
+    bus: crate::emulator::devices::BusKind::BuiltIn,
+    fits: fits_se30,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "SE/30 video ROM",
+        digests: &["8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};

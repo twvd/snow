@@ -3,8 +3,8 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
-use crate::bus::{Address, BusMember};
+use super::{NubusSlot, VideoCard, bus_long, lanes};
+use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -142,10 +142,99 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for Toby<TRenderer>
+impl<TRenderer> NubusSlot for Toby<TRenderer>
 where
     TRenderer: Renderer,
 {
+    // The card decodes 20 address bits and mirrors the rest. The framebuffer is
+    // memory and answers every size; it's stored inverted, like everything on
+    // the card. A register decodes only its address and has its byte lane, as
+    // MAME models the card (nubus_m2video.cpp).
+    fn read_sized(&mut self, offset: Address, size: u32) -> Option<u32> {
+        let a = offset & 0x0F_FFFF;
+        if let Some(bytes) = self.vram.get(a as usize..(a + size) as usize) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(!b)));
+        }
+        let long = match a & !3 {
+            // VBlank status, on lane 3: 0 during vertical blanking
+            0xD_0000..=0xD_FFFC => {
+                if self.in_vblank {
+                    0
+                } else {
+                    0xFF
+                }
+            }
+            // Declaration ROM, on lane 0, at the top of the slot space
+            r @ 0xF_0000..=0xF_FFFC => u32::from(self.read_rom(r)) << 24,
+            r => {
+                log::warn!("{}: read from unimplemented register {:05X}", self, r);
+                0
+            }
+        };
+        Some(lanes(long, offset, size))
+    }
+
+    fn write_sized(&mut self, offset: Address, size: u32, val: u32) -> Option<()> {
+        let a = offset & 0x0F_FFFF;
+        if let Some(bytes) = self.vram.get_mut(a as usize..(a + size) as usize) {
+            for (b, v) in bytes
+                .iter_mut()
+                .zip(&val.to_be_bytes()[4 - size as usize..])
+            {
+                *b = !v;
+            }
+            return Some(());
+        }
+        let data = !bus_long(val, size, offset);
+        match a {
+            // TFB registers, one to a long word, 8 bits on lane 3
+            0x8_0000..=0x8_FFFF => match (a >> 2) & 0xF {
+                // Framebuffer base/scroll offset
+                0x3 => self.fb_base = 4 * (data as usize & 0xFF),
+                0xF => self.mode = ((data >> 4) & 3) as u8,
+                _ => {}
+            },
+            // Bt453 RAMDAC, one register to a long word, 8 bits on lane 0
+            0x9_0000..=0x9_FFFF => {
+                let byte = (data >> 24) as u8;
+                match (a >> 2) & 3 {
+                    1 | 3 => {
+                        self.clut_addr = usize::from(byte);
+                        self.clut_comp = 0;
+                    }
+                    2 => {
+                        let idx = self.clut_addr * 3 + self.clut_comp;
+                        if let Some(e) = self.clut.get_mut(idx) {
+                            *e = byte;
+                        }
+                        self.clut_comp += 1;
+                        if self.clut_comp == 3 {
+                            self.clut_comp = 0;
+                            self.clut_addr = (self.clut_addr + 1) & 0xFF;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // VBlank interrupt control
+            0xA_0000..=0xA_FFFF => {
+                if a & 4 != 0 {
+                    self.vblank_enable = false;
+                } else {
+                    self.vblank_enable = true;
+                    self.vblank_irq = false;
+                }
+            }
+            r => log::warn!(
+                "{}: write to unimplemented register {:05X} {:08X}",
+                self,
+                r,
+                val
+            ),
+        }
+        Some(())
+    }
+
     fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
@@ -154,7 +243,12 @@ where
     fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
+impl<TRenderer> VideoCard<TRenderer> for Toby<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
@@ -172,93 +266,6 @@ where
 
     fn set_renderer(&mut self, renderer: TRenderer) {
         self.renderer = Some(renderer);
-    }
-}
-
-impl<TRenderer> BusMember<Address> for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    fn read(&mut self, addr: Address) -> Option<u8> {
-        // The card decodes 20 address bits and mirrors the rest.
-        let a = addr & 0x0F_FFFF;
-        match a {
-            // Framebuffer (stored inverted)
-            0x0_0000..=0x7_FFFF => Some(!self.vram[a as usize]),
-
-            // VBlank status: 0 during vertical blanking, 0xFF otherwise.
-            0xD_0000..=0xD_FFFF if a & 3 == 3 => Some(if self.in_vblank { 0x00 } else { 0xFF }),
-            0xD_0000..=0xD_FFFF => Some(0),
-
-            // Declaration ROM (single byte lane, at the top of the slot space)
-            0xF_0000..=0xF_FFFF => Some(self.read_rom(a)),
-
-            _ => None,
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        let a = addr & 0x0F_FFFF;
-        match a {
-            // Framebuffer (stored inverted)
-            0x0_0000..=0x7_FFFF => {
-                self.vram[a as usize] = !val;
-                Some(())
-            }
-
-            // Framebuffer base/scroll offset register
-            0x8_000C => {
-                self.fb_base = 4 * (usize::from(!val) & 0xFF);
-                Some(())
-            }
-
-            // CRTC/timing registers. Written 32-bits, inverted
-            0x8_0000..=0x8_FFFF => {
-                let reg = ((a >> 2) & 0xF) as usize;
-                if reg == 0xF {
-                    self.mode = (!val >> 4) & 3;
-                }
-                Some(())
-            }
-
-            // CLUT/RAMDAC
-            0x9_0000..=0x9_FFFF => {
-                if a & 3 == 0 {
-                    match (a >> 2) & 3 {
-                        1 | 3 => {
-                            self.clut_addr = usize::from(!val);
-                            self.clut_comp = 0;
-                        }
-                        2 => {
-                            let idx = self.clut_addr * 3 + self.clut_comp;
-                            if let Some(e) = self.clut.get_mut(idx) {
-                                *e = !val;
-                            }
-                            self.clut_comp += 1;
-                            if self.clut_comp == 3 {
-                                self.clut_comp = 0;
-                                self.clut_addr = (self.clut_addr + 1) & 0xFF;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Some(())
-            }
-
-            // VBlank interrupt control
-            0xA_0000..=0xA_FFFF => {
-                if a & 4 != 0 {
-                    self.vblank_enable = false;
-                } else {
-                    self.vblank_enable = true;
-                    self.vblank_irq = false;
-                }
-                Some(())
-            }
-
-            _ => None,
-        }
     }
 }
 
@@ -312,3 +319,30 @@ where
         write!(f, "Macintosh II Video Card (Toby)")
     }
 }
+
+/// The Macs whose NuBus slots take this card
+const fn fits_mac_ii(mac: crate::mac::MacModel) -> bool {
+    use crate::mac::MacModel;
+    matches!(
+        mac,
+        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::MacIIVideoCard,
+    name: "Macintosh II Video Card",
+    bus: crate::emulator::devices::BusKind::Nubus,
+    fits: fits_mac_ii,
+    function: crate::emulator::devices::FunctionKind::Video,
+    fixed: true,
+    one_per_bus: false,
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Macintosh II Video Card ROM",
+        digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+    monitors: &[Some(crate::mac::MacMonitor::HiRes14)],
+    create: None,
+};

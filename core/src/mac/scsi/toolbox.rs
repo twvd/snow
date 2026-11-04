@@ -12,12 +12,21 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Result, bail};
 use log::*;
+use serde::{Deserialize, Serialize};
 
+use super::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use super::{
-    ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+    ASC_INVALID_COMMAND, ASC_MEDIUM_NOT_PRESENT, ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST,
+    CC_KEY_NOT_READY, STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+};
+use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::emulator::devices::{
+    CreateContext, DeviceConfig, FileTransfer, FileTransferSettings, FileTransferStatus,
+    FunctionMut, replace_status,
 };
 use crate::util::mac::{macroman_to_utf8, utf8_to_macroman};
 
@@ -77,12 +86,14 @@ fn read_fully(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
     Ok(total)
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct BlueSCSI {
     shared_dir: Option<PathBuf>,
+    #[serde(skip)]
     file: Option<File>,
 
-    /// Sense for the controller to hand to the addressed target.
+    /// Sense for the target to report
+    #[serde(skip)]
     pending_sense: Option<(u8, u16)>,
 }
 
@@ -97,6 +108,16 @@ impl BlueSCSI {
 
     pub(crate) fn take_pending_sense(&mut self) -> Option<(u8, u16)> {
         self.pending_sense.take()
+    }
+
+    pub(crate) fn shared_dir(&self) -> Option<&Path> {
+        self.shared_dir.as_deref()
+    }
+
+    /// Shares another folder, or none. A transfer in progress is dropped.
+    pub(crate) fn set_shared_dir(&mut self, shared_dir: Option<PathBuf>) {
+        self.shared_dir = shared_dir;
+        self.file = None;
     }
 
     pub(crate) fn handle_command(
@@ -118,7 +139,7 @@ impl BlueSCSI {
             0xD4 => self.send_file_10(cmd, outdata),
             0xD5 => self.send_file_end(),
             0xD6 => self.toggle_debug(cmd, debug_enabled),
-            0xD9 => self.toolbox_metadata(cmd, devices),
+            0xD9 => toolbox_metadata(cmd, devices),
             _ => {
                 error!("Unknown BlueSCSI command: {:02X}", cmd[0]);
                 ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -322,48 +343,253 @@ impl BlueSCSI {
         }
         ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
     }
+}
 
-    /// 0xD9 - Toolbox metadata/capabilities command
-    /// Subcommand in CDB[1]:
-    ///   0x00 = List devices (8 bytes, one per SCSI ID)
-    ///   0x01 = Get capabilities (8 bytes)
-    /// Allocation length in CDB[8]:
-    ///   0 = 8 bytes (backward compatibility)
-    ///   1-8 = requested number of bytes
-    ///   >8 = error (INVALID_FIELD_IN_CDB)
-    fn toolbox_metadata(&self, cmd: &[u8], devices: &[u8; 8]) -> ScsiCmdResult {
-        let subcommand = cmd[1];
-        let alloc_len = if cmd[8] == 0 { 8 } else { cmd[8] as usize };
+/// 0xD9 - Toolbox metadata/capabilities command
+/// Subcommand in CDB[1]:
+///   0x00 = List devices (8 bytes, one per SCSI ID)
+///   0x01 = Get capabilities (8 bytes)
+/// Allocation length in CDB[8]:
+///   0 = 8 bytes (backward compatibility)
+///   1-8 = requested number of bytes
+///   >8 = error (INVALID_FIELD_IN_CDB)
+///
+/// `devices` is the BlueSCSI device type at each SCSI ID, 0xFF where there is none.
+pub(crate) fn toolbox_metadata(cmd: &[u8], devices: &[u8; 8]) -> ScsiCmdResult {
+    let subcommand = cmd[1];
+    let alloc_len = if cmd[8] == 0 { 8 } else { cmd[8] as usize };
 
-        // Currently max response is 8 bytes
-        if alloc_len > 8 {
-            error!("0xD9: allocation length {} exceeds maximum 8", alloc_len);
-            return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
+    // Currently max response is 8 bytes
+    if alloc_len > 8 {
+        error!("0xD9: allocation length {} exceeds maximum 8", alloc_len);
+        return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
+    }
+
+    match subcommand {
+        TOOLBOX_LIST_DEVICES => {
+            // Return 8 bytes, one for each SCSI ID, with the BlueSCSI device
+            // type code of the attached target (0xFF = no device on that ID).
+            ScsiCmdResult::DataIn(devices[..alloc_len].to_vec())
         }
+        TOOLBOX_GET_CAPABILITIES => {
+            // Return capabilities structure:
+            // Byte 0: API version
+            // Byte 1: Capability flags
+            // Bytes 2-7: Reserved for future use
+            let mut response = [0u8; 8];
+            response[0] = TOOLBOX_API_VERSION;
+            response[1] = CAP_LARGE_TRANSFERS | CAP_LARGE_SEND;
+            ScsiCmdResult::DataIn(response[..alloc_len].to_vec())
+        }
+        _ => {
+            error!("Unknown 0xD9 subcommand: {:02X}", subcommand);
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        }
+    }
+}
 
-        match subcommand {
-            TOOLBOX_LIST_DEVICES => {
-                // Return 8 bytes, one for each SCSI ID, with the BlueSCSI device
-                // type code of the attached target (0xFF = no device on that ID).
-                ScsiCmdResult::DataIn(devices[..alloc_len].to_vec())
+/// The text of the BlueSCSI vendor mode page (0x31), which Toolbox apps look for
+pub(crate) const VENDOR_PAGE: &[u8; 42] = b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\x00";
+
+/// A BlueSCSI giving the guest's Toolbox apps a host folder to copy files in and out of.
+///
+/// A real BlueSCSI is an adapter emulating disks and other devices, each of which also answers
+/// the Toolbox, from one folder on its SD card. This one emulates no disk: it looks like a
+/// removable disk drive with no disk in it, with a folder of its own. It can't be anything but a
+/// disk: the SD Transfer app only takes a direct-access device whose page 0x31 holds the BlueSCSI
+/// text, and knows Snow by its INQUIRY vendor (found by disassembling its FindBlueSCSI).
+#[derive(Serialize, Deserialize)]
+pub(super) struct ScsiTargetBlueScsi {
+    common: ScsiTargetCommon,
+    toolbox: BlueSCSI,
+    /// The Toolbox's debug flag, which the guest can toggle
+    debug: bool,
+    /// The BlueSCSI device type at each SCSI ID, for LIST_DEVICES
+    #[serde(skip)]
+    devices: [u8; 8],
+}
+
+impl ScsiTargetBlueScsi {
+    pub(super) fn new(shared_dir: Option<PathBuf>) -> Self {
+        Self {
+            common: Default::default(),
+            toolbox: BlueSCSI::new(shared_dir),
+            debug: false,
+            devices: [0xFF; 8],
+        }
+    }
+
+    fn not_ready(&mut self) -> Result<ScsiCmdResult> {
+        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+    }
+}
+
+impl FileTransfer for ScsiTargetBlueScsi {
+    fn update_status(&mut self, status: &mut FileTransferStatus) -> bool {
+        let new = FileTransferStatus {
+            settings: FileTransferSettings {
+                media: self.folder().map(Path::to_path_buf),
+            },
+        };
+        replace_status(status, new)
+    }
+
+    fn folder(&self) -> Option<&Path> {
+        self.toolbox.shared_dir()
+    }
+
+    fn load(&mut self, folder: &Path) -> Result<()> {
+        if !folder.is_dir() {
+            bail!("{} is not a folder", folder.display());
+        }
+        self.toolbox.set_shared_dir(Some(folder.to_path_buf()));
+        Ok(())
+    }
+
+    fn eject(&mut self) {
+        self.toolbox.set_shared_dir(None);
+    }
+}
+
+#[typetag::serde]
+impl ScsiTarget for ScsiTargetBlueScsi {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
+    }
+
+    #[cfg(feature = "savestates")]
+    fn after_restore(&mut self, _media: Option<&Path>) -> Result<()> {
+        Ok(())
+    }
+
+    fn set_blocksize(&mut self, _blocksize: usize) -> bool {
+        false
+    }
+
+    fn take_event(&mut self) -> Option<ScsiTargetEvent> {
+        None
+    }
+
+    fn target_type(&self) -> ScsiTargetType {
+        ScsiTargetType::BlueScsi
+    }
+
+    fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        self.not_ready()
+    }
+
+    fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
+        let mut result = vec![0; 36];
+        // Direct-access device, removable
+        result[0] = 0;
+        result[1] = 0x80;
+        result[2] = 0x02;
+        result[3] = 0x02;
+        result[4] = result.len() as u8 - 4;
+        result[8..16].copy_from_slice(b"SNOW    ");
+        result[16..32].copy_from_slice(b"BLUESCSI        ");
+        result[32..35].copy_from_slice(b"1.0");
+
+        let alloc = cmd.get(4).copied().unwrap_or(0) as usize;
+        if alloc > 0 && alloc < result.len() {
+            result.truncate(alloc);
+        }
+        Ok(ScsiCmdResult::DataIn(result))
+    }
+
+    fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>> {
+        (page == 0x31).then(|| VENDOR_PAGE.to_vec())
+    }
+
+    fn ms_density(&self) -> u8 {
+        0
+    }
+
+    fn ms_media_type(&self) -> u8 {
+        0
+    }
+
+    fn ms_device_specific(&self) -> u8 {
+        0
+    }
+
+    fn set_device_map(&mut self, devices: &[u8; 8]) {
+        self.devices = *devices;
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::FileTransfer(self)
+    }
+
+    fn blocksize(&self) -> Option<usize> {
+        Some(512)
+    }
+
+    fn blocks(&self) -> Option<usize> {
+        None
+    }
+
+    fn read(&mut self, _block_offset: usize, _block_count: usize) -> Result<ScsiCmdResult> {
+        self.not_ready()
+    }
+
+    fn write(&mut self, _block_offset: usize, _data: &[u8]) {}
+
+    fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        match cmd[0] {
+            0xD0..=0xD6 | 0xD9 => {
+                let result =
+                    self.toolbox
+                        .handle_command(cmd, outdata, &mut self.debug, &self.devices);
+                if let Some((key, asc)) = self.toolbox.take_pending_sense() {
+                    self.common.set_cc(key, asc);
+                }
+                Ok(result)
             }
-            TOOLBOX_GET_CAPABILITIES => {
-                // Return capabilities structure:
-                // Byte 0: API version
-                // Byte 1: Capability flags
-                // Bytes 2-7: Reserved for future use
-                let mut response = [0u8; 8];
-                response[0] = TOOLBOX_API_VERSION;
-                response[1] = CAP_LARGE_TRANSFERS | CAP_LARGE_SEND;
-                ScsiCmdResult::DataIn(response[..alloc_len].to_vec())
-            }
+            // READ(6), WRITE(6)
+            0x08 | 0x0A => self.not_ready(),
             _ => {
-                error!("Unknown 0xD9 subcommand: {:02X}", subcommand);
-                ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+                warn!("BlueSCSI: unknown command {:02X}h", cmd[0]);
+                self.common
+                    .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
         }
     }
 }
+
+impl Debuggable for ScsiTargetBlueScsi {
+    fn get_debug_properties(&self) -> DebuggableProperties {
+        vec![]
+    }
+}
+
+/// Makes a BlueSCSI from its entry
+fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
+    let settings: FileTransferSettings = config.parse()?;
+    if let Some(folder) = &settings.media
+        && !folder.is_dir()
+    {
+        bail!("{} is not a folder", folder.display());
+    }
+    Ok(Box::new(ScsiTargetBlueScsi::new(settings.media)))
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::BlueScsi,
+    name: "BlueSCSI",
+    bus: crate::emulator::devices::BusKind::Scsi,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::FileTransfer,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    monitors: &[],
+    create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
+};
 
 #[cfg(test)]
 mod tests {

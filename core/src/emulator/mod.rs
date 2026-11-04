@@ -1,17 +1,17 @@
 pub mod comm;
+pub mod devices;
 
 #[cfg(feature = "savestates")]
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::Floppy;
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof, TwoImg};
+use snow_floppy::loaders::{FloppyImageSaver, Moof};
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
 #[cfg(feature = "savestates")]
 use std::io::Seek;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,23 +34,22 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
-use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
+use crate::mac::serial_bridge::SerialDevice;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
 };
 use crate::renderer::AudioProvider;
 use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayHandle, FrameReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
@@ -62,7 +61,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange, ScsiTargetStatus,
+    EmulatorStatus, GuestScreen, InputRecording, MemoryNotifierRange,
 };
 
 /// Mouse emulation mode
@@ -200,6 +199,32 @@ const ADDR_RAWMOUSE_X: Address = 0x082E;
 /// CrsrNew
 const ADDR_CRSRNEW: Address = 0x08CE;
 
+/// MMU32Bit: true when the guest runs in 32-bit mode (Inside Macintosh V, p. V-592)
+const ADDR_MMU32BIT: Address = 0x0CB2;
+/// Color QuickDraw's list of graphics devices and the main one, handles to
+/// GDevice records (Inside Macintosh: Imaging With QuickDraw, ch. 5)
+const ADDR_DEVICELIST: Address = 0x08A8;
+const ADDR_MAINDEVICE: Address = 0x08A4;
+/// The Device Manager's unit table, of handles to the drivers' DCEs
+const ADDR_UTABLEBASE: Address = 0x011C;
+/// Offsets in a GDevice record: the driver's reference number, the flags, the
+/// next device and the bounds (top, left, bottom, right)
+const GD_REFNUM: Address = 0;
+const GD_FLAGS: Address = 20;
+const GD_NEXTGD: Address = 30;
+const GD_RECT: Address = 34;
+/// gdFlags: the device is a screen, and one the guest uses. Without a 'scrn'
+/// resource, from the Monitors control panel, only the startup screen is used
+/// (Inside Macintosh V, p. V-126).
+const GD_SCREEN_DEVICE: u16 = 1 << 13;
+const GD_SCREEN_ACTIVE: u16 = 1 << 15;
+/// Offset of dCtlSlot in a DCE (Inside Macintosh: Devices, ch. 1)
+const DCTL_SLOT: Address = 40;
+/// Most graphics devices looked at, against a broken list
+const MAX_GDEVICES: usize = 16;
+/// Time between two looks at where the guest puts the displays
+const SCREENS_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Least time between two looks at the memory notifiers while running. Debugging
 /// mostly happens stopped, where each step or stop looks at them regardless.
 const MEMORY_NOTIFY_INTERVAL: Duration = Duration::from_millis(200);
@@ -329,6 +354,7 @@ dispatch! {
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
+        fn display_names(&self) -> Vec<String> { bus.display_names() }
     }
 
     mutable_calls {
@@ -354,7 +380,7 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
-        fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn after_deserialize(&mut self, renderers: Vec<ChannelRenderer>) -> () { bus.after_deserialize(renderers) }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
         fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
@@ -395,7 +421,13 @@ pub struct Emulator {
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
-    serial_bridges: [Option<SccBridge>; 2],
+    serial_bridges: [Option<Box<dyn SerialDevice>>; 2],
+    /// What the machine remembers of its devices
+    device_book: devices::DeviceBook,
+    /// The machine's buses, as the frontend sees them. Built again when a device comes or goes.
+    bus_list: Arc<Vec<devices::Bus>>,
+    /// The status of every device, shared with the frontend
+    status_block: Arc<devices::StatusBlock>,
     audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
     /// Ranges of memory the frontend wants to be told about, by id
     memory_notifiers: BTreeMap<u32, MemoryNotifier>,
@@ -403,6 +435,69 @@ pub struct Emulator {
     memory_map_state: Option<MemoryMapState>,
     /// Last look at the memory notifiers
     memory_notify_time: Instant,
+    /// The slot of each display, as the guest's drivers have it
+    display_slots: Vec<u8>,
+    /// Where the guest puts the displays, at the last look
+    screens: Vec<GuestScreen>,
+    screens_time: Instant,
+}
+
+/// Creates one renderer per NuBus card that shows a screen, recording the frame receivers (in
+/// the same order) so they can be paired with the display names afterwards.
+fn make_renderers(
+    nubus: &[NubusCardConfig<'_>],
+    receivers: &mut Vec<FrameReceiver>,
+) -> Result<Vec<ChannelRenderer>> {
+    nubus
+        .iter()
+        .filter(|c| c.has_display())
+        .map(|_| {
+            let renderer = ChannelRenderer::new(0, 0)?;
+            receivers.push(renderer.get_receiver());
+            Ok(renderer)
+        })
+        .collect()
+}
+
+/// Pairs display names with their frame receivers into display handles. Both
+/// lists must be in the same order (display install order).
+fn build_displays(names: Vec<String>, receivers: Vec<FrameReceiver>) -> Vec<DisplayHandle> {
+    debug_assert_eq!(names.len(), receivers.len());
+    names
+        .into_iter()
+        .zip(receivers)
+        .map(|(name, receiver)| DisplayHandle { name, receiver })
+        .collect()
+}
+
+/// The cards of a Mac II in slot order: the ones given, else the card of the extra ROMs in
+/// slot $9
+fn macii_cards<'a>(
+    extra_roms: &[ExtraROMs<'a>],
+    video_cards: &[NubusCardConfig<'a>],
+    monitor: Option<MacMonitor>,
+) -> Result<Vec<NubusCardConfig<'a>>> {
+    let mut cards = video_cards.to_vec();
+    if cards.is_empty() {
+        cards.extend(extra_roms.iter().find_map(|p| {
+            let (kind, rom) = match p {
+                ExtraROMs::MDC12(data) => (NubusDeviceKind::Mdc12, *data),
+                ExtraROMs::Toby(data) => (NubusDeviceKind::Toby, *data),
+                _ => return None,
+            };
+            Some(NubusCardConfig {
+                slot: 0x9,
+                kind,
+                rom,
+                monitor: Some(monitor.unwrap_or_default()),
+            })
+        }));
+    }
+    if cards.is_empty() {
+        bail!("Macintosh II requires display card ROM")
+    }
+    cards.sort_by_key(|c| c.slot);
+    Ok(cards)
 }
 
 impl Emulator {
@@ -410,7 +505,7 @@ impl Emulator {
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         Self::new_with_extra(
             rom,
             extra_roms,
@@ -423,7 +518,7 @@ impl Emulator {
             false,
             None,
             None,
-            None,
+            &[],
         )
     }
 
@@ -439,14 +534,16 @@ impl Emulator {
         pmmu_enabled: bool,
         fpu_enabled: bool,
         vram_size: Option<usize>,
-        shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+        video_cards: &[NubusCardConfig],
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
+
+        // Frame receivers for each display output, collected in the same order
+        // as the renderers are installed (i.e. the order display_names() reports).
+        let mut receivers: Vec<FrameReceiver> = Vec::new();
 
         let mut config = match model {
             MacModel::Early128K
@@ -465,6 +562,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = CompactMacBus::new(
                     model,
                     rom,
@@ -489,6 +588,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus =
                     MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
@@ -499,19 +600,7 @@ impl Emulator {
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
+                let nubus = macii_cards(extra_roms, video_cards, monitor)?;
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -519,14 +608,14 @@ impl Emulator {
                     _ => None,
                 });
 
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 // Initialize bus and CPU. A 68851 takes the place of the AMU.
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
+                    renderers,
                     mouse_mode,
                     ram_size,
                     !pmmu_enabled,
@@ -542,19 +631,7 @@ impl Emulator {
             MacModel::MacIIx | MacModel::MacIIcx => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
+                let nubus = macii_cards(extra_roms, video_cards, monitor)?;
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -563,13 +640,13 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
+                    renderers,
                     mouse_mode,
                     ram_size,
                     false,
@@ -593,6 +670,7 @@ impl Emulator {
                     slot: 0xE,
                     kind: NubusDeviceKind::SE30Video,
                     rom: vrom,
+                    monitor: None,
                 }];
 
                 // Find extension ROM if present
@@ -602,13 +680,13 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderers = make_renderers(&nubus, &mut receivers)?;
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
+                    renderers,
                     mouse_mode,
                     ram_size,
                     false,
@@ -624,6 +702,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let mut bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
@@ -636,6 +716,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let mut bus = LcIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
@@ -648,6 +730,8 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let mut bus = LcIIIBus::new(
                     model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
@@ -665,6 +749,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = Quadra700Bus::new(
                     model,
                     rom,
@@ -682,6 +768,8 @@ impl Emulator {
             MacModel::LC475 => {
                 assert!(override_fdd_type.is_none());
 
+                let renderer = ChannelRenderer::new(0, 0)?;
+                receivers.push(renderer.get_receiver());
                 let bus = Lc475Bus::new(
                     model,
                     rom,
@@ -698,8 +786,15 @@ impl Emulator {
             }
         };
 
-        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
+        let mut device_book = devices::DeviceBook::default();
+        if let Some(settings) = iie_card {
+            device_book.set_iie_chain(&settings);
+        }
+
+        // Pair each display output's name (from the bus, in install order) with
+        // its frame receiver (collected in the same order above).
+        let displays = build_displays(config.display_names(), receivers);
 
         let mut emu = Self {
             config,
@@ -714,11 +809,19 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book,
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            display_slots: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
+        emu.display_slots = emu.read_display_slots();
+        emu.rebuild_bus_list();
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -726,7 +829,7 @@ impl Emulator {
                 .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
         }
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Restores a saved emulator state into a new Emulator instance
@@ -734,11 +837,9 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
         let time = Instant::now();
 
         let fstr = path
@@ -748,8 +849,20 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f, tmpdir)?;
-        config.after_deserialize(renderer);
+        let (mut config, devices, slots) = load_state_from(f, tmpdir)?;
+
+        // Mint one renderer per display output the restored machine exposes,
+        // keeping the receivers so the frontend can pick up the frames.
+        let names = config.display_names();
+        let mut receivers: Vec<FrameReceiver> = Vec::with_capacity(names.len());
+        let mut renderers: Vec<ChannelRenderer> = Vec::with_capacity(names.len());
+        for _ in &names {
+            let renderer = ChannelRenderer::new(0, 0)?;
+            receivers.push(renderer.get_receiver());
+            renderers.push(renderer);
+        }
+        config.after_deserialize(renderers);
+        let displays = build_displays(names, receivers);
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
         // stuck.
@@ -770,11 +883,26 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            device_book: Default::default(),
+            bus_list: Arc::default(),
+            status_block: Arc::new(devices::StatusBlock::new()),
             audio_provider: None,
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            display_slots: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
+        emu.display_slots = emu.read_display_slots();
+        // The state doesn't hold where the devices came from, the list does
+        let devices = serde_json::from_str(&devices).unwrap_or_else(|e| {
+            log::warn!("No device list in the state file: {}", e);
+            vec![]
+        });
+        emu.rebuild_bus_list();
+        emu.restore_slots(slots)?;
+        emu.reinstate_devices(devices);
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -789,7 +917,7 @@ impl Emulator {
             time.elapsed()
         );
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
@@ -816,28 +944,33 @@ impl Emulator {
         for i in 0..self.config.swim().drives.len() {
             self.writeback_ejected(i);
         }
-        for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
-            if let Some(img) = drive.take_ejected_image() {
+        for i in 0..self.config.swim().drives.len() {
+            if let Some(img) = self.config.swim_mut().drives[i].take_ejected_image()
+                && let Some(addr) = self.find_slot(devices::bus_id::SWIM, &(i + 1).to_string())
+            {
                 self.event_sender
-                    .send(EmulatorEvent::FloppyEjected(i, img))?;
+                    .send(EmulatorEvent::FloppyEjected(addr, img))?;
             }
         }
-        for (id, target) in self
+        let scsi_events: Vec<_> = self
             .config
             .scsi_mut()
             .targets
             .iter_mut()
             .enumerate()
-            .filter_map(|(i, t)| t.as_mut().map(|t| (i, t)))
-        {
-            match target.take_event() {
-                Some(ScsiTargetEvent::MediaEjected) => {
-                    self.event_sender
-                        .send(EmulatorEvent::ScsiMediaEjected(id))
-                        .unwrap();
+            .filter_map(|(i, t)| Some((i, t.as_mut()?.take_event()?)))
+            .collect();
+        for (id, event) in scsi_events {
+            match event {
+                ScsiTargetEvent::MediaEjected => {
+                    if let Some(addr) = self.find_slot(devices::bus_id::SCSI, &id.to_string()) {
+                        self.event_sender
+                            .send(EmulatorEvent::MediaEjected(addr))
+                            .unwrap();
+                    }
                 }
                 #[cfg(feature = "printer")]
-                Some(ScsiTargetEvent::PageSaved(f)) => {
+                ScsiTargetEvent::PageSaved(f) => {
                     self.event_sender
                         .send(EmulatorEvent::UserMessage(
                             UserMessageType::Notice,
@@ -845,9 +978,10 @@ impl Emulator {
                         ))
                         .unwrap();
                 }
-                None => (),
             }
         }
+
+        self.publish_status();
 
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
@@ -855,48 +989,8 @@ impl Emulator {
                 running: self.run,
                 breakpoints: self.config.cpu_breakpoints().to_vec(),
                 cycles: self.config.cpu_cycles(),
-                fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.config.swim().drives[i].is_present(),
-                    ejected: !self.config.swim().drives[i].floppy_inserted,
-                    motor: self.config.swim().drives[i].motor,
-                    writing: self.config.swim().drives[i].motor && self.config.swim().is_writing(),
-                    track: self.config.swim().drives[i].track,
-                    image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
-                    dirty: self.config.swim().drives[i].floppy.is_dirty(),
-                    drive_type: self.config.swim().drives[i].drive_type,
-                    writeback_supported: self.config.swim().drives[i].image_path.is_some()
-                        && self.config.swim().drives[i].floppy.supports_writeback(),
-                    writeback_enabled: self.config.swim().drives[i].writeback_enabled,
-                }),
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
-                scsi: core::array::from_fn(|i| {
-                    self.config
-                        .scsi()
-                        .get_target_type(i)
-                        .map(|t| ScsiTargetStatus {
-                            target_type: t,
-                            capacity: self.config.scsi().get_disk_capacity(i),
-                            image: self
-                                .config
-                                .scsi()
-                                .get_disk_imagefn(i)
-                                .map(|p| p.to_path_buf()),
-                            cdrom_folder: self
-                                .config
-                                .scsi()
-                                .get_cdrom_folder(i)
-                                .map(|p| p.to_path_buf()),
-                            #[cfg(feature = "ethernet")]
-                            link_type: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_link()),
-                            #[cfg(feature = "ethernet")]
-                            capture_status: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_capture_status()),
-                        })
-                }),
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
@@ -1052,10 +1146,140 @@ impl Emulator {
         Ok(())
     }
 
+    /// The slot of each display, as the guest's drivers have it. Only a Mac II
+    /// has more than one.
+    fn read_display_slots(&self) -> Vec<u8> {
+        match &self.config {
+            EmulatorConfig::MacII(inner) => inner.bus.macii().display_slots(),
+            EmulatorConfig::MacII30(inner) => inner.bus.macii().display_slots(),
+            _ => vec![],
+        }
+    }
+
+    fn inspect_long(&mut self, addr: Address) -> Option<u32> {
+        let high = self.config.cpu_inspect_read_word(addr, false)?;
+        let low = self.config.cpu_inspect_read_word(addr + 2, false)?;
+        Some((u32::from(high) << 16) | u32::from(low))
+    }
+
+    /// A pointer in guest memory, as the guest follows it. In 24-bit mode the
+    /// top byte isn't part of the address, and master pointers keep the flags
+    /// of their handle in it: StripAddress (Inside Macintosh V, p. V-593).
+    fn inspect_pointer(&mut self, addr: Address, mode32: bool) -> Option<Address> {
+        let pointer = self.inspect_long(addr)?;
+        Some(if mode32 {
+            pointer
+        } else {
+            pointer & 0x00FF_FFFF
+        })
+    }
+
+    /// Where the guest puts the displays: the screens of Color QuickDraw's
+    /// device list, each found by the slot of its driver. None if the list
+    /// can't be read.
+    fn read_screens(&mut self) -> Option<Vec<GuestScreen>> {
+        let mut screens = vec![];
+        let mode32 = self.config.cpu_inspect_read(ADDR_MMU32BIT, false)? != 0;
+        let main = self.inspect_pointer(ADDR_MAINDEVICE, mode32)?;
+        let unit_table = self.inspect_pointer(ADDR_UTABLEBASE, mode32)?;
+        let mut handle = self.inspect_pointer(ADDR_DEVICELIST, mode32)?;
+        for _ in 0..MAX_GDEVICES {
+            if handle == 0 {
+                break;
+            }
+            let gd = self.inspect_pointer(handle, mode32)?;
+            let flags = self.config.cpu_inspect_read_word(gd + GD_FLAGS, false)?;
+            let refnum = self.config.cpu_inspect_read_word(gd + GD_REFNUM, false)? as i16;
+            if flags & GD_SCREEN_DEVICE != 0 && refnum < 0 {
+                let unit = (-i32::from(refnum) - 1) as Address;
+                let dce_handle = self.inspect_pointer(unit_table + 4 * unit, mode32)?;
+                let dce = self.inspect_pointer(dce_handle, mode32)?;
+                let slot = self.config.cpu_inspect_read(dce + DCTL_SLOT, false)?;
+                let mut rect = [0; 4];
+                for (i, v) in rect.iter_mut().enumerate() {
+                    *v = self
+                        .config
+                        .cpu_inspect_read_word(gd + GD_RECT + 2 * i as Address, false)?
+                        as i16;
+                }
+                let [top, left, bottom, right] = rect;
+                if let Some(display) = self.display_slots.iter().position(|&s| s == slot)
+                    && right > left
+                    && bottom > top
+                {
+                    screens.push(GuestScreen {
+                        display,
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        main: handle == main,
+                        active: flags & GD_SCREEN_ACTIVE != 0,
+                    });
+                }
+            }
+            handle = self.inspect_pointer(gd + GD_NEXTGD, mode32)?;
+        }
+        Some(screens)
+    }
+
+    /// The guest's screens are only looked at with several displays and the
+    /// absolute mouse: with the relative mouse, the guest may not be Mac OS
+    /// (A/UX, Linux) and its memory is left alone.
+    fn screens_wanted(&self) -> bool {
+        let mode = match &self.config {
+            EmulatorConfig::MacII(inner) => inner.bus.macii().mouse_mode(),
+            EmulatorConfig::MacII30(inner) => inner.bus.macii().mouse_mode(),
+            _ => return false,
+        };
+        self.display_slots.len() > 1 && mode == MouseMode::Absolute
+    }
+
+    /// Looks where the guest puts the displays, when there are several, and
+    /// tells the frontend when that changes
+    fn screens_tick(&mut self) -> Result<()> {
+        if !self.screens_wanted() {
+            if !self.screens.is_empty() {
+                self.screens.clear();
+                self.event_sender.send(EmulatorEvent::Screens(vec![]))?;
+            }
+            return Ok(());
+        }
+        if self.screens_time.elapsed() < SCREENS_INTERVAL {
+            return Ok(());
+        }
+        self.screens_time = Instant::now();
+        if let Some(screens) = self.read_screens()
+            && screens != self.screens
+        {
+            log::info!("Screens: {:?}", screens);
+            self.screens.clone_from(&screens);
+            self.event_sender.send(EmulatorEvent::Screens(screens))?;
+        }
+        Ok(())
+    }
+
     /// Reports a new position of the mouse in absolute mode to the OS, in its
-    /// low memory globals. If they have no translation at the moment, this
-    /// position is skipped.
-    fn mouse_update_abs(&mut self, x: u16, y: u16) {
+    /// low memory globals, from a position on one of the displays. If they
+    /// have no translation at the moment, or the guest doesn't use that
+    /// display, this position is skipped.
+    fn mouse_update_abs(&mut self, display: usize, x: u16, y: u16) {
+        // With several displays, a display's pixels are where the guest puts it
+        let (x, y) = if self.display_slots.len() > 1 {
+            let Some(screen) = self
+                .screens
+                .iter()
+                .find(|s| s.display == display && s.active)
+            else {
+                return;
+            };
+            (
+                x.wrapping_add_signed(screen.left),
+                y.wrapping_add_signed(screen.top),
+            )
+        } else {
+            (x, y)
+        };
         let (Some(old_x), Some(old_y)) = (
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_X, false),
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_Y, false),
@@ -1122,10 +1346,6 @@ impl Emulator {
         self.audio_provider = Some(provider);
         self.config
             .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
-    }
-
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
     }
 
     pub fn attach_disk_image_at(
@@ -1277,52 +1497,31 @@ impl Emulator {
     fn poll_localtalk_bridge(&mut self) {
         // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
         // Only poll if RX is enabled and no character is available (ready for new packet)
-        if self
-            .config
-            .scc_mut()
-            .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
-            && self
-                .config
-                .scc()
-                .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
-            && let Some(ref mut bridge) = self.serial_bridges[1]
-            && bridge.is_localtalk()
+        let ch = crate::mac::scc::SccCh::B;
+        if self.config.scc_mut().take_localtalk_poll_needed(ch)
+            && self.config.scc().is_rx_ready_for_data(ch)
+            && let Some(device) = self.serial_bridges[ch as usize].as_mut()
         {
-            // Propagate SCC state to LocalTalk bridge
-            let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
-            bridge.set_node_address(sdlc_addr);
-            bridge.set_address_search_mode(
-                self.config
-                    .scc()
-                    .is_address_search_mode(crate::mac::scc::SccCh::B),
-            );
-
-            // Prefer SDLC frame-boundary path if frames are ready
-            let frames = self
-                .config
-                .scc_mut()
-                .take_tx_frames(crate::mac::scc::SccCh::B);
+            let scc = self.config.scc();
+            device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+            let frames = self.config.scc_mut().take_tx_frames(ch);
             if !frames.is_empty() {
                 for frame in &frames {
-                    bridge.send_frame(frame);
+                    device.tx_frame(frame);
                 }
-                // Drain tx_queue to avoid double-sending
-                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                // The same bytes are in the byte queue too
+                self.config.scc_mut().take_tx(ch);
             }
-
-            // Byte-stream TX path (fallback when no frame boundaries detected)
-            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
-                let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                bridge.write_from_scc(&tx_data);
+            if self.config.scc().has_tx_data(ch) {
+                let tx_data = self.config.scc_mut().take_tx(ch);
+                device.tx_bytes(&tx_data);
             }
 
             // Now poll for incoming data and pending CTS
-            bridge.poll();
-            let rx_data = bridge.read_to_scc();
+            device.poll();
+            let rx_data = device.rx();
             if !rx_data.is_empty() {
-                self.config
-                    .scc_mut()
-                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+                self.config.scc_mut().push_rx(ch, &rx_data);
             }
         }
     }
@@ -1353,42 +1552,14 @@ impl Emulator {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom(&mut self, id: usize) {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
-        info!("SCSI ID #{}: CD-ROM drive attached", id);
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config
-            .scsi_mut()
-            .attach_cdrom_folder_at(id, dir, audio_provider)?;
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) {
-        self.config.scsi_mut().attach_ethernet_at(id);
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
-        self.config.scsi_mut().attach_printer_at(id, output_dir);
-        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
-    }
-
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+    fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+        let devices = serde_json::to_string(&self.devices())?;
+        let slots = self.slot_states()?;
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot)?;
+        save_state_to(&f, &self.config, screenshot, devices, &slots)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -1416,16 +1587,28 @@ impl Tickable for Emulator {
 
                         self.config.mouse_update_rel(relx, rely, btn);
                     }
-                    EmulatorCommand::MouseUpdateAbsolute { x, y } => {
+                    EmulatorCommand::MouseUpdateAbsolute { x, y, display } => {
                         if let Some(r) = self.record_input.as_mut() {
                             r.push((cycles, cmd));
                         }
 
-                        self.mouse_update_abs(x, y);
+                        self.mouse_update_abs(display, x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
                         log::info!("Mouse mode: {:?}", mode);
                         self.config.set_mouse_mode(mode);
+                    }
+                    EmulatorCommand::AddDevice(config) => {
+                        if let Err(e) = self.add_device(&config) {
+                            self.user_warning(&format!("{}: {:#}", config.label(), e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::RemoveDevice(addr) => {
+                        if let Err(e) = self.remove_device(addr) {
+                            self.user_warning(&format!("{:#}", e));
+                        }
+                        self.status_update()?;
                     }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
@@ -1433,191 +1616,32 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(drive, filename, wp) => {
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                if wp {
-                                    img.set_force_wp();
-                                }
-                                let writeback_path =
-                                    img.supports_writeback().then(|| PathBuf::from(&filename));
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                } else {
-                                    let drv = &mut self.config.swim_mut().drives[drive];
-                                    drv.image_path = writeback_path;
-                                    drv.writeback_enabled = false;
-                                    drv.pending_writeback = false;
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {:?}",
-                                    filename, e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::InsertIieDisk(drive, path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header names the sector order, else
-                                // the extension does
-                                let (bytes, order) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
-                                            (img.data, DskOrder::Prodos)
-                                        }
-                                        Ok(img) => (img.data, DskOrder::Dos),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else if path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-                                {
-                                    (&bytes[..], DskOrder::Prodos)
-                                } else {
-                                    (&bytes[..], DskOrder::Dos)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
-                                            self.user_error(&format!(
-                                                "Cannot insert IIe disk '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
-                    }
                     EmulatorCommand::SetIieGamePort(port) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
+                        let card = self.iie_card_mut();
                         if let Some(card) = card {
                             card.set_game_port(port);
                         }
                     }
-                    EmulatorCommand::EjectIieDisk(drive) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
+                    EmulatorCommand::InsertFloppyImage(addr, mut img, wp) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
                         };
-                        if let Some(card) = card {
-                            card.eject_disk(drive);
-                        }
-                    }
-                    EmulatorCommand::InsertIieUniDisk(path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header carries the lock flag; a
-                                // raw image is the blocks alone
-                                let (data, locked) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) => (img.data.to_vec(), img.locked),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    (bytes, false)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_unidisk(data, locked) {
-                                            self.user_error(&format!(
-                                                "Cannot insert UniDisk 3.5 image '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::EjectIieUniDisk => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
-                            card.eject_unidisk();
-                        }
-                    }
-                    EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
                         if wp {
                             img.set_force_wp();
                         }
                         if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
+                        } else {
+                            let drv = &mut self.config.swim_mut().drives[drive];
+                            drv.media_path = None;
+                            drv.media_read_only = false;
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::EjectFloppy(drive) => {
-                        self.try_writeback(drive);
-                        self.config.swim_mut().drives[drive].eject();
-                    }
-                    EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
+                    EmulatorCommand::SetFloppyWriteback(addr, enabled) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
+                        };
                         let ok = {
                             let drv = &mut self.config.swim_mut().drives[drive];
                             if enabled
@@ -1637,77 +1661,32 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::ScsiAttachHdd(id, filename) => {
-                        match self.load_hdd_image(&filename, id) {
-                            Ok(_) => {
-                                info!(
-                                    "SCSI ID #{}: hard drive attached, image '{}' loaded",
-                                    id,
-                                    filename.display()
-                                );
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiBranchHdd(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .branch_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: branched to file '{}'", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiLoadMedia(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .load_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdrom(id) => {
-                        self.attach_cdrom(id);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
-                        if let Err(e) = self.attach_cdrom_folder(id, dir) {
-                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                    EmulatorCommand::BranchDisk(addr, filename) => {
+                        if let Err(e) = self.branch_disk(addr, &filename) {
+                            self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::ScsiAttachEthernet(id) => {
-                        self.attach_ethernet(id);
+                    EmulatorCommand::LoadMedia(addr, filename, wp) => {
+                        if let Err(e) = self.load_media(addr, &filename, wp) {
+                            self.user_error(&format!(
+                                "Cannot load '{}': {:#}",
+                                filename.display(),
+                                e
+                            ));
+                        }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "printer")]
-                    EmulatorCommand::ScsiAttachPrinter(id, output_dir) => {
-                        self.attach_printer(id, output_dir);
+                    EmulatorCommand::EjectMedia(addr) => {
+                        if let Err(e) = self.eject_media(addr) {
+                            self.user_error(&format!("{:#}", e));
+                        }
                         self.status_update()?;
                     }
-                    EmulatorCommand::DetachScsiTarget(id) => {
-                        self.config.scsi_mut().detach_target(id);
-                        info!("SCSI ID #{}: target detached", id);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::SaveFloppy(drive, filename) => {
+                    EmulatorCommand::SaveFloppy(addr, filename) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
+                        };
                         if let Err(e) = Moof::save_file(
                             self.config.swim().get_active_image(drive),
                             &filename.to_string_lossy(),
@@ -1914,53 +1893,12 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetSystrapHistory(v) => {
                         self.config.cpu_enable_systrap_history(v);
                     }
-                    EmulatorCommand::SetSharedDir(path) => {
-                        self.config.scsi_mut().set_shared_dir(path);
-                    }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
                         self.status_update()?;
                     }
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
-                    }
-                    EmulatorCommand::SerialBridgeEnable(ch, config) => {
-                        let ch_idx = ch as usize;
-                        match SccBridge::new(&config) {
-                            Ok(bridge) => {
-                                let status = bridge.status();
-                                info!("SCC bridge enabled on channel {:?}: {}", ch, status);
-                                match &status {
-                                    SerialBridgeStatus::Pty(path) => {
-                                        self.user_notice(&format!(
-                                            "Serial bridge PTY: {}",
-                                            path.display()
-                                        ));
-                                    }
-                                    SerialBridgeStatus::LocalTalk(_) => {
-                                        self.user_notice("LocalTalk bridge enabled");
-                                    }
-                                    _ => {}
-                                }
-                                self.serial_bridges[ch_idx] = Some(bridge);
-                                self.event_sender
-                                    .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Failed to enable SCC bridge on channel {:?}: {}",
-                                    ch, e
-                                ));
-                            }
-                        }
-                    }
-                    EmulatorCommand::SerialBridgeDisable(ch) => {
-                        let ch_idx = ch as usize;
-                        if self.serial_bridges[ch_idx].take().is_some() {
-                            info!("Serial bridge disabled on channel {:?}", ch);
-                            self.event_sender
-                                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
-                        }
                     }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
@@ -1976,7 +1914,10 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
                         self.config.swim_mut().seed_weak_bits(seed);
                     }
-                    EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
+                    EmulatorCommand::SetFloppyRpmAdjustment(addr, adjustment) => {
+                        let Ok(drive) = self.drive_at(addr) else {
+                            continue;
+                        };
                         if drive < self.config.swim_mut().drives.len() {
                             let drv = &mut self.config.swim_mut().drives[drive];
                             drv.rpm_adjustment = adjustment;
@@ -1984,18 +1925,16 @@ impl Tickable for Emulator {
                         }
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetSetLink(idx, link) => {
-                        self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("Setting link on non-ethernet device")?
-                            .eth_set_link(link)?;
+                    EmulatorCommand::EthernetSetLink(addr, link) => {
+                        self.ethernet_at(addr, |ethernet| ethernet.set_link(link))??;
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStartCapture(idx, filename) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_start_capture(&filename)
+                    EmulatorCommand::EthernetStartCapture(addr, filename) => {
+                        let Ok(idx) = self.scsi_id_at(addr) else {
+                            continue;
+                        };
+                        match self
+                            .ethernet_at(addr, |ethernet| ethernet.start_capture(&filename))?
                         {
                             Ok(_) => {
                                 self.user_success(&format!(
@@ -2014,12 +1953,11 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStopCapture(idx) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_stop_capture()
-                        {
+                    EmulatorCommand::EthernetStopCapture(addr) => {
+                        let Ok(idx) = self.scsi_id_at(addr) else {
+                            continue;
+                        };
+                        match self.ethernet_at(addr, |ethernet| ethernet.stop_capture())? {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
                                     "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
@@ -2045,6 +1983,9 @@ impl Tickable for Emulator {
         if !self.memory_notifiers.is_empty() && self.run {
             self.memory_notifiers_tick()?;
         }
+        if self.run {
+            self.screens_tick()?;
+        }
 
         if self.run {
             if self.last_update.elapsed() > Duration::from_millis(500) {
@@ -2057,50 +1998,42 @@ impl Tickable for Emulator {
             for ch in crate::mac::scc::SccCh::iter() {
                 let ch_idx = ch as usize;
 
-                // Poll bridges for incoming data and status changes
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                    // Propagate SCC state to LocalTalk bridge
-                    if bridge.is_localtalk() {
-                        let sdlc_addr = self.config.scc().sdlc_address(ch);
-                        bridge.set_node_address(sdlc_addr);
-                        bridge
-                            .set_address_search_mode(self.config.scc().is_address_search_mode(ch));
-
-                        // Prefer SDLC frame-boundary path if frames are ready
-                        let frames = self.config.scc_mut().take_tx_frames(ch);
-                        if !frames.is_empty() {
-                            for frame in &frames {
-                                bridge.send_frame(frame);
-                            }
-                            // Drain tx_queue to avoid double-sending via byte-stream
-                            self.config.scc_mut().take_tx(ch);
+                // The SCC's station for a device carrying frames
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                    let scc = self.config.scc();
+                    device.set_station(scc.sdlc_address(ch), scc.is_address_search_mode(ch));
+                    let frames = self.config.scc_mut().take_tx_frames(ch);
+                    if !frames.is_empty() {
+                        for frame in &frames {
+                            device.tx_frame(frame);
                         }
+                        // The same bytes are in the byte queue too
+                        self.config.scc_mut().take_tx(ch);
                     }
                 }
 
-                // Check for TX data from SCC (byte-stream path / fallback)
+                // Check for TX data from SCC
                 if self.config.scc().has_tx_data(ch) {
                     let tx_data = self.config.scc_mut().take_tx(ch);
 
-                    // Route through bridge if active, otherwise send to frontend
-                    if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                        bridge.write_from_scc(&tx_data);
+                    // Route through the device if there is one, otherwise send to frontend
+                    if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
+                        device.tx_bytes(&tx_data);
                     } else {
                         self.event_sender
                             .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
                     }
                 }
 
-                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                if let Some(device) = self.serial_bridges[ch_idx].as_mut() {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
-                    let has_data = bridge.poll();
-                    if has_data {
+                    if device.poll() {
                         self.event_sender
-                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
+                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(device.status())))?;
                     }
 
-                    // Read incoming data from bridge and send to SCC
-                    let rx_data = bridge.read_to_scc();
+                    // Read incoming data from the device and send to SCC
+                    let rx_data = device.rx();
                     if !rx_data.is_empty() {
                         self.config.scc_mut().push_rx(ch, &rx_data);
                     }
