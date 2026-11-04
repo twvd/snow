@@ -741,7 +741,9 @@ impl ScsiTargetCdrom {
                 0b1000 => channel_samples[3],
                 _ => 0,
             };
-            sample as f32 / 32768.0 * port.volume as f32 / 255.0
+            // Apple CD-ROM drives apply volume byte roughly fifth power, not linearly.
+            // Measurements taken from a real AppleCD drive using AppleCD Audio player
+            sample as f32 / 32768.0 * (port.volume as f32 / 255.0).powi(5)
         };
 
         let samples = backend.read_cdda_sector(self.audio_pos);
