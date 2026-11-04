@@ -580,5 +580,6 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: None,
     path_keys: &[],
     adds_buses: &[],
+    monitors: &[],
     create: Some(crate::emulator::devices::CreateFn::Scsi(create)),
 };

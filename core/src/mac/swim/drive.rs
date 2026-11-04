@@ -752,6 +752,7 @@ pub const INFO_400K: crate::emulator::devices::ModelInfo = crate::emulator::devi
     rom: None,
     path_keys: &["media"],
     adds_buses: &[],
+    monitors: &[],
     create: None,
 };
 
@@ -766,6 +767,7 @@ pub const INFO_800K: crate::emulator::devices::ModelInfo = crate::emulator::devi
     rom: None,
     path_keys: &["media"],
     adds_buses: &[],
+    monitors: &[],
     create: None,
 };
 
@@ -781,6 +783,7 @@ pub const INFO_800K_PWM: crate::emulator::devices::ModelInfo =
         rom: None,
         path_keys: &["media"],
         adds_buses: &[],
+        monitors: &[],
         create: None,
     };
 
@@ -796,6 +799,7 @@ pub const INFO_SUPERDRIVE: crate::emulator::devices::ModelInfo =
         rom: None,
         path_keys: &["media"],
         adds_buses: &[],
+        monitors: &[],
         create: None,
     };
 

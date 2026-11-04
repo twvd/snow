@@ -230,10 +230,15 @@ where
         bus
     }
 
+    /// The display outputs of this machine (the single built-in display)
+    pub fn display_names(&self) -> Vec<String> {
+        vec!["Built-in display".to_string()]
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
         self.map = build_map(self.model);
-        self.video.renderer = Some(renderer);
+        self.video.renderer = renderers.into_iter().next();
         // Make sure we have at least the last frame available
         self.video.render().unwrap();
     }

@@ -8,6 +8,7 @@ use crate::bus::access::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::EmuContext;
+use crate::mac::{NubusCardConfig, NubusDeviceKind};
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
@@ -67,6 +68,14 @@ where
 
     pub fn slot_ref(&self) -> &dyn NubusSlot {
         with_card!(self, c => c)
+    }
+
+    /// Whether the card shows a screen: a video card with a monitor
+    pub fn has_display(&self) -> bool {
+        match self {
+            Self::MDC12(c) => c.has_monitor(),
+            Self::Toby(_) => true,
+        }
     }
 
     /// The card as a video card, if it is one
@@ -274,8 +283,40 @@ where
         self.cards[usize::from(slot - 0x9)] = Some(card);
     }
 
+    /// Makes the card `cfg` describes in its slot, with the renderer of its
+    /// display if it has one
+    pub fn insert_card(&mut self, cfg: &NubusCardConfig, renderer: Option<TRenderer>) {
+        let card = match cfg.kind {
+            NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, cfg.monitor)),
+            NubusDeviceKind::Toby => {
+                NubusCard::Toby(Toby::new(cfg.rom, renderer.expect("no renderer")))
+            }
+            NubusDeviceKind::SE30Video => unreachable!("the SE/30's video isn't a NuBus card"),
+        };
+        self.insert(cfg.slot, card);
+    }
+
     pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard<TRenderer>> {
         self.cards.iter_mut().flatten()
+    }
+
+    /// The name of each card's display, in slot order, for the cards with one
+    pub fn display_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.cards.iter().enumerate().filter_map(|(i, card)| {
+            card.as_ref()
+                .filter(|c| c.has_display())
+                .map(|c| format!("Slot ${:X}: {}", i + 0x9, c.slot_ref()))
+        })
+    }
+
+    /// Gives the cards with a display their renderers, which a save state
+    /// doesn't hold, in the order of display_names()
+    pub fn set_renderers(&mut self, renderers: &mut impl Iterator<Item = TRenderer>) {
+        for card in self.cards_mut().filter(|c| c.has_display()) {
+            let video = card.video().expect("a display without video");
+            video.set_renderer(renderers.next().expect("no renderer"));
+            video.render().unwrap();
+        }
     }
 
     /// A CPU cycle in the standard slot space ($Fsxx_xxxx) or the super slot

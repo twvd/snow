@@ -2,7 +2,7 @@ use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
-use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorInitArgs;
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
@@ -32,6 +32,7 @@ use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::renderer::DisplayHandle;
 use snow_core::tickable::Ticks;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
@@ -74,6 +75,41 @@ macro_rules! persistent_window {
         }
         w
     }};
+}
+
+/// A single display output of the machine (one per display card). The first
+/// pane is the primary display; the UI controls, screenshot and workspace
+/// settings operate on it, and it is shown inline unless detached. Any further
+/// panes are always shown in their own floating window.
+struct DisplayPane {
+    /// Window title / display name (e.g. "Slot $A: Macintosh Display Card 8-24")
+    name: String,
+    widget: FramebufferWidget,
+}
+
+/// Draws a display pane inside a floating, resizable window.
+fn draw_display_window(
+    ctx: &egui::Context,
+    title: &str,
+    default_rect: Option<egui::Rect>,
+    widget: &mut FramebufferWidget,
+) {
+    let mut w = egui::Window::new(title).resizable(true);
+    w = match default_rect {
+        Some(r) => w.default_rect(r),
+        None => w.default_size([800.0, 600.0]),
+    };
+    w.show(ctx, |ui| {
+        ui.vertical_centered(|ui| {
+            let response = widget.draw(ui, true);
+            // Consume drag events on the framebuffer to prevent window dragging
+            ui.interact(
+                response.rect,
+                ui.id().with("fb_drag_blocker"),
+                egui::Sense::drag(),
+            );
+        });
+    });
 }
 
 fn truncate(s: &str, max_chars: usize) -> &str {
@@ -198,7 +234,12 @@ pub struct SnowGui {
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
     toasts: egui_toast::Toasts,
-    framebuffer: FramebufferWidget,
+    /// egui context, kept so that additional display widgets can be created
+    /// on the fly when a machine with multiple display cards is initialized.
+    egui_ctx: egui::Context,
+    /// The display outputs of the machine, one pane per display card. Always
+    /// contains at least one pane (`displays[0]`, the persistent primary).
+    displays: Vec<DisplayPane>,
     registers: RegistersWidget,
     breakpoints: BreakpointsWidget,
     memory: MemoryViewerWidget,
@@ -414,7 +455,11 @@ impl SnowGui {
                             .response
                     })
             },
-            framebuffer: FramebufferWidget::new(cc),
+            egui_ctx: cc.egui_ctx.clone(),
+            displays: vec![DisplayPane {
+                name: "Display".to_string(),
+                widget: FramebufferWidget::new(&cc.egui_ctx),
+            }],
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
             memory: MemoryViewerWidget::default(),
@@ -1331,7 +1376,7 @@ impl SnowGui {
                 ui.separator();
                 if self.emu.is_initialized() {
                     ui.add(
-                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
+                        egui::Slider::new(&mut self.displays[0].widget.scale, 0.5..=4.0)
                             .text("Display scale"),
                     );
                     ui.menu_button("Display position", |ui| {
@@ -1355,7 +1400,7 @@ impl SnowGui {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
                         for algorithm in ScalingAlgorithm::iter() {
                             ui.radio_value(
-                                &mut self.framebuffer.scaling_algorithm,
+                                &mut self.displays[0].widget.scaling_algorithm,
                                 algorithm,
                                 format!("{}", algorithm),
                             );
@@ -1384,10 +1429,10 @@ impl SnowGui {
                         self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
                     }
                     ui.add(egui::Checkbox::new(
-                        &mut self.framebuffer.shader_enabled,
+                        &mut self.displays[0].widget.shader_enabled,
                         "Shader effects",
                     ));
-                    if self.framebuffer.shader_enabled {
+                    if self.displays[0].widget.shader_enabled {
                         egui::containers::menu::SubMenuButton::new("Shader effect settings")
                             .config(
                                 egui::containers::menu::MenuConfig::new()
@@ -1401,9 +1446,9 @@ impl SnowGui {
                                 let mut add_shader: Option<crate::shader_pipeline::ShaderId> = None;
 
                                 // Dynamically generate UI for each shader in the pipeline
-                                let shader_count = self.framebuffer.shader_config_count();
+                                let shader_count = self.displays[0].widget.shader_config_count();
                                 for i in 0..shader_count {
-                                    let config = &mut self.framebuffer.shader_configs_mut()[i];
+                                    let config = &mut self.displays[0].widget.shader_configs_mut()[i];
                                     let heading = format!(
                                         "{}. {} ({})",
                                         i + 1,
@@ -1486,7 +1531,7 @@ impl SnowGui {
                                 }
 
                                 // Add shader menu
-                                let available_shaders = self.framebuffer.available_shaders();
+                                let available_shaders = self.displays[0].widget.available_shaders();
                                 if !available_shaders.is_empty() {
                                     ui.separator();
                                     ui.menu_button("Add shader", |ui| {
@@ -1502,16 +1547,16 @@ impl SnowGui {
 
                                 if let Some((index, move_up)) = move_action {
                                     if move_up {
-                                        self.framebuffer.move_shader_up(index);
+                                        self.displays[0].widget.move_shader_up(index);
                                     } else {
-                                        self.framebuffer.move_shader_down(index);
+                                        self.displays[0].widget.move_shader_down(index);
                                     }
                                 }
                                 if let Some(index) = remove_index {
-                                    self.framebuffer.remove_shader(index);
+                                    self.displays[0].widget.remove_shader(index);
                                 }
                                 if let Some(id) = add_shader {
-                                    self.framebuffer.add_shader(id);
+                                    self.displays[0].widget.add_shader(id);
                                 }
                             });
                     }
@@ -2774,15 +2819,51 @@ impl SnowGui {
         }
     }
 
-    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
-        if !self.framebuffer.has_pointer() {
-            return None;
+    /// Wires each display output of a freshly initialized machine to a display
+    /// pane. The persistent primary pane (`displays[0]`) is reused and
+    /// reconnected; any further outputs each get a fresh pane (and window).
+    fn connect_displays(&mut self, displays: Vec<DisplayHandle>) {
+        let model = self.emu.get_model().unwrap();
+        // Keep the persistent primary pane, drop any panes from a previous machine.
+        self.displays.truncate(1);
+
+        let mut displays = displays.into_iter();
+        match displays.next() {
+            Some(primary) => {
+                // The primary pane keeps its canonical "Display" title so its
+                // window position persists (see Workspace::WINDOW_NAMES).
+                self.displays[0].widget.load_shader_defaults(model);
+                self.displays[0].widget.connect_receiver(primary.receiver);
+            }
+            // Nothing to show: the machine's cards have no monitor
+            None => self.displays[0].widget.connect_receiver(Default::default()),
         }
+        for d in displays {
+            let mut widget = FramebufferWidget::new(&self.egui_ctx);
+            widget.load_shader_defaults(model);
+            widget.connect_receiver(d.receiver);
+            self.displays.push(DisplayPane {
+                name: d.name,
+                widget,
+            });
+        }
+    }
+
+    /// Returns the framebuffer the pointer is currently over, if any.
+    fn focused_framebuffer(&self) -> Option<&FramebufferWidget> {
+        self.displays
+            .iter()
+            .map(|d| &d.widget)
+            .find(|w| w.has_pointer())
+    }
+
+    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let framebuffer = self.focused_framebuffer()?;
 
         let mouse_pos = ctx.pointer_latest_pos()?;
-        let display_size = egui::Vec2::from(self.framebuffer.display_size());
-        let fbrect = self.framebuffer.rect();
-        let scale = self.framebuffer.scaling_factors_actual();
+        let display_size = egui::Vec2::from(framebuffer.display_size());
+        let fbrect = framebuffer.rect();
+        let scale = framebuffer.scaling_factors_actual();
         let x = (mouse_pos.x - fbrect.left_top().x) * scale.x;
         let y = (mouse_pos.y - fbrect.left_top().y) * scale.y;
         if x < 0.0 || y < 0.0 || x > display_size.x || y > display_size.y {
@@ -2830,7 +2911,7 @@ impl SnowGui {
             self.model_dialog.prefill(
                 self.workspace.model,
                 self.workspace.get_rom_path().as_deref(),
-                self.workspace.get_display_card_rom_path().as_deref(),
+                &self.workspace.video_cards(),
                 self.workspace.get_pram_path().as_deref(),
                 self.workspace.get_extension_rom_path().as_deref(),
                 &self.workspace.init_args,
@@ -2875,9 +2956,7 @@ impl SnowGui {
             custom_datetime,
         ) {
             Ok(p) => {
-                self.framebuffer
-                    .load_shader_defaults(self.emu.get_model().unwrap());
-                self.framebuffer.connect_receiver(p.frame_receiver);
+                self.connect_displays(p.displays);
                 self.report_refused_devices(p.refused);
             }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
@@ -2899,20 +2978,19 @@ impl SnowGui {
         self.ff_on = args.start_fastforward;
         self.dynamic_ff_input_time = None;
 
-        // Save to last used ROMs
-        if let Some(model) = model {
-            self.settings.set_last_rom(model, path);
-            if let Some(dr_path) = self.workspace.get_display_card_rom_path() {
-                self.settings
-                    .set_last_card_rom(video_rom_card(model, args.video_card), &dr_path);
-            }
-        }
-
         self.workspace.set_rom_path(path);
         self.workspace.set_extension_rom_path(extension_rom_path);
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
         self.workspace.model = model;
+
+        // Save to last used ROMs
+        if let Some(model) = model {
+            self.settings.set_last_rom(model, path);
+            for card in self.workspace.video_cards() {
+                self.settings.set_last_card_rom(card.kind, &card.rom);
+            }
+        }
     }
 
     /// What a machine couldn't use stays in the workspace, and the user gets told once
@@ -2963,9 +3041,9 @@ impl SnowGui {
         if let Some(joy) = &mut self.iie_joystick {
             joy.set_bindings(bindings);
         }
-        self.framebuffer.scale = self.workspace.viewport_scale;
-        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
-        self.framebuffer.shader_enabled = self.workspace.shader_enabled;
+        self.displays[0].widget.scale = self.workspace.viewport_scale;
+        self.displays[0].widget.scaling_algorithm = self.workspace.scaling_algorithm;
+        self.displays[0].widget.shader_enabled = self.workspace.shader_enabled;
         if let Some(rompath) = self.workspace.get_rom_path() {
             let extension_rom_path = self.workspace.get_extension_rom_path();
             let pram_path = self.workspace.get_pram_path();
@@ -2997,17 +3075,18 @@ impl SnowGui {
         // Do this after the emulator is initialized so the shader defaults that get loaded are
         // overwritten.
         if !self.workspace.shader_configs.is_empty() {
-            self.framebuffer
+            self.displays[0]
+                .widget
                 .import_config(self.workspace.shader_configs.clone());
         }
     }
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.iie_joystick_bindings = Some(self.joy_bindings());
-        self.workspace.viewport_scale = self.framebuffer.scale;
-        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
-        self.workspace.shader_enabled = self.framebuffer.shader_enabled;
-        self.workspace.shader_configs = self.framebuffer.export_config();
+        self.workspace.viewport_scale = self.displays[0].widget.scale;
+        self.workspace.scaling_algorithm = self.displays[0].widget.scaling_algorithm;
+        self.workspace.shader_enabled = self.displays[0].widget.shader_enabled;
+        self.workspace.shader_configs = self.displays[0].widget.export_config();
         if self.emu.is_initialized() {
             self.workspace.set_live_devices(self.emu.devices());
         }
@@ -3170,7 +3249,7 @@ impl SnowGui {
             chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
         );
         p.push(&filename);
-        if let Err(e) = self.framebuffer.write_screenshot_file(p) {
+        if let Err(e) = self.displays[0].widget.write_screenshot_file(p) {
             self.show_error(&format!("Failed to write screenshot: {}", e));
         }
         self.toasts.add(
@@ -3329,11 +3408,7 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
-        let mut devices = card_entries(
-            Some(result.model),
-            result.display_rom_path.as_deref(),
-            &result.init_args,
-        );
+        let mut devices = card_entries(&result.video_cards, &result.init_args);
         // What's plugged in stays plugged in, and what couldn't be used gets another chance
         devices.extend(
             self.emu
@@ -3505,9 +3580,7 @@ impl SnowGui {
             .init_from_statefile(path.as_ref(), self.workspace.pause_on_state_load)
         {
             Ok(p) => {
-                self.framebuffer
-                    .load_shader_defaults(self.emu.get_model().unwrap());
-                self.framebuffer.connect_receiver(p.frame_receiver);
+                self.connect_displays(p.displays);
             }
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }
@@ -4223,7 +4296,7 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.state_dialog.take_picked() {
             if self.state_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
                 self.emu
-                    .save_state(&path, self.framebuffer.screenshot().ok());
+                    .save_state(&path, self.displays[0].widget.screenshot().ok());
             } else {
                 self.load_statefile(path);
             }
@@ -4253,23 +4326,17 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
-            if !self.is_ui_hidden() && self.workspace.framebuffer_mode == FramebufferMode::Detached
+            let multi_display = self.displays.len() > 1;
+            if !self.is_ui_hidden()
+                && (multi_display || self.workspace.framebuffer_mode == FramebufferMode::Detached)
             {
-                // Render framebuffer in a floating window
-                persistent_window_s!(self, "Display", [800.0, 600.0])
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        ui.vertical_centered(|ui| {
-                            let response = self.framebuffer.draw(ui, true);
-                            // Consume drag events on the framebuffer to prevent window dragging
-                            ui.interact(
-                                response.rect,
-                                ui.id().with("fb_drag_blocker"),
-                                egui::Sense::drag(),
-                            );
-                        });
-                        //ui.allocate_space(ui.available_size());
-                    });
+                // Each display output is shown in its own floating window. This
+                // is optional (the "Detached" mode) for a single display, but
+                // always used when there is more than one display card.
+                for d in &mut self.displays {
+                    let default_rect = self.workspace.get_window(&d.name);
+                    draw_display_window(ctx, &d.name, default_rect, &mut d.widget);
+                }
             } else {
                 // Render framebuffer inline on the background
                 let response = ui.scope_builder(
@@ -4291,15 +4358,17 @@ impl eframe::App for SnowGui {
                                 }
                             }
                         } else if self.workspace.framebuffer_mode == FramebufferMode::Centered {
-                            let padding_height =
-                                (ui.available_height() - self.framebuffer.max_height()) / 2.0;
+                            let padding_height = (ui.available_height()
+                                - self.displays[0].widget.max_height())
+                                / 2.0;
                             if padding_height > 0.0 {
                                 ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                             }
                         }
 
-                        self.framebuffer.draw(ui, self.is_ui_hidden());
-                        if self.is_ui_hidden() {
+                        let ui_hidden = self.is_ui_hidden();
+                        self.displays[0].widget.draw(ui, ui_hidden);
+                        if ui_hidden {
                             // To fill the screen with hitbox for the context menu
                             ui.allocate_space(ui.available_size());
                         }
@@ -4573,8 +4642,8 @@ impl eframe::App for SnowGui {
                         }
                     } else {
                         egui::Pos2 {
-                            x: (rel_p.x / self.framebuffer.scale) * 2.0,
-                            y: (rel_p.y / self.framebuffer.scale) * 2.0,
+                            x: (rel_p.x / self.displays[0].widget.scale) * 2.0,
+                            y: (rel_p.y / self.displays[0].widget.scale) * 2.0,
                         }
                     };
                     let relpos = self.apply_mouse_speed(relpos);

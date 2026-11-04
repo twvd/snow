@@ -2366,6 +2366,7 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: None,
     path_keys: &[],
     adds_buses: &[crate::emulator::devices::BusKind::IieDisk],
+    monitors: &[],
     create: None,
 };
 

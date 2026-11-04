@@ -63,7 +63,8 @@ fn main() -> Result<()> {
             extra_roms.push(ExtraROMs::MDC12(display_rom));
         }
     }
-    let (mut emulator, frame_recv) = Emulator::new(&rom, &extra_roms, model)?;
+    let (mut emulator, mut displays) = Emulator::new(&rom, &extra_roms, model)?;
+    let frame_recv = displays.remove(0).receiver;
     let cmd = emulator.create_cmd_sender();
     let floppy_slot = |slot: &str| {
         emulator

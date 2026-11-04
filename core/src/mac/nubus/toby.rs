@@ -336,5 +336,6 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     }),
     path_keys: &["rom"],
     adds_buses: &[],
+    monitors: &[Some(crate::mac::MacMonitor::HiRes14)],
     create: None,
 };

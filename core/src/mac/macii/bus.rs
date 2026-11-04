@@ -13,10 +13,8 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::toby::Toby;
-use crate::mac::nubus::{Nubus, NubusCard, NubusSlot, VideoCard};
+use crate::mac::nubus::{Nubus, NubusSlot, VideoCard};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -24,9 +22,7 @@ use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{
-    AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE,
-};
+use crate::mac::{AbsoluteMouse, MacModel, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -219,19 +215,28 @@ where
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
+    /// `nubus` cards should be supplied in ascending slot order, and `renderers` in the
+    /// matching order, one per card that shows a screen, so that each is paired with the name
+    /// [`Self::display_names`] reports.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
         nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
-        monitor: MacMonitor,
+        renderers: Vec<TRenderer>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         amu: bool,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
+        assert_eq!(
+            nubus.iter().filter(|c| c.has_display()).count(),
+            renderers.len(),
+            "expected one renderer per display"
+        );
+        // Build the NuBus cards from the provided configuration. Renderers are
+        // matched to cards in the order the cards are given.
+        let mut renderers = renderers.into_iter();
         let mut cards = Nubus::default();
         let mut se30_video = None;
         for cfg in nubus {
@@ -242,23 +247,16 @@ where
                 model
             );
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            // Only video cards take a renderer
-            let mut renderer = || {
-                renderers
-                    .pop()
-                    .expect("not enough renderers for the video cards")
+            let renderer = if cfg.has_display() {
+                renderers.next()
+            } else {
+                None
             };
             match cfg.kind {
-                NubusDeviceKind::Mdc12 => cards.insert(
-                    cfg.slot,
-                    NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor)),
-                ),
-                NubusDeviceKind::Toby => {
-                    cards.insert(cfg.slot, NubusCard::Toby(Toby::new(cfg.rom, renderer())));
-                }
                 NubusDeviceKind::SE30Video => {
-                    se30_video = Some(SE30Video::new(cfg.rom, renderer()));
+                    se30_video = Some(SE30Video::new(cfg.rom, renderer.expect("no renderer")));
                 }
+                _ => cards.insert_card(cfg, renderer),
             }
         }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
@@ -324,19 +322,24 @@ where
         bus
     }
 
+    /// The display outputs of this machine: the SE/30's video, or one per video card with a
+    /// monitor, in NuBus slot order
+    pub fn display_names(&self) -> Vec<String> {
+        if self.se30_video.is_some() {
+            return vec!["Built-in display".to_string()];
+        }
+        self.nubus.display_names().collect()
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple video cards
-        let video = match self.se30_video.as_mut() {
-            Some(video) => video as &mut dyn VideoCard<TRenderer>,
-            None => self
-                .nubus
-                .cards_mut()
-                .find_map(|card| card.video())
-                .expect("no video card"),
-        };
-        video.set_renderer(renderer);
-        video.render().unwrap();
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        // Renderers are matched to displays in the order display_names() reports them
+        let mut renderers = renderers.into_iter();
+        if let Some(video) = self.se30_video.as_mut() {
+            video.set_renderer(renderers.next().expect("no renderer"));
+            video.render().unwrap();
+        }
+        self.nubus.set_renderers(&mut renderers);
 
         self.asc.after_deserialize();
     }

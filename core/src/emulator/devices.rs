@@ -32,8 +32,8 @@ use crate::mac::serial_bridge::{
     SerialBridgeConfig, SerialBridgeStatus, SerialDevice, serial_device,
 };
 use crate::mac::swim::drive::{DriveType, FloppyDrive};
-use crate::mac::{ExtraROMs, MacModel, MacMonitor};
-use crate::renderer::DisplayBuffer;
+use crate::mac::{ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
+use crate::renderer::DisplayHandle;
 use log::info;
 
 /// The ids of the buses. They are in the workspace files: they must not change.
@@ -131,6 +131,9 @@ pub struct ModelInfo {
     pub path_keys: &'static [&'static str],
     /// The buses a device of this model adds
     pub adds_buses: &'static [BusKind],
+    /// The monitors a video card can have on its connector, None for nothing. Empty for
+    /// video whose screen is the machine's.
+    pub monitors: &'static [Option<MacMonitor>],
     /// How a device of this model is made. None: the machine build makes it.
     pub(crate) create: Option<CreateFn>,
 }
@@ -693,9 +696,16 @@ pub struct FloppySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayCard824Settings {
     pub rom: PathBuf,
+    /// What's on its connector, None for nothing
+    #[serde(default = "default_card_monitor")]
+    pub monitor: Option<MacMonitor>,
 }
 impl DeviceSettings for DisplayCard824Settings {
     const MODEL: DeviceModel = DeviceModel::DisplayCard824;
+}
+
+fn default_card_monitor() -> Option<MacMonitor> {
+    Some(MacMonitor::default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -865,12 +875,8 @@ pub struct MachineConfig<'a> {
     pub vram_size: Option<usize>,
 }
 
-/// A machine, where its frames arrive, and the devices it couldn't use
-pub type NewMachine = (
-    Emulator,
-    Arc<Mutex<Option<DisplayBuffer>>>,
-    Vec<RefusedDevice>,
-);
+/// A machine, where the frames of each of its displays arrive, and the devices it couldn't use
+pub type NewMachine = (Emulator, Vec<DisplayHandle>, Vec<RefusedDevice>);
 
 /// An entry a machine couldn't use. It stays in the workspace.
 #[derive(Debug, Clone)]
@@ -879,10 +885,18 @@ pub struct RefusedDevice {
     pub reason: String,
 }
 
+/// A video card, or the SE/30's video, the machine is built with
+struct PlannedVideo {
+    slot: u8,
+    device: DeviceModel,
+    rom: Vec<u8>,
+    monitor: Option<MacMonitor>,
+}
+
 /// What has to be decided before a machine can be built
 #[derive(Default)]
 struct BuildPlan {
-    video: Option<(u8, DeviceModel, Vec<u8>)>,
+    video: Vec<PlannedVideo>,
     iie_card: Option<IieCardSettings>,
     override_drive: Option<DriveType>,
     cards: Vec<DeviceConfig>,
@@ -950,8 +964,14 @@ impl BuildPlan {
                     .ok()
                     .filter(|s| model.nubus_slots().contains(s))
                     .context("No such NuBus slot on this machine")?;
-                let rom: DisplayCard824Settings = config.parse()?;
-                self.take_video(slot, device, &rom.rom, config)?;
+                let (rom, monitor) = if device == DeviceModel::MacIIVideoCard {
+                    let settings: MacIIVideoCardSettings = config.parse()?;
+                    (settings.rom, None)
+                } else {
+                    let settings: DisplayCard824Settings = config.parse()?;
+                    (settings.rom, settings.monitor)
+                };
+                self.take_video(slot, device, &rom, monitor, config)?;
                 Ok(false)
             }
             DeviceModel::SE30Video => {
@@ -959,7 +979,7 @@ impl BuildPlan {
                     bail!("This machine can't take a {}", device.name());
                 }
                 let rom: SE30VideoSettings = config.parse()?;
-                self.take_video(0xE, device, &rom.rom, config)?;
+                self.take_video(0xE, device, &rom.rom, None, config)?;
                 Ok(false)
             }
             DeviceModel::AppleIIePdsCard => {
@@ -998,13 +1018,19 @@ impl BuildPlan {
         slot: u8,
         device: DeviceModel,
         rom: &Path,
+        monitor: Option<MacMonitor>,
         config: &DeviceConfig,
     ) -> Result<()> {
-        if self.video.is_some() {
-            bail!("A machine can only have one video card for now");
+        if self.video.iter().any(|v| v.slot == slot) {
+            bail!("This slot already holds a card");
         }
         let rom = std::fs::read(rom).with_context(|| format!("Cannot read {}", rom.display()))?;
-        self.video = Some((slot, device, rom));
+        self.video.push(PlannedVideo {
+            slot,
+            device,
+            rom,
+            monitor,
+        });
         self.cards.push(DeviceConfig {
             model: Some(device.key().to_owned()),
             ..config.clone()
@@ -1592,19 +1618,27 @@ impl Emulator {
     ) -> Result<NewMachine> {
         let plan = BuildPlan::new(machine.model, devices);
         let mut extra_roms = vec![];
-        let mut video_slot = 0x9;
-        if let Some((slot, device, rom)) = &plan.video {
-            video_slot = *slot;
-            extra_roms.push(match device {
-                DeviceModel::MacIIVideoCard => ExtraROMs::Toby(rom),
-                DeviceModel::SE30Video => ExtraROMs::SE30Video(rom),
-                _ => ExtraROMs::MDC12(rom),
+        let mut video_cards = vec![];
+        for video in &plan.video {
+            let kind = match video.device {
+                DeviceModel::SE30Video => {
+                    extra_roms.push(ExtraROMs::SE30Video(&video.rom));
+                    continue;
+                }
+                DeviceModel::MacIIVideoCard => NubusDeviceKind::Toby,
+                _ => NubusDeviceKind::Mdc12,
+            };
+            video_cards.push(NubusCardConfig {
+                slot: video.slot,
+                kind,
+                rom: &video.rom,
+                monitor: video.monitor,
             });
         }
         if let Some(rom) = machine.extension_rom {
             extra_roms.push(ExtraROMs::ExtensionROM(rom));
         }
-        let (mut emu, frame_recv) = Self::new_with_extra(
+        let (mut emu, displays) = Self::new_with_extra(
             machine.rom,
             &extra_roms,
             machine.model,
@@ -1617,7 +1651,7 @@ impl Emulator {
             machine.vram_size,
             None,
             plan.iie_card,
-            video_slot,
+            &video_cards,
         )?;
         emu.device_book.cards = plan.cards;
         emu.rebuild_bus_list();
@@ -1632,7 +1666,7 @@ impl Emulator {
             }
         }
         emu.status_update()?;
-        Ok((emu, frame_recv, refused))
+        Ok((emu, displays, refused))
     }
 
     /// If the slot has a device, hands it the settings. If not, creates one.
@@ -2250,8 +2284,15 @@ mod tests {
                 build(
                     model,
                     vec![
-                        DeviceConfig::new(bus_id::NUBUS, "9", &DisplayCard824Settings { rom })
-                            .unwrap(),
+                        DeviceConfig::new(
+                            bus_id::NUBUS,
+                            "9",
+                            &DisplayCard824Settings {
+                                rom,
+                                monitor: Some(MacMonitor::HiRes14),
+                            },
+                        )
+                        .unwrap(),
                         config.clone(),
                     ],
                 )
@@ -2290,38 +2331,54 @@ mod tests {
     }
 
     #[test]
-    fn a_video_card_goes_in_the_slot_it_says() {
+    fn video_cards_go_in_the_slots_they_say() {
         let files = TestFiles::new("nubus");
-        let card = DeviceConfig::new(
-            bus_id::NUBUS,
-            "A",
-            &DisplayCard824Settings {
-                rom: files.file("card.rom", 32 * 1024),
-            },
-        )
-        .unwrap();
+        let rom = files.file("card.rom", 32 * 1024);
+        let card = |slot: &str, monitor| {
+            DeviceConfig::new(
+                bus_id::NUBUS,
+                slot,
+                &DisplayCard824Settings {
+                    rom: rom.clone(),
+                    monitor,
+                },
+            )
+            .unwrap()
+        };
+        let a = card("A", Some(MacMonitor::RGB12));
+        let b = card("B", None);
         assert_eq!(
-            assert_round_trip(MacModel::MacIIx, vec![card.clone()]),
-            vec![card.clone()]
+            assert_round_trip(MacModel::MacIIx, vec![a.clone(), b.clone()]),
+            vec![a.clone(), b.clone()]
         );
 
-        // There is no slot E on a IIcx, and a machine has one card for now
+        // There is no slot E on a IIcx, and a slot holds one card
         let (mut emu, refused) = build(
             MacModel::MacIIcx,
             vec![
-                card.clone(),
-                DeviceConfig {
-                    slot: "E".into(),
-                    ..card.clone()
-                },
-                DeviceConfig {
-                    slot: "B".into(),
-                    ..card.clone()
-                },
+                b.clone(),
+                card("E", None),
+                a.clone(),
+                card("A", Some(MacMonitor::HiRes14)),
             ],
         );
         assert_eq!(refused.len(), 2, "{:?}", refused);
-        assert_eq!(emu.devices(), [card]);
+        assert_eq!(emu.devices(), [a, b]);
+        // The card without a monitor shows nothing
+        assert_eq!(
+            emu.config.display_names(),
+            ["Slot $A: Macintosh Display Card 8-24"]
+        );
+    }
+
+    #[test]
+    fn an_older_card_entry_has_a_monitor() {
+        let files = TestFiles::new("nubus-old");
+        let rom = files.file("card.rom", 32 * 1024);
+        let config =
+            DeviceConfig::existing(bus_id::NUBUS, "9", &serde_json::json!({ "rom": rom })).unwrap();
+        let settings: DisplayCard824Settings = config.parse().unwrap();
+        assert_eq!(settings.monitor, Some(MacMonitor::default()));
     }
 
     #[test]
