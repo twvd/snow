@@ -13,7 +13,7 @@ use super::{sonora, v8};
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::Debuggable;
 use crate::mac::{MacModel, MacMonitor};
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayBuffer, Renderer, render_packed};
 use crate::tickable::Ticks;
 use crate::types::Byte;
 
@@ -225,46 +225,84 @@ where
 
     /// Renders the frame to the target DisplayBuffer
     fn render_to(&self, buf: &mut DisplayBuffer, mode: &Mode) {
+        buf.set_size(mode.width, mode.height);
+        match mode.depth {
+            0 => self.render_indexed(buf, mode, &self.palette_lut::<2>()),
+            1 => self.render_indexed(buf, mode, &self.palette_lut::<4>()),
+            2 => self.render_indexed(buf, mode, &self.palette_lut::<16>()),
+            3 => self.render_indexed(buf, mode, &self.palette_lut::<256>()),
+            _ => {
+                for (y, line) in buf.chunks_exact_mut(mode.width * 4).enumerate() {
+                    self.render_line(line, y * mode.row_bytes, mode);
+                }
+            }
+        }
+    }
+
+    /// The RGBA pixel of each of the N pixel values. The pixel is the upper
+    /// bits of the address in the colour table, the lower bits are set.
+    fn palette_lut<const N: usize>(&self) -> [[u8; 4]; N] {
+        let bpp = N.trailing_zeros();
+        std::array::from_fn(|v| {
+            let rgb = self.ramdac.palette[(v << (8 - bpp)) | (0xFF >> bpp)];
+            // The monochrome monitors show the blue signal
+            if self.monitor.has_color() {
+                [rgb[0], rgb[1], rgb[2], 0xFF]
+            } else {
+                [rgb[2], rgb[2], rgb[2], 0xFF]
+            }
+        })
+    }
+
+    /// Renders the lines of pixels of the depth of `mode` through their
+    /// lookup table, but those that wrap around the end of VRAM
+    fn render_indexed<const N: usize>(&self, buf: &mut [u8], mode: &Mode, lut: &[[u8; 4]; N]) {
+        let line_bytes = (mode.width << mode.depth).div_ceil(8);
+        for (y, line) in buf.chunks_exact_mut(mode.width * 4).enumerate() {
+            let row = y * mode.row_bytes;
+            match self.vram.get(row..row + line_bytes) {
+                Some(fb) => render_packed(fb, line, lut),
+                None => self.render_line(line, row, mode),
+            }
+        }
+    }
+
+    /// Renders a line a pixel at a time, from VRAM offset `row`
+    fn render_line(&self, line: &mut [u8], row: usize, mode: &Mode) {
         let &Mode {
-            width,
-            height,
             depth,
-            row_bytes,
             direct_palette,
+            ..
         } = mode;
         let palette = &self.ramdac.palette;
         let vram = |idx: usize| self.vram[idx % self.vram.len()];
 
-        buf.set_size(width, height);
-        for (y, line) in buf.chunks_exact_mut(width * 4).enumerate() {
-            let row = y * row_bytes;
-            for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
-                let rgb = if depth < DEPTH_16BPP {
-                    // The pixel is the upper bits of the address in the colour
-                    // table, the lower bits are set.
-                    let bpp = 1 << depth;
-                    let byte = vram(row + x * bpp / 8);
-                    let index = usize::from(byte << ((x * bpp) % 8)) | (0xFF >> bpp);
-                    let rgb = palette[index];
-                    // The monochrome monitors show the blue signal
-                    if self.monitor.has_color() {
-                        rgb
-                    } else {
-                        [rgb[2]; 3]
-                    }
+        for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
+            let rgb = if depth < DEPTH_16BPP {
+                // The pixel is the upper bits of the address in the colour
+                // table, the lower bits are set.
+                let bpp = 1 << depth;
+                let byte = vram(row + x * bpp / 8);
+                let index = usize::from(byte << ((x * bpp) % 8)) | (0xFF >> bpp);
+                let rgb = palette[index];
+                // The monochrome monitors show the blue signal
+                if self.monitor.has_color() {
+                    rgb
                 } else {
-                    // Depths above 16 bpp are not known to exist
-                    let word = u16::from_be_bytes([vram(row + x * 2), vram(row + x * 2 + 1)]);
-                    let [r, g, b] = [word >> 10, word >> 5, word].map(|c| usize::from(c) & 0x1F);
-                    if direct_palette {
-                        [palette[r][0], palette[g][1], palette[b][2]]
-                    } else {
-                        [r, g, b].map(|c| (c << 3 | c >> 2) as u8)
-                    }
-                };
-                pixel[..3].copy_from_slice(&rgb);
-                pixel[3] = 0xFF;
-            }
+                    [rgb[2]; 3]
+                }
+            } else {
+                // Depths above 16 bpp are not known to exist
+                let word = u16::from_be_bytes([vram(row + x * 2), vram(row + x * 2 + 1)]);
+                let [r, g, b] = [word >> 10, word >> 5, word].map(|c| usize::from(c) & 0x1F);
+                if direct_palette {
+                    [palette[r][0], palette[g][1], palette[b][2]]
+                } else {
+                    [r, g, b].map(|c| (c << 3 | c >> 2) as u8)
+                }
+            };
+            pixel[..3].copy_from_slice(&rgb);
+            pixel[3] = 0xFF;
         }
     }
 

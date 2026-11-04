@@ -7,7 +7,7 @@ use super::NubusSlot;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::{DisplayBuffer, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -97,47 +97,38 @@ where
         buf.set_size(Self::H_VISIBLE, Self::V_VISIBLE);
 
         let fb = &self.vram[self.fb_base..];
+        match self.mode {
+            0 => self.render_lines(fb, buf, &self.clut_lut::<2>()),
+            1 => self.render_lines(fb, buf, &self.clut_lut::<4>()),
+            2 => self.render_lines(fb, buf, &self.clut_lut::<16>()),
+            3 => self.render_lines(fb, buf, &self.clut_lut::<256>()),
+            _ => unreachable!(),
+        }
+    }
+
+    /// The RGBA pixel of each of the N pixel values. The framebuffer is packed
+    /// with the leftmost pixel in the most significant bits, and the pixel
+    /// value left-aligned forms the CLUT index (so for 2bpp the indices are
+    /// 0x00/0x40/0x80/0xC0, for 4bpp 0x00..0xF0).
+    fn clut_lut<const N: usize>(&self) -> [[u8; 4]; N] {
+        let shift = 8 - N.trailing_zeros();
+        std::array::from_fn(|v| {
+            let c = &self.clut[(v << shift) * 3..][..3];
+            [c[0], c[1], c[2], 0xFF]
+        })
+    }
+
+    /// Renders the visible lines of pixels of log2(N) bits
+    fn render_lines<const N: usize>(&self, fb: &[u8], buf: &mut [u8], lut: &[[u8; 4]; N]) {
         // Bytes per scanline: 128 (1bpp), 256 (2bpp), 512 (4bpp), 1024 (8bpp)
         let stride = 128usize << self.mode;
-
-        // The framebuffer is packed with the leftmost pixel in the most significant
-        // bits and the pixel value left-aligned to form the CLUT index (so for
-        // 2bpp the indices are 0x00/0x40/0x80/0xC0, for 4bpp 0x00..0xF0).
-        for y in 0..Self::V_VISIBLE {
-            for x in 0..Self::H_VISIBLE {
-                let index = match self.mode {
-                    0 => {
-                        // 1 bpp
-                        let byte = fb[y * stride + x / 8];
-                        usize::from((byte << (x % 8)) & 0x80)
-                    }
-                    1 => {
-                        // 2 bpp
-                        let byte = fb[y * stride + x / 4];
-                        usize::from((byte << ((x % 4) * 2)) & 0xC0)
-                    }
-                    2 => {
-                        // 4 bpp
-                        let byte = fb[y * stride + x / 2];
-                        if x % 2 == 0 {
-                            usize::from(byte & 0xF0)
-                        } else {
-                            usize::from((byte & 0x0F) << 4)
-                        }
-                    }
-                    3 => {
-                        // 8 bpp
-                        usize::from(fb[y * stride + x])
-                    }
-                    _ => unreachable!(),
-                };
-
-                let out = (y * Self::H_VISIBLE + x) * 4;
-                buf[out] = self.clut[index * 3];
-                buf[out + 1] = self.clut[index * 3 + 1];
-                buf[out + 2] = self.clut[index * 3 + 2];
-                buf[out + 3] = 0xFF;
-            }
+        let row_bytes = Self::H_VISIBLE * N.trailing_zeros() as usize / 8;
+        for (y, line) in buf
+            .chunks_exact_mut(Self::H_VISIBLE * 4)
+            .take(Self::V_VISIBLE)
+            .enumerate()
+        {
+            render_packed(&fb[y * stride..][..row_bytes], line, lut);
         }
     }
 }
