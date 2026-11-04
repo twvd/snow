@@ -198,6 +198,8 @@ pub struct EmulatorState {
     mouse_mode: MouseMode,
     /// The settings of the Apple IIe Card, if the machine has one
     iie_card: Option<IieCardSettings>,
+    /// The Apple IIe Card is in front
+    iie_in_front: bool,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -524,6 +526,7 @@ impl EmulatorState {
             self.eventrecv = None;
             self.status = None;
             self.record_input_path = None;
+            self.iie_in_front = false;
         }
 
         self.instruction_history_enabled = false;
@@ -681,7 +684,7 @@ impl EmulatorState {
                 EmulatorEvent::SerialBridgeStatus(ch, status) => {
                     self.serial_bridge_status[ch.to_usize().unwrap()] = status;
                 }
-                EmulatorEvent::IieInFront(_) => (),
+                EmulatorEvent::IieInFront(in_front) => self.iie_in_front = in_front,
             }
         }
 
@@ -1416,6 +1419,11 @@ impl EmulatorState {
             return Ok(());
         };
         Ok(sender.send(EmulatorCommand::SccReceiveData(ch, data))?)
+    }
+
+    /// Whether the Apple IIe Card is in front
+    pub fn iie_in_front(&self) -> bool {
+        self.iie_in_front
     }
 
     pub fn is_mouse_relative(&self) -> bool {

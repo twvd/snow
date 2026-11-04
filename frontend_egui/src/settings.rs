@@ -107,6 +107,9 @@ pub struct AppSettings {
     pub dynamic_fastforward: bool,
     #[serde(default = "bool_true")]
     pub auto_relative_mouse_fullscreen: bool,
+    /// Use the relative mouse while the Apple IIe Card is in front
+    #[serde(default = "bool_true")]
+    pub auto_relative_mouse_iie: bool,
     /// Multiplier applied to mouse motion in relative mouse mode
     pub relative_mouse_speed: f32,
     /// Capture the mouse in relative mouse mode
@@ -151,6 +154,7 @@ impl Default for AppSettings {
             fastforward_limit: 2.0,
             dynamic_fastforward: false,
             auto_relative_mouse_fullscreen: true,
+            auto_relative_mouse_iie: true,
             relative_mouse_speed: 1.0,
             mouse_capture: true,
             writeback_mode: PromptChoice::default(),

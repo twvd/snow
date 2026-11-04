@@ -183,6 +183,8 @@ pub struct SnowGui {
     occluded: bool,
     in_zen_mode: bool,
     pre_fullscreen_mouse_mode: Option<MouseMode>,
+    /// The mouse mode to restore when the Apple IIe Card leaves the front
+    pre_iie_mouse_mode: Option<MouseMode>,
     /// Sub-pixel remainder of scaled relative mouse motion, carried to the next event
     mouse_rel_remainder: egui::Vec2,
     mouse_grabbed: bool,
@@ -254,6 +256,7 @@ pub struct SnowGui {
     pending_confirm: PendingConfirm,
     ui_active: bool,
     last_running: bool,
+    last_iie_in_front: bool,
 
     // Snowflakes
     snowflakes: Vec<Snowflake>,
@@ -380,6 +383,7 @@ impl SnowGui {
             occluded: false,
             in_zen_mode: false,
             pre_fullscreen_mouse_mode: None,
+            pre_iie_mouse_mode: None,
             mouse_rel_remainder: egui::Vec2::ZERO,
             mouse_grabbed: false,
             mouse_grab_applied: false,
@@ -528,6 +532,7 @@ impl SnowGui {
             pending_confirm: PendingConfirm::None,
             ui_active: true,
             last_running: false,
+            last_iie_in_front: false,
 
             // Snowflakes
             snowflakes: Vec::new(),
@@ -647,6 +652,27 @@ impl SnowGui {
         self.release_mouse_grab();
         if let Some(mode) = self.pre_fullscreen_mouse_mode.take() {
             self.emu.set_mouse_mode(mode);
+        }
+        self.update_iie_mouse(ctx);
+    }
+
+    /// Uses the relative mouse while the Apple IIe Card is in front: the IIe
+    /// takes its mouse moves from ADB, which the absolute mouse doesn't drive
+    fn update_iie_mouse(&mut self, ctx: &egui::Context) {
+        if self.settings.auto_relative_mouse_iie && self.emu.iie_in_front() {
+            if self.pre_iie_mouse_mode.is_none() && self.emu.mouse_mode() == MouseMode::Absolute {
+                self.pre_iie_mouse_mode = Some(MouseMode::Absolute);
+                self.emu.set_mouse_mode(MouseMode::RelativeHw);
+                self.grab_mouse(ctx);
+            }
+        } else if let Some(mode) = self.pre_iie_mouse_mode.take() {
+            if self.pre_fullscreen_mouse_mode.is_some() {
+                // Fullscreen keeps the relative mouse, and restores the mode on exit
+                self.pre_fullscreen_mouse_mode = Some(mode);
+            } else if self.emu.mouse_mode() == MouseMode::RelativeHw {
+                self.release_mouse_grab();
+                self.emu.set_mouse_mode(mode);
+            }
         }
     }
 
@@ -1188,6 +1214,19 @@ impl SnowGui {
                         .clicked()
                     {
                         self.settings.save();
+                    }
+                    if ui
+                        .checkbox(
+                            &mut self.settings.auto_relative_mouse_iie,
+                            "Use relative mouse in the Apple IIe",
+                        )
+                        .on_hover_text(
+                            "Switch to relative mouse mode while the Apple IIe Card is in front",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                        self.update_iie_mouse(ctx);
                     }
                     if ui
                         .checkbox(
@@ -3582,6 +3621,10 @@ impl eframe::App for SnowGui {
             if self.last_running != self.emu.is_running() {
                 self.last_running = self.emu.is_running();
                 self.update_titlebar(ctx);
+            }
+            if self.last_iie_in_front != self.emu.iie_in_front() {
+                self.last_iie_in_front = self.emu.iie_in_front();
+                self.update_iie_mouse(ctx);
             }
             self.registers.update_regs(self.emu.get_regs().clone());
 
