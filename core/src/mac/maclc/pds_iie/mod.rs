@@ -288,6 +288,16 @@ const PADDLE_CYCLES_PER_COUNT: i64 = 11;
 const PADDLE_BASE_CYCLES: i64 = 5;
 /// The position of a joystick kept connected after `GamePort::keep_stick`
 const PADDLE_CENTRE: u8 = 128;
+/// How long the IIe stays in front after the host last wrote `$20`. IIe
+/// Startup's VBL task writes it about 60 times a second while the IIe is in
+/// front, with gaps of a little over 0.1 s while a 5.25" disk is read, and not
+/// at all while the Option Panel or another Mac application is (seen running
+/// IIe Startup 2.2).
+const IN_FRONT_TIMEOUT: Ticks = C16M_FREQUENCY / 2;
+/// How long the host must keep writing `$20` before the IIe is in front: at
+/// launch, IIe Startup's self-test writes it for about 0.1 s with the Mac
+/// desktop still shown.
+const IN_FRONT_SETTLE: Ticks = C16M_FREQUENCY;
 
 /// What kind of access trapped the 65C02.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1559,6 +1569,11 @@ pub struct PdsIIeCard {
     /// [`Self::take_speaker_level`].
     speaker_high: Ticks,
     speaker_total: Ticks,
+    /// C16M ticks since the host last wrote `$20`, up to `IN_FRONT_TIMEOUT`
+    ctrl2_idle: Ticks,
+    /// C16M ticks the 65C02 has been running with the host writing `$20`, up
+    /// to `IN_FRONT_SETTLE`
+    front_time: Ticks,
     /// Last (code, address) pair logged for a trap, to keep the
     /// repeated-trap debug output to the distinct cases.
     #[cfg(feature = "iie-debug")]
@@ -1600,6 +1615,12 @@ const LC_BANK2_AT_C000: bool = false;
 const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
 impl PdsIIeCard {
+    /// Whether the IIe is in front: its 65C02 runs, and the host keeps writing
+    /// `$20`
+    pub fn in_front(&self) -> bool {
+        self.front_time >= IN_FRONT_SETTLE
+    }
+
     /// Creates a card with its 65C02 stopped and the default settings.
     pub fn new() -> Self {
         Self::with_settings(&IieCardSettings::default())
@@ -1618,6 +1639,8 @@ impl PdsIIeCard {
             clock_acc: 0,
             speaker_high: 0,
             speaker_total: 0,
+            ctrl2_idle: IN_FRONT_TIMEOUT,
+            front_time: 0,
             #[cfg(feature = "iie-debug")]
             last_trap_log: (0, 0),
             #[cfg(feature = "iie-debug")]
@@ -1850,6 +1873,7 @@ impl PdsIIeCard {
             }
             0x20 => {
                 if hi {
+                    self.ctrl2_idle = 0;
                     let mut s = self.cpu.bus.state.borrow_mut();
                     let running = s.host.ctrl2 & 0x80 != 0;
                     let held = running && s.host.ctrl2 & 0x08 == 0;
@@ -2161,6 +2185,12 @@ impl Tickable for PdsIIeCard {
         }
         self.speaker_total += ticks;
         drop(s);
+        self.ctrl2_idle = (self.ctrl2_idle + ticks).min(IN_FRONT_TIMEOUT);
+        self.front_time = if run && self.ctrl2_idle < IN_FRONT_TIMEOUT {
+            (self.front_time + ticks).min(IN_FRONT_SETTLE)
+        } else {
+            0
+        };
         if !run {
             return Ok(ticks);
         }
@@ -2700,6 +2730,42 @@ mod tests {
         assert!(!card.suspended());
         run(&mut card, 1);
         assert_ne!(card.cpu.regs.pc, held_pc); // advancing again
+    }
+
+    /// The IIe is in front once it has run with the host writing `$20` for
+    /// `IN_FRONT_SETTLE`, until the writes stop for `IN_FRONT_TIMEOUT` or the
+    /// 65C02 stops
+    #[test]
+    fn in_front_while_the_host_writes_ctrl2() {
+        let mut card = PdsIIeCard::new();
+        let step = IN_FRONT_SETTLE / 20;
+        for _ in 0..20 {
+            assert!(!card.in_front());
+            card.host_write(0x20, 1, 0x88).unwrap();
+            card.tick(step, ()).unwrap();
+        }
+        assert!(card.in_front());
+        card.tick(IN_FRONT_TIMEOUT - step - 1, ()).unwrap();
+        assert!(card.in_front());
+        card.tick(1, ()).unwrap();
+        assert!(!card.in_front());
+
+        // A short burst of writes, as the self-test at launch makes
+        for _ in 0..2 {
+            card.host_write(0x20, 1, 0x88).unwrap();
+            card.tick(step, ()).unwrap();
+        }
+        card.tick(IN_FRONT_TIMEOUT, ()).unwrap();
+        assert!(!card.in_front());
+
+        // Stopped
+        for _ in 0..20 {
+            card.host_write(0x20, 1, 0x88).unwrap();
+            card.tick(step, ()).unwrap();
+        }
+        card.host_write(0x20, 1, 0x08).unwrap();
+        card.tick(1, ()).unwrap();
+        assert!(!card.in_front());
     }
 
     /// The game buttons trap while `$21` bit 1 is set: "Restart IIe"

@@ -267,4 +267,6 @@ pub enum EmulatorEvent {
     SystrapHistory(Vec<SystrapHistoryEntry>),
     /// Serial bridge status update
     SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
+    /// The Apple IIe Card came to the front (true) or left it
+    IieInFront(bool),
 }
