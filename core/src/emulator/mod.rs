@@ -390,6 +390,8 @@ pub struct Emulator {
     event_recv: EmulatorEventReceiver,
     run: bool,
     last_update: Instant,
+    /// The Apple IIe Card was in front at the last check
+    iie_in_front: bool,
     model: MacModel,
     record_input: Option<InputRecording>,
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
@@ -709,6 +711,7 @@ impl Emulator {
             event_recv: statusr,
             run: false,
             last_update: Instant::now(),
+            iie_in_front: false,
             model,
             record_input: None,
             replay_input: VecDeque::default(),
@@ -765,6 +768,7 @@ impl Emulator {
             event_recv: statusr,
             run: false,
             last_update: Instant::now(),
+            iie_in_front: false,
             model,
             record_input: None,
             replay_input: VecDeque::default(),
@@ -810,6 +814,18 @@ impl Emulator {
 
     pub fn create_event_recv(&self) -> EmulatorEventReceiver {
         self.event_recv.clone()
+    }
+
+    /// Whether the Apple IIe Card is in front, on a machine that has one
+    fn iie_card_in_front(&mut self) -> bool {
+        let card = match &mut self.config {
+            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
+            _ => None,
+        };
+        card.is_some_and(|card| card.in_front())
     }
 
     fn status_update(&mut self) -> Result<()> {
@@ -2133,6 +2149,13 @@ impl Tickable for Emulator {
             // Honour any writeback requests raised during this tick batch
             // (e.g. by the SWIM controller turning a drive motor off).
             self.flush_pending_writebacks(false);
+
+            let iie_in_front = self.iie_card_in_front();
+            if iie_in_front != self.iie_in_front {
+                self.iie_in_front = iie_in_front;
+                self.event_sender
+                    .send(EmulatorEvent::IieInFront(iie_in_front))?;
+            }
         } else {
             thread::sleep(Duration::from_millis(100));
         }

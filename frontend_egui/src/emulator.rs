@@ -681,6 +681,7 @@ impl EmulatorState {
                 EmulatorEvent::SerialBridgeStatus(ch, status) => {
                     self.serial_bridge_status[ch.to_usize().unwrap()] = status;
                 }
+                EmulatorEvent::IieInFront(_) => (),
             }
         }
 
