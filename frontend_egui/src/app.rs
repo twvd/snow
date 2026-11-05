@@ -245,12 +245,18 @@ pub struct SnowGui {
     state_dialog_last_header: Option<SaveHeader>,
     state_dialog_screenshot: egui::TextureHandle,
     shared_dir_dialog: SnowFileDialog,
+    #[cfg(feature = "afp_server")]
+    afp_dir_dialog: SnowFileDialog,
     #[cfg(feature = "ethernet")]
     pcap_capture_dialog: SnowFileDialog,
     #[cfg(feature = "ethernet")]
     pcap_capture_dialog_idx: usize,
 
     error_dialog_open: bool,
+    #[cfg(feature = "afp_server")]
+    afp_advanced_open: bool,
+    #[cfg(feature = "afp_server")]
+    afp_advanced_snapshot: snow_core::mac::serial_bridge::AfpSettings,
     error_string: String,
     confirm_dialog: ConfirmDialog,
     pending_confirm: PendingConfirm,
@@ -517,6 +523,11 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_shared_dir),
+            #[cfg(feature = "afp_server")]
+            afp_dir_dialog: SnowFileDialog::new()
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_afp_dir),
             #[cfg(feature = "ethernet")]
             pcap_capture_dialog: SnowFileDialog::new()
                 .add_filter("PCAP files", &["pcap", "cap"])
@@ -528,6 +539,10 @@ impl SnowGui {
 
             error_dialog_open: false,
             error_string: String::new(),
+            #[cfg(feature = "afp_server")]
+            afp_advanced_open: false,
+            #[cfg(feature = "afp_server")]
+            afp_advanced_snapshot: Default::default(),
             confirm_dialog: ConfirmDialog::new(),
             pending_confirm: PendingConfirm::None,
             ui_active: true,
@@ -1127,6 +1142,14 @@ impl SnowGui {
                     }
                 });
                 ui.separator();
+                #[cfg(feature = "afp_server")]
+                {
+                    ui.menu_button("Network File Sharing…", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH + 120.0);
+                        self.draw_afp_menu(ui);
+                    });
+                    ui.separator();
+                }
                 if ui
                     .add_enabled(
                         self.emu.is_initialized(),
@@ -2100,6 +2123,166 @@ impl SnowGui {
         }
     }
 
+    #[cfg(feature = "afp_server")]
+    fn draw_afp_menu(&mut self, ui: &mut egui::Ui) {
+        let active = matches!(
+            &self.workspace.serial_bridges[1],
+            Some(SerialBridgeConfig::AppleTalk { .. })
+        );
+        let mut enabled = active;
+        let have_folder = self.workspace.get_afp_shared_dir().is_some();
+        // A folder is required: the server never silently shares a
+        // /var/tmp path (which would not even make sense on Windows)
+        ui.add_enabled_ui(have_folder || active, |ui| {
+            ui.checkbox(&mut enabled, "Enable AppleShare file server");
+        });
+        if !have_folder && !active {
+            ui.small("Choose a shared folder first.");
+        }
+        if enabled != active {
+            if enabled {
+                self.apply_afp_bridge();
+            } else {
+                self.workspace.serial_bridges[1] = None;
+                let _ = self.emu.disable_serial_bridge(SccCh::B);
+            }
+        }
+        // The desktop database's scan progress, live from the bridge
+        if enabled
+            && let Some(snow_core::mac::serial_bridge::SerialBridgeStatus::LocalTalk(status)) =
+                self.emu.get_serial_bridge_status(SccCh::B)
+        {
+            if !status.scan_done {
+                let fraction = match status.scan_total {
+                    Some(total) if total > 0 => {
+                        (status.scan_entries as f32 / total as f32).clamp(0.0, 1.0)
+                    }
+                    _ => f32::NAN, // still counting: indeterminate
+                };
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(format!(
+                    "Desktop database: {} / {} entries",
+                    status.scan_entries,
+                    status
+                        .scan_total
+                        .map_or_else(|| "…".to_string(), |t| t.to_string())
+                ));
+            } else if status.scan_apps > 0 {
+                ui.label(format!(
+                    "Desktop database: {} apps, {} icons",
+                    status.scan_apps, status.scan_icons
+                ));
+            }
+        }
+
+        // The shared folder and the volume name can be chosen before
+        // enabling; they are applied to the running server when it is
+        // enabled (or re-applied when it is already running)
+        ui.label("Shared folder:");
+        let mut dir_str = self
+            .workspace
+            .get_afp_shared_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        ui.add_enabled(false, egui::TextEdit::singleline(&mut dir_str));
+        if ui.button("Select folder...").clicked() {
+            self.afp_dir_dialog
+                .pick_directory(self.settings.native_file_dialogs);
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Volume name:");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.workspace.afp_volume_name)
+                    .desired_width(140.0)
+                    // AFP volume names are at most 27 characters
+                    .char_limit(27),
+            );
+            // What cannot be a volume name on the wire never gets in
+            self.workspace
+                .afp_volume_name
+                .retain(snow_core::mac::serial_bridge::afp_volume_name_char_ok);
+            // The bridge is rebuilt on focus loss and only when the
+            // name really changed — not on every keystroke (a rebuild
+            // restarts the scan and drops the guest's session)
+            let built_name = match &self.workspace.serial_bridges[1] {
+                Some(SerialBridgeConfig::AppleTalk { volume_name, .. }) => {
+                    volume_name.clone().unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            if response.lost_focus() && self.workspace.afp_volume_name != built_name && enabled {
+                self.apply_afp_bridge();
+            }
+        });
+        // A nested menu, because a ComboBox popup would close the
+        // enclosing menu
+        let version_before = self.workspace.afp_max_version;
+        ui.menu_button(
+            format!("Maximum AFP version: {}", self.workspace.afp_max_version),
+            |ui| {
+                use snow_core::mac::serial_bridge::AfpMaxVersion::*;
+                ui.selectable_value(
+                    &mut self.workspace.afp_max_version,
+                    Max22,
+                    Max22.to_string(),
+                );
+                ui.selectable_value(
+                    &mut self.workspace.afp_max_version,
+                    Max21,
+                    Max21.to_string(),
+                );
+                ui.selectable_value(
+                    &mut self.workspace.afp_max_version,
+                    Max20,
+                    Max20.to_string(),
+                );
+                ui.selectable_value(
+                    &mut self.workspace.afp_max_version,
+                    Max11,
+                    Max11.to_string(),
+                );
+            },
+        );
+        if self.workspace.afp_max_version != version_before && enabled {
+            self.apply_afp_bridge();
+        }
+
+        // The advanced settings live in their own dialog
+        if ui.button("Advanced…").clicked() {
+            self.afp_advanced_snapshot = self.workspace.afp_settings;
+            self.afp_advanced_open = true;
+        }
+        if enabled {
+            if self.workspace.afp_settings.read_only {
+                ui.label("The volume is read-only: files can be copied off, not onto the server.");
+            } else {
+                ui.label("The volume is writable.");
+            }
+            ui.separator();
+            ui.label("In the guest, make AppleTalk active on the printer port");
+            ui.label("and use the Chooser to mount the volume.");
+        } else if !have_folder {
+            ui.label("Choose a shared folder, then enable the server above.");
+        }
+    }
+
+    /// Build the AppleTalk bridge configuration from the workspace
+    /// settings and apply it to SCC channel B (the printer port)
+    #[cfg(feature = "afp_server")]
+    fn apply_afp_bridge(&mut self) {
+        let config = SerialBridgeConfig::AppleTalk {
+            root: self.workspace.get_afp_shared_dir(),
+            volume_name: Some(self.workspace.afp_volume_name.clone()),
+            max_version: self.workspace.afp_max_version,
+            settings: self.workspace.afp_settings,
+        };
+        self.workspace.serial_bridges[1] = Some(config.clone());
+        if self.emu.is_initialized() {
+            let _ = self.emu.enable_serial_bridge(SccCh::B, config);
+        }
+    }
+
     fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
         let fdds: Vec<(usize, _)> = (0..3)
             .filter_map(|i| self.emu.get_fdd_status(i).cloned().map(|d| (i, d)))
@@ -2944,8 +3127,14 @@ impl SnowGui {
             // Bridges given on the command line take precedence over the workspace
             for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
                 if self.pending_serial_bridges[idx].is_none()
-                    && let Some(config) = self.workspace.serial_bridges[idx].clone()
+                    && let Some(mut config) = self.workspace.serial_bridges[idx].clone()
                 {
+                    // The folder as the workspace holds it, relative to
+                    // itself: the workspace may have moved since this saved
+                    #[cfg(feature = "afp_server")]
+                    if let SerialBridgeConfig::AppleTalk { root, .. } = &mut config {
+                        *root = self.workspace.get_afp_shared_dir();
+                    }
                     let _ = self.emu.enable_serial_bridge(ch, config);
                 }
             }
@@ -3730,6 +3919,71 @@ impl eframe::App for SnowGui {
 
         self.draw_joy_mapping(ctx);
 
+        #[cfg(feature = "afp_server")]
+        {
+            let mut open = self.afp_advanced_open;
+            let mut changed = false;
+            egui::Window::new("AppleShare advanced settings")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let s = &mut self.workspace.afp_settings;
+                    ui.add(
+                        egui::DragValue::new(&mut s.scan_depth)
+                            .range(1..=64)
+                            .prefix("Desktop scan depth: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut s.scan_entries_cap)
+                            .range(100_000..=100_000_000)
+                            .speed(100_000)
+                            .prefix("Desktop scan entry cap: "),
+                    );
+                    ui.label("Hidden files:");
+                    ui.horizontal(|ui| {
+                        use snow_core::mac::serial_bridge::AfpHiddenFiles::*;
+                        ui.selectable_value(&mut s.hidden_files, Hide, Hide.to_string());
+                        ui.selectable_value(&mut s.hidden_files, Invisible, Invisible.to_string());
+                        ui.selectable_value(&mut s.hidden_files, Show, Show.to_string());
+                    });
+                    ui.checkbox(&mut s.follow_symlinks, "Follow symlinks inside the share");
+                    ui.separator();
+                    ui.label("Metadata containers to probe:");
+                    ui.checkbox(
+                        &mut s.probe_apple_double,
+                        "AppleDouble (._ and .AppleDouble)",
+                    );
+                    ui.separator();
+                    ui.checkbox(&mut s.read_only, "Read only");
+                    if !s.read_only {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "Writes will create .AppleDouble metadata folders in \
+the shared directory.",
+                        );
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut s.wire_debug, "Wire debug logging (hex dumps)");
+                    ui.small("Logs every LocalTalk frame and AFP command, for protocol diagnosis.");
+                    changed = self.workspace.afp_settings != self.afp_advanced_snapshot;
+                });
+            if open != self.afp_advanced_open {
+                // The dialog closed: apply the changes to a running
+                // server
+                self.afp_advanced_open = open;
+                if changed {
+                    let active = matches!(
+                        &self.workspace.serial_bridges[1],
+                        Some(SerialBridgeConfig::AppleTalk { .. })
+                    );
+                    if active && self.emu.is_initialized() {
+                        self.apply_afp_bridge();
+                    }
+                }
+            }
+        }
+
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.create_disk_dialog.is_open();
@@ -4051,6 +4305,27 @@ impl eframe::App for SnowGui {
         }
 
         self.ui_active &= *self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // AppleTalk file server shared directory picker dialog
+        #[cfg(feature = "afp_server")]
+        {
+            self.afp_dir_dialog.update(ctx, frame);
+            if let Some(path) = self.afp_dir_dialog.take_picked() {
+                self.workspace.set_afp_shared_dir(Some(&path));
+                // Apply to the running server only when it is enabled
+                if matches!(
+                    &self.workspace.serial_bridges[1],
+                    Some(SerialBridgeConfig::AppleTalk { .. })
+                ) {
+                    self.apply_afp_bridge();
+                }
+
+                self.settings.fd_afp_dir = self.afp_dir_dialog.storage_mut().clone();
+                self.settings.save();
+            }
+
+            self.ui_active &= *self.afp_dir_dialog.state() != egui_file_dialog::DialogState::Open;
+        }
 
         // Pcap capture dialog
         #[cfg(feature = "ethernet")]

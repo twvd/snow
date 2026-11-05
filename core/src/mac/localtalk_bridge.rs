@@ -13,9 +13,16 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+#[cfg(feature = "afp_server")]
+use std::path::PathBuf;
 
 use log::*;
+#[cfg(feature = "afp_server")]
+use rand::Rng;
 use socket2::{Domain, Protocol, Socket, Type};
+
+#[cfg(feature = "afp_server")]
+use snow_appletalk::link::{DdpHeaderKind, Packet};
 
 /// LocalTalk over UDP port
 pub const LTOUDP_PORT: u16 = 1954;
@@ -65,36 +72,89 @@ impl TryFrom<u8> for LlapType {
 pub struct LocalTalkStatus {
     /// Our node address (0 = not yet assigned)
     pub node_address: u8,
+    /// Address of the built-in AppleTalk node (0 = none)
+    pub server_node: u8,
     /// Number of packets transmitted
     pub tx_packets: u64,
     /// Number of packets received
     pub rx_packets: u64,
+    /// APPL files the desktop scan has found so far
+    #[cfg(feature = "afp_server")]
+    pub scan_apps: usize,
+    /// Icons the desktop scan has extracted so far
+    #[cfg(feature = "afp_server")]
+    pub scan_icons: usize,
+    /// Directory entries the desktop scan has visited so far
+    #[cfg(feature = "afp_server")]
+    pub scan_entries: usize,
+    /// The total number of entries, once the counting pass is done
+    #[cfg(feature = "afp_server")]
+    pub scan_total: Option<usize>,
+    /// Whether the desktop scan has finished
+    #[cfg(feature = "afp_server")]
+    pub scan_done: bool,
+}
+
+/// The desktop-scan part of the status line (empty without the AFP
+/// server)
+#[cfg(feature = "afp_server")]
+fn desktop_suffix(status: &LocalTalkStatus) -> String {
+    if status.scan_apps == 0 {
+        String::new()
+    } else {
+        format!(
+            ", desktop: {} apps, {} icons{}",
+            status.scan_apps,
+            status.scan_icons,
+            if status.scan_done {
+                " (done)"
+            } else {
+                " (scanning)"
+            }
+        )
+    }
+}
+
+#[cfg(not(feature = "afp_server"))]
+fn desktop_suffix(_status: &LocalTalkStatus) -> String {
+    String::new()
 }
 
 impl std::fmt::Display for LocalTalkStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "LocalTalk (node {}, tx:{} rx:{})",
+            "LocalTalk (node {}{}, tx:{} rx:{}{})",
             if self.node_address == 0 {
                 "?".to_string()
             } else {
                 self.node_address.to_string()
             },
+            if self.server_node == 0 {
+                String::new()
+            } else {
+                format!(", server node {}", self.server_node)
+            },
             self.tx_packets,
-            self.rx_packets
+            self.rx_packets,
+            desktop_suffix(self)
         )
     }
 }
 
 /// LocalTalk over UDP bridge
 pub struct LocalTalkBridge {
-    /// UDP socket for multicast communication
-    socket: UdpSocket,
+    /// UDP socket for multicast communication (None in private mode)
+    socket: Option<UdpSocket>,
     /// Sender ID for loopback detection (typically process ID)
     sender_id: u32,
     /// Our node address (set from SCC WR6, also learned from outgoing packets)
     node_address: u8,
+    /// Address of the built-in AppleTalk node (0 = none)
+    server_node: u8,
+    /// The same address, as the node's NBP answers with it
+    #[cfg(feature = "afp_server")]
+    server_address: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
     /// Z8530 SDLC address search mode (hardware destination filter)
     /// When ON: only accept packets for our address or broadcast (0xFF)
     /// When OFF: accept all packets (Mac firmware handles its own filtering)
@@ -103,11 +163,25 @@ pub struct LocalTalkBridge {
     pending_cts: VecDeque<(u8, u8)>,
     /// Buffer for accumulating TX data from SCC
     tx_buffer: Vec<u8>,
+    /// Whether a packet came out of the frame the guest is sending
+    tx_extracted: bool,
     /// Buffer for received packets to inject into SCC
     rx_queue: Vec<Vec<u8>>,
+    /// Packets from the SCC to the AppleTalk node
+    #[cfg(feature = "afp_server")]
+    node_tx: Option<crossbeam_channel::Sender<Packet>>,
+    /// Packets from the AppleTalk node to inject into the SCC
+    #[cfg(feature = "afp_server")]
+    node_rx: Option<crossbeam_channel::Receiver<Packet>>,
     /// Statistics
     tx_packets: u64,
     rx_packets: u64,
+    /// The desktop scan's progress reports, if the AFP server is on
+    #[cfg(feature = "afp_server")]
+    scan_status_rx: Option<crossbeam_channel::Receiver<snow_appletalk::afp::ScanStatus>>,
+    /// The latest desktop scan progress
+    #[cfg(feature = "afp_server")]
+    scan_status: snow_appletalk::afp::ScanStatus,
 }
 
 impl LocalTalkBridge {
@@ -145,51 +219,232 @@ impl LocalTalkBridge {
         );
 
         Ok(Self {
-            socket,
+            socket: Some(socket),
             sender_id,
             node_address: 0,
+            server_node: 0,
+            #[cfg(feature = "afp_server")]
+            server_address: None,
             address_search_mode: false,
             pending_cts: VecDeque::new(),
             tx_buffer: Vec::with_capacity(MAX_LLAP_SIZE),
+            tx_extracted: false,
             rx_queue: Vec::new(),
+            #[cfg(feature = "afp_server")]
+            node_tx: None,
+            #[cfg(feature = "afp_server")]
+            node_rx: None,
             tx_packets: 0,
             rx_packets: 0,
+            #[cfg(feature = "afp_server")]
+            scan_status_rx: None,
+            #[cfg(feature = "afp_server")]
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
         })
+    }
+
+    /// Create a private bridge for the built-in AppleTalk node, with no
+    /// connection to the outside network. The node runs on its own thread
+    /// and uses a server node address from the range 128-254. The AFP
+    /// server shares the given directory as a volume (the SNOW_AFP_ROOT
+    /// environment variable when unset) under the given name (default
+    /// "Snow").
+    #[cfg(feature = "afp_server")]
+    pub fn new_private(
+        share_root: Option<PathBuf>,
+        volume_name: Option<String>,
+        max_version: snow_appletalk::afp::MaxVersion,
+        settings: snow_appletalk::afp::AfpSettings,
+    ) -> Self {
+        // The wire-level dumps follow the server's diagnostic setting; off
+        // leaves the SNOW_AT_WIRE_DEBUG environment variable in charge
+        if settings.wire_debug {
+            snow_appletalk::wire::set_wire_debug(true);
+        }
+        let server_node = Self::pick_server_node(0);
+        let (node_tx, thread_rx) = crossbeam_channel::bounded(256);
+        let (thread_tx, node_rx) = crossbeam_channel::bounded(256);
+        let (scan_tx, scan_rx) = crossbeam_channel::unbounded();
+        let server_address = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(server_node));
+        let node_address = server_address.clone();
+        std::thread::spawn(move || {
+            snow_appletalk::node::Node::new(
+                server_node,
+                0,
+                thread_rx,
+                thread_tx,
+                share_root,
+                volume_name,
+                max_version,
+                Some(scan_tx),
+                settings,
+            )
+            .with_shared_address(node_address)
+            .run();
+        });
+
+        Self {
+            socket: None,
+            sender_id: std::process::id(),
+            node_address: 0,
+            server_node,
+            server_address: Some(server_address),
+            address_search_mode: false,
+            pending_cts: VecDeque::new(),
+            tx_buffer: Vec::with_capacity(MAX_LLAP_SIZE),
+            tx_extracted: false,
+            rx_queue: Vec::new(),
+            node_tx: Some(node_tx),
+            node_rx: Some(node_rx),
+            tx_packets: 0,
+            rx_packets: 0,
+            scan_status_rx: Some(scan_rx),
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
+        }
+    }
+
+    /// Pick a random server node address, avoiding the given one
+    #[cfg(feature = "afp_server")]
+    fn pick_server_node(avoid: u8) -> u8 {
+        loop {
+            let node = rand::rng().random_range(128..=254);
+            if node != avoid {
+                return node;
+            }
+        }
     }
 
     /// Get current bridge status
     pub fn status(&self) -> LocalTalkStatus {
         LocalTalkStatus {
             node_address: self.node_address,
+            server_node: self.server_node,
             tx_packets: self.tx_packets,
             rx_packets: self.rx_packets,
+            #[cfg(feature = "afp_server")]
+            scan_apps: self.scan_status.apps,
+            #[cfg(feature = "afp_server")]
+            scan_icons: self.scan_status.icons,
+            #[cfg(feature = "afp_server")]
+            scan_entries: self.scan_status.entries,
+            #[cfg(feature = "afp_server")]
+            scan_total: self.scan_status.total,
+            #[cfg(feature = "afp_server")]
+            scan_done: self.scan_status.done,
         }
     }
 
-    /// Handle a complete LLAP packet from the SCC TX path
-    pub fn handle_tx_packet(&mut self, llap: &[u8]) {
-        if llap.len() < 3 {
-            warn!("LocalTalk: TX packet too small ({} bytes)", llap.len());
+    /// Handle a complete LLAP packet from the SCC TX path.
+    /// Dump an LLAP frame, with wire debug on
+    #[cfg(feature = "afp_server")]
+    fn dump_llap(dir: &str, llap: &[u8]) {
+        if !snow_appletalk::wire::wire_debug_enabled() {
             return;
         }
+        let mut hex = String::with_capacity(llap.len() * 3);
+        for (i, b) in llap.iter().enumerate() {
+            if i > 0 {
+                hex.push(' ');
+            }
+            hex.push_str(&format!("{b:02x}"));
+        }
+        let t = std::time::Instant::now()
+            .duration_since(Self::debug_start())
+            .as_millis();
+        log::info!(
+            "LLAP {dir} t={t}ms: dst={:02x} src={:02x} type={:02x} len={} | {hex}",
+            llap.first().copied().unwrap_or(0),
+            llap.get(1).copied().unwrap_or(0),
+            llap.get(2).copied().unwrap_or(0),
+            llap.len()
+        );
+    }
+
+    /// The start time for wire_debug timestamps
+    #[cfg(feature = "afp_server")]
+    fn debug_start() -> std::time::Instant {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        *START.get_or_init(std::time::Instant::now)
+    }
+
+    /// Whether the per-frame logs print: the bridge reports every frame,
+    /// so they follow the built-in node's wire debug switch
+    pub fn wire_debug() -> bool {
+        #[cfg(feature = "afp_server")]
+        let on = snow_appletalk::wire::wire_debug_enabled();
+        #[cfg(not(feature = "afp_server"))]
+        let on = false;
+        on
+    }
+
+    /// Handle an LLAP packet transmitted by the guest
+    pub fn handle_tx_packet(&mut self, llap: &[u8]) -> Vec<Vec<u8>> {
+        if llap.len() < 3 {
+            warn!("LocalTalk: TX packet too small ({} bytes)", llap.len());
+            return Vec::new();
+        }
+        #[cfg(feature = "afp_server")]
+        Self::dump_llap("<- guest", llap);
 
         let dest = llap[0];
         let src = llap[1];
         let ptype = llap[2];
 
+        // The Mac is acquiring an address: it has just started, or just
+        // turned AppleTalk on, so whatever sessions it had are gone
+        #[cfg(feature = "afp_server")]
+        if ptype == 0x81
+            && dest == src
+            && dest != self.server_node
+            && let Some(node_tx) = &self.node_tx
+        {
+            let _ = node_tx.try_send(Packet::node_started(src));
+        }
+
+        // The Mac tries the AppleTalk node's address: an ENQ carries the
+        // address being tried as both destination and source. The answer
+        // comes back at once, as a CTS does, and the Mac tries another
+        // (Inside AppleTalk ch1: the node using an address acknowledges).
+        if ptype == 0x81 && self.server_node != 0 && dest == self.server_node {
+            let ack = vec![src, self.server_node, 0x82];
+            #[cfg(feature = "afp_server")]
+            Self::dump_llap("-> guest (ack)", &ack);
+            return vec![ack];
+        }
+
         // Track our node address from outgoing packets
         if src != 0 && src != 0xFF {
             self.node_address = src;
+            // The Mac already holds the AppleTalk node's address: the node
+            // moves, and NBP has to answer with the new one
+            #[cfg(feature = "afp_server")]
+            if src == self.server_node {
+                self.server_node = Self::pick_server_node(src);
+                if let Some(address) = &self.server_address {
+                    address.store(self.server_node, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
 
         match ptype {
             0x84 => {
                 // lapRTS - Request to send
-                // Don't send over network - synthesize CTS response locally
-                // Both unicast and broadcast RTS get a CTS so the Mac proceeds to send data.
-                // On real hardware, broadcast wouldn't need CTS, but in our emulation
-                // the Mac's SCC driver waits for CTS before sending the next frame.
-                self.pending_cts.push_back((src, dest));
+                // Don't send over network - synthesize CTS response locally.
+                // On the private link, only answer RTS frames addressed to the
+                // AppleTalk node, and hand the CTS back immediately so it can
+                // be injected into the SCC right away (the driver's CTS poll
+                // window is too short for the next tick batch). A broadcast
+                // RTS gets no reply on a real bus, and the Mac treats an
+                // unexpected CTS as a collision (LLAP access control).
+                // The UDP bridge keeps answering every RTS via pending_cts.
+                if self.socket.is_none() && dest == self.server_node {
+                    #[cfg(feature = "afp_server")]
+                    Self::dump_llap("-> guest (cts)", &[src, dest, 0x85]);
+                    return vec![vec![src, dest, 0x85]];
+                }
+                if self.socket.is_some() {
+                    self.pending_cts.push_back((src, dest));
+                }
             }
             0x85 => {
                 // lapCTS - Clear to send
@@ -198,12 +453,37 @@ impl LocalTalkBridge {
             _ => {
                 // All other packets (data, ENQ, ACK) are sent over UDP
                 self.send_udp(llap);
+
+                // Forward data packets for the AppleTalk node (or everyone)
+                #[cfg(feature = "afp_server")]
+                if (ptype == 0x01 || ptype == 0x02)
+                    && (dest == self.server_node || dest == 0xFF)
+                    && let Some(node_tx) = &self.node_tx
+                {
+                    let packet = Packet {
+                        kind: if ptype == 0x01 {
+                            DdpHeaderKind::Short
+                        } else {
+                            DdpHeaderKind::Extended
+                        },
+                        node: src,
+                        datagram: llap[3..].to_vec(),
+                    };
+                    if node_tx.try_send(packet).is_err() {
+                        debug!("LocalTalk: AppleTalk node queue full, dropped a packet");
+                    }
+                }
             }
         }
+        Vec::new()
     }
 
     /// Send an LLAP packet over UDP multicast
     fn send_udp(&mut self, llap: &[u8]) {
+        let Some(socket) = &self.socket else {
+            return;
+        };
+
         // Build UDP packet: 4-byte sender ID (big-endian) + LLAP data
         let mut packet = Vec::with_capacity(4 + llap.len());
         packet.extend_from_slice(&self.sender_id.to_be_bytes());
@@ -211,7 +491,7 @@ impl LocalTalkBridge {
 
         let dest = SocketAddr::V4(SocketAddrV4::new(LTOUDP_MULTICAST, LTOUDP_PORT));
 
-        match self.socket.send_to(&packet, dest) {
+        match socket.send_to(&packet, dest) {
             Ok(_) => {
                 self.tx_packets += 1;
             }
@@ -221,45 +501,96 @@ impl LocalTalkBridge {
         }
     }
 
-    /// Poll for incoming UDP packets and state changes
-    /// Returns true if there's data available for the SCC
+    /// Poll for incoming UDP packets and state changes.
+    /// Returns true if something arrived, so the status changed. A frame
+    /// still waiting for the guest's receiver does not count: with
+    /// AppleTalk off in the guest it waits for good, and this runs on
+    /// every tick batch.
     pub fn poll(&mut self) -> bool {
-        let mut buf = [0u8; 4 + MAX_LLAP_SIZE + 64]; // Extra space for safety
         let mut received_any = false;
 
-        // Receive all pending UDP packets
-        loop {
-            match self.socket.recv_from(&mut buf) {
-                Ok((len, _)) => {
-                    if len < 4 + 3 {
-                        // Too small: need at least sender_id (4) + LLAP header (3)
-                        continue;
+        // Drain the desktop scan's progress reports
+        #[cfg(feature = "afp_server")]
+        {
+            if let Some(rx) = &self.scan_status_rx {
+                while let Ok(status) = rx.try_recv() {
+                    if status != self.scan_status {
+                        if Self::wire_debug() {
+                            log::debug!("LocalTalk: desktop scan status {:?}", status);
+                        }
+                        self.scan_status = status;
+                        received_any = true;
                     }
-
-                    // Extract sender ID
-                    let packet_sender_id = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-
-                    // Loopback detection: skip packets from ourselves
-                    if packet_sender_id == self.sender_id {
-                        continue;
-                    }
-
-                    // Extract LLAP packet
-                    let llap = &buf[4..len];
-                    self.handle_rx_packet(llap);
-                    received_any = true;
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    break;
-                }
-                Err(e) => {
-                    warn!("LocalTalk: UDP recv error: {}", e);
-                    break;
                 }
             }
         }
 
-        received_any || !self.pending_cts.is_empty() || !self.rx_queue.is_empty()
+        // Collect pending UDP packets. Not in the middle of a frame the guest
+        // is sending: this runs for every byte it writes, and the line is
+        // the guest's until it finishes.
+        let udp_packets = if let Some(socket) =
+            self.socket.as_ref().filter(|_| self.tx_buffer.is_empty())
+        {
+            let mut packets = Vec::new();
+            let mut buf = [0u8; 4 + MAX_LLAP_SIZE + 64]; // Extra space for safety
+
+            loop {
+                match socket.recv_from(&mut buf) {
+                    Ok((len, _)) => {
+                        if len < 4 + 3 {
+                            // Too small: need at least sender_id (4) + LLAP header (3)
+                            continue;
+                        }
+
+                        // Extract sender ID
+                        let packet_sender_id = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+
+                        // Loopback detection: skip packets from ourselves
+                        if packet_sender_id == self.sender_id {
+                            continue;
+                        }
+
+                        packets.push(buf[4..len].to_vec());
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("LocalTalk: UDP recv error: {}", e);
+                        break;
+                    }
+                }
+            }
+            packets
+        } else {
+            Vec::new()
+        };
+
+        for llap in udp_packets {
+            self.handle_rx_packet(&llap);
+            received_any = true;
+        }
+
+        // Inject packets from the AppleTalk node into the SCC
+        #[cfg(feature = "afp_server")]
+        if let Some(node_rx) = &self.node_rx {
+            while let Ok(packet) = node_rx.try_recv() {
+                let mut llap = Vec::with_capacity(3 + packet.datagram.len());
+                llap.push(packet.node);
+                llap.push(self.server_node);
+                llap.push(match packet.kind {
+                    DdpHeaderKind::Short => 0x01,
+                    DdpHeaderKind::Extended => 0x02,
+                });
+                llap.extend_from_slice(&packet.datagram);
+                #[cfg(feature = "afp_server")]
+                Self::dump_llap("-> guest (node)", &llap);
+                self.rx_queue.push(llap);
+                received_any = true;
+            }
+        }
+
+        received_any
     }
 
     /// Handle a received LLAP packet from the network
@@ -267,6 +598,8 @@ impl LocalTalkBridge {
         if llap.len() < 3 {
             return;
         }
+        #[cfg(feature = "afp_server")]
+        Self::dump_llap("-> guest (udp)", llap);
 
         let dest = llap[0];
 
@@ -312,11 +645,6 @@ impl LocalTalkBridge {
         self.address_search_mode = mode;
     }
 
-    /// Send a complete LLAP frame (from SDLC TX frame boundary detection)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        self.handle_tx_packet(llap);
-    }
-
     /// Read data to inject into the SCC RX path
     /// Returns LLAP packet data (one packet at a time)
     pub fn read_to_scc(&mut self) -> Option<Vec<u8>> {
@@ -334,24 +662,36 @@ impl LocalTalkBridge {
         None
     }
 
+    /// Deliver a frame the guest did not read again, before the queued
+    /// ones. Only data frames: a late CTS or ACK would answer nothing.
+    pub fn return_frame(&mut self, llap: Vec<u8>) {
+        if matches!(llap.get(2), Some(0x01 | 0x02)) {
+            self.rx_queue.insert(0, llap);
+        }
+    }
+
     /// Get the number of packets waiting in the RX queue
     pub fn rx_queue_len(&self) -> usize {
         self.rx_queue.len()
     }
 
     /// Write data from the SCC TX path
-    /// Accumulates bytes and extracts LLAP packets
-    pub fn write_from_scc(&mut self, data: &[u8]) {
+    /// Accumulates bytes and extracts LLAP packets.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    pub fn write_from_scc(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         if data.is_empty() {
-            return;
+            return Vec::new();
         }
 
         self.tx_buffer.extend_from_slice(data);
-        self.try_extract_packets();
+        self.try_extract_packets()
     }
 
-    /// Try to extract complete LLAP packets from the TX buffer
-    fn try_extract_packets(&mut self) {
+    /// Try to extract complete LLAP packets from the TX buffer.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    fn try_extract_packets(&mut self) -> Vec<Vec<u8>> {
+        let mut replies = Vec::new();
+
         while self.tx_buffer.len() >= 3 {
             let ptype = self.tx_buffer[2];
 
@@ -386,8 +726,9 @@ impl LocalTalkBridge {
             }
 
             // Extract the packet
+            self.tx_extracted = true;
             let packet: Vec<u8> = self.tx_buffer.drain(..packet_len).collect();
-            self.handle_tx_packet(&packet);
+            replies.extend(self.handle_tx_packet(&packet));
         }
 
         // If buffer gets too large without extracting packets, something is wrong
@@ -398,16 +739,22 @@ impl LocalTalkBridge {
             );
             self.tx_buffer.clear();
         }
+
+        replies
     }
 
-    /// Flush any pending TX data (called on frame boundary)
-    pub fn flush_tx(&mut self) {
-        if !self.tx_buffer.is_empty() {
-            let packet = std::mem::take(&mut self.tx_buffer);
-            if packet.len() >= 3 {
-                self.handle_tx_packet(&packet);
-            }
+    /// The guest ended a frame. The bytes extracted so far are framed by
+    /// their DDP length, so anything left is either a frame whose length
+    /// field does not cover it, which goes out as it is, or what followed a
+    /// complete packet, which is dropped. Either way the next frame starts
+    /// clean. Returns packets to inject into the SCC RX buffer immediately.
+    pub fn end_tx_frame(&mut self) -> Vec<Vec<u8>> {
+        let extracted = std::mem::take(&mut self.tx_extracted);
+        let rest = std::mem::take(&mut self.tx_buffer);
+        if extracted || rest.len() < 3 {
+            return Vec::new();
         }
+        self.handle_tx_packet(&rest)
     }
 }
 
@@ -418,6 +765,46 @@ mod tests {
     /// Create a bridge for testing (may fail if UDP port is in use)
     fn test_bridge() -> Option<LocalTalkBridge> {
         LocalTalkBridge::new().ok()
+    }
+
+    #[test]
+    fn test_frame_end_resynchronizes_the_byte_stream() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        // A data frame whose DDP length promises more than it holds
+        bridge.write_from_scc(&[10, 42, 0x01, 0x00, 0x40, 1, 2, 3]);
+        assert_eq!(bridge.tx_buffer.len(), 8);
+        bridge.end_tx_frame();
+        assert!(bridge.tx_buffer.is_empty());
+        // The next frame parses from its start
+        bridge.write_from_scc(&[10, 42, 0x84]);
+        assert_eq!(bridge.pending_cts.len(), 1);
+        assert!(bridge.tx_buffer.is_empty());
+        // Bytes after a complete packet are not a frame
+        bridge.end_tx_frame();
+        bridge.write_from_scc(&[10, 42, 0x84, 0xAA, 0xBB, 0xCC]);
+        assert_eq!(bridge.pending_cts.len(), 2);
+        bridge.end_tx_frame();
+        assert!(bridge.tx_buffer.is_empty());
+        assert_eq!(bridge.pending_cts.len(), 2);
+    }
+
+    #[test]
+    fn test_return_frame() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        bridge.handle_rx_packet(&[42, 10, 0x01, 1]);
+        // A data frame the guest did not read goes before the queue
+        bridge.return_frame(vec![42, 10, 0x01, 0]);
+        assert_eq!(bridge.read_to_scc(), Some(vec![42, 10, 0x01, 0]));
+        // A control frame does not come back
+        bridge.return_frame(vec![42, 10, 0x85]);
+        assert_eq!(bridge.read_to_scc(), Some(vec![42, 10, 0x01, 1]));
+        assert_eq!(bridge.read_to_scc(), None);
     }
 
     #[test]
@@ -520,5 +907,122 @@ mod tests {
         let (dest, src) = bridge.pending_cts[0];
         assert_eq!(dest, 42); // CTS goes back to sender
         assert_eq!(src, 10);
+    }
+
+    #[cfg(all(feature = "afp_server", feature = "afp_server_test"))]
+    mod private {
+        use super::*;
+        use snow_appletalk::ddp::{build_short, parse_short};
+        use snow_appletalk::test::{TEST_SOCKET, TEST_TYPE};
+
+        #[test]
+        fn test_enq_ack() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+
+            // The Mac tries the AppleTalk node's address: the real frame has
+            // it as both destination and source
+            let server = bridge.server_node;
+            assert_eq!(
+                bridge.handle_tx_packet(&[server, server, 0x81]),
+                vec![vec![server, server, 0x82]]
+            );
+            // The node keeps it
+            assert_eq!(bridge.server_node, server);
+        }
+
+        #[test]
+        fn test_a_mac_holding_the_address_moves_the_node() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+            let server = bridge.server_node;
+            bridge.handle_tx_packet(&[0xFF, server, 0x01, 0, 5, 2, 2, 2]);
+            assert_ne!(bridge.server_node, server);
+            let address = bridge.server_address.as_ref().unwrap();
+            assert_eq!(
+                address.load(std::sync::atomic::Ordering::Relaxed),
+                bridge.server_node
+            );
+        }
+
+        #[test]
+        fn test_poll_is_quiet_while_a_frame_waits() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+            // Let the desktop scan of the fallback share finish reporting
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            bridge.poll();
+            bridge.rx_queue.push(vec![0x20, bridge.server_node, 0x01]);
+            assert!(!bridge.poll());
+            assert_eq!(bridge.rx_queue_len(), 1);
+        }
+
+        #[test]
+        fn test_rts_gets_immediate_cts() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+
+            // A unicast RTS to the AppleTalk node is answered immediately
+            // (the driver's CTS poll window is too short to wait for a
+            // later poll of pending_cts)
+            let replies = bridge.handle_tx_packet(&[bridge.server_node, 0x20, 0x84]);
+            assert_eq!(replies, vec![vec![0x20, bridge.server_node, 0x85]]);
+            assert!(bridge.pending_cts.is_empty());
+
+            // A broadcast RTS gets no reply (a synthesized CTS makes the
+            // Mac's LLAP driver treat it as a collision)
+            assert!(bridge.handle_tx_packet(&[0xFF, 0x20, 0x84]).is_empty());
+        }
+
+        #[test]
+        fn test_echo() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+
+            // The Mac broadcasts a test datagram from node 0x20
+            let mut llap = vec![0xFF, 0x20, 0x01];
+            llap.extend_from_slice(&build_short(TEST_SOCKET, 0x30, TEST_TYPE, b"SNT1hello"));
+            bridge.handle_tx_packet(&llap);
+
+            // Wait for the AppleTalk node to answer
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                bridge.poll();
+                if let Some(reply) = bridge.read_to_scc() {
+                    assert_eq!(reply[..3], [0x20, bridge.server_node, 0x01]);
+                    let (header, data) = parse_short(&reply[3..]).unwrap();
+                    assert_eq!(header.dst_socket, 0x30);
+                    assert_eq!(header.src_socket, TEST_SOCKET);
+                    assert_eq!(header.ddp_type, TEST_TYPE);
+                    assert_eq!(data, &b"SNT1hello"[..]);
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "No reply from the AppleTalk node"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
     }
 }

@@ -227,6 +227,12 @@ struct SccChannel {
     tx_ip: bool,
     tx_ie: bool,
     rx_ip: bool,
+    /// TX underrun/EOM latch (RR0 bit 6): cleared by the WR0 crcreset
+    /// 0b11 command, set by the SCC when a frame finishes transmitting
+    tx_underrun: bool,
+    /// TX buffer busy: set when a byte is written, cleared when RR0 is
+    /// read (the byte is transmitted instantly in the emulation)
+    tx_busy: bool,
     /// RX interrupt mode from WR1 bits 3-4:
     /// 0 = disabled, 1 = first char or special, 2 = all chars or special, 3 = special only
     rx_int_mode: u8,
@@ -275,8 +281,13 @@ struct SccChannel {
     // LocalTalk/SDLC TX frame state
     /// SDLC TX frame accumulation buffer
     lt_tx_frame: Vec<u8>,
-    /// Completed SDLC TX frames ready for bridge
-    lt_tx_complete: VecDeque<Vec<u8>>,
+    /// The guest ended a frame since the bridge last asked
+    lt_tx_frame_ended: bool,
+    /// A frame the receiver was turned off on before the guest read any
+    /// of it, for the bridge to deliver again
+    lt_rx_unread: Option<Vec<u8>>,
+    /// RTxC clocks since the guest finished reading a received frame
+    lt_rx_quiet: Ticks,
 }
 
 /// Clock of the RTxCA and RTxCB pins of the SCC on most Macs, C3.7M, which
@@ -308,10 +319,17 @@ pub struct Scc {
 impl Scc {
     /// Creates an SCC whose RTxC pins get `rtxc_frequency`
     pub fn new(rtxc_frequency: Ticks) -> Self {
-        Self {
+        let mut scc = Self {
             rtxc_frequency,
             ..Self::default()
+        };
+        // The Z8530 resets with RR0 = 01xxx100: the Tx Underrun/EOM
+        // latch (bit 6) and Tx Empty (bit 2) both set (the
+        // datasheet's reset state)
+        for ch in &mut scc.ch {
+            ch.tx_underrun = true;
         }
+        scc
     }
 
     fn read_data(&mut self, ch: SccCh) -> u8 {
@@ -339,6 +357,12 @@ impl Scc {
         value
     }
 
+    /// Whether the LocalTalk frame trace prints: it follows the built-in
+    /// AppleTalk node's wire debug switch
+    fn lt_trace() -> bool {
+        crate::mac::localtalk_bridge::LocalTalkBridge::wire_debug()
+    }
+
     /// Advance the RX buffer to the next byte
     fn lt_rx_buff_advance(&mut self, chi: usize) {
         // If no frame, clear chr_avail and set flag byte
@@ -360,9 +384,12 @@ impl Scc {
             // After reading second CRC byte (crc_offset == 1), signal end of frame
             if crc_offset == 1 {
                 // Clear the frame and signal EOF
+                self.ch[chi].lt_rx_quiet = 0;
                 self.ch[chi].lt_rx_frame = None;
                 self.ch[chi].lt_end_of_frame = true;
                 self.ch[chi].hunt = true;
+                // The carrier drops when the frame is complete
+                self.set_dcd_idx(chi, false);
                 // Check for queued frames
                 self.lt_check_queued_frame(chi);
             }
@@ -374,6 +401,16 @@ impl Scc {
 
     fn write_data(&mut self, ch: SccCh, val: u8) {
         let chi = ch.to_usize().unwrap();
+        // The TX buffer is busy until the status is read again (the byte
+        // is transmitted instantly in the emulation)
+        self.ch[chi].tx_busy = true;
+        // In SDLC mode the LocalTalk bridge extracts complete packets
+        // from the byte stream, so have the emulator poll it right away:
+        // the driver's CTS poll window is too short to wait for the next
+        // tick batch
+        if self.ch[chi].sdlc {
+            self.ch[chi].localtalk_poll_needed = true;
+        }
         if self.ch[chi].tx_enable && self.ch[chi].tx_ie && self.mic.mie() {
             self.ch[chi].tx_ip = true;
         }
@@ -451,7 +488,15 @@ impl Scc {
         };
 
         match ch.rx_int_mode {
-            0 => false, // disabled
+            // Disabled, unless the one-shot "interrupt on next char"
+            // (WR0 IntNextRx) armed it via first_char. Mode 0 keeps
+            // the one-shot on purpose: Snow delivers the reply frame
+            // instantly, usually before the driver has finished its
+            // transmit and re-armed the receiver with WR0 0x20 (on
+            // real hardware the reply takes milliseconds, so the
+            // re-arm wins the race). Found with a guest test
+            // program: without this the interrupt did not fire in mode 0.
+            0 => rx_chr_avail && ch.first_char,
             1 => {
                 // Rx INT on 1st char or special condition
                 rx_chr_avail && ch.first_char
@@ -490,8 +535,8 @@ impl Scc {
             (0 | 4, _) => *RdReg0::default()
                 .with_zero(self.ch[chi].zero_count)
                 .with_rx_char(rx_char_avail)
-                .with_tx_empty(true)
-                .with_tx_underrun(true)
+                .with_tx_empty(!self.ch[chi].tx_busy)
+                .with_tx_underrun(self.ch[chi].tx_underrun)
                 .with_sync_hunt(self.ch[chi].hunt)
                 .with_dcd(self.ch[chi].dcd),
             (1 | 5, _) => *RdReg1::default()
@@ -533,6 +578,12 @@ impl Scc {
         };
         //debug!("Ch {:?} read ctrl {} = {:02X}", ch, self.reg, result);
 
+        if self.reg == 0 || self.reg == 4 {
+            // The written byte has been "transmitted" by the time the
+            // status is read (instant transmission in the emulation)
+            self.ch[chi].tx_busy = false;
+        }
+
         self.reg = 0;
         result
     }
@@ -556,7 +607,6 @@ impl Scc {
                     }
                     SccCommand::PointHigh => self.reg |= 1 << 3,
                     SccCommand::ResetExtStatusInt => {
-                        self.ch[chi].hunt = false;
                         self.ch[chi].ext_ip = false;
                         self.ch[chi].zero_count = false;
                         self.ch[chi].lt_end_of_frame = false;
@@ -585,10 +635,24 @@ impl Scc {
                         self.ch[chi].lt_tx_frame.clear();
                     }
                     0b11 => {
-                        // Reset TX Underrun/EOM Latch - signals end of SDLC frame
+                        // Reset TX Underrun/EOM Latch - the latch is set
+                        // again when the frame finishes transmitting
+                        self.ch[chi].tx_underrun = false;
                         if self.ch[chi].sdlc && !self.ch[chi].lt_tx_frame.is_empty() {
                             let frame = std::mem::take(&mut self.ch[chi].lt_tx_frame);
-                            self.ch[chi].lt_tx_complete.push_back(frame);
+                            if Self::lt_trace() {
+                                log::debug!(
+                                    "SCC {:?}: sent frame {:02x?}, {} bytes",
+                                    ch,
+                                    &frame[..frame.len().min(3)],
+                                    frame.len()
+                                );
+                            }
+                            // The frame is fully transmitted at the
+                            // boundary, so the underrun/EOM latch sets
+                            self.ch[chi].tx_underrun = true;
+                            self.ch[chi].lt_tx_frame_ended = true;
+                            self.ch[chi].localtalk_poll_needed = true;
                         }
                     }
                     _ => {}
@@ -626,18 +690,46 @@ impl Scc {
                 // Track SDLC address search mode for bridge filtering
                 self.ch[chi].sdlc_address_search_mode = r.sdlc_address_search();
 
-                // Enter Hunt Mode - but only clear frame if there isn't one already waiting
-                // The Mac writes hunt=1 to prepare for receiving, not to discard received data
-                if r.hunt() && self.ch[chi].lt_rx_frame.is_none() {
+                // Enter Hunt Mode takes effect immediately, even when a
+                // frame is still buffered: the receiver stops tracking the
+                // current frame (the buffered bytes stay readable)
+                if r.hunt() {
                     self.ch[chi].hunt = true;
                     self.ch[chi].lt_end_of_frame = false;
                 }
                 // If RX is being disabled, clear the frame and chr_avail
                 if !r.rx_enable() && was_rx_enabled {
+                    // A frame the guest has not read a byte of goes back
+                    // to the bridge. On a real line its sender would not
+                    // have had a CTS from a receiver that is off, and
+                    // would have sent it later (LLAP's RTS/CTS dialog,
+                    // Inside AppleTalk ch1); dropping it lost frames the
+                    // guest turned its receiver off on to answer the
+                    // previous one
+                    if self.ch[chi].lt_rx_offset <= 1 {
+                        self.ch[chi].lt_rx_unread = self.ch[chi].lt_rx_frame.take();
+                        if Self::lt_trace() && self.ch[chi].lt_rx_unread.is_some() {
+                            log::debug!("SCC {:?}: receiver off, unread frame returned", ch);
+                        }
+                    } else if Self::lt_trace() && self.ch[chi].lt_rx_frame.is_some() {
+                        log::debug!(
+                            "SCC {:?}: receiver off, frame lost after {} bytes",
+                            ch,
+                            self.ch[chi].lt_rx_offset - 1
+                        );
+                    }
                     self.ch[chi].hunt = true;
                     self.ch[chi].lt_rx_frame = None;
                     self.ch[chi].lt_end_of_frame = false;
                     self.ch[chi].lt_rx_chr_avail = false;
+                    self.set_dcd(ch, false);
+                }
+                if self.ch[chi].sdlc && r.rx_enable() != was_rx_enabled && Self::lt_trace() {
+                    log::debug!(
+                        "SCC {:?}: receiver {}",
+                        ch,
+                        if r.rx_enable() { "on" } else { "off" }
+                    );
                 }
                 self.ch[chi].rx_enable = r.rx_enable();
 
@@ -645,6 +737,8 @@ impl Scc {
                 // signal that LocalTalk bridge should be polled immediately
                 if r.rx_enable() && !was_rx_enabled && self.ch[chi].sdlc {
                     self.ch[chi].localtalk_poll_needed = true;
+                    // Start any frame that arrived while RX was disabled
+                    self.lt_check_queued_frame(chi);
                 }
             }
             5 => {
@@ -713,10 +807,35 @@ impl Scc {
         needed
     }
 
-    /// Check if the SCC channel is ready to receive data (RxEnable && !RxChrAvail)
+    /// Whether the LocalTalk bridge can deliver a frame: the receiver is
+    /// on, holds no frame and has none queued, the guest is not in the
+    /// middle of sending one, and the last frame it received ended an
+    /// interdialog gap ago. A real sender gets no CTS from the guest
+    /// until then, so the frame waits in the bridge.
     pub fn is_rx_ready_for_data(&self, ch: SccCh) -> bool {
         let chi = ch.to_usize().unwrap();
-        self.ch[chi].rx_enable && !self.ch[chi].lt_rx_chr_avail
+        // The interdialog gap, at least 400 us on the line (Inside
+        // AppleTalk ch1): the bridge's frames otherwise follow each other
+        // at once, and the guest's driver empties the FIFO after a frame
+        // (an LC III under 7.1 reads it three times in hunt mode), which
+        // took the first bytes of the next frame and lost it
+        let gap = self.rtxc_frequency * 400 / 1_000_000;
+        self.ch[chi].rx_enable
+            && !self.ch[chi].lt_rx_chr_avail
+            && self.ch[chi].rx_queue.is_empty()
+            && self.ch[chi].lt_tx_frame.is_empty()
+            && self.ch[chi].lt_rx_quiet >= gap
+    }
+
+    /// Whether the guest ended a frame since the last call
+    pub fn take_tx_frame_ended(&mut self, ch: SccCh) -> bool {
+        std::mem::take(&mut self.ch[ch.to_usize().unwrap()].lt_tx_frame_ended)
+    }
+
+    /// The frame the receiver was turned off on before the guest read
+    /// any of it, for the bridge to deliver again
+    pub fn take_unread_frame(&mut self, ch: SccCh) -> Option<Vec<u8>> {
+        self.ch[ch.to_usize().unwrap()].lt_rx_unread.take()
     }
 
     /// Advances the SCC by `ticks` of a clock of `frequency`
@@ -724,6 +843,9 @@ impl Scc {
         self.rtxc_clock += ticks * self.rtxc_frequency;
         let clocks = self.rtxc_clock / frequency;
         self.rtxc_clock -= clocks * frequency;
+        for ch in &mut self.ch {
+            ch.lt_rx_quiet = ch.lt_rx_quiet.saturating_add(clocks);
+        }
         self.tick_brg(clocks);
     }
 
@@ -750,13 +872,14 @@ impl Scc {
 
     pub fn push_rx(&mut self, ch: SccCh, data: &[u8]) {
         let chi = ch.to_usize().unwrap();
-        if !self.ch[chi].rx_enable {
+        // For LocalTalk/SDLC mode, push as a complete frame, queued while
+        // the receiver is off
+        if self.ch[chi].sdlc {
+            self.push_rx_frame(ch, data.to_vec());
             return;
         }
 
-        // For LocalTalk/SDLC mode, push as a complete frame
-        if self.ch[chi].sdlc {
-            self.push_rx_frame(ch, data.to_vec());
+        if !self.ch[chi].rx_enable {
             return;
         }
 
@@ -770,12 +893,32 @@ impl Scc {
     /// Push a complete LocalTalk/SDLC frame for reception
     pub fn push_rx_frame(&mut self, ch: SccCh, frame: Vec<u8>) {
         let chi = ch.to_usize().unwrap();
+
+        // If the receiver is disabled, queue the frame and deliver it
+        // when the receiver is re-enabled
         if !self.ch[chi].rx_enable {
+            if Self::lt_trace() {
+                log::debug!(
+                    "SCC {:?}: frame {:02x?} queued, receiver off",
+                    ch,
+                    &frame[..frame.len().min(3)]
+                );
+            }
+            self.ch[chi].rx_queue.push_back((frame.len() >> 8) as u8);
+            self.ch[chi].rx_queue.push_back(frame.len() as u8);
+            self.ch[chi].rx_queue.extend(frame.iter());
             return;
         }
 
         // If there's already a frame being received (chr_avail set), queue this one
         if self.ch[chi].lt_rx_chr_avail {
+            if Self::lt_trace() {
+                log::debug!(
+                    "SCC {:?}: frame {:02x?} queued, receiver busy",
+                    ch,
+                    &frame[..frame.len().min(3)]
+                );
+            }
             // Queue for later - use rx_queue as a frame queue
             // Prefix with length so we can extract it later
             self.ch[chi].rx_queue.push_back((frame.len() >> 8) as u8);
@@ -785,17 +928,34 @@ impl Scc {
         }
 
         // Start receiving this frame
+        if Self::lt_trace() {
+            log::debug!(
+                "SCC {:?}: receiving frame {:02x?}, {} bytes",
+                ch,
+                &frame[..frame.len().min(3)],
+                frame.len()
+            );
+        }
         self.ch[chi].lt_rx_frame = Some(frame);
         self.ch[chi].lt_rx_offset = 0;
         self.ch[chi].lt_end_of_frame = false;
-        self.ch[chi].hunt = false; // Exit hunt mode
+        // The whole frame is received at once, so the receiver is already
+        // back in hunt mode and the line is idle (carrier sense)
+        self.ch[chi].hunt = true;
+        // Carrier present while the frame is being delivered
+        self.set_dcd(ch, true);
 
         // Pre-buffer the first byte
         self.lt_rx_buff_advance(chi);
 
         // Set chr_avail and first_char to signal data is ready and trigger interrupt
         self.ch[chi].lt_rx_chr_avail = true;
-        self.ch[chi].first_char = true; // For interrupt mode 1 ("int on first char")
+        if self.ch[chi].rx_int_mode == 1 {
+            self.ch[chi].first_char = true; // For interrupt mode 1 ("int on first char")
+        }
+        if self.mic.mie() && self.check_rx_interrupt(chi) {
+            self.ch[chi].rx_ip = true;
+        }
     }
 
     /// Check if there's a queued frame and start receiving it
@@ -809,15 +969,29 @@ impl Scc {
 
             if self.ch[chi].rx_queue.len() >= len {
                 let frame: Vec<u8> = self.ch[chi].rx_queue.drain(..len).collect();
+                if Self::lt_trace() {
+                    log::debug!(
+                        "SCC channel {}: receiving queued frame {:02x?}, {} bytes",
+                        chi,
+                        &frame[..frame.len().min(3)],
+                        frame.len()
+                    );
+                }
                 self.ch[chi].lt_rx_frame = Some(frame);
                 self.ch[chi].lt_rx_offset = 0;
                 self.ch[chi].lt_end_of_frame = false;
-                self.ch[chi].hunt = false;
+                self.ch[chi].hunt = true;
+                self.set_dcd_idx(chi, true);
 
                 // Pre-buffer the first byte
                 self.lt_rx_buff_advance(chi);
                 self.ch[chi].lt_rx_chr_avail = true;
-                self.ch[chi].first_char = true; // For interrupt mode 1
+                if self.ch[chi].rx_int_mode == 1 {
+                    self.ch[chi].first_char = true; // For interrupt mode 1
+                }
+                if self.mic.mie() && self.check_rx_interrupt(chi) {
+                    self.ch[chi].rx_ip = true;
+                }
             }
         }
     }
@@ -841,8 +1015,12 @@ impl Scc {
     }
 
     pub fn set_dcd(&mut self, ch: SccCh, val: bool) {
-        let chi = ch.to_usize().unwrap();
+        self.set_dcd_idx(ch.to_usize().unwrap(), val);
+    }
 
+    /// Drive DCD from the carrier state. A DCD change raises the
+    /// external/status interrupt when WR15 DCD IE is set.
+    fn set_dcd_idx(&mut self, chi: usize, val: bool) {
         if self.ch[chi].dcd == val {
             // No change in state
             return;
@@ -869,16 +1047,6 @@ impl Scc {
     pub fn is_address_search_mode(&self, ch: SccCh) -> bool {
         self.ch[ch.to_usize().unwrap()].sdlc_address_search_mode
     }
-
-    /// Take completed SDLC TX frames for a channel
-    pub fn take_tx_frames(&mut self, ch: SccCh) -> VecDeque<Vec<u8>> {
-        std::mem::take(&mut self.ch[ch.to_usize().unwrap()].lt_tx_complete)
-    }
-
-    /// Check if there are completed SDLC TX frames waiting
-    pub fn has_tx_frames(&self, ch: SccCh) -> bool {
-        !self.ch[ch.to_usize().unwrap()].lt_tx_complete.is_empty()
-    }
 }
 
 impl BusMember<Address> for Scc {
@@ -898,5 +1066,218 @@ impl BusMember<Address> for Scc {
         } else {
             Some(self.write_data(ch, val))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tx_underrun_latch() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        // The datasheet's reset state: RR0 = 01xxx100, so the
+        // underrun/EOM latch starts set
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0x40);
+        // Reset Tx Underrun/EOM with no frame in progress clears it
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0);
+
+        // SDLC mode via WR3 address search
+        scc.write(0, 0x03);
+        scc.write(0, 0x04);
+
+        // Frame bytes, then arm the latch and finish the frame
+        scc.write(2, 1);
+        scc.write(2, 2);
+        scc.write(2, 3);
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0x40);
+
+        // Re-arming with no frame in progress leaves the latch clear
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0);
+    }
+
+    #[test]
+    fn test_async_tx_empty_polling() {
+        // The classic polled serial driver: Tx Empty (RR0 bit 2)
+        // must read busy right after a write and empty again on the
+        // next status read, so the guest can pace its output without
+        // hardware flow control
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+        scc.write(0, 0x02);
+        scc.write(0, 0x00); // WR2: the interrupt vector
+        scc.write(0, 0x05);
+        scc.write(0, 0x68); // WR5: TX enable
+        // First status read at reset: empty (the reset state)
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x04);
+        scc.write(2, b'A');
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x00); // busy
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x04); // empty again
+        scc.write(2, b'B');
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x00); // busy
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x04); // empty again
+    }
+
+    #[test]
+    fn test_int_next_rx_fires_in_mode0() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x09);
+        scc.write(0, 0x08); // WR9: master interrupt enable
+        scc.write(0, 0x01);
+        scc.write(0, 0x00); // WR1: RX interrupt mode 0 (disabled)
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD); // WR3: SDLC mode, RX enabled, hunt
+        scc.write(0, 0x20); // WR0: enable interrupt on next RX character
+
+        assert!(!scc.get_irq());
+        scc.push_rx_frame(SccCh::B, vec![1, 2, 3]);
+
+        // The one-shot interrupt fires even though the mode is 0
+        assert!(scc.get_irq());
+        scc.write(0, 0x02); // Point at RR2
+        assert_eq!(scc.read(0).unwrap() & 0x0E, 0b010 << 1); // BRxAvailable
+    }
+
+    #[test]
+    fn test_dcd_ext_status() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x09);
+        scc.write(0, 0x08); // WR9: master interrupt enable
+        scc.write(0, 0x01);
+        scc.write(0, 0x01); // WR1: external/status interrupt enable
+        scc.write(0, 0x0F);
+        scc.write(0, 0x08); // WR15: DCD interrupt enable
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD); // WR3: SDLC mode, RX enabled
+
+        assert_eq!(scc.read(0).unwrap() & 0x08, 0);
+        scc.push_rx_frame(SccCh::B, vec![1, 2, 3]);
+
+        // Carrier (DCD) asserted while the frame is delivered, and the
+        // DCD change raised the external/status interrupt
+        assert_eq!(scc.read(0).unwrap() & 0x08, 0x08);
+        assert!(scc.get_irq());
+
+        // Consume the frame (3 data bytes + 2 CRC bytes): the carrier
+        // drops at the end of the frame
+        for _ in 0..5 {
+            scc.read(2);
+        }
+        assert_eq!(scc.read(0).unwrap() & 0x08, 0);
+    }
+
+    #[test]
+    fn test_enter_hunt_with_pending_frame() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD); // WR3: SDLC mode, RX enabled, hunt
+        scc.push_rx_frame(SccCh::B, vec![10, 20, 30]);
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0x01);
+
+        // Enter Hunt again with the frame still buffered: hunt stays
+        // set and the buffered data stays readable
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        assert_eq!(scc.read(0).unwrap() & 0x10, 0x10);
+        assert_eq!(scc.read(2).unwrap(), 10);
+    }
+
+    #[test]
+    fn test_rx_frame_queued_while_disabled() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x03);
+        scc.write(0, 0x0C); // WR3: SDLC mode, RX disabled
+        scc.push_rx_frame(SccCh::B, vec![7, 8, 9]);
+
+        // Not visible while RX is disabled
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0);
+
+        // Re-enabling RX surfaces the queued frame
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0x01);
+        assert_eq!(scc.read(2).unwrap(), 7);
+    }
+
+    #[test]
+    fn test_rx_pushed_while_disabled() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x03);
+        scc.write(0, 0x0C); // WR3: SDLC mode, RX disabled
+        assert!(!scc.is_rx_ready_for_data(SccCh::B));
+        // The bridge's frame is queued, not dropped
+        scc.push_rx(SccCh::B, &[7, 8, 9]);
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        assert_eq!(scc.read(2).unwrap(), 7);
+    }
+
+    #[test]
+    fn test_unread_frame_on_rx_disable() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        // The receiver is turned off before the guest reads the frame:
+        // it goes back to the bridge
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        scc.push_rx_frame(SccCh::B, vec![1, 2, 3]);
+        scc.write(0, 0x03);
+        scc.write(0, 0xCC);
+        assert_eq!(scc.take_unread_frame(SccCh::B), Some(vec![1, 2, 3]));
+        assert_eq!(scc.take_unread_frame(SccCh::B), None);
+
+        // A frame the guest started reading is lost, as on a real line
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        scc.push_rx_frame(SccCh::B, vec![4, 5, 6]);
+        assert_eq!(scc.read(2).unwrap(), 4);
+        scc.write(0, 0x03);
+        scc.write(0, 0xCC);
+        assert_eq!(scc.take_unread_frame(SccCh::B), None);
+    }
+
+    #[test]
+    fn test_interdialog_gap() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        scc.tick(400, 1_000_000);
+        assert!(scc.is_rx_ready_for_data(SccCh::B));
+        // The guest reads a frame to its CRC
+        scc.push_rx_frame(SccCh::B, vec![1, 2, 3]);
+        for _ in 0..5 {
+            scc.read(2);
+        }
+        // The next frame waits 400 us after it
+        assert!(!scc.is_rx_ready_for_data(SccCh::B));
+        scc.tick(300, 1_000_000);
+        assert!(!scc.is_rx_ready_for_data(SccCh::B));
+        scc.tick(100, 1_000_000);
+        assert!(scc.is_rx_ready_for_data(SccCh::B));
+    }
+
+    #[test]
+    fn test_not_ready_while_transmitting() {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        scc.tick(400, 1_000_000);
+        assert!(scc.is_rx_ready_for_data(SccCh::B));
+        // In the middle of a frame the guest sends
+        scc.write(2, 0x55);
+        assert!(!scc.is_rx_ready_for_data(SccCh::B));
+        // The frame ends
+        scc.write(0, 0xC0);
+        assert!(scc.is_rx_ready_for_data(SccCh::B));
     }
 }
