@@ -71,6 +71,21 @@ bitfield! {
 
 bitfield! {
     #[derive(Serialize, Deserialize)]
+    pub struct PmgrIN(u8): {
+        /// Typically connected with at 100k/100k divider from 5V (digital reading, not analog)
+        pmgr_in0: bool @ 0,
+        /// A/D line from the battery (digital reading, not analog)
+        ad_line: bool @ 1,
+        sound_latch: bool @ 2,
+        /// Modem off hook (active low)
+        off_hook: bool @ 3,
+        /// PowerBook 100 Only - target disk mode detection (active low)
+        target_disk: bool @ 5,
+    }
+}
+
+bitfield! {
+    #[derive(Serialize, Deserialize)]
     struct ADBStatus(u8): {
         init: bool @ 0,
         new: bool @ 1,
@@ -136,6 +151,9 @@ pub struct Pmgr {
 
     /// Power plane
     power_plane: PowerPlane,
+
+    /// Power Manager input pins (digital)
+    pmgr_in: PmgrIN,
 
     adb_status: ADBStatus,
     unknown_flags: UnknownFlags,
@@ -211,6 +229,12 @@ impl Pmgr {
             xpram: [0x00; 128],
 
             power_plane: PowerPlane(0x9F),
+
+            pmgr_in: PmgrIN(0)
+                .with_pmgr_in0(true) // IN0 over 0.8V threshold
+                .with_ad_line(true) // A/D line over 0.8V threshold
+                .with_off_hook(true) // Not off hook
+                .with_target_disk(true), // No target disk
 
             adb_status: ADBStatus(0),
             unknown_flags: UnknownFlags(0),
@@ -675,13 +699,20 @@ impl Pmgr {
 
     /// Read from internal power manager memory
     fn internal_read(
-        &self,
-        _loch: Byte,
-        _locl: Byte,
-        _len: Byte,
+        &mut self,
+        loch: Byte,
+        locl: Byte,
+        len: Byte,
     ) -> (Result<()>, Option<Vec<Byte>>) {
-        // TODO
-        (Ok(()), None)
+        let addr = u16::from_be_bytes([loch, locl]);
+        let data: Vec<Byte> = (0..u16::from(len))
+            .map(|i| match addr.wrapping_add(i) {
+                0x00E0 => self.power_plane.0,
+                0x00EE => self.pmgr_in.0,
+                _ => 0x00, // TODO: reads from other addresses
+            })
+            .collect();
+        (Ok(()), Some(data))
     }
 
     /// Read the version number from the power manager
