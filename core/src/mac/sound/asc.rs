@@ -178,7 +178,7 @@ impl Asc {
         (l, r)
     }
 
-    /// Swap left and right output (for the SE/30)
+    /// Swap left and right output for models that have it reversed
     pub fn with_swapped_outputs(mut self) -> Self {
         self.swap_lr = true;
         self

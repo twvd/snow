@@ -427,6 +427,11 @@ impl MacModel {
             Self::Quadra700 | Self::LC475 => macii::via2::RegisterB(0xCF),
         }
     }
+
+    /// ASC channel outputs are backwards on these models
+    pub const fn asc_swapped_outputs(self) -> bool {
+        matches!(self, Self::SE30 | Self::MacII | Self::MacIIFDHD)
+    }
 }
 
 impl MacModel {
