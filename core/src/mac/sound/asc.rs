@@ -18,6 +18,7 @@ pub struct Asc {
     out: AudioPath,
 
     mode: AscMode,
+    clk: AscClockRate,
     ctrl: Control,
     /// Volume, stored only
     volume: u8,
@@ -72,6 +73,28 @@ enum AscMode {
     Wavetable = 2,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    FromPrimitive,
+    ToPrimitive,
+    strum::IntoStaticStr,
+    Serialize,
+    Deserialize,
+)]
+enum AscClockRate {
+    /// C16M/704
+    Clk704 = 0,
+    /// Stopped
+    Stop = 1,
+    /// XTAL/768
+    Clk768 = 2,
+    /// XTAL/384
+    Clk384 = 3,
+}
+
 impl Default for Asc {
     fn default() -> Self {
         Self {
@@ -79,12 +102,14 @@ impl Default for Asc {
             channels: Default::default(),
             wavetables: [0; 0x800],
             mode: AscMode::Off,
+            clk: AscClockRate::Clk704,
             fifo_l: Fifo::new(0, FIFO_SIZE),
             fifo_r: Fifo::new(0, FIFO_SIZE),
             fifo_status: Default::default(),
             irq: false,
             ctrl: Control(0),
             volume: 0,
+            swap_lr: false,
         }
     }
 }
@@ -94,6 +119,7 @@ impl Asc {
         self.irq = false;
         self.fifo_status.0 = 0;
         self.mode = AscMode::Off;
+        self.clk = AscClockRate::Clk704;
         self.volume = 0;
         self.fifo_l.clear();
         self.fifo_r.clear();
@@ -150,6 +176,7 @@ impl Asc {
         (l, r)
     }
 
+
     /// Ticks the ASC at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
         let (l, r) = match self.mode {
@@ -201,7 +228,7 @@ impl BusMember<Address> for Asc {
             // Volume
             0x806 => Some(self.volume),
             // Clock rate
-            0x807 => Some(0),
+            0x807 => Some(self.clk.to_u8().unwrap()),
             // Not documented, reads zero
             0x808 => Some(0),
             // Wavetable channel configuration
@@ -264,10 +291,8 @@ impl BusMember<Address> for Asc {
             0x806 => Some(self.volume = val),
             // Clock rate
             0x807 => {
-                if val != 0 {
-                    log::warn!("TODO Clock rate = {}", val);
-                }
-                Some(())
+                // TODO: Handle clock rate changes
+                Some(self.clk = AscClockRate::from_u8(val & 0b11).unwrap_or(AscClockRate::Clk704))
             }
             // Channel configuration
             0x810..=0x82F => {
