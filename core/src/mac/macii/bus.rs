@@ -272,7 +272,14 @@ where
             scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
-            asc: Asc::default(),
+            asc: {
+                let asc = Asc::default();
+                if model == MacModel::SE30 {
+                    asc.with_swapped_outputs()
+                } else {
+                    asc
+                }
+            },
             asc_clock: 0,
             mouse_ready: false,
 
