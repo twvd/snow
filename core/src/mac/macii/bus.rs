@@ -274,7 +274,7 @@ where
             scsi: ScsiController::new(),
             asc: {
                 let asc = Asc::default();
-                if model == MacModel::SE30 {
+                if model.asc_swapped_outputs() {
                     asc.with_swapped_outputs()
                 } else {
                     asc
