@@ -29,6 +29,8 @@ pub struct Asc {
     irq: bool,
     fifo_l: Fifo,
     fifo_r: Fifo,
+    /// If left and right channel outputs need to be swapped
+    swap_lr: bool,
 }
 
 bitfield! {
@@ -176,6 +178,11 @@ impl Asc {
         (l, r)
     }
 
+    /// Swap left and right output (for the SE/30)
+    pub fn with_swapped_outputs(mut self) -> Self {
+        self.swap_lr = true;
+        self
+    }
 
     /// Ticks the ASC at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
@@ -186,6 +193,7 @@ impl Asc {
             AscMode::Wavetable => self.sample_wavetable(),
         };
         if queue_sample {
+            let (l, r) = if self.swap_lr { (r, l) } else { (l, r) };
             self.out.push(l, r)?;
         }
 
