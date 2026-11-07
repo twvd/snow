@@ -712,6 +712,7 @@ impl Pmgr {
                 _ => 0x00, // TODO: reads from other addresses
             })
             .collect();
+        self.length = len;
         (Ok(()), Some(data))
     }
 
