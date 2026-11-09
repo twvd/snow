@@ -14,6 +14,7 @@ use snow_core::mac::maclc::lc_475_bus;
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::quadra::dafb;
+use snow_core::mac::quadra::q800_bus;
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use strum::IntoEnumIterator;
@@ -296,7 +297,7 @@ impl ModelSelectionDialog {
 
     fn monitor_selectable(&self) -> bool {
         match self.selected_model {
-            MacModel::Quadra700 | MacModel::LC475 => true,
+            MacModel::Quadra700 | MacModel::LC475 | MacModel::Quadra800 => true,
             MacModel::SE30 => false,
             _ => {
                 self.display_rom_required
@@ -581,7 +582,7 @@ impl ModelSelectionDialog {
                 if self.monitor_selectable() {
                     let monitors: Vec<MacMonitor> = match self.selected_model {
                         MacModel::Quadra700 => dafb::MONITORS.to_vec(),
-                        MacModel::LC475 => dafb::MONITORS_MEMCJR.to_vec(),
+                        MacModel::LC475 | MacModel::Quadra800 => dafb::MONITORS_MEMCJR.to_vec(),
                         // VGA and 19" monitors are not known to work with the video cards
                         _ => MacMonitor::iter()
                             .filter(|&m| m != MacMonitor::VGA && m != MacMonitor::RGB19)
@@ -692,6 +693,21 @@ impl ModelSelectionDialog {
                     ui.end_row();
 
                     self.pds_slot_row(ui);
+                }
+                if self.selected_model == MacModel::Quadra800 {
+                    ui.label("VRAM size:");
+                    egui::ComboBox::new(egui::Id::new("q800_vram"), "")
+                        .selected_text(format_ram(self.init_args.vram_size.unwrap_or(1024 * 1024)))
+                        .show_ui(ui, |ui| {
+                            for &sz in q800_bus::VRAM_SIZES {
+                                ui.selectable_value(
+                                    &mut self.init_args.vram_size,
+                                    Some(sz),
+                                    format_ram(sz),
+                                );
+                            }
+                        });
+                    ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -867,8 +883,10 @@ impl ModelSelectionDialog {
                             MacModel::LC | MacModel::LCII | MacModel::LCIII | MacModel::LC475
                         ) {
                             self.init_args.fpu_enabled = false;
-                            self.init_args.vram_size = None;
                             self.init_args.pds_card = PdsCardKind::None;
+                            if self.selected_model != MacModel::Quadra800 {
+                                self.init_args.vram_size = None;
+                            }
                         }
 
                         self.result = Some(ModelSelectionResult {

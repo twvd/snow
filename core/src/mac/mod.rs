@@ -97,6 +97,8 @@ pub enum MacModel {
     LC475,
     /// Macintosh Quadra 700
     Quadra700,
+    /// Macintosh Quadra 800
+    Quadra800,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -145,6 +147,10 @@ impl MacModel {
         ("c2093476e9c9a7d76973910a91fbfba23ca71163b84eb2623adf8608a6b03ed2", &[Self::Quadra700]),
         // Macintosh LC 475
         ("9c758473a523ffe40ed0d20d27ff37216ed2df064335d7da815a89cff5607b34", &[Self::LC475]),
+        // Macintosh Quadra 800, Centris 610 and 650
+        ("05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca", &[Self::Quadra800]),
+        // Macintosh Quadra 800, Centris 610 and 650 (older)
+        ("7d9cb8c3bae0e26171adf9f24bedf10bf6371ae3c9bdbcdfd3b94e5350099fb6", &[Self::Quadra800]),
     ];
 
     pub const fn has_adb(self) -> bool {
@@ -171,6 +177,7 @@ impl MacModel {
             Self::LCIII => 36 * 1024 * 1024,
             Self::Quadra700 => 8 * 1024 * 1024,
             Self::LC475 => 36 * 1024 * 1024,
+            Self::Quadra800 => 40 * 1024 * 1024,
         }
     }
 
@@ -265,6 +272,15 @@ impl MacModel {
                 32 * 1024 * 1024,
                 64 * 1024 * 1024,
             ],
+            // 8 MB on the board and up to four SIMMs
+            Self::Quadra800 => &[
+                8 * 1024 * 1024,
+                16 * 1024 * 1024,
+                24 * 1024 * 1024,
+                40 * 1024 * 1024,
+                72 * 1024 * 1024,
+                136 * 1024 * 1024,
+            ],
         }
     }
 
@@ -282,7 +298,8 @@ impl MacModel {
             | Self::LCII
             | Self::LCIII
             | Self::Quadra700
-            | Self::LC475 => true,
+            | Self::LC475
+            | Self::Quadra800 => true,
         }
     }
 
@@ -311,7 +328,7 @@ impl MacModel {
             | Self::LC
             | Self::LCII
             | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
-            Self::LCIII | Self::LC475 => &[DriveType::SuperDrive],
+            Self::LCIII | Self::LC475 | Self::Quadra800 => &[DriveType::SuperDrive],
         }
     }
 
@@ -355,7 +372,7 @@ impl MacModel {
             | Self::Portable15MB => M68000,
             Self::MacII | Self::MacIIFDHD | Self::LC => M68020,
             Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LCII | Self::LCIII => M68030,
-            Self::Quadra700 | Self::LC475 => M68040,
+            Self::Quadra700 | Self::LC475 | Self::Quadra800 => M68040,
         }
     }
 
@@ -394,6 +411,9 @@ impl MacModel {
             Self::LC475 => via::RegisterA(0x80),
             // Bit 0 = diagnostic mode (active low)
             Self::Quadra700 => via::RegisterA(0xC1),
+            // ID pins PA6, PA4, PA2 and PA1: $12, the Quadra 800. PA1 high
+            // also tells the ROM that the RAM has both data buses.
+            Self::Quadra800 => via::RegisterA(0x93),
         }
     }
 
@@ -404,6 +424,7 @@ impl MacModel {
             Self::MacIIcx => &[0x9, 0xA, 0xB],
             Self::SE30 => &[0xE],
             Self::Quadra700 => &[0xD, 0xE],
+            Self::Quadra800 => &[0xC, 0xD, 0xE],
             _ => &[],
         }
     }
@@ -424,7 +445,7 @@ impl MacModel {
             | Self::LCIII => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
-            Self::Quadra700 | Self::LC475 => macii::via2::RegisterB(0xCF),
+            Self::Quadra700 | Self::LC475 | Self::Quadra800 => macii::via2::RegisterB(0xCF),
         }
     }
 
@@ -489,6 +510,7 @@ impl Display for MacModel {
                 Self::LCIII => "Macintosh LC III",
                 Self::Quadra700 => "Macintosh Quadra 700",
                 Self::LC475 => "Macintosh LC 475",
+                Self::Quadra800 => "Macintosh Quadra 800",
             }
         )
     }

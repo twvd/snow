@@ -37,6 +37,7 @@ use crate::mac::maclc::pds_iie::IieCardSettings;
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
+use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
@@ -130,6 +131,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &machine_target!(inner, lc_iii, $($ref_target)*),
                         Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
                         Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
+                        Self::Quadra800(inner) => &machine_target!(inner, quadra800, $($ref_target)*),
                     }
                 }
             )*
@@ -147,6 +149,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &mut machine_target!(inner, lc_iii_mut, $($mut_ref_target)*),
                         Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
                         Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
+                        Self::Quadra800(inner) => &mut machine_target!(inner, quadra800_mut, $($mut_ref_target)*),
                     }
                 }
             )*
@@ -164,6 +167,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii, $($immut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
+                        Self::Quadra800(inner) => machine_target!(inner, quadra800, $($immut_call_target)*),
                     }
                 }
             )*
@@ -181,6 +185,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii_mut, $($mut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
+                        Self::Quadra800(inner) => machine_target!(inner, quadra800_mut, $($mut_call_target)*),
                     }
                 }
             )*
@@ -300,6 +305,8 @@ enum EmulatorConfig {
     Quadra700(Box<CpuM68040<MachineBus040>>),
     /// Macintosh LC 475: a 68LC040, or a 68040 in its socket
     LC475(Box<CpuM68040<MachineBus040>>),
+    /// Macintosh Quadra 800 (68040)
+    Quadra800(Box<CpuM68040<MachineBus040>>),
 }
 
 dispatch! {
@@ -697,6 +704,21 @@ impl Emulator {
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
                 EmulatorConfig::LC475(Box::new(CpuM68040::new(MachineBus040::Lc475(bus), fpu)))
+            }
+            MacModel::Quadra800 => {
+                assert!(override_fdd_type.is_none());
+
+                let bus = Quadra800Bus::new(
+                    model,
+                    rom,
+                    renderer,
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                    vram_size,
+                );
+                let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
+                EmulatorConfig::Quadra800(Box::new(cpu))
             }
         };
 

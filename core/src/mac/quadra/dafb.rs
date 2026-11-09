@@ -25,7 +25,8 @@ use crate::types::Field32;
 pub enum DafbKind {
     /// DAFB of the Quadra 700, with the AC842 RAMDAC
     Dafb,
-    /// DAFB II cell of MEMCjr, with the Antelope RAMDAC (LC 475)
+    /// DAFB II cell of MEMCjr or djMEMC, with the Antelope RAMDAC (LC 475,
+    /// Quadra 800)
     MemcJr,
 }
 
@@ -40,7 +41,8 @@ pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::VGA,
 ];
 
-/// Monitors which the DAFB II cell of MEMCjr supports, the same and the 19" RGB
+/// Monitors which the DAFB II cell of MEMCjr and djMEMC supports, the same and
+/// the 19" RGB
 pub const MONITORS_MEMCJR: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
