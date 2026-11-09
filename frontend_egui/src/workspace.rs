@@ -472,6 +472,18 @@ impl Workspace {
         let args = &mut self.init_args;
         for config in &self.devices {
             match config.known_model() {
+                #[cfg(feature = "ethernet")]
+                Some(DeviceModel::AppleEthernetLc) => {
+                    args.pds_card = PdsCardKind::ApplLcSonic;
+                    args.pds_rom = config
+                        .parse::<snow_core::emulator::devices::AppleEthernetLcSettings>()
+                        .ok()
+                        .map(|settings| settings.rom);
+                }
+                #[cfg(feature = "ethernet")]
+                Some(DeviceModel::AppleEthernetLcTp) => {
+                    args.pds_card = PdsCardKind::ApplLcSonicTp;
+                }
                 Some(DeviceModel::AppleIIePdsCard) => {
                     args.pds_card = PdsCardKind::AppleIIe;
                     if let Ok(settings) = config.parse::<AppleIIePdsCardSettings>() {
@@ -622,6 +634,22 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
                 json!({}),
             ),
         });
+    }
+    #[cfg(feature = "ethernet")]
+    match args.pds_card {
+        PdsCardKind::ApplLcSonic => entries.push(old_entry(
+            bus_id::PDS_LC,
+            "0",
+            Some(DeviceModel::AppleEthernetLc.key()),
+            json!({ "rom": args.pds_rom }),
+        )),
+        PdsCardKind::ApplLcSonicTp => entries.push(old_entry(
+            bus_id::PDS_LC,
+            "0",
+            Some(DeviceModel::AppleEthernetLcTp.key()),
+            json!({}),
+        )),
+        _ => (),
     }
     if args.pds_card == PdsCardKind::AppleIIe {
         let settings = &args.iie_card_settings;
@@ -838,6 +866,31 @@ mod tests {
             json!(rom)
         ));
         assert_eq!(ws.video_cards()[0].rom, rom);
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn an_ethernet_lc_card_is_read_back_with_its_rom() {
+        let dir = TestDir::new("enetlc");
+        let rom = dir.file("341-0470.bin");
+        let ws = dir.load(&format!(
+            r#"{{"model":"LC","devices":[{{"bus":"PDS_LC","slot":"0","device":"AppleEthernetLc",
+                "rom":{},"mac":[8,0,7,1,2,3]}}]}}"#,
+            json!(rom)
+        ));
+        assert_eq!(ws.init_args.pds_card, PdsCardKind::ApplLcSonic);
+        assert_eq!(ws.init_args.pds_rom.as_ref(), Some(&rom));
+        // The dialog's arguments give back the card without its MAC address: the running
+        // card's MAC address is added when the dialog's result is applied
+        assert_eq!(
+            card_entries(&[], &ws.init_args),
+            [old_entry(
+                bus_id::PDS_LC,
+                "0",
+                Some("AppleEthernetLc"),
+                json!({ "rom": rom })
+            )]
+        );
     }
 
     #[test]

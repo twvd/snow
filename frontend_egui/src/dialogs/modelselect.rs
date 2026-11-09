@@ -42,6 +42,26 @@ const fn card_kind(model: DeviceModel) -> NubusDeviceKind {
     }
 }
 
+/// The device model of a card kind for the PDS slot
+const fn pds_model(kind: PdsCardKind) -> Option<DeviceModel> {
+    match kind {
+        PdsCardKind::None => None,
+        PdsCardKind::AppleIIe => Some(DeviceModel::AppleIIePdsCard),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::ApplLcSonic => Some(DeviceModel::AppleEthernetLc),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::ApplLcSonicTp => Some(DeviceModel::AppleEthernetLcTp),
+    }
+}
+
+/// Whether a PDS card kind fits a machine
+fn pds_fits(kind: PdsCardKind, mac: MacModel) -> bool {
+    pds_model(kind).is_none_or(|model| models_for(BusKind::LcPds, mac).any(|i| i.model == model))
+}
+
+/// The value of `rom_dialog_slot` for the PDS card's ROM: 0, as the NuBus slots start at $9
+const PDS_ROM_SLOT: u8 = 0;
+
 /// A card in a NuBus slot, or the SE/30's video, as the dialog has it
 struct SlotCard {
     kind: NubusDeviceKind,
@@ -134,6 +154,9 @@ pub struct ModelSelectionDialog {
     cards: BTreeMap<u8, SlotCard>,
     // The card whose ROM the file dialog picks
     rom_dialog_slot: u8,
+    // The PDS card's ROM, for a card that has one to load
+    pds_rom_path: String,
+    pds_rom_valid: bool,
     display_rom_dialog: SnowFileDialog,
     display_rom_required: bool,
     // Last ROM of each kind of card, for a card put in a slot
@@ -201,6 +224,8 @@ impl Default for ModelSelectionDialog {
 
             cards: BTreeMap::new(),
             rom_dialog_slot: 0,
+            pds_rom_path: String::new(),
+            pds_rom_valid: false,
             display_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin", "uk6"])
                 .show_pinned_folders(false)
@@ -266,6 +291,12 @@ impl ModelSelectionDialog {
         }
         self.early_800k = init_args.override_fdd_type == Some(DriveType::GCR800KPWM);
         self.init_args = init_args.clone();
+        self.pds_rom_path = init_args
+            .pds_rom
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.validate_pds_rom();
 
         // Recompute model-dependent state (e.g. whether a display ROM is required).
         self.update_display_rom_requirement();
@@ -484,12 +515,15 @@ impl ModelSelectionDialog {
             self.do_validate_main_rom();
         }
 
-        if let Some(path) = self.display_rom_dialog.take_picked()
-            && let Some(card) = self.cards.get_mut(&self.rom_dialog_slot)
-        {
-            card.rom_path = path.to_string_lossy().to_string();
-            self.card_rom_paths.insert(card.kind, card.rom_path.clone());
-            self.do_validate_card(self.rom_dialog_slot);
+        if let Some(path) = self.display_rom_dialog.take_picked() {
+            if self.rom_dialog_slot == PDS_ROM_SLOT {
+                self.pds_rom_path = path.to_string_lossy().to_string();
+                self.validate_pds_rom();
+            } else if let Some(card) = self.cards.get_mut(&self.rom_dialog_slot) {
+                card.rom_path = path.to_string_lossy().to_string();
+                self.card_rom_paths.insert(card.kind, card.rom_path.clone());
+                self.do_validate_card(self.rom_dialog_slot);
+            }
         }
 
         if let Some(path) = self.pram_dialog.take_picked() {
@@ -666,7 +700,7 @@ impl ModelSelectionDialog {
                     }
                     ui.end_row();
 
-                    self.pds_slot_row(ui);
+                    self.pds_slot_row(ui, settings);
                 }
                 if self.selected_model == MacModel::LC475 {
                     // The CPU is socketed, and some owners fit a 68040
@@ -697,7 +731,7 @@ impl ModelSelectionDialog {
                         });
                     ui.end_row();
 
-                    self.pds_slot_row(ui);
+                    self.pds_slot_row(ui, settings);
                 }
                 if self.selected_model == MacModel::Quadra800 {
                     ui.label("VRAM size:");
@@ -888,7 +922,8 @@ impl ModelSelectionDialog {
                     let can_proceed = self.main_rom_valid
                         && (!self.display_rom_required
                             || self.cards.values().any(|c| c.kind.is_video()))
-                        && self.cards.values().all(|c| c.rom_valid);
+                        && self.cards.values().all(|c| c.rom_valid)
+                        && (!self.pds_takes_rom() || self.pds_rom_valid);
 
                     if ui
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
@@ -907,6 +942,12 @@ impl ModelSelectionDialog {
                                 self.init_args.vram_size = None;
                             }
                         }
+                        if !pds_fits(self.init_args.pds_card, self.selected_model) {
+                            self.init_args.pds_card = PdsCardKind::None;
+                        }
+                        self.init_args.pds_rom = self
+                            .pds_takes_rom()
+                            .then(|| PathBuf::from(&self.pds_rom_path));
 
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
@@ -952,7 +993,7 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
-                                ..self.init_args
+                                ..self.init_args.clone()
                             },
                         });
                         self.open = false;
@@ -1095,14 +1136,17 @@ impl ModelSelectionDialog {
     }
 
     /// The Apple IIe Card settings, a dialog over the main one
-    /// The grid row choosing the card in the PDS slot
-    fn pds_slot_row(&mut self, ui: &mut egui::Ui) {
+    /// The grid row choosing the card in the PDS slot and, under it, the card's ROM for a card
+    /// whose ROM the user loads
+    fn pds_slot_row(&mut self, ui: &mut egui::Ui, settings: &AppSettings) {
         ui.label("PDS Slot");
+        let mac = self.selected_model;
+        let current = self.init_args.pds_card;
         ui.horizontal(|ui| {
             egui::ComboBox::new(egui::Id::new("Select PDS card"), "")
                 .selected_text(format!("{}", self.init_args.pds_card))
                 .show_ui(ui, |ui| {
-                    for card in PdsCardKind::iter() {
+                    for card in PdsCardKind::iter().filter(|&c| pds_fits(c, mac)) {
                         ui.selectable_value(&mut self.init_args.pds_card, card, card.to_string());
                     }
                 });
@@ -1117,6 +1161,59 @@ impl ModelSelectionDialog {
             }
         });
         ui.end_row();
+        if self.init_args.pds_card != current {
+            self.validate_pds_rom();
+        }
+        if !self.pds_takes_rom() {
+            return;
+        }
+        let label = pds_model(self.init_args.pds_card)
+            .and_then(|m| m.info().rom.as_ref())
+            .map_or("ROM", |rom| rom.label);
+        ui.label(format!("    {}", label));
+        let mut edited = false;
+        ui.horizontal(|ui| {
+            edited = ui.text_edit_singleline(&mut self.pds_rom_path).lost_focus();
+            if ui.button("Browse...").clicked() {
+                self.rom_dialog_slot = PDS_ROM_SLOT;
+                self.display_rom_dialog
+                    .pick_file(settings.native_file_dialogs);
+            }
+        });
+        if self.pds_rom_path.is_empty() {
+            ui.label("");
+        } else if self.pds_rom_valid {
+            ui.label(
+                egui::RichText::new(egui_material_icons::icons::ICON_CHECK_CIRCLE)
+                    .color(egui::Color32::DARK_GREEN),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new(egui_material_icons::icons::ICON_ERROR)
+                    .color(egui::Color32::DARK_RED),
+            );
+        }
+        ui.end_row();
+        if edited {
+            self.validate_pds_rom();
+        }
+    }
+
+    /// Whether the user loads the ROM of the card in the PDS slot
+    fn pds_takes_rom(&self) -> bool {
+        pds_model(self.init_args.pds_card).is_some_and(|m| m.info().rom.is_some())
+    }
+
+    fn validate_pds_rom(&mut self) {
+        let Some(model) = pds_model(self.init_args.pds_card).filter(|_| self.pds_takes_rom())
+        else {
+            self.pds_rom_valid = true;
+            return;
+        };
+        self.pds_rom_valid = match std::fs::read(&self.pds_rom_path) {
+            Ok(rom) => self.disable_rom_validation || model.info().validate_rom(&rom),
+            Err(_) => false,
+        };
     }
 
     fn iie_settings_modal(&mut self, ctx: &egui::Context) {
@@ -1219,6 +1316,7 @@ impl ModelSelectionDialog {
         for slot in slots {
             self.do_validate_card(slot);
         }
+        self.validate_pds_rom();
         self.do_validate_main_rom();
     }
 

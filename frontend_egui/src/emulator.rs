@@ -97,6 +97,11 @@ pub struct EmulatorInitArgs {
     #[serde(skip_serializing)]
     pub pds_card: PdsCardKind,
 
+    /// The declaration ROM of the card in the PDS slot, for a card whose ROM the user loads.
+    /// In the devices of a workspace.
+    #[serde(skip_serializing)]
+    pub pds_rom: Option<PathBuf>,
+
     /// Apple IIe Card settings (used if it is in the PDS slot). In the devices of a workspace.
     #[serde(skip_serializing)]
     pub iie_card_settings: IieCardSettings,
@@ -134,6 +139,7 @@ impl Default for EmulatorInitArgs {
             fpu_enabled: Default::default(),
             vram_size: Default::default(),
             pds_card: Default::default(),
+            pds_rom: None,
             iie_card_settings: Default::default(),
             iie_joystick_emulation: true,
             video_card: Default::default(),

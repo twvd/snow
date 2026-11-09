@@ -608,6 +608,12 @@ pub enum PdsCardKind {
     None,
     /// Apple IIe Card
     AppleIIe,
+    /// Apple Ethernet LC Card, with its declaration ROM
+    #[cfg(feature = "ethernet")]
+    ApplLcSonic,
+    /// Apple Ethernet LC Twisted-Pair Card
+    #[cfg(feature = "ethernet")]
+    ApplLcSonicTp,
 }
 
 impl Display for PdsCardKind {
@@ -618,6 +624,10 @@ impl Display for PdsCardKind {
             match self {
                 Self::None => "None",
                 Self::AppleIIe => "Apple IIe Card",
+                #[cfg(feature = "ethernet")]
+                Self::ApplLcSonic => "Apple Ethernet LC Card",
+                #[cfg(feature = "ethernet")]
+                Self::ApplLcSonicTp => "Apple Ethernet LC Twisted-Pair Card",
             }
         )
     }
