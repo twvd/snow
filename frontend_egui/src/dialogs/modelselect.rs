@@ -26,6 +26,8 @@ const fn card_model(kind: NubusDeviceKind) -> DeviceModel {
         NubusDeviceKind::Toby => DeviceModel::MacIIVideoCard,
         NubusDeviceKind::SE30Video => DeviceModel::SE30Video,
         NubusDeviceKind::Mdc12 => DeviceModel::DisplayCard824,
+        #[cfg(feature = "ethernet")]
+        NubusDeviceKind::ApplNbSonicTp => DeviceModel::AppleEthernetNbTp,
     }
 }
 
@@ -34,11 +36,13 @@ const fn card_kind(model: DeviceModel) -> NubusDeviceKind {
     match model {
         DeviceModel::MacIIVideoCard => NubusDeviceKind::Toby,
         DeviceModel::SE30Video => NubusDeviceKind::SE30Video,
+        #[cfg(feature = "ethernet")]
+        DeviceModel::AppleEthernetNbTp => NubusDeviceKind::ApplNbSonicTp,
         _ => NubusDeviceKind::Mdc12,
     }
 }
 
-/// A video card in a NuBus slot, or the SE/30's video, as the dialog has it
+/// A card in a NuBus slot, or the SE/30's video, as the dialog has it
 struct SlotCard {
     kind: NubusDeviceKind,
     rom_path: String,
@@ -51,7 +55,10 @@ struct SlotCard {
 impl SlotCard {
     /// Whether the card shows a screen: a video card with a monitor
     fn has_display(&self) -> bool {
-        self.kind != NubusDeviceKind::Mdc12 || self.monitor.is_some()
+        match self.kind {
+            NubusDeviceKind::Mdc12 => self.monitor.is_some(),
+            kind => kind.is_video(),
+        }
     }
 
     fn new(kind: NubusDeviceKind, rom_path: String) -> Self {
@@ -77,6 +84,11 @@ impl SlotCard {
         if !monitors.contains(&self.monitor) {
             self.monitor = monitors.first().copied().flatten();
         }
+    }
+
+    /// Whether the user loads the card's ROM: Snow builds the ROMs of some cards at run time
+    fn takes_rom(&self) -> bool {
+        card_model(self.kind).info().rom.is_some()
     }
 
     /// What the card's record calls its ROM
@@ -874,7 +886,8 @@ impl ModelSelectionDialog {
                 |_ui| {},
                 |ui| {
                     let can_proceed = self.main_rom_valid
-                        && (!self.display_rom_required || !self.cards.is_empty())
+                        && (!self.display_rom_required
+                            || self.cards.values().any(|c| c.kind.is_video()))
                         && self.cards.values().all(|c| c.rom_valid);
 
                     if ui
@@ -996,7 +1009,7 @@ impl ModelSelectionDialog {
                 self.card_monitor_row(ui, slot);
             }
         }
-        if self.display_rom_required && self.cards.is_empty() {
+        if self.display_rom_required && !self.cards.values().any(|c| c.kind.is_video()) {
             ui.label("");
             ui.label(
                 egui::RichText::new(format!(
@@ -1025,7 +1038,7 @@ impl ModelSelectionDialog {
     }
 
     fn video_rom_row(&mut self, ui: &mut egui::Ui, settings: &AppSettings, slot: u8) {
-        let Some(card) = self.cards.get_mut(&slot) else {
+        let Some(card) = self.cards.get_mut(&slot).filter(|c| c.takes_rom()) else {
             return;
         };
         ui.label(format!("    {}", card.rom_description()));
@@ -1226,7 +1239,9 @@ impl ModelSelectionDialog {
             return;
         };
         // No ROM yet: the row shows it
-        let result = if card.rom_path.is_empty() {
+        let result = if !card.takes_rom() {
+            Ok(())
+        } else if card.rom_path.is_empty() {
             Err(None)
         } else {
             self.validate_card_rom(card).map_err(Some)

@@ -578,12 +578,13 @@ fn old_entry(
     }
 }
 
-/// A video card in a NuBus slot, or the SE/30's video in its slot $E, as the Load ROM dialog
+/// A card in a NuBus slot, or the SE/30's video in its slot $E, as the Load ROM dialog
 /// chooses them
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoCardEntry {
     pub slot: u8,
     pub kind: NubusDeviceKind,
+    /// Empty for a card whose ROM is built at run time
     pub rom: PathBuf,
     /// What's on an 8-24's connector, None for nothing
     pub monitor: Option<MacMonitor>,
@@ -612,6 +613,13 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
                 &slot,
                 Some(DeviceModel::DisplayCard824.key()),
                 json!({ "rom": card.rom, "monitor": card.monitor }),
+            ),
+            #[cfg(feature = "ethernet")]
+            NubusDeviceKind::ApplNbSonicTp => old_entry(
+                bus_id::NUBUS,
+                &slot,
+                Some(DeviceModel::AppleEthernetNbTp.key()),
+                json!({}),
             ),
         });
     }
@@ -646,28 +654,35 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
     entries
 }
 
-/// A video card, or the machine's own video, as the Load ROM dialog has it
+/// A card, or the machine's own video, as the Load ROM dialog has it
 fn video_card(config: &DeviceConfig, mac: MacModel) -> Option<VideoCardEntry> {
-    let rom = PathBuf::from(config.settings.get("rom")?.as_str()?);
+    let rom = || Some(PathBuf::from(config.settings.get("rom")?.as_str()?));
     let slot = u8::from_str_radix(&config.slot, 16).ok();
     match config.model_on(mac)? {
         DeviceModel::SE30Video => Some(VideoCardEntry {
             slot: 0xE,
             kind: NubusDeviceKind::SE30Video,
-            rom,
+            rom: rom()?,
             monitor: None,
         }),
         DeviceModel::MacIIVideoCard => Some(VideoCardEntry {
             slot: slot?,
             kind: NubusDeviceKind::Toby,
-            rom,
+            rom: rom()?,
             monitor: None,
         }),
         DeviceModel::DisplayCard824 => Some(VideoCardEntry {
             slot: slot?,
             kind: NubusDeviceKind::Mdc12,
-            rom,
+            rom: rom()?,
             monitor: config.parse::<DisplayCard824Settings>().ok()?.monitor,
+        }),
+        #[cfg(feature = "ethernet")]
+        DeviceModel::AppleEthernetNbTp => Some(VideoCardEntry {
+            slot: slot?,
+            kind: NubusDeviceKind::ApplNbSonicTp,
+            rom: PathBuf::new(),
+            monitor: None,
         }),
         _ => None,
     }

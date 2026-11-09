@@ -3020,7 +3020,10 @@ impl SnowGui {
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
             for card in self.workspace.video_cards() {
-                self.settings.set_last_card_rom(card.kind, &card.rom);
+                // A card whose ROM Snow builds at run time has no ROM file
+                if !card.rom.as_os_str().is_empty() {
+                    self.settings.set_last_card_rom(card.kind, &card.rom);
+                }
             }
         }
     }
@@ -3439,10 +3442,23 @@ impl SnowGui {
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
         let mut devices = card_entries(&result.video_cards, &result.init_args);
+        // A card keeps what the dialog doesn't choose, such as an Ethernet card's MAC address
+        let running = self.emu.devices();
+        for entry in &mut devices {
+            let old = running
+                .iter()
+                .find(|d| d.bus == entry.bus && d.slot == entry.slot && d.model == entry.model);
+            for (key, value) in old.map(|d| &d.settings).into_iter().flatten() {
+                entry
+                    .settings
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
         // When the machine stays the same, its built-in Ethernet keeps its MAC address and
         // link. Its entry names no model, because the machine always has it.
         if self.workspace.model == Some(result.model) {
-            devices.extend(self.emu.devices().into_iter().filter(|d| {
+            devices.extend(running.into_iter().filter(|d| {
                 d.model.is_none()
                     && d.model_on(result.model)
                         .is_some_and(|m| m.function() == FunctionKind::Ethernet)

@@ -340,6 +340,12 @@ where
         self.nubus.display_slots().collect()
     }
 
+    /// The Ethernet port of the card in a NuBus slot, if it is an Ethernet card
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_card_mut(&mut self, slot: u8) -> Option<&mut crate::net::EthernetPort> {
+        self.nubus.card_mut(slot)?.ethernet_mut()
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
         // Renderers are matched to displays in the order display_names() reports them
@@ -347,6 +353,9 @@ where
         if let Some(video) = self.se30_video.as_mut() {
             video.set_renderer(renderers.next().expect("no renderer"));
             video.render().unwrap();
+        }
+        for card in self.nubus.cards_mut() {
+            card.after_deserialize();
         }
         self.nubus.set_renderers(&mut renderers);
 

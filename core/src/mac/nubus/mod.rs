@@ -17,11 +17,19 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use toby::Toby;
 
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::appl_nb_sonic_tp::ApplNbSonicTp;
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
+// A machine has only a few cards, each made once: the size of the largest
+// variant doesn't matter
+#[allow(clippy::large_enum_variant)]
 pub enum NubusCard<TRenderer: Renderer> {
     MDC12(Mdc12<TRenderer>),
     Toby(Toby<TRenderer>),
+    #[cfg(feature = "ethernet")]
+    ApplNbSonicTp(ApplNbSonicTp),
 }
 
 /// What a NuBus slot sees of a card
@@ -54,6 +62,8 @@ macro_rules! with_card {
         match $card {
             NubusCard::MDC12($c) => $e,
             NubusCard::Toby($c) => $e,
+            #[cfg(feature = "ethernet")]
+            NubusCard::ApplNbSonicTp($c) => $e,
         }
     };
 }
@@ -75,6 +85,8 @@ where
         match self {
             Self::MDC12(c) => c.has_monitor(),
             Self::Toby(_) => true,
+            #[cfg(feature = "ethernet")]
+            Self::ApplNbSonicTp(_) => false,
         }
     }
 
@@ -83,6 +95,27 @@ where
         match self {
             Self::MDC12(c) => Some(c),
             Self::Toby(c) => Some(c),
+            #[cfg(feature = "ethernet")]
+            Self::ApplNbSonicTp(_) => None,
+        }
+    }
+
+    /// The card's Ethernet port, if it is an Ethernet card
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_mut(&mut self) -> Option<&mut crate::net::EthernetPort> {
+        match self {
+            Self::ApplNbSonicTp(c) => Some(c.port_mut()),
+            _ => None,
+        }
+    }
+
+    /// After a state was loaded, reconnects what the state doesn't hold, such
+    /// as an Ethernet card's link to the host's network. A video card's renderer
+    /// is reconnected elsewhere.
+    pub fn after_deserialize(&mut self) {
+        #[cfg(feature = "ethernet")]
+        if let Self::ApplNbSonicTp(c) = self {
+            c.after_deserialize();
         }
     }
 }
@@ -292,8 +325,26 @@ where
                 NubusCard::Toby(Toby::new(cfg.rom, renderer.expect("no renderer")))
             }
             NubusDeviceKind::SE30Video => unreachable!("the SE/30's video isn't a NuBus card"),
+            #[cfg(feature = "ethernet")]
+            NubusDeviceKind::ApplNbSonicTp => {
+                NubusCard::ApplNbSonicTp(ApplNbSonicTp::new(crate::net::EthernetPort::new([
+                    0x08,
+                    0x00,
+                    0x07,
+                    rand::random(),
+                    rand::random(),
+                    rand::random(),
+                ])))
+            }
         };
         self.insert(cfg.slot, card);
+    }
+
+    /// The card in `slot`, $9 to $E
+    pub fn card_mut(&mut self, slot: u8) -> Option<&mut NubusCard<TRenderer>> {
+        self.cards
+            .get_mut(usize::from(slot.checked_sub(0x9)?))?
+            .as_mut()
     }
 
     pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard<TRenderer>> {

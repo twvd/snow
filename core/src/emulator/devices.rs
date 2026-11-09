@@ -100,6 +100,8 @@ pub enum DeviceModel {
     DaynaPortScsiLink,
     #[cfg(feature = "ethernet")]
     BuiltInSonic,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetNbTp,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
     Mac400KDrive,
@@ -196,6 +198,8 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::scsi::ethernet::INFO,
     #[cfg(feature = "ethernet")]
     &crate::mac::ethernet::sonic::INFO,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::ethernet::appl_nb_sonic_tp::INFO,
     #[cfg(feature = "printer")]
     &crate::mac::scsi::printer::INFO,
     &crate::mac::swim::drive::INFO_400K,
@@ -934,10 +938,11 @@ pub struct RefusedDevice {
     pub reason: String,
 }
 
-/// A video card, or the SE/30's video, the machine is built with
-struct PlannedVideo {
+/// A NuBus card, or the SE/30's built-in video, that the machine is built with
+struct PlannedCard {
     slot: u8,
     device: DeviceModel,
+    /// Empty for a card whose declaration ROM Snow builds at run time
     rom: Vec<u8>,
     monitor: Option<MacMonitor>,
 }
@@ -945,7 +950,7 @@ struct PlannedVideo {
 /// What has to be decided before a machine can be built
 #[derive(Default)]
 struct BuildPlan {
-    video: Vec<PlannedVideo>,
+    planned_cards: Vec<PlannedCard>,
     iie_card: Option<IieCardSettings>,
     override_drive: Option<DriveType>,
     cards: Vec<DeviceConfig>,
@@ -1009,10 +1014,7 @@ impl BuildPlan {
                 if config.bus != bus_id::NUBUS || !fits(BusKind::Nubus) {
                     bail!("This machine can't take a {}", device.name());
                 }
-                let slot = u8::from_str_radix(&config.slot, 16)
-                    .ok()
-                    .filter(|s| model.nubus_slots().contains(s))
-                    .context("No such NuBus slot on this machine")?;
+                let slot = nubus_slot(model, config)?;
                 let (rom, monitor) = if device == DeviceModel::MacIIVideoCard {
                     let settings: MacIIVideoCardSettings = config.parse()?;
                     (settings.rom, None)
@@ -1022,6 +1024,15 @@ impl BuildPlan {
                 };
                 self.take_video(slot, device, &rom, monitor, config)?;
                 Ok(false)
+            }
+            #[cfg(feature = "ethernet")]
+            DeviceModel::AppleEthernetNbTp => {
+                if config.bus != bus_id::NUBUS || !fits(BusKind::Nubus) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                self.take_card(nubus_slot(model, config)?, device, vec![], None, config)?;
+                // The card gets the MAC address and the link of its entry once the machine is built
+                Ok(true)
             }
             DeviceModel::SE30Video => {
                 if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
@@ -1078,11 +1089,22 @@ impl BuildPlan {
         monitor: Option<MacMonitor>,
         config: &DeviceConfig,
     ) -> Result<()> {
-        if self.video.iter().any(|v| v.slot == slot) {
+        let rom = std::fs::read(rom).with_context(|| format!("Cannot read {}", rom.display()))?;
+        self.take_card(slot, device, rom, monitor, config)
+    }
+
+    fn take_card(
+        &mut self,
+        slot: u8,
+        device: DeviceModel,
+        rom: Vec<u8>,
+        monitor: Option<MacMonitor>,
+        config: &DeviceConfig,
+    ) -> Result<()> {
+        if self.planned_cards.iter().any(|c| c.slot == slot) {
             bail!("This slot already holds a card");
         }
-        let rom = std::fs::read(rom).with_context(|| format!("Cannot read {}", rom.display()))?;
-        self.video.push(PlannedVideo {
+        self.planned_cards.push(PlannedCard {
             slot,
             device,
             rom,
@@ -1157,6 +1179,14 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
             SlotTarget::Card(bus.kind, number(0) as u8)
         }
     }
+}
+
+/// The NuBus slot that an entry names, if this machine has that slot
+fn nubus_slot(model: MacModel, config: &DeviceConfig) -> Result<u8> {
+    u8::from_str_radix(&config.slot, 16)
+        .ok()
+        .filter(|s| model.nubus_slots().contains(s))
+        .context("No such NuBus slot on this machine")
 }
 
 fn settings_map(settings: &impl Serialize) -> Map<String, Value> {
@@ -1731,21 +1761,23 @@ impl Emulator {
     ) -> Result<NewMachine> {
         let plan = BuildPlan::new(machine.model, devices);
         let mut extra_roms = vec![];
-        let mut video_cards = vec![];
-        for video in &plan.video {
-            let kind = match video.device {
+        let mut nubus_cards = vec![];
+        for card in &plan.planned_cards {
+            let kind = match card.device {
                 DeviceModel::SE30Video => {
-                    extra_roms.push(ExtraROMs::SE30Video(&video.rom));
+                    extra_roms.push(ExtraROMs::SE30Video(&card.rom));
                     continue;
                 }
                 DeviceModel::MacIIVideoCard => NubusDeviceKind::Toby,
+                #[cfg(feature = "ethernet")]
+                DeviceModel::AppleEthernetNbTp => NubusDeviceKind::ApplNbSonicTp,
                 _ => NubusDeviceKind::Mdc12,
             };
-            video_cards.push(NubusCardConfig {
-                slot: video.slot,
+            nubus_cards.push(NubusCardConfig {
+                slot: card.slot,
                 kind,
-                rom: &video.rom,
-                monitor: video.monitor,
+                rom: &card.rom,
+                monitor: card.monitor,
             });
         }
         if let Some(rom) = machine.extension_rom {
@@ -1764,7 +1796,7 @@ impl Emulator {
             machine.vram_size,
             None,
             plan.iie_card,
-            &video_cards,
+            &nubus_cards,
         )?;
         emu.device_book.cards = plan.cards;
         emu.rebuild_bus_list();
@@ -2514,6 +2546,33 @@ mod tests {
         // Not on a machine that has no such option
         let (_, refused) = build(MacModel::Plus, vec![config]);
         assert_eq!(refused.len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn an_ethernet_card_goes_in_a_nubus_slot() {
+        use crate::net::EthernetLinkType;
+        let files = TestFiles::new("nubus_ethernet");
+        let video = DeviceConfig::new(
+            bus_id::NUBUS,
+            "9",
+            &DisplayCard824Settings {
+                rom: files.file("card.rom", 32 * 1024),
+                monitor: Some(MacMonitor::RGB12),
+            },
+        )
+        .unwrap();
+        let ethernet = DeviceConfig::of_model(
+            bus_id::NUBUS,
+            "C",
+            DeviceModel::AppleEthernetNbTp,
+            &serde_json::json!({ "mac": [8, 0, 7, 4, 5, 6], "link": EthernetLinkType::Down }),
+        )
+        .unwrap();
+        assert_eq!(
+            assert_round_trip(MacModel::MacIIx, vec![video.clone(), ethernet.clone()]),
+            vec![video, ethernet]
+        );
     }
 
     #[test]

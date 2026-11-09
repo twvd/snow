@@ -345,11 +345,17 @@ impl EmulatorConfig {
     fn card_ethernet_mut(
         &mut self,
         bus: devices::BusKind,
-        _slot: u8,
+        slot: u8,
     ) -> Option<&mut crate::net::EthernetPort> {
         match (self, bus) {
             (Self::Quadra700(cpu), devices::BusKind::BuiltIn) => {
                 Some(cpu.bus.quadra700_mut().sonic.port_mut())
+            }
+            (Self::MacII(cpu), devices::BusKind::Nubus) => {
+                cpu.bus.macii_mut().ethernet_card_mut(slot)
+            }
+            (Self::MacII30(cpu), devices::BusKind::Nubus) => {
+                cpu.bus.macii_mut().ethernet_card_mut(slot)
             }
             _ => None,
         }
@@ -512,15 +518,15 @@ fn build_displays(names: Vec<String>, receivers: Vec<FrameReceiver>) -> Vec<Disp
         .collect()
 }
 
-/// The cards of a Mac II in slot order: the ones given, else the card of the extra ROMs in
-/// slot $9
+/// The cards of a Mac II in slot order: the ones given and, if none of them is a video card,
+/// the video card of the extra ROMs in slot $9
 fn macii_cards<'a>(
     extra_roms: &[ExtraROMs<'a>],
-    video_cards: &[NubusCardConfig<'a>],
+    nubus_cards: &[NubusCardConfig<'a>],
     monitor: Option<MacMonitor>,
 ) -> Result<Vec<NubusCardConfig<'a>>> {
-    let mut cards = video_cards.to_vec();
-    if cards.is_empty() {
+    let mut cards = nubus_cards.to_vec();
+    if !cards.iter().any(|c| c.kind.is_video()) {
         cards.extend(extra_roms.iter().find_map(|p| {
             let (kind, rom) = match p {
                 ExtraROMs::MDC12(data) => (NubusDeviceKind::Mdc12, *data),
@@ -535,7 +541,7 @@ fn macii_cards<'a>(
             })
         }));
     }
-    if cards.is_empty() {
+    if !cards.iter().any(|c| c.kind.is_video()) {
         bail!("Macintosh II requires display card ROM")
     }
     cards.sort_by_key(|c| c.slot);
@@ -579,7 +585,7 @@ impl Emulator {
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
-        video_cards: &[NubusCardConfig],
+        nubus_cards: &[NubusCardConfig],
     ) -> Result<(Self, Vec<DisplayHandle>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -644,7 +650,7 @@ impl Emulator {
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
 
-                let nubus = macii_cards(extra_roms, video_cards, monitor)?;
+                let nubus = macii_cards(extra_roms, nubus_cards, monitor)?;
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -675,7 +681,7 @@ impl Emulator {
             MacModel::MacIIx | MacModel::MacIIcx => {
                 assert!(override_fdd_type.is_none());
 
-                let nubus = macii_cards(extra_roms, video_cards, monitor)?;
+                let nubus = macii_cards(extra_roms, nubus_cards, monitor)?;
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -796,7 +802,7 @@ impl Emulator {
                 // built-in one.
                 let renderer = ChannelRenderer::new(0, 0)?;
                 receivers.push(renderer.get_receiver());
-                let mut cards = video_cards.to_vec();
+                let mut cards = nubus_cards.to_vec();
                 cards.sort_by_key(|c| c.slot);
                 let card_renderers = make_renderers(&cards, &mut receivers)?;
                 let bus = Quadra700Bus::new(
@@ -840,7 +846,7 @@ impl Emulator {
                 // The displays of the cards come after the built-in one
                 let renderer = ChannelRenderer::new(0, 0)?;
                 receivers.push(renderer.get_receiver());
-                let mut cards = video_cards.to_vec();
+                let mut cards = nubus_cards.to_vec();
                 cards.sort_by_key(|c| c.slot);
                 let card_renderers = make_renderers(&cards, &mut receivers)?;
                 let bus = Quadra800Bus::new(
