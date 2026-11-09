@@ -102,6 +102,10 @@ pub enum DeviceModel {
     BuiltInSonic,
     #[cfg(feature = "ethernet")]
     AppleEthernetNbTp,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetLc,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetLcTp,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
     Mac400KDrive,
@@ -200,6 +204,10 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::ethernet::sonic::INFO,
     #[cfg(feature = "ethernet")]
     &crate::mac::ethernet::appl_nb_sonic_tp::INFO,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::ethernet::appl_lc_sonic::INFO,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::ethernet::appl_lc_sonic::INFO_TP,
     #[cfg(feature = "printer")]
     &crate::mac::scsi::printer::INFO,
     &crate::mac::swim::drive::INFO_400K,
@@ -733,6 +741,18 @@ impl DeviceSettings for MacIIVideoCardSettings {
     const MODEL: DeviceModel = DeviceModel::MacIIVideoCard;
 }
 
+/// The settings of the Apple Ethernet LC Card: the image of its declaration ROM, which
+/// holds the card's driver
+#[cfg(feature = "ethernet")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppleEthernetLcSettings {
+    pub rom: PathBuf,
+}
+#[cfg(feature = "ethernet")]
+impl DeviceSettings for AppleEthernetLcSettings {
+    const MODEL: DeviceModel = DeviceModel::AppleEthernetLc;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SE30VideoSettings {
     pub rom: PathBuf,
@@ -952,6 +972,10 @@ struct PlannedCard {
 struct BuildPlan {
     planned_cards: Vec<PlannedCard>,
     iie_card: Option<IieCardSettings>,
+    /// An Apple Ethernet LC card in the PDS slot, with its declaration ROM if it has to be
+    /// loaded
+    #[cfg(feature = "ethernet")]
+    pds_ethernet: Option<(DeviceModel, Vec<u8>)>,
     override_drive: Option<DriveType>,
     cards: Vec<DeviceConfig>,
     /// What to hand to the machine once it's built
@@ -1054,6 +1078,10 @@ impl BuildPlan {
                 if config.bus != bus_id::PDS_LC || !fits(BusKind::LcPds) {
                     bail!("This machine can't take a {}", device.name());
                 }
+                #[cfg(feature = "ethernet")]
+                if self.pds_ethernet.is_some() {
+                    bail!("This slot already holds a card");
+                }
                 let settings: AppleIIePdsCardSettings = config.parse()?;
                 self.iie_card = Some(IieCardSettings {
                     security_jumper: settings.security_jumper,
@@ -1061,6 +1089,31 @@ impl BuildPlan {
                 });
                 self.cards.push(config.clone());
                 Ok(false)
+            }
+            #[cfg(feature = "ethernet")]
+            DeviceModel::AppleEthernetLc | DeviceModel::AppleEthernetLcTp => {
+                if config.bus != bus_id::PDS_LC || !fits(BusKind::LcPds) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                if self.iie_card.is_some() || self.pds_ethernet.is_some() {
+                    bail!("This slot already holds a card");
+                }
+                let rom = if device == DeviceModel::AppleEthernetLc {
+                    let settings: AppleEthernetLcSettings = config.parse()?;
+                    let rom = std::fs::read(&settings.rom)
+                        .with_context(|| format!("Cannot read {}", settings.rom.display()))?;
+                    crate::mac::ethernet::appl_lc_sonic::check_rom(&rom)?;
+                    rom
+                } else {
+                    vec![]
+                };
+                self.pds_ethernet = Some((device, rom));
+                self.cards.push(DeviceConfig {
+                    model: Some(device.key().to_owned()),
+                    ..config.clone()
+                });
+                // The card gets the MAC address and the link of its entry once the machine is built
+                Ok(true)
             }
             _ => {
                 // A drive other than the machine's own
@@ -1798,6 +1851,10 @@ impl Emulator {
             plan.iie_card,
             &nubus_cards,
         )?;
+        #[cfg(feature = "ethernet")]
+        if let Some((device, rom)) = plan.pds_ethernet {
+            emu.config.set_pds_ethernet(device, rom)?;
+        }
         emu.device_book.cards = plan.cards;
         emu.rebuild_bus_list();
 
@@ -2573,6 +2630,41 @@ mod tests {
             assert_round_trip(MacModel::MacIIx, vec![video.clone(), ethernet.clone()]),
             vec![video, ethernet]
         );
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn an_ethernet_card_goes_in_the_lc_pds_slot() {
+        use crate::net::EthernetLinkType;
+        let ethernet = DeviceConfig::of_model(
+            bus_id::PDS_LC,
+            "0",
+            DeviceModel::AppleEthernetLcTp,
+            &serde_json::json!({ "mac": [8, 0, 7, 7, 8, 9], "link": EthernetLinkType::Down }),
+        )
+        .unwrap();
+        for mac in [
+            MacModel::LC,
+            MacModel::LCII,
+            MacModel::LCIII,
+            MacModel::LC475,
+        ] {
+            assert_eq!(
+                assert_round_trip(mac, vec![ethernet.clone()]),
+                vec![ethernet.clone()]
+            );
+        }
+        // The PDS slot takes only one card: the second one is refused
+        let iie = DeviceConfig::of_model(
+            bus_id::PDS_LC,
+            "0",
+            DeviceModel::AppleIIePdsCard,
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let (mut emu, refused) = build(MacModel::LC, vec![iie, ethernet.clone()]);
+        assert_eq!(refused.len(), 1, "{:?}", refused);
+        assert_eq!(emu.devices().len(), 1);
     }
 
     #[test]

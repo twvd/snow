@@ -209,6 +209,53 @@ pub fn check_rom(rom: &[u8]) -> Result<()> {
     Ok(())
 }
 
+const fn fits_lc(mac: crate::mac::MacModel) -> bool {
+    matches!(
+        mac,
+        crate::mac::MacModel::LC
+            | crate::mac::MacModel::LCII
+            | crate::mac::MacModel::LCIII
+            | crate::mac::MacModel::LC475
+    )
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::AppleEthernetLc,
+    name: "Apple Ethernet LC Card",
+    bus: crate::emulator::devices::BusKind::LcPds,
+    fits: fits_lc,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: true,
+    one_per_bus: false,
+    // ROMs 341-0470 and 341-0842, both from the Macintosh LC Ethernet Adapter
+    rom: Some(crate::emulator::devices::RomInfo {
+        label: "Ethernet LC Card ROM",
+        digests: &[
+            "e4d460e1ed918232fdd39b0ee40c7e2daf6ad9ca57e779fd2d662886cfdcc67f",
+            "cb6151d8ac8438c97c51bc1c32680773e030f0e6a3dbc713537c46c1c5e9ce21",
+        ],
+    }),
+    path_keys: &["rom"],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
+pub const INFO_TP: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::AppleEthernetLcTp,
+    name: "Apple Ethernet LC Twisted-Pair Card",
+    bus: crate::emulator::devices::BusKind::LcPds,
+    fits: fits_lc,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

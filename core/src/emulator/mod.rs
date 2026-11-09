@@ -357,8 +357,41 @@ impl EmulatorConfig {
             (Self::MacII30(cpu), devices::BusKind::Nubus) => {
                 cpu.bus.macii_mut().ethernet_card_mut(slot)
             }
+            (Self::MacLC(cpu), devices::BusKind::LcPds) => cpu.bus.lc_i_mut().ethernet_card_mut(),
+            (Self::MacLCII(cpu), devices::BusKind::LcPds) => cpu.bus.lc_i_mut().ethernet_card_mut(),
+            (Self::MacLCIII(cpu), devices::BusKind::LcPds) => {
+                cpu.bus.lc_iii_mut().ethernet_card_mut()
+            }
+            (Self::LC475(cpu), devices::BusKind::LcPds) => cpu.bus.lc475_mut().ethernet_card_mut(),
             _ => None,
         }
+    }
+
+    /// Puts an Apple Ethernet LC card, with its declaration ROM if it has one to load, in the
+    /// PDS slot of an LC
+    #[cfg(feature = "ethernet")]
+    fn set_pds_ethernet(&mut self, device: devices::DeviceModel, rom: Vec<u8>) -> Result<()> {
+        use crate::mac::ethernet::appl_lc_sonic::ApplLcSonic;
+        let port = crate::net::EthernetPort::new([
+            0x08,
+            0x00,
+            0x07,
+            rand::random(),
+            rand::random(),
+            rand::random(),
+        ]);
+        let card = match device {
+            devices::DeviceModel::AppleEthernetLc => ApplLcSonic::new(port, rom),
+            _ => ApplLcSonic::new_twisted_pair(port),
+        };
+        match self {
+            Self::MacLC(cpu) => cpu.bus.lc_i_mut().set_ethernet_card(card),
+            Self::MacLCII(cpu) => cpu.bus.lc_i_mut().set_ethernet_card(card),
+            Self::MacLCIII(cpu) => cpu.bus.lc_iii_mut().set_ethernet_card(card),
+            Self::LC475(cpu) => cpu.bus.lc475_mut().set_ethernet_card(card),
+            _ => bail!("This machine has no LC PDS slot"),
+        }
+        Ok(())
     }
 }
 
