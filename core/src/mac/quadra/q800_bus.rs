@@ -56,20 +56,37 @@ const CPU_ID_ADDR: Address = 0x5FFF_FFFC;
 /// Period of the 60.15 Hz interrupt of IOSB on VIA 1 CA1, in VIA ticks
 const TICK60_PERIOD: Ticks = 13024;
 
-/// Wait states, in C16M ticks, of an access to a device on the I/O bus, on top
-/// of the bus cycle itself: IOSB synchronises the cycle with the I/O bus clock
-/// and its termination back with the CPU clock. Fit to BusTiming on a 25 MHz
-/// Quadra 610, which has IOSB too: VIA 2 and the ISM read in 12 clocks, the
-/// 53C96 in 12 and the ASC in 13. No Quadra 800 has been measured.
-const IO_BUS_WAITS: Ticks = 5;
+/// Wait states, in bus clocks, of an access to a device on the I/O bus, on top
+/// of the bus cycle itself. The I/O bus is synchronous with the CPU bus
+/// (Developer Note), and the accesses take the same number of clocks at 25 and
+/// 33 MHz: BusTiming reads VIA 2 and the ISM in 11 clocks on a 25 MHz Quadra
+/// 610, which has IOSB, and on an LC 475 at 33 MHz, whose PrimeTime is a close
+/// relative of IOSB. No Quadra 800 has been measured.
+const IO_BUS_WAITS: Ticks = 9;
 
-/// Extra wait states, in C16M ticks, of an SCC access, for PCLK: the Quadra 610
-/// reads it in 17 clocks. The recovery time between accesses isn't modelled.
-const SCC_PCLK_WAITS: Ticks = 3;
+/// Extra wait states, in bus clocks, of an access to the 53C96 and to the
+/// sound: the LC 475 at 33 MHz reads the 53C96 in 12 clocks, the sound in 12
+/// to 13
+const IO_SLOW_WAITS: Ticks = 1;
 
-/// C16M ticks from the VIA 1 tick that an access starts on to the CPU's release:
-/// BusTiming holds the CPU 0.76 VIA cycle on a Quadra 610
-const VIA_RELEASE: Ticks = 15;
+/// Extra wait states, in bus clocks, of an SCC access, for PCLK: both machines
+/// read it in 16 clocks
+const SCC_PCLK_WAITS: Ticks = 5;
+
+/// Native ticks from the start of an SCC access to the start of the next, for
+/// its recovery time: back to back, the LC 475 at 33 MHz reads it every 639 ns
+/// (21 clocks), where the Quadra 610 at 25 MHz is only held by the access
+/// itself
+const SCC_RECOVERY: Ticks = 21;
+
+/// Native ticks from the start of a SWIM access to the start of the next: back
+/// to back, both machines read the ISM every 16 clocks
+const SWIM_RECOVERY: Ticks = 16;
+
+/// C16M ticks from the VIA 1 tick that an access starts on to the CPU's
+/// release, which then ends its own cycle: BusTiming holds the CPU 900 ns, 0.70
+/// VIA cycle, on the LC 475 at 33 MHz (0.76 on the Quadra 610 at 25 MHz)
+const VIA_RELEASE: Ticks = 13;
 
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
@@ -143,6 +160,14 @@ enum Region {
     Video,
 }
 
+/// What holds an access to a device on the I/O bus back after the previous one
+#[derive(Clone, Copy)]
+enum Recovery {
+    None,
+    Scc,
+    Swim,
+}
+
 /// The NuBus slots $C-$E and the PDS are empty: nothing answers there, which
 /// is a bus error, as the Slot Manager expects.
 const fn region(overlay: bool, block: usize) -> Region {
@@ -192,8 +217,10 @@ pub struct Quadra800Bus<TRenderer: Renderer> {
     tick60_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
-    /// C16M tick the SWIM can be accessed again
+    /// Native tick the SWIM can be accessed again
     swim_ready: Ticks,
+    /// Native tick the SCC can be accessed again
+    scc_ready: Ticks,
     pub(crate) scsi: Esp,
     /// A pseudo-DMA access is held off, waiting for DREQ
     scsi_dma_stalled: bool,
@@ -279,6 +306,7 @@ where
             scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new_swim2(model.fdd_drives(), C16M_FREQUENCY),
             swim_ready: 0,
+            scc_ready: 0,
             // MODE pins strapped for a 16-bit DMA bus, as on the LC 475
             scsi: Esp::new(true),
             scsi_dma_stalled: false,
@@ -622,17 +650,19 @@ where
             // VIA 1. VIA 2 has no timers, and doesn't take the VIA clock either:
             // its reads take the same time at any spacing.
             0x0000_0000..=0x0000_1FFF => self.via_cycle(acc),
-            0x0000_2000..=0x0000_3FFF => self.io_bus_cycle(acc, 0, false),
+            0x0000_2000..=0x0000_3FFF => self.io_bus_cycle(acc, 0, Recovery::None),
             // SCC
-            0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, false),
+            0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, Recovery::Scc),
             // 53C96 pseudo-DMA
             0x0001_0100..=0x0001_0103 => self.scsi_dma_cycle(acc),
-            // 53C96, sound, IOSB registers
-            0x0001_0000..=0x0001_00FF | 0x0001_4000..=0x0001_4FFF | 0x0001_8000..=0x0001_9FFF => {
-                self.io_bus_cycle(acc, 0, false)
+            // 53C96, sound
+            0x0001_0000..=0x0001_00FF | 0x0001_4000..=0x0001_4FFF => {
+                self.io_bus_cycle(acc, IO_SLOW_WAITS, Recovery::None)
             }
+            // IOSB registers
+            0x0001_8000..=0x0001_9FFF => self.io_bus_cycle(acc, 0, Recovery::None),
             // SWIM
-            0x0001_E000..=0x0001_FFFF => self.io_bus_cycle(acc, 0, true),
+            0x0001_E000..=0x0001_FFFF => self.io_bus_cycle(acc, 0, Recovery::Swim),
             // djMEMC, and nothing
             _ => match self.native_clock.device_sync(&acc) {
                 DeviceCycle::Stall(n) => BusResponse::Stall(n),
@@ -653,32 +683,47 @@ where
         }
     }
 
-    /// An access to a device on the I/O bus: it starts on a C16M tick and
-    /// lasts a bus cycle in C16M ticks, plus the IO_BUS_WAITS of IOSB and the
-    /// device's own `waits`, in C16M ticks. The SWIM accesses are held as far
-    /// apart as the ISM needs (Swim::ism_recovery()) and, when overclocking, as
-    /// Swim::hold16() needs.
-    fn io_bus_cycle(&mut self, acc: BusAccess<Bus68040>, waits: Ticks, swim: bool) -> BusResponse {
-        let w = match self.native_clock.device16_sync(&acc) {
+    /// An access to a device on the I/O bus: it lasts a bus cycle, plus the
+    /// IO_BUS_WAITS of IOSB and the device's own `waits`, in bus clocks. It is
+    /// held back as long as the device's `recovery` from the previous access
+    /// needs.
+    fn io_bus_cycle(
+        &mut self,
+        acc: BusAccess<Bus68040>,
+        waits: Ticks,
+        recovery: Recovery,
+    ) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
             DeviceCycle::Stall(n) => return BusResponse::Stall(n),
             DeviceCycle::Access(w) => w,
         };
-        let hold = if swim { self.swim_hold() } else { 0 };
+        // When overclocking, the access starts once the clock has caught up
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = match recovery {
+            Recovery::None => 0,
+            Recovery::Scc => {
+                let hold = self.scc_ready.saturating_sub(now);
+                self.scc_ready = now + hold + SCC_RECOVERY;
+                hold
+            }
+            Recovery::Swim => self.swim_hold(now),
+        };
         let w = self
             .native_clock
-            .scale_dev16_waits(w, IO_BUS_WAITS + waits + hold);
+            .scale_dev_waits(w, IO_BUS_WAITS + waits + hold);
         bus_access_long(acc, w, self, Self::io_read, Self::io_write)
     }
 
-    /// C16M ticks a SWIM access is held for, called after device16_sync(). FCLK
-    /// is taken as C16M.
-    fn swim_hold(&mut self) -> Ticks {
-        let now = self.native_clock.c16m_ticks();
+    /// Native ticks a SWIM access starting at `now` is held for: IOSB's own
+    /// recovery, the ISM's (Swim::ism_recovery(), with FCLK taken as C16M), or
+    /// when overclocking what Swim::hold() needs
+    fn swim_hold(&mut self, now: Ticks) -> Ticks {
+        let ism = (self.swim.ism_recovery() * BUS_FREQUENCY).div_ceil(C16M_FREQUENCY);
         let hold = self
             .swim_ready
             .saturating_sub(now)
-            .max(self.swim.hold16(&self.native_clock));
-        self.swim_ready = now + hold + self.swim.ism_recovery();
+            .max(self.swim.hold(&self.native_clock));
+        self.swim_ready = now + hold + SWIM_RECOVERY.max(ism);
         hold
     }
 
@@ -897,15 +942,22 @@ where
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// djMEMC): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
-    /// don't take bursts. These are the LC 475's at 25 MHz: RAM 5-2-2-2 reading
-    /// and 4-2-2-2 writing, ROM 5, which BusTiming also reads on a 25 MHz
-    /// Quadra 610 for single accesses. Real writes are posted, which the bus
-    /// can't express: only their period is right.
+    /// don't take bursts.
+    ///
+    /// At 33 MHz, the later ROM sets djMEMC up for the same DRAM timing as
+    /// MEMCjr in the LC 475 at 33 MHz, which BusTiming reads in 6 clocks, 6-3-3-3
+    /// in a line, and writes in 5. It sets the ROM cycle to 6 clocks, one less
+    /// than the LC 475's. The screen in the current VRAM row reads in 4 clocks,
+    /// 4-3-3-3, and writes in 3, 3-2-2-2, as on the LC 475 at 25 and 33 MHz.
+    /// Real writes are posted, which the bus can't express: only their period
+    /// is right.
     fn memory_waits(region: Region, addr: Address, write: bool) -> Option<(Ticks, Ticks)> {
         match region {
-            Region::Ram => Some((3, 1)),
-            Region::Rom => Some((3, 3)),
-            Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => Some((2, if write { 1 } else { 2 })),
+            Region::Ram => Some((if write { 3 } else { 4 }, 2)),
+            Region::Rom => Some((4, 5)),
+            Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => {
+                Some(if write { (1, 1) } else { (2, 2) })
+            }
             _ => None,
         }
     }
