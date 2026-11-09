@@ -16,6 +16,7 @@ use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::PdsIIeCard;
 use crate::mac::quadra::bus::Quadra700Bus;
+use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::renderer::channel::ChannelRenderer;
 use crate::tickable::{Tickable, Ticks};
 
@@ -166,13 +167,14 @@ machine_bus!(
     Bus68040,
     Quadra700(Quadra700Bus<ChannelRenderer>, quadra700, quadra700_mut),
     Lc475(Lc475Bus<ChannelRenderer>, lc475, lc475_mut),
+    Quadra800(Quadra800Bus<ChannelRenderer>, quadra800, quadra800_mut),
 );
 
 impl MachineBus040 {
     /// The Apple IIe Card in the PDS of an LC 475
     pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
         match self {
-            Self::Quadra700(_) => None,
+            Self::Quadra700(_) | Self::Quadra800(_) => None,
             Self::Lc475(bus) => bus.iie_card_mut(),
         }
     }
