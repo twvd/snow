@@ -149,6 +149,19 @@ impl EthernetPort {
         self.mac
     }
 
+    /// Changes the MAC address, restarting a running link so the host
+    /// side filters on the new one
+    pub fn set_mac(&mut self, mac: [u8; 6]) -> Result<()> {
+        if mac == self.mac {
+            return Ok(());
+        }
+        self.mac = mac;
+        if self.connected() {
+            self.set_link(self.link())?;
+        }
+        Ok(())
+    }
+
     /// Sends a frame to the network
     pub fn send(&mut self, packet: &[u8]) {
         if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
@@ -446,6 +459,7 @@ impl EthernetPort {
 impl Ethernet for EthernetPort {
     fn update_status(&mut self, status: &mut EthernetStatus) -> bool {
         let new = EthernetStatus {
+            mac: self.mac,
             link: Self::link(self),
             capture: Self::capture_status(self),
         };
@@ -458,6 +472,10 @@ impl Ethernet for EthernetPort {
 
     fn set_link(&mut self, link: EthernetLinkType) -> Result<()> {
         Self::set_link(self, link)
+    }
+
+    fn set_mac(&mut self, mac: [u8; 6]) -> Result<()> {
+        Self::set_mac(self, mac)
     }
 
     fn start_capture(&mut self, filename: &Path) -> Result<()> {

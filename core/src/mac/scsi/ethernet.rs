@@ -1,7 +1,7 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::devices::{CreateContext, DeviceConfig, FunctionMut};
+use crate::emulator::devices::{CreateContext, DeviceConfig, FunctionMut, configure_ethernet};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -318,13 +318,7 @@ impl Debuggable for ScsiTargetEthernet {
 /// Makes a DaynaPORT from its entry
 fn create(config: &DeviceConfig, _ctx: &mut CreateContext) -> Result<Box<dyn ScsiTarget>> {
     let mut adapter = ScsiTargetEthernet::default();
-    // A link this build doesn't have shouldn't cost the device
-    if let Some(link) = config.settings.get("link") {
-        match serde_json::from_value(link.clone()) {
-            Ok(link) => adapter.port.set_link(link)?,
-            Err(_) => log::warn!("Unknown Ethernet link {}", link),
-        }
-    }
+    configure_ethernet(&mut adapter.port, config)?;
     Ok(Box::new(adapter))
 }
 

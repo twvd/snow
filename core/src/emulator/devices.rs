@@ -314,6 +314,7 @@ pub trait Ethernet {
     fn update_status(&mut self, status: &mut EthernetStatus) -> bool;
     fn link(&self) -> crate::net::EthernetLinkType;
     fn set_link(&mut self, link: crate::net::EthernetLinkType) -> Result<()>;
+    fn set_mac(&mut self, mac: [u8; 6]) -> Result<()>;
     fn start_capture(&mut self, filename: &Path) -> Result<()>;
     fn stop_capture(&mut self) -> Option<(PathBuf, usize)>;
     fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
@@ -439,7 +440,7 @@ impl FunctionStatus {
             Self::Cdrom(s) => settings_map(&s.settings),
             Self::Floppy(s) => settings_map(&s.settings),
             #[cfg(feature = "ethernet")]
-            Self::Ethernet(s) => settings_map(&serde_json::json!({ "link": s.link })),
+            Self::Ethernet(s) => settings_map(&serde_json::json!({ "mac": s.mac, "link": s.link })),
             _ => Map::new(),
         }
     }
@@ -501,6 +502,9 @@ impl Default for FloppyStatus {
 #[cfg(feature = "ethernet")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetStatus {
+    /// An adapter whose entry has none makes one up, and the entry then keeps it, so that the
+    /// other machines on the network see the same address every time
+    pub mac: [u8; 6],
     pub link: crate::net::EthernetLinkType,
     pub capture: Option<super::comm::EthernetCaptureStatus>,
 }
@@ -509,6 +513,7 @@ pub struct EthernetStatus {
 impl Default for EthernetStatus {
     fn default() -> Self {
         Self {
+            mac: [0; 6],
             link: crate::net::EthernetLinkType::Down,
             capture: None,
         }
@@ -1327,6 +1332,24 @@ fn load_function(function: FunctionMut<'_>, path: &Path, read_only: bool) -> Res
     }
 }
 
+/// Gives an Ethernet adapter the MAC address and link of its entry
+#[cfg(feature = "ethernet")]
+pub(crate) fn configure_ethernet(ethernet: &mut dyn Ethernet, config: &DeviceConfig) -> Result<()> {
+    if let Some(mac) = config.settings.get("mac") {
+        let mac =
+            serde_json::from_value(mac.clone()).map_err(|_| anyhow!("Bad MAC address {}", mac))?;
+        ethernet.set_mac(mac)?;
+    }
+    // A link this build doesn't have shouldn't cost the device
+    if let Some(link) = config.settings.get("link") {
+        match serde_json::from_value(link.clone()) {
+            Ok(link) => ethernet.set_link(link)?,
+            Err(_) => log::warn!("Unknown Ethernet link {}", link),
+        }
+    }
+    Ok(())
+}
+
 /// Fills in a status by comparison, for the devices whose status is cheap to make: true if
 /// it changed
 pub(crate) fn replace_status<T: PartialEq>(status: &mut T, new: T) -> bool {
@@ -1845,19 +1868,12 @@ impl Emulator {
                 }
             }
             #[cfg(feature = "ethernet")]
-            FunctionKind::Ethernet => {
-                // A link this build doesn't have shouldn't cost the device
-                let Some(link) = config.settings.get("link") else {
-                    return Ok(());
-                };
-                let link = serde_json::from_value(link.clone())
-                    .map_err(|_| anyhow!("Unknown Ethernet link {}", link))?;
-                self.with_function(target, model, |f| match f {
-                    FunctionMut::Ethernet(ethernet) => ethernet.set_link(link),
+            FunctionKind::Ethernet => self
+                .with_function(target, model, |f| match f {
+                    FunctionMut::Ethernet(ethernet) => configure_ethernet(ethernet, config),
                     _ => bail!("This device has no Ethernet link"),
                 })
-                .context("The device in this slot is gone")?
-            }
+                .context("The device in this slot is gone")?,
             FunctionKind::Cdrom => {
                 let settings: CdromSettings = config.parse()?;
                 match settings.media {
@@ -2332,13 +2348,38 @@ mod tests {
             bus_id::SCSI,
             "5",
             DeviceModel::DaynaPortScsiLink,
-            &serde_json::json!({ "link": EthernetLinkType::Down }),
+            &serde_json::json!({ "mac": [0, 0x80, 0x19, 1, 2, 3], "link": EthernetLinkType::Down }),
         )
         .unwrap();
         assert_eq!(
             assert_round_trip(MacModel::Plus, vec![config.clone()]),
             [config]
         );
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn an_ethernet_adapter_keeps_the_mac_address_it_makes_up() {
+        let config = DeviceConfig::of_model(
+            bus_id::SCSI,
+            "5",
+            DeviceModel::DaynaPortScsiLink,
+            &Map::new(),
+        )
+        .unwrap();
+        let (mut emu, refused) = build(MacModel::Plus, vec![config]);
+        assert!(refused.is_empty(), "{:?}", refused);
+        let reported = emu.devices();
+        let mac = reported[0]
+            .settings
+            .get("mac")
+            .expect("no MAC address")
+            .clone();
+        assert_eq!(
+            assert_round_trip(MacModel::Plus, reported.clone()),
+            reported
+        );
+        assert_eq!(reported[0].settings.get("mac"), Some(&mac));
     }
 
     #[test]
