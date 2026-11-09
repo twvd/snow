@@ -106,6 +106,8 @@ pub enum DeviceModel {
     AppleEthernetLc,
     #[cfg(feature = "ethernet")]
     AppleEthernetLcTp,
+    #[cfg(feature = "ethernet")]
+    DaynaPortEsi30,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
     Mac400KDrive,
@@ -208,6 +210,8 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::ethernet::appl_lc_sonic::INFO,
     #[cfg(feature = "ethernet")]
     &crate::mac::ethernet::appl_lc_sonic::INFO_TP,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::ethernet::dayna_si30::INFO,
     #[cfg(feature = "printer")]
     &crate::mac::scsi::printer::INFO,
     &crate::mac::swim::drive::INFO_400K,
@@ -972,8 +976,8 @@ struct PlannedCard {
 struct BuildPlan {
     planned_cards: Vec<PlannedCard>,
     iie_card: Option<IieCardSettings>,
-    /// An Apple Ethernet LC card in the PDS slot, with its declaration ROM if it has to be
-    /// loaded
+    /// An Ethernet card in the PDS slot of an LC or of the SE/30, with the image of its
+    /// declaration ROM for a card whose ROM the user loads
     #[cfg(feature = "ethernet")]
     pds_ethernet: Option<(DeviceModel, Vec<u8>)>,
     override_drive: Option<DriveType>,
@@ -1108,6 +1112,22 @@ impl BuildPlan {
                     vec![]
                 };
                 self.pds_ethernet = Some((device, rom));
+                self.cards.push(DeviceConfig {
+                    model: Some(device.key().to_owned()),
+                    ..config.clone()
+                });
+                // The card gets the MAC address and the link of its entry once the machine is built
+                Ok(true)
+            }
+            #[cfg(feature = "ethernet")]
+            DeviceModel::DaynaPortEsi30 => {
+                if config.bus != bus_id::PDS_SE30 || !fits(BusKind::Se30Pds) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                if self.pds_ethernet.is_some() {
+                    bail!("This slot already holds a card");
+                }
+                self.pds_ethernet = Some((device, vec![]));
                 self.cards.push(DeviceConfig {
                     model: Some(device.key().to_owned()),
                     ..config.clone()
@@ -2716,6 +2736,35 @@ mod tests {
             DeviceConfig::existing(bus_id::NUBUS, "9", &serde_json::json!({ "rom": rom })).unwrap();
         let settings: DisplayCard824Settings = config.parse().unwrap();
         assert_eq!(settings.monitor, Some(MacMonitor::default()));
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn an_ethernet_card_goes_in_the_se30_pds() {
+        use crate::net::EthernetLinkType;
+        let files = TestFiles::new("se30_pds");
+        let video = DeviceConfig {
+            model: None,
+            ..DeviceConfig::new(
+                bus_id::BUILT_IN,
+                "0",
+                &SE30VideoSettings {
+                    rom: files.file("video.rom", 32 * 1024),
+                },
+            )
+            .unwrap()
+        };
+        let ethernet = DeviceConfig::of_model(
+            bus_id::PDS_SE30,
+            "0",
+            DeviceModel::DaynaPortEsi30,
+            &serde_json::json!({ "mac": [0, 0x80, 0x19, 1, 1, 1], "link": EthernetLinkType::Down }),
+        )
+        .unwrap();
+        assert_eq!(
+            assert_round_trip(MacModel::SE30, vec![video.clone(), ethernet.clone()]),
+            vec![video, ethernet]
+        );
     }
 
     #[test]

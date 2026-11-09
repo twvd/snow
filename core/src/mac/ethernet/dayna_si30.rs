@@ -202,6 +202,25 @@ impl Debuggable for DaynaSi30 {
     }
 }
 
+const fn fits_se30(mac: crate::mac::MacModel) -> bool {
+    matches!(mac, crate::mac::MacModel::SE30)
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::DaynaPortEsi30,
+    name: "DaynaPORT E/si30",
+    bus: crate::emulator::devices::BusKind::Se30Pds,
+    fits: fits_se30,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -484,6 +484,10 @@ impl Workspace {
                 Some(DeviceModel::AppleEthernetLcTp) => {
                     args.pds_card = PdsCardKind::ApplLcSonicTp;
                 }
+                #[cfg(feature = "ethernet")]
+                Some(DeviceModel::DaynaPortEsi30) => {
+                    args.pds_card = PdsCardKind::DaynaSi30;
+                }
                 Some(DeviceModel::AppleIIePdsCard) => {
                     args.pds_card = PdsCardKind::AppleIIe;
                     if let Ok(settings) = config.parse::<AppleIIePdsCardSettings>() {
@@ -647,6 +651,12 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
             bus_id::PDS_LC,
             "0",
             Some(DeviceModel::AppleEthernetLcTp.key()),
+            json!({}),
+        )),
+        PdsCardKind::DaynaSi30 => entries.push(old_entry(
+            bus_id::PDS_SE30,
+            "0",
+            Some(DeviceModel::DaynaPortEsi30.key()),
             json!({}),
         )),
         _ => (),

@@ -588,7 +588,7 @@ impl Display for NubusDeviceKind {
     }
 }
 
-/// Card in the PDS slot of the Macintosh LC family
+/// Card in the PDS slot of the Macintosh LC family or of the SE/30
 #[derive(
     Debug,
     Clone,
@@ -614,6 +614,9 @@ pub enum PdsCardKind {
     /// Apple Ethernet LC Twisted-Pair Card
     #[cfg(feature = "ethernet")]
     ApplLcSonicTp,
+    /// DaynaPORT E/si30, in the SE/30
+    #[cfg(feature = "ethernet")]
+    DaynaSi30,
 }
 
 impl Display for PdsCardKind {
@@ -628,6 +631,8 @@ impl Display for PdsCardKind {
                 Self::ApplLcSonic => "Apple Ethernet LC Card",
                 #[cfg(feature = "ethernet")]
                 Self::ApplLcSonicTp => "Apple Ethernet LC Twisted-Pair Card",
+                #[cfg(feature = "ethernet")]
+                Self::DaynaSi30 => "DaynaPORT E/si30",
             }
         )
     }

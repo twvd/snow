@@ -357,6 +357,9 @@ impl EmulatorConfig {
             (Self::MacII30(cpu), devices::BusKind::Nubus) => {
                 cpu.bus.macii_mut().ethernet_card_mut(slot)
             }
+            (Self::MacII30(cpu), devices::BusKind::Se30Pds) => {
+                cpu.bus.macii_mut().pds_ethernet_mut()
+            }
             (Self::MacLC(cpu), devices::BusKind::LcPds) => cpu.bus.lc_i_mut().ethernet_card_mut(),
             (Self::MacLCII(cpu), devices::BusKind::LcPds) => cpu.bus.lc_i_mut().ethernet_card_mut(),
             (Self::MacLCIII(cpu), devices::BusKind::LcPds) => {
@@ -367,11 +370,28 @@ impl EmulatorConfig {
         }
     }
 
-    /// Puts an Apple Ethernet LC card, with its declaration ROM if it has one to load, in the
-    /// PDS slot of an LC
+    /// Puts an Ethernet card in the PDS slot of an LC or of the SE/30, with the image of its
+    /// declaration ROM for a card whose ROM the user loads
     #[cfg(feature = "ethernet")]
     fn set_pds_ethernet(&mut self, device: devices::DeviceModel, rom: Vec<u8>) -> Result<()> {
         use crate::mac::ethernet::appl_lc_sonic::ApplLcSonic;
+        if device == devices::DeviceModel::DaynaPortEsi30 {
+            let Self::MacII30(cpu) = self else {
+                bail!("This machine has no SE/30 PDS");
+            };
+            // Dayna's OUI
+            let port = crate::net::EthernetPort::new([
+                0x00,
+                0x80,
+                0x19,
+                rand::random(),
+                rand::random(),
+                rand::random(),
+            ]);
+            let card = crate::mac::ethernet::dayna_si30::DaynaSi30::new(port);
+            cpu.bus.macii_mut().set_pds_card(card);
+            return Ok(());
+        }
         let port = crate::net::EthernetPort::new([
             0x08,
             0x00,

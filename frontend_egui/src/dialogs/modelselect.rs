@@ -51,12 +51,19 @@ const fn pds_model(kind: PdsCardKind) -> Option<DeviceModel> {
         PdsCardKind::ApplLcSonic => Some(DeviceModel::AppleEthernetLc),
         #[cfg(feature = "ethernet")]
         PdsCardKind::ApplLcSonicTp => Some(DeviceModel::AppleEthernetLcTp),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::DaynaSi30 => Some(DeviceModel::DaynaPortEsi30),
     }
 }
 
-/// Whether a PDS card kind fits a machine
+/// Whether a PDS card kind fits a machine, in its PDS slot
 fn pds_fits(kind: PdsCardKind, mac: MacModel) -> bool {
-    pds_model(kind).is_none_or(|model| models_for(BusKind::LcPds, mac).any(|i| i.model == model))
+    let bus = if mac == MacModel::SE30 {
+        BusKind::Se30Pds
+    } else {
+        BusKind::LcPds
+    };
+    pds_model(kind).is_none_or(|model| models_for(bus, mac).any(|i| i.model == model))
 }
 
 /// The value of `rom_dialog_slot` for the PDS card's ROM: 0, as the NuBus slots start at $9
@@ -417,6 +424,7 @@ impl ModelSelectionDialog {
                     | MacModel::MacIIFDHD
                     | MacModel::MacIIx
                     | MacModel::MacIIcx
+                    | MacModel::SE30
                     | MacModel::LC
                     | MacModel::LCII
                     | MacModel::LCIII
@@ -733,6 +741,9 @@ impl ModelSelectionDialog {
 
                     self.pds_slot_row(ui, settings);
                 }
+                if self.selected_model == MacModel::SE30 {
+                    self.pds_slot_row(ui, settings);
+                }
                 if self.selected_model == MacModel::Quadra800 {
                     ui.label("VRAM size:");
                     egui::ComboBox::new(egui::Id::new("q800_vram"), "")
@@ -937,7 +948,6 @@ impl ModelSelectionDialog {
                             MacModel::LC | MacModel::LCII | MacModel::LCIII | MacModel::LC475
                         ) {
                             self.init_args.fpu_enabled = false;
-                            self.init_args.pds_card = PdsCardKind::None;
                             if self.selected_model != MacModel::Quadra800 {
                                 self.init_args.vram_size = None;
                             }

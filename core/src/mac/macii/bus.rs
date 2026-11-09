@@ -13,6 +13,10 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::dayna_si30::DaynaSi30;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::sonic::SonicDma;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::{Nubus, NubusSlot, VideoCard};
 use crate::mac::rtc::Rtc;
@@ -156,6 +160,14 @@ pub struct MacIIBus<TRenderer: Renderer> {
     /// The SE/30's video, which answers in slot $E like a card but is
     /// hard-wired
     se30_video: Option<SE30Video<TRenderer>>,
+
+    /// Ethernet card in the 030 PDS of the SE/30, answering as slot $9
+    #[cfg(feature = "ethernet")]
+    pds_card: Option<Box<DaynaSi30>>,
+    /// Changes when the PDS card's SONIC writes RAM, for inspect_generation()
+    #[cfg(feature = "ethernet")]
+    #[serde(skip)]
+    dma_generation: u32,
 
     /// Mouse mode
     mouse_mode: MouseMode,
@@ -310,6 +322,10 @@ where
 
             nubus: cards,
             se30_video,
+            #[cfg(feature = "ethernet")]
+            pds_card: None,
+            #[cfg(feature = "ethernet")]
+            dma_generation: 0,
             mouse_mode,
         };
 
@@ -340,6 +356,49 @@ where
         self.nubus.display_slots().collect()
     }
 
+    /// Puts a DaynaPORT E/si30 in the SE/30's PDS, while the machine is built
+    #[cfg(feature = "ethernet")]
+    pub fn set_pds_card(&mut self, card: DaynaSi30) {
+        self.pds_card = Some(Box::new(card));
+    }
+
+    /// The Ethernet port of the card in the SE/30's PDS
+    #[cfg(feature = "ethernet")]
+    pub fn pds_ethernet_mut(&mut self) -> Option<&mut crate::net::EthernetPort> {
+        self.pds_card.as_mut().map(|c| c.port_mut())
+    }
+
+    /// Calls `f` with the PDS card and the memory that its DMA reaches
+    #[cfg(feature = "ethernet")]
+    fn with_pds_card<R>(
+        &mut self,
+        f: impl FnOnce(&mut DaynaSi30, &mut PdsDma<'_, TRenderer>) -> R,
+    ) -> Option<R> {
+        let mut card = self.pds_card.take()?;
+        let r = f(&mut card, &mut PdsDma(self));
+        self.pds_card = Some(card);
+        Some(r)
+    }
+
+    /// A CPU cycle to the PDS card, done as byte accesses
+    #[cfg(feature = "ethernet")]
+    fn pds_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let card = self.pds_card.as_ref()?;
+        Some((addr..addr + len).fold(0, |v, a| {
+            (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
+        }))
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn pds_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.with_pds_card(|card, dma| {
+            for a in addr..addr + len {
+                let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
+                Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val, dma));
+            }
+        })
+    }
+
     /// The Ethernet port of the card in a NuBus slot, if it is an Ethernet card
     #[cfg(feature = "ethernet")]
     pub fn ethernet_card_mut(&mut self, slot: u8) -> Option<&mut crate::net::EthernetPort> {
@@ -359,6 +418,10 @@ where
         }
         self.nubus.set_renderers(&mut renderers);
 
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.pds_card {
+            card.after_deserialize();
+        }
         self.asc.after_deserialize();
     }
 
@@ -875,6 +938,12 @@ where
                     Self::superslot_write,
                 ),
             },
+            #[cfg(feature = "ethernet")]
+            Region::Slot if acc.addr >> 24 == 0xF9 && self.pds_card.is_some() => {
+                // The SE/30's PDS is the 68030's own bus: the card takes the CPU's cycles
+                // directly, not as NuBus transactions
+                bus_access_long(acc, NUBUS_WAITS, self, Self::pds_read, Self::pds_write)
+            }
             Region::Slot => {
                 if let Some(resp) = self.nubus.access(acc, NUBUS_WAITS) {
                     resp
@@ -934,6 +1003,10 @@ where
         self.nubus.reset();
         if let Some(video) = self.se30_video.as_mut() {
             video.reset();
+        }
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.pds_card {
+            card.reset();
         }
         self.asc.reset();
 
@@ -1055,6 +1128,15 @@ where
                 slot_irqs |= 1 << 5;
             }
         }
+        // The SE/30's PDS card answers as slot $9
+        #[cfg(feature = "ethernet")]
+        if self.with_pds_card(|card, dma| {
+            card.tick(native_ticks, ctx.bus_frequency, dma);
+            card.irq()
+        }) == Some(true)
+        {
+            slot_irqs |= 1;
+        }
         self.via2.a_in.set_v2irqs(!slot_irqs);
         // The GLUE combines the slot interrupts into /SLOTIRQ
         self.via2.set_line(
@@ -1140,7 +1222,11 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay)
+        #[cfg(feature = "ethernet")]
+        let dma = self.dma_generation << 1;
+        #[cfg(not(feature = "ethernet"))]
+        let dma = 0;
+        u32::from(self.overlay) | dma
     }
 }
 
@@ -1163,9 +1249,37 @@ where
 
         if let Some(video) = self.se30_video.as_ref() {
             result.push(dbgprop_nest!("SE/30 video", video));
+            #[cfg(feature = "ethernet")]
+            if let Some(card) = self.pds_card.as_ref() {
+                result.push(dbgprop_nest!("DaynaPORT E/si30", card));
+            }
             return result;
         }
         result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
         result
+    }
+}
+
+/// What the SONIC of the SE/30's PDS card reaches: the RAM
+#[cfg(feature = "ethernet")]
+struct PdsDma<'a, TRenderer: Renderer>(&'a mut MacIIBus<TRenderer>);
+
+#[cfg(feature = "ethernet")]
+impl<TRenderer: Renderer> SonicDma for PdsDma<'_, TRenderer> {
+    fn read_byte(&mut self, addr: Address) -> u8 {
+        if addr < 0x4000_0000 {
+            self.0.ram_read(addr, 1).unwrap_or(0xFF) as u8
+        } else {
+            MacIIBus::<TRenderer>::OPENBUS
+        }
+    }
+
+    fn write_byte(&mut self, addr: Address, val: u8) {
+        if addr < 0x4000_0000 {
+            self.0.ram_write(addr, 1, val.into());
+            // Memory notifiers only see the CPU's writes: a new DMA generation
+            // makes them read their ranges again
+            self.0.dma_generation = self.0.dma_generation.wrapping_add(1);
+        }
     }
 }
