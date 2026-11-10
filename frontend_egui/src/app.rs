@@ -369,7 +369,7 @@ impl SnowGui {
         zen: bool,
         serial_bridge_a: Option<&str>,
         serial_bridge_b: Option<&str>,
-        floppies: &[String],
+        floppies: &[(String, bool)],
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -603,9 +603,9 @@ impl SnowGui {
 
             // Load floppy images from CLI args (only if emulator was initialized)
             if app.emu.is_initialized() {
-                for floppy_path in floppies {
+                for (floppy_path, wp) in floppies {
                     let path = Path::new(floppy_path);
-                    if !app.request_load_floppy_firstfree(path) {
+                    if !app.request_load_floppy_firstfree(path, *wp) {
                         log::warn!(
                             "Failed to load floppy '{}': no available drives",
                             path.display()
@@ -2672,13 +2672,13 @@ impl SnowGui {
     /// Like [`Self::request_load_floppy`] but picks the first free drive.
     /// Returns `false` if no drive is available; otherwise the load may be
     /// gated on a confirmation dialog.
-    pub fn request_load_floppy_firstfree(&mut self, path: &Path) -> bool {
+    pub fn request_load_floppy_firstfree(&mut self, path: &Path, wp: bool) -> bool {
         for i in 0..3 {
             if let Some(d) = self.emu.get_fdd_status(i)
                 && d.present
                 && d.ejected
             {
-                self.request_load_floppy(i, path, self.floppy_wp_default);
+                self.request_load_floppy(i, path, wp);
                 return true;
             }
         }
@@ -2932,7 +2932,7 @@ impl SnowGui {
 
             if let Some(floppy_path) = self.workspace.get_floppy_images().first().cloned()
                 && floppy_path.exists()
-                && !self.request_load_floppy_firstfree(&floppy_path)
+                && !self.request_load_floppy_firstfree(&floppy_path, self.floppy_wp_default)
             {
                 self.show_error(&format!(
                     "Cannot load floppy image: no free drive for {:?}",
@@ -3502,7 +3502,7 @@ impl SnowGui {
                     return;
                 };
                 if snow_floppy::loaders::Autodetect::detect(&image).is_ok() {
-                    if !self.request_load_floppy_firstfree(path) {
+                    if !self.request_load_floppy_firstfree(path, self.floppy_wp_default) {
                         self.toasts.add(
                             Toast::new()
                                 .text("Cannot load floppy image: no free drive")
