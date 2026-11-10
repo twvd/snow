@@ -408,6 +408,7 @@ where
             start_pc: 0,
             size: 0,
             atc_fault: true,
+            data: 0,
         }))
     }
 }

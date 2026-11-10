@@ -4,7 +4,7 @@ use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::bus::low_bytes;
 use crate::cpu_m68k::cpu::{CpuError, Group0Details, HistoryEntryInstruction};
-use crate::cpu_m68k::{CpuM68kType, M68020, M68040};
+use crate::cpu_m68k::{CpuM68kType, M68020, M68030, M68040};
 use crate::tickable::Ticks;
 use crate::types::Long;
 
@@ -307,16 +307,24 @@ where
                     self.advance(ticks)?;
                     self.sync()?;
                 }
+                // The 68020+ report the faulted cycle and the bytes of the
+                // operand left (MC68030UM 8.2.1): cpu_access_translated() makes
+                // the address that of the cycle
                 BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
                     function_code: fault.fc,
                     ir: 0,
-                    size: fault.size,
+                    size: if (M68020..=M68030).contains(&CPU_TYPE) {
+                        size as usize
+                    } else {
+                        fault.size
+                    },
                     atc_fault: false,
                     instruction: false,
                     read: !fault.write,
                     address: fault.o_addr,
                     // Filled in later
                     start_pc: 0,
+                    data: wdata.unwrap_or(0),
                 })),
             }
         };
