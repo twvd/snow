@@ -182,6 +182,11 @@ pub struct V8Sound {
     /// volume in the DFAC instead.
     volume: u8,
 
+    /// Volume set in the DFAC, which follows the sound chip on the LC, LC II
+    /// and LC III. Full until the system sets it: the LC II's ROM plays its
+    /// chime before.
+    dfac_volume: u8,
+
     /// Play and record register, for the sound input
     play_record: u8,
 
@@ -198,6 +203,7 @@ impl V8Sound {
                 .map(|_| Channel::new(kind.fifo_size().0, kind.fifo_size().1))
                 .collect(),
             volume: 0,
+            dfac_volume: 7,
             play_record: 0,
             record_clock: 0,
         };
@@ -210,6 +216,7 @@ impl V8Sound {
             *channel = Channel::new(self.kind.fifo_size().0, self.kind.fifo_size().1);
         }
         self.set_volume(0);
+        self.set_dfac(None);
         self.play_record = 0;
         self.record_clock = 0;
         self.out.reset();
@@ -279,7 +286,23 @@ impl V8Sound {
         } else {
             val
         };
-        self.out.set_gain(volume_gain(self.volume >> 5));
+        self.update_gain();
+    }
+
+    /// Sets the DFAC configuration that the system writes through Egret. The
+    /// low 3 bits are the volume, bit-reversed: System 7.5.5 on a LC III
+    /// writes $50, $54, $52, $56, $51, $55, $53 and $57 for volumes 0 to 7.
+    pub fn set_dfac(&mut self, config: Option<u8>) {
+        let volume = config.map_or(7, |c| ((c & 1) << 2) | (c & 2) | ((c >> 2) & 1));
+        if volume != self.dfac_volume {
+            self.dfac_volume = volume;
+            self.update_gain();
+        }
+    }
+
+    fn update_gain(&mut self) {
+        self.out
+            .set_gain(volume_gain(self.volume >> 5) * volume_gain(self.dfac_volume));
     }
 
     /// PrimeTime is recording: FIFO A goes to the CPU
@@ -619,6 +642,19 @@ mod tests {
         sound.write(0xF26, 0x70);
         sound.write(0xF27, 0x70);
         assert_eq!(output(&sound, [0x80, 0x40]), (-0x3800, -0x3800));
+    }
+
+    #[test]
+    fn dfac_volume() {
+        let mut sound = V8Sound::new(V8Variant::Sonora);
+        assert_eq!(sound.dfac_volume, 7);
+        for (volume, config) in [0x50, 0x54, 0x52, 0x56, 0x51, 0x55, 0x53, 0x57]
+            .into_iter()
+            .enumerate()
+        {
+            sound.set_dfac(Some(config));
+            assert_eq!(usize::from(sound.dfac_volume), volume);
+        }
     }
 
     #[test]

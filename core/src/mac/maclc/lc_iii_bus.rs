@@ -958,6 +958,7 @@ where
                 .iie_card
                 .as_mut()
                 .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
+            self.sound.set_dfac(self.egret.dfac());
             self.sound
                 .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }

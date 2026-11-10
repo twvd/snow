@@ -104,6 +104,11 @@ impl Egret {
         self.common.adb_event(event);
     }
 
+    /// Last byte the host wrote to the DFAC, if any
+    pub fn dfac(&self) -> Option<u8> {
+        self.common.dfac
+    }
+
     pub fn rtc(&self) -> &Rtc {
         &self.common.rtc
     }

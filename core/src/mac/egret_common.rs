@@ -186,6 +186,9 @@ pub struct EgretCommon {
 
     /// Internal RAM of a Cuda, from CUDA_RAM
     cuda_ram: Vec<u8>,
+
+    /// Last byte written to the DFAC, if any
+    pub(crate) dfac: Option<u8>,
 }
 
 impl Default for EgretCommon {
@@ -225,6 +228,7 @@ impl EgretCommon {
             } else {
                 vec![]
             },
+            dfac: None,
         }
     }
 
@@ -728,8 +732,12 @@ impl EgretCommon {
             // Choose whether some event resets the CPU (unknown, not modelled)
             CMD_MONOSTABLE_RESET => Self::params(params).map(|[_]| vec![]),
 
-            // Set up the sound input circuit (not modelled)
-            CMD_WRITE_DFAC if (1..=4).contains(&params.len()) => Ok(vec![]),
+            // Configure the DFAC. At boot, the LC III's ROM also writes four
+            // bytes, which end with the byte it writes alone.
+            CMD_WRITE_DFAC if (1..=4).contains(&params.len()) => {
+                self.dfac = params.last().copied();
+                Ok(vec![])
+            }
             CMD_WRITE_DFAC => Err(ERROR_PARAMS),
 
             // Run the self test of the microcontroller (always passes)
