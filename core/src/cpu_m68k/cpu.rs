@@ -1336,7 +1336,7 @@ where
     }
 
     /// Raises a privilege violation exception
-    fn raise_privilege_violation(&mut self) -> Result<()> {
+    pub(in crate::cpu_m68k) fn raise_privilege_violation(&mut self) -> Result<()> {
         // "If the instruction is not executed because the instruction is illegal or privileged,
         // the trace exception does not occur."
         self.step_inhibit_trace = true;

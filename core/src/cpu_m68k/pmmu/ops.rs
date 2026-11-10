@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::FC_MASK;
-use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
@@ -41,6 +41,13 @@ where
             return self.op_linef(instr);
         }
 
+        // All of them are privileged. The exception stacks the address of
+        // the instruction's first word (MC68030UM 8.1.6), so check before
+        // the extension word moves the PC.
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
         let extword = self.fetch_immediate::<Word>()?;
 
         // Mind the ordering here!
@@ -66,14 +73,6 @@ where
             // PMOVE TT regs (68030+)
             // preg field: 010 = TT0, 011 = TT1; bit 0 of preg picks the register
             let extword = Pmove1Extword(extword);
-            if !self.regs.sr.supervisor() {
-                self.advance_cycles(4)?;
-                return self.raise_exception(
-                    ExceptionGroup::Group2,
-                    VECTOR_PRIVILEGE_VIOLATION,
-                    None,
-                );
-            }
             let tt_idx = extword.preg() & 0b1;
             if extword.write() {
                 // Register to EA
@@ -114,11 +113,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         let extword = Pmove1Extword(extword);
 
         // Flush disable, inhibits ATC flush on xRP write. 68030+
@@ -228,11 +222,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         let extword = Pmove3Extword(extword);
 
         match (extword.preg(), extword.write()) {
@@ -264,11 +253,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         let extword = Pmove1Extword(extword);
 
         match (extword.preg(), extword.write()) {
@@ -331,11 +315,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         let extword = PtestExtword(extword);
 
         let fc = self.decode_pmmu_fc(extword.fc())?;
@@ -430,11 +409,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         // M68000PRM 6-32: on the 68030 bits 9-8 of the extension word must
         // be zero (the mask is 3 bits in 7-5), so an encoding with bit 8
         // set is not a valid 68030 form and takes the F-line path. On the
@@ -508,11 +482,6 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
-        if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
-        }
-
         // PLOAD extension word is same as PTEST
         let extword = PtestExtword(extword);
 
