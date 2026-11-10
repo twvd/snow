@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
@@ -17,6 +16,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::sound::audiopath::{AudioPath, Panning, sample16};
 use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
@@ -79,7 +79,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) video: Video<TRenderer>,
 
     #[serde(skip)]
-    pub(crate) audio: AudioState,
+    pub(crate) audio: AudioPath,
 
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -185,7 +185,7 @@ where
             ram: vec![0; ram_size],
             via: Via::new(model),
             video: Video::new(renderer),
-            audio: AudioState::default(),
+            audio: AudioPath::default(),
             scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(
                 &fdds,
@@ -256,6 +256,11 @@ where
         self.audio.set_sink(sink);
 
         self.scsi.bus_mut().set_audio_provider(provider)
+    }
+
+    /// Pushes a sample of the sound buffer, the same on both sides
+    fn push_audio(&mut self, sample: u8) -> Result<()> {
+        self.audio.push([sample16(sample), 0], Panning::MONO, 0.0)
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
@@ -906,10 +911,10 @@ where
 
                 // Emulator will block here to sync to audio frequency
                 match self.speed {
-                    EmulatorSpeed::Accurate => self.audio.push(audiosample)?,
+                    EmulatorSpeed::Accurate => self.push_audio(audiosample)?,
                     EmulatorSpeed::Dynamic => {
                         if !self.audio.is_silent() || audiosample != self.last_audiosample {
-                            self.audio.push(audiosample)?;
+                            self.push_audio(audiosample)?;
                         }
                     }
                     EmulatorSpeed::Uncapped => (),
