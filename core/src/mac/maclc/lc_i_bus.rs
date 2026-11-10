@@ -216,9 +216,14 @@ where
         bus
     }
 
+    /// The display outputs of this machine (the single built-in video output)
+    pub fn display_names(&self) -> Vec<String> {
+        vec!["Built-in display".to_string()]
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.video.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        self.video.renderer = renderers.into_iter().next();
         self.sound.after_deserialize();
     }
 
@@ -1157,34 +1162,34 @@ mod tests {
         // Pseudo-slot I/O window ($50FC 0000 in the 32-bit map): the
         // trap-code register reads 0 when not trapped.
         let resp = bus
-            .access(BusAccess::<Bus68020>::read(0xFC_0000, 1, 0))
+            .access(BusAccess::<Bus68020>::read(0xFC_0000, 1, 0, 0))
             .unwrap();
         assert_eq!(resp, ack(0));
 
         // Keyboard register through the same window: write $18 high
         // byte, read it back (key | strobe).
         let _ = bus
-            .access(BusAccess::<Bus68020>::write(0xFC_0018, 1, 0x41, 0))
+            .access(BusAccess::<Bus68020>::write(0xFC_0018, 1, 0x41, 0, 0))
             .unwrap();
         let resp = bus
-            .access(BusAccess::<Bus68020>::read(0xFC_0018, 1, 0))
+            .access(BusAccess::<Bus68020>::read(0xFC_0018, 1, 0, 0))
             .unwrap();
         assert_eq!(resp, ack(0xC1));
 
         // The same register block at the bottom of the 24-bit slot
         // window ($E0 0000).
         let resp = bus
-            .access(BusAccess::<Bus68020>::read(0xE0_0018, 1, 0))
+            .access(BusAccess::<Bus68020>::read(0xE0_0018, 1, 0, 0))
             .unwrap();
         assert_eq!(resp, ack(0xC1));
 
         // Outside the register block reads open bus.
         let resp = bus
-            .access(BusAccess::<Bus68020>::read(0xFC_0100, 1, 0))
+            .access(BusAccess::<Bus68020>::read(0xFC_0100, 1, 0, 0))
             .unwrap();
         assert_eq!(resp, ack(0xFF));
         let resp = bus
-            .access(BusAccess::<Bus68020>::read(0xE8_0018, 1, 0))
+            .access(BusAccess::<Bus68020>::read(0xE8_0018, 1, 0, 0))
             .unwrap();
         assert_eq!(resp, ack(0xFF));
     }

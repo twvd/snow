@@ -39,7 +39,7 @@ impl std::fmt::Display for SerialBridgeConfig {
 }
 
 /// Status of an active serial bridge
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SerialBridgeStatus {
     /// PTY bridge active, with path to slave device
     Pty(PathBuf),
@@ -380,80 +380,101 @@ impl SerialBridge {
     }
 }
 
-/// Unified bridge that can be either serial (PTY/TCP) or LocalTalk
-pub enum SccBridge {
-    /// Serial bridge (PTY or TCP)
-    Serial(SerialBridge),
-    /// LocalTalk over UDP
-    LocalTalk(super::localtalk_bridge::LocalTalkBridge),
+/// What the serial bus's controller, the SCC, sees of the device on a port
+///
+/// A device implements the calls for what it carries, bytes or LocalTalk frames, and the others
+/// do nothing: a device on a port the guest drives in the other mode gets nothing through, as on
+/// the real thing.
+pub trait SerialDevice: Send {
+    /// Bytes the guest sent
+    fn tx_bytes(&mut self, _data: &[u8]) {}
+    /// A whole frame the guest sent
+    fn tx_frame(&mut self, _frame: &[u8]) {}
+    /// What to hand the guest
+    fn rx(&mut self) -> Vec<u8> {
+        vec![]
+    }
+    /// The SCC's station address and address search mode, which frames are filtered by
+    fn set_station(&mut self, _address: u8, _address_search: bool) {}
+    /// Polls the host side; true if the status changed
+    fn poll(&mut self) -> bool;
+    fn status(&self) -> SerialBridgeStatus;
 }
 
-impl SccBridge {
-    /// Create a new bridge with the given configuration
-    pub fn new(config: &SerialBridgeConfig) -> io::Result<Self> {
-        match config {
-            SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
-                super::localtalk_bridge::LocalTalkBridge::new()?,
-            )),
-            _ => Ok(Self::Serial(SerialBridge::new(config)?)),
-        }
+/// The bridge for a serial bridge configuration
+pub fn serial_device(config: &SerialBridgeConfig) -> io::Result<Box<dyn SerialDevice>> {
+    Ok(match config {
+        SerialBridgeConfig::LocalTalk => Box::new(super::localtalk_bridge::LocalTalkBridge::new()?),
+        _ => Box::new(SerialBridge::new(config)?),
+    })
+}
+
+impl SerialDevice for SerialBridge {
+    fn tx_bytes(&mut self, data: &[u8]) {
+        self.write_from_scc(data);
     }
 
-    /// Write data from the SCC TX queue to the bridge
-    pub fn write_from_scc(&mut self, data: &[u8]) {
-        match self {
-            Self::Serial(bridge) => bridge.write_from_scc(data),
-            Self::LocalTalk(bridge) => bridge.write_from_scc(data),
-        }
+    fn rx(&mut self) -> Vec<u8> {
+        self.read_to_scc()
     }
 
-    /// Read data from the bridge to inject into SCC RX queue
-    pub fn read_to_scc(&mut self) -> Vec<u8> {
-        match self {
-            Self::Serial(bridge) => bridge.read_to_scc(),
-            Self::LocalTalk(bridge) => bridge.read_to_scc().unwrap_or_default(),
-        }
+    fn poll(&mut self) -> bool {
+        Self::poll(self)
     }
 
-    /// Poll for state changes
-    pub fn poll(&mut self) -> bool {
-        match self {
-            Self::Serial(bridge) => bridge.poll(),
-            Self::LocalTalk(bridge) => bridge.poll(),
-        }
-    }
-
-    /// Get current bridge status
-    pub fn status(&self) -> SerialBridgeStatus {
-        match self {
-            Self::Serial(bridge) => bridge.status(),
-            Self::LocalTalk(bridge) => SerialBridgeStatus::LocalTalk(bridge.status()),
-        }
-    }
-
-    /// Check if this bridge is a LocalTalk bridge
-    pub fn is_localtalk(&self) -> bool {
-        matches!(self, Self::LocalTalk(_))
-    }
-
-    /// Set the node address (LocalTalk only)
-    pub fn set_node_address(&mut self, addr: u8) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.set_node_address(addr);
-        }
-    }
-
-    /// Set the SDLC address search mode (LocalTalk only)
-    pub fn set_address_search_mode(&mut self, mode: bool) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.set_address_search_mode(mode);
-        }
-    }
-
-    /// Send a complete SDLC frame (LocalTalk only)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.send_frame(llap);
-        }
+    fn status(&self) -> SerialBridgeStatus {
+        Self::status(self)
     }
 }
+
+impl SerialDevice for super::localtalk_bridge::LocalTalkBridge {
+    /// Frames the SCC didn't mark the end of come as bytes
+    fn tx_bytes(&mut self, data: &[u8]) {
+        self.write_from_scc(data);
+    }
+
+    fn tx_frame(&mut self, frame: &[u8]) {
+        self.send_frame(frame);
+    }
+
+    fn rx(&mut self) -> Vec<u8> {
+        self.read_to_scc().unwrap_or_default()
+    }
+
+    fn set_station(&mut self, address: u8, address_search: bool) {
+        self.set_node_address(address);
+        self.set_address_search_mode(address_search);
+    }
+
+    fn poll(&mut self) -> bool {
+        Self::poll(self)
+    }
+
+    fn status(&self) -> SerialBridgeStatus {
+        SerialBridgeStatus::LocalTalk(Self::status(self))
+    }
+}
+
+/// The host link a serial bridge opens, from its entry
+fn create(config: &crate::emulator::devices::DeviceConfig) -> anyhow::Result<SerialBridgeConfig> {
+    let settings: crate::emulator::devices::SerialLinkSettings = config.parse()?;
+    Ok(match settings.tcp_port {
+        Some(port) => SerialBridgeConfig::Tcp(port),
+        None => SerialBridgeConfig::Pty,
+    })
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::SerialBridge,
+    name: "Serial bridge",
+    bus: crate::emulator::devices::BusKind::Serial,
+    fits: crate::emulator::devices::ModelInfo::fits_all,
+    function: crate::emulator::devices::FunctionKind::SerialLink,
+    fixed: false,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    monitors: &[],
+    create: Some(crate::emulator::devices::CreateFn::Serial(create)),
+};

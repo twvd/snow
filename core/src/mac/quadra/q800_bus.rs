@@ -7,7 +7,8 @@
 //! is on VIA 1 port B, as on the Quadra 700 (schematic sheets 15 and 19).
 //! djMEMC holds the memory timing and the video, which is DAFB compatible.
 //!
-//! The NuBus controller (Kiwi) and its three slots, the PDS and the Ethernet
+//! The NuBus controller, Kiwi, which is compatible with the YANCC of the
+//! Quadra 700, has three slots, $C, $D and $E. The PDS and the Ethernet
 //! controller are not there yet. An access to the Ethernet controller is a bus
 //! error, which the ROM takes for a machine without the Ethernet option.
 
@@ -25,6 +26,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
+use crate::mac::nubus::Nubus;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
@@ -33,7 +35,7 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -47,6 +49,12 @@ use serde::{Deserialize, Serialize};
 /// Frequency of the bus of the real hardware, without overclocking: the
 /// 33.33 MHz of the 68040 (Developer Note)
 const BUS_FREQUENCY: Ticks = 33_333_333;
+
+/// Wait states of a NuBus transaction, approximate: two cycles of the 10 MHz
+/// NuBus (Developer Note) and the crossing between its clock and the 33 MHz bus
+/// add up to about 9 bus clocks. Kiwi takes a write in a buffer and lets the
+/// CPU go on before the transaction is done, which isn't modelled.
+const NUBUS_WAITS: Ticks = 7;
 
 /// Long at the end of the I/O space which identifies an IOSB machine: the VIA 1
 /// ID pins tell which one
@@ -158,6 +166,10 @@ enum Region {
     CpuId,
     /// Built-in video (djMEMC), slot $9
     Video,
+    /// NuBus super slots
+    SuperSlot,
+    /// NuBus standard slots
+    Slot,
 }
 
 /// What holds an access to a device on the I/O bus back after the previous one
@@ -168,8 +180,8 @@ enum Recovery {
     Swim,
 }
 
-/// The NuBus slots $C-$E and the PDS are empty: nothing answers there, which
-/// is a bus error, as the Slot Manager expects.
+/// Where nothing answers, as an empty NuBus slot, it's a bus error, as the
+/// Slot Manager expects
 const fn region(overlay: bool, block: usize) -> Region {
     match block {
         0x00..=0x3F if overlay => Region::Rom,
@@ -177,7 +189,9 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x40..=0x4F => Region::Rom,
         0x50..=0x53 => Region::Io,
         0x5F => Region::CpuId,
+        0x60..=0xEF => Region::SuperSlot,
         0xF9 => Region::Video,
+        0xF1..=0xFF => Region::Slot,
         _ => Region::None,
     }
 }
@@ -266,6 +280,9 @@ pub struct Quadra800Bus<TRenderer: Renderer> {
     /// Built-in video
     pub(crate) dafb: Dafb<TRenderer>,
 
+    /// The cards in the NuBus slots $C to $E
+    nubus: Nubus<TRenderer>,
+
     /// Mouse mode
     mouse_mode: MouseMode,
 }
@@ -284,16 +301,38 @@ where
     /// error. The length of this timeout is not documented.
     const SCSI_DMA_TIMEOUT: Ticks = 640;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
         renderer: TRenderer,
         monitor: MacMonitor,
+        cards: &[NubusCardConfig],
+        card_renderers: Vec<TRenderer>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         vram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+
+        // The renderers of the cards with a display, in the order of the cards
+        let mut card_renderers = card_renderers.into_iter();
+        let mut nubus = Nubus::default();
+        for cfg in cards {
+            assert!(
+                model.nubus_slots().contains(&cfg.slot),
+                "NuBus slot {:#X} not available on {}",
+                cfg.slot,
+                model
+            );
+            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
+            let renderer = if cfg.has_display() {
+                card_renderers.next()
+            } else {
+                None
+            };
+            nubus.insert_card(cfg, renderer);
+        }
 
         let mut bus = Self {
             irq: None,
@@ -337,6 +376,7 @@ where
                 DafbKind::MemcJr,
                 vram_size.unwrap_or(VRAM_SIZES[1]),
             ),
+            nubus,
             mouse_mode,
         };
 
@@ -420,10 +460,33 @@ where
             .then(|| offset as usize + (addr as usize & ((1 << RAM_BLOCK_SHIFT) - 1)))
     }
 
+    /// The display outputs of this machine: the built-in video, then one per
+    /// video card with a monitor, in NuBus slot order
+    pub fn display_names(&self) -> Vec<String> {
+        std::iter::once("Built-in display".to_string())
+            .chain(self.nubus.display_names())
+            .collect()
+    }
+
+    /// The slot of each display, in the order of display_names(): the slot
+    /// whose address space its framebuffer is in, $9 for the built-in video
+    pub fn display_slots(&self) -> Vec<u8> {
+        std::iter::once(0x9)
+            .chain(self.nubus.display_slots())
+            .collect()
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        // Renderers are matched to displays in the order display_names() reports them
+        let mut renderers = renderers.into_iter();
+        self.dafb.renderer = renderers.next();
         self.dafb.render().unwrap();
+        self.nubus.set_renderers(&mut renderers);
 
         self.sound.after_deserialize();
     }
@@ -917,7 +980,13 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
+        self.dafb.blank()?;
+        for card in self.nubus.cards_mut() {
+            if let Some(video) = card.video() {
+                video.blank()?;
+            }
+        }
+        Ok(())
     }
 
     /// Dispatches a key event to the keyboard
@@ -1014,7 +1083,9 @@ where
 
         let mut resp = match region {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Region::CpuId | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
+            Region::CpuId | Region::Video | Region::SuperSlot | Region::Slot if acc.pending > 0 => {
+                BusResponse::Stall(0)
+            }
             Region::Ram => {
                 let now = self.native_clock.native_ticks() + acc.pending;
                 let waits = waits
@@ -1029,6 +1100,10 @@ where
             Region::Io => self.io_cycle(acc),
             Region::CpuId => bus_access_long(acc, 0, self, Self::cpu_id_read, Self::ignore_write),
             Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
+            Region::SuperSlot | Region::Slot => self
+                .nubus
+                .access(acc, NUBUS_WAITS)
+                .unwrap_or(BusResponse::BusError),
             Region::None => BusResponse::BusError,
         };
 
@@ -1062,6 +1137,7 @@ where
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         self.dafb.reset();
+        self.nubus.reset();
         self.sound.reset();
         self.scsi.reset();
         self.scsi_dma_stalled = false;
@@ -1176,11 +1252,17 @@ where
         let video_irq = self.dafb.get_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
 
+        // The interrupts of slots $C to $E are on PA3 to PA5, as MAME has them
+        self.nubus.tick(native_ticks, ctx)?;
+        let slot_irqs = self.nubus.irqs();
+        self.via2.a_in.set_v2irqs(!slot_irqs);
+
         self.scsi.tick(native_ticks, ctx)?;
 
         // The flags of the slots and of the 53C96 latch the falling edge of
         // their active low line, as on the LC 475
-        self.via2.set_line(ViaLine::CA1, (!video_irq).into());
+        self.via2
+            .set_line(ViaLine::CA1, (!(video_irq || slot_irqs != 0)).into());
         self.via2
             .set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
 
@@ -1295,8 +1377,8 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
 
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
@@ -1308,12 +1390,7 @@ where
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for slot in self.model.nubus_slots() {
-            result.push(dbgprop_group!(
-                format!("NuBus slot ${:1X} (empty)", slot),
-                vec![]
-            ));
-        }
+        result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
         result
     }
 }
@@ -1329,6 +1406,8 @@ mod tests {
             &vec![0; 1024 * 1024],
             NullRenderer::new(0, 0).unwrap(),
             MacMonitor::default(),
+            &[],
+            vec![],
             MouseMode::Disabled,
             Some(ram_size),
             None,
@@ -1393,8 +1472,20 @@ mod tests {
 
     #[test]
     fn empty_slots_are_a_bus_error() {
-        for block in [0x60, 0x90, 0xC0, 0xE0, 0xFC, 0xFD, 0xFE] {
-            assert!(matches!(MAP[0][block], Region::None));
+        let mut bus = bus(8 * MB);
+        for addr in [
+            0x6000_0000,
+            0x9000_0000,
+            0xC000_0000,
+            0xE000_0000,
+            0xFC00_0000,
+            0xFD00_0000,
+            0xFE00_0000,
+        ] {
+            let resp = bus
+                .access(BusAccess::<Bus68040>::read(addr, 4, 0, 0))
+                .unwrap();
+            assert!(matches!(resp, BusResponse::BusError), "{addr:08X}");
         }
         assert!(matches!(MAP[0][0xF9], Region::Video));
     }

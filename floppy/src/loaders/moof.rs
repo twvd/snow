@@ -74,6 +74,7 @@ impl std::convert::From<FloppyType> for MoofDiskType {
             FloppyType::Mac400K => Self::SSDDGCR400k,
             FloppyType::Mac800K => Self::DSDDGCR800k,
             FloppyType::Mfm144M => Self::DSHDMFM144Mb,
+            FloppyType::Twiggy => Self::Twiggy,
         }
     }
 }

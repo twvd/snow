@@ -451,7 +451,7 @@ mod tests {
     }
 
     fn read(pending: Ticks) -> BusAccess<Bus68000> {
-        BusAccess::read(0, 1, pending)
+        BusAccess::read(0, 1, 0, pending)
     }
 
     fn sync<const C16M: bool>(

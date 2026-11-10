@@ -67,8 +67,8 @@ pub struct BusAccess<C> {
     /// Write data, right-aligned to `size`
     pub data: u32,
     pub write: bool,
-    // Function code, currently unused
-    // pub fc: u8,
+    /// Function code (FC2-FC0)
+    pub fc: u8,
     /// CPU cycles elapsed since the bus was last ticked
     pub pending: Ticks,
     /// One long word of a line transfer, which the CPU would like to run as
@@ -79,37 +79,26 @@ pub struct BusAccess<C> {
 }
 
 impl<C: CpuBus> BusAccess<C> {
-    pub const fn read(
-        addr: Address,
-        size: u32,
-        // fc: u8,
-        pending: Ticks,
-    ) -> Self {
+    pub const fn read(addr: Address, size: u32, fc: u8, pending: Ticks) -> Self {
         Self {
             addr,
             size,
             data: 0,
             write: false,
-            // fc,
+            fc,
             pending,
             burst: false,
             _cpu: PhantomData,
         }
     }
 
-    pub const fn write(
-        addr: Address,
-        size: u32,
-        data: u32,
-        // fc: u8,
-        pending: Ticks,
-    ) -> Self {
+    pub const fn write(addr: Address, size: u32, data: u32, fc: u8, pending: Ticks) -> Self {
         Self {
             addr,
             size,
             data,
             write: true,
-            // fc,
+            fc,
             pending,
             burst: false,
             _cpu: PhantomData,
@@ -199,7 +188,7 @@ const WRITE_LANES: [[[u32; 4]; 4]; 4] = [
 /// The lanes of the data bus during a write of the `size` bytes left of an
 /// operand, right-aligned in `data`, at `addr`: D31-D24 in the top byte
 #[inline(always)]
-fn write_lanes(data: u32, size: u32, addr: Address) -> u32 {
+pub(crate) fn write_lanes(data: u32, size: u32, addr: Address) -> u32 {
     WRITE_LANES[size as usize - 1][(addr % 4) as usize]
         .iter()
         .fold(0, |lanes, &op| {
@@ -447,11 +436,11 @@ mod tests {
     }
 
     fn rd<C: CpuBus>(addr: Address, size: u32) -> BusAccess<C> {
-        BusAccess::read(addr, size, 0)
+        BusAccess::read(addr, size, 0, 0)
     }
 
     fn wr<C: CpuBus>(addr: Address, size: u32, data: u32) -> BusAccess<C> {
-        BusAccess::write(addr, size, data, 0)
+        BusAccess::write(addr, size, data, 0, 0)
     }
 
     fn ack(resp: BusResponse) -> (u32, u32) {

@@ -1,4 +1,5 @@
 mod access_error040;
+mod bus_fault;
 mod cache_flush_workaround;
 mod cacr;
 mod cmp2;

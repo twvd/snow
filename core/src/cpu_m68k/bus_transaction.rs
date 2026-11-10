@@ -282,8 +282,8 @@ where
         let (width, data, waits, burst_reject) = loop {
             let pending = *self.cycles + *self.ticks - *self.last_bus_sync;
             let mut acc = match wdata {
-                Some(data) => BusAccess::write(paddr, size, data, pending),
-                None => BusAccess::read(paddr, size, pending),
+                Some(data) => BusAccess::write(paddr, size, data, fault.fc, pending),
+                None => BusAccess::read(paddr, size, fault.fc, pending),
             };
             acc.burst = beat != Beat::Single;
             match self.bus.access(acc)? {
