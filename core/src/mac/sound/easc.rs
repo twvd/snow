@@ -24,7 +24,7 @@
 
 use super::audiopath::AudioPath;
 use super::cdxa::CdxaDecoder;
-use super::channel::{CHANNEL_REG_SCALE_L, CHANNEL_REG_SCALE_R, Channel, channel_reg, mix};
+use super::channel::{Channel, channel_reg, panning};
 use super::rate_converter::RateConverter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -222,26 +222,19 @@ impl Easc {
         self.last[ch]
     }
 
-    /// Mixes the samples of the channels for one output side
-    fn mix(&self, a: i16, b: i16, scale_reg: usize) -> i16 {
-        let [ca, cb] = &self.channels;
-        mix(ca, cb, (a, b), scale_reg)
-    }
-
     /// Plays a sample, at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
-        let (a, b) = if !self.fifo_mode {
-            (self.last[0], self.last[1])
+        let samples = if !self.fifo_mode {
+            self.last
         } else if self.recording() {
             self.record();
-            (self.last[0], self.sample(1))
+            [self.last[0], self.sample(1)]
         } else {
-            (self.sample(0), self.sample(1))
+            [self.sample(0), self.sample(1)]
         };
         if queue_sample {
-            let l = self.mix(a, b, CHANNEL_REG_SCALE_L);
-            let r = self.mix(a, b, CHANNEL_REG_SCALE_R);
-            self.out.push16(l, r)?;
+            let [ca, cb] = &self.channels;
+            self.out.push(samples, panning(ca, cb), 0.0)?;
         }
         Ok(())
     }
@@ -363,6 +356,7 @@ impl Debuggable for Easc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::sound::audiopath::mix;
 
     const REG_FIFO_A_IRQ: Address = 0xF09;
     const REG_FIFO_B_IRQ: Address = 0xF29;
@@ -528,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn mix() {
+    fn scales() {
         let mut easc = Easc::default();
 
         // As the ROM sets them, A on the left and B on the right
@@ -536,14 +530,16 @@ mod tests {
         easc.write(0xF07, 0x00);
         easc.write(0xF26, 0x00);
         easc.write(0xF27, 0x7F);
-        assert_eq!(easc.mix(0x4000, -0x4000, CHANNEL_REG_SCALE_L), 0x3F80);
-        assert_eq!(easc.mix(0x4000, -0x4000, CHANNEL_REG_SCALE_R), -0x3F80);
+        let p = panning(&easc.channels[0], &easc.channels[1]);
+        assert_eq!(mix([0x4000, -0x4000], p.left), 0x3F80);
+        assert_eq!(mix([0x4000, -0x4000], p.right), -0x3F80);
 
         // Both on both sides, clipped
         easc.write(0xF06, 0x80);
         easc.write(0xF26, 0x80);
-        assert_eq!(easc.mix(0x4000, 0x1000, CHANNEL_REG_SCALE_L), 0x5000);
-        assert_eq!(easc.mix(0x7000, 0x7000, CHANNEL_REG_SCALE_L), 0x7FFF);
-        assert_eq!(easc.mix(-0x8000, -0x7000, CHANNEL_REG_SCALE_L), -0x8000);
+        let p = panning(&easc.channels[0], &easc.channels[1]);
+        assert_eq!(mix([0x4000, 0x1000], p.left), 0x5000);
+        assert_eq!(mix([0x7000, 0x7000], p.left), 0x7FFF);
+        assert_eq!(mix([-0x8000, -0x7000], p.left), -0x8000);
     }
 }

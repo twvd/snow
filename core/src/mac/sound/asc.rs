@@ -1,4 +1,4 @@
-use super::audiopath::AudioPath;
+use super::audiopath::{AudioPath, Panning, sample16};
 use super::fifo::{FIFO_SIZE, Fifo};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -193,8 +193,12 @@ impl Asc {
             AscMode::Wavetable => self.sample_wavetable(),
         };
         if queue_sample {
-            let (l, r) = if self.swap_lr { (r, l) } else { (l, r) };
-            self.out.push(l, r)?;
+            let panning = if self.swap_lr {
+                Panning::SWAPPED
+            } else {
+                Panning::STEREO
+            };
+            self.out.push([sample16(l), sample16(r)], panning, 0.0)?;
         }
 
         Ok(())

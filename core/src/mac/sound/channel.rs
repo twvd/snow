@@ -2,6 +2,7 @@
 //! V8, a block of registers. Shared by the V8 and Sonora (v8_sonora.rs) and
 //! the EASC (easc.rs).
 
+use super::audiopath::Panning;
 use super::fifo::Fifo;
 use crate::bus::Address;
 use crate::types::Byte;
@@ -73,12 +74,12 @@ impl Channel {
     }
 }
 
-/// Mixes the samples of two channels for one output side, each by its scale
-/// for that side, clipped
-pub fn mix(a: &Channel, b: &Channel, samples: (i16, i16), scale_reg: usize) -> i16 {
-    let sa = i32::from(samples.0) * i32::from(a.read_reg(scale_reg));
-    let sb = i32::from(samples.1) * i32::from(b.read_reg(scale_reg));
-    ((sa + sb) >> 7).clamp(-0x8000, 0x7FFF) as i16
+/// Panning of two channels by the scales in their registers
+pub fn panning(a: &Channel, b: &Channel) -> Panning {
+    Panning {
+        left: [a.regs[CHANNEL_REG_SCALE_L], b.regs[CHANNEL_REG_SCALE_L]],
+        right: [a.regs[CHANNEL_REG_SCALE_R], b.regs[CHANNEL_REG_SCALE_R]],
+    }
 }
 
 /// Channel and number of the register at an address in the registers of
