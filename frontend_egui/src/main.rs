@@ -34,7 +34,7 @@ mod built_info {
 
 use crate::app::SnowGui;
 
-use clap::Parser;
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use eframe::egui;
 use egui_winit::winit::{self, application::ApplicationHandler};
 use log::LevelFilter;
@@ -79,10 +79,40 @@ struct Args {
     /// Floppy image(s) to load at start (can be specified multiple times)
     #[arg(long)]
     floppy: Vec<String>,
+
+    /// Floppy image(s) to load write-protected at start (can be specified
+    /// multiple times)
+    #[arg(long)]
+    floppy_wp: Vec<String>,
+}
+
+/// Returns the images given with --floppy and --floppy-wp in command line
+/// order, each with a flag that is true if the image is to be mounted
+/// write-protected.
+fn floppies_in_order(args: &Args, matches: &ArgMatches) -> Vec<(String, bool)> {
+    let mut floppies = Vec::new();
+    for (paths, id, wp) in [
+        (&args.floppy, "floppy", false),
+        (&args.floppy_wp, "floppy_wp", true),
+    ] {
+        let Some(indices) = matches.indices_of(id) else {
+            continue;
+        };
+        for (index, path) in indices.zip(paths) {
+            floppies.push((index, path.clone(), wp));
+        }
+    }
+    floppies.sort_by_key(|&(index, _, _)| index);
+    floppies
+        .into_iter()
+        .map(|(_, path, wp)| (path, wp))
+        .collect()
 }
 
 fn main() -> eframe::Result {
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let floppies = floppies_in_order(&args, &matches);
 
     let logger_env = Box::new(
         env_logger::builder()
@@ -147,7 +177,7 @@ fn main() -> eframe::Result {
                     args.zen,
                     args.serial_bridge_a.as_deref(),
                     args.serial_bridge_b.as_deref(),
-                    &args.floppy,
+                    &floppies,
                 )))
             }
         }),
