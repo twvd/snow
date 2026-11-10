@@ -383,7 +383,10 @@ impl ModelSelectionDialog {
     /// Whether the machine has built-in video and NuBus slots that take video
     /// cards beside it
     fn takes_cards(&self) -> bool {
-        matches!(self.selected_model, MacModel::Quadra700)
+        matches!(
+            self.selected_model,
+            MacModel::Quadra700 | MacModel::Quadra800
+        )
     }
 
     /// The monitor of the built-in video. A card's is in its slot's rows.

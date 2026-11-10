@@ -819,13 +819,19 @@ impl Emulator {
             MacModel::Quadra800 => {
                 assert!(override_fdd_type.is_none());
 
+                // The displays of the cards come after the built-in one
                 let renderer = ChannelRenderer::new(0, 0)?;
                 receivers.push(renderer.get_receiver());
+                let mut cards = video_cards.to_vec();
+                cards.sort_by_key(|c| c.slot);
+                let card_renderers = make_renderers(&cards, &mut receivers)?;
                 let bus = Quadra800Bus::new(
                     model,
                     rom,
                     renderer,
                     monitor.unwrap_or_default(),
+                    &cards,
+                    card_renderers,
                     mouse_mode,
                     ram_size,
                     vram_size,
@@ -1217,6 +1223,7 @@ impl Emulator {
             EmulatorConfig::MacII(inner) => inner.bus.macii().display_slots(),
             EmulatorConfig::MacII30(inner) => inner.bus.macii().display_slots(),
             EmulatorConfig::Quadra700(inner) => inner.bus.quadra700().display_slots(),
+            EmulatorConfig::Quadra800(inner) => inner.bus.quadra800().display_slots(),
             _ => vec![],
         }
     }
@@ -1296,6 +1303,7 @@ impl Emulator {
             EmulatorConfig::MacII(inner) => inner.bus.macii().mouse_mode(),
             EmulatorConfig::MacII30(inner) => inner.bus.macii().mouse_mode(),
             EmulatorConfig::Quadra700(inner) => inner.bus.quadra700().mouse_mode(),
+            EmulatorConfig::Quadra800(inner) => inner.bus.quadra800().mouse_mode(),
             _ => return false,
         };
         self.display_slots.len() > 1 && mode == MouseMode::Absolute

@@ -412,6 +412,7 @@ const fn fits_nubus(mac: crate::mac::MacModel) -> bool {
             | MacModel::MacIIx
             | MacModel::MacIIcx
             | MacModel::Quadra700
+            | MacModel::Quadra800
     )
 }
 
