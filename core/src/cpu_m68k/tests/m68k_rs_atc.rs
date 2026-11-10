@@ -473,6 +473,22 @@ fn reloaded_entry_leaves_the_last_translations() {
     assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x5566_7788);
 }
 
+#[test]
+fn user_mode_pflusha_stacks_its_first_word() {
+    // The privilege violation stacks the address of the instruction's first
+    // word, not of its extension word (MC68030UM 8.1.6)
+    let mut cpu = cpu_mmu_030();
+    write_long(&mut cpu.bus, 0x20, 0x2000);
+    cpu.regs.isp = 0x8000;
+    cpu.regs.sr.set_supervisor(false);
+    run(&mut cpu, &[0xF000, 0x2400]); // PFLUSHA
+    assert_eq!(cpu.regs.pc, 0x2000);
+    let pc = (2..6).fold(0, |pc, i| {
+        (pc << 8) | Address::from(cpu.bus.mem[&(0x8000 - 8 + i)])
+    });
+    assert_eq!(pc, CODE);
+}
+
 /// MC68851 PFLUSH forms (MC68851 UM A-6..A-7), which also run on Snow's
 /// 68020 PMMU. The 68851 mask is 4 bits in bits 8-5 and modes 101/111 are
 /// PFLUSHS, which also flushes globally shared entries.
