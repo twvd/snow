@@ -234,6 +234,10 @@ pub struct SnowGui {
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
     floppy_dialog_target: FloppyDialogTarget,
+    /// The "Mount write-protected" menu option: floppy images are mounted
+    /// write-protected, except from the file dialog, whose write-protect
+    /// checkbox starts checked.
+    floppy_wp_default: bool,
     floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
     record_dialog: SnowFileDialog,
@@ -487,6 +491,7 @@ impl SnowGui {
             floppy_dialog_last: None,
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
+            floppy_wp_default: false,
             floppy_dialog_wp: false,
             workspace_dialog: SnowFileDialog::new()
                 .add_filter("Snow workspace", &["snoww"])
@@ -2141,6 +2146,7 @@ impl SnowGui {
                     ui.separator();
                     if ui.button("Load image...").clicked() {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                        self.floppy_dialog_wp = self.floppy_wp_default;
                         self.floppy_dialog
                             .pick_file(self.settings.native_file_dialogs);
                     }
@@ -2150,7 +2156,7 @@ impl SnowGui {
                             self.settings.get_recent_floppy_images_for_display()
                         {
                             if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                                self.request_load_floppy(i, &path, false);
+                                self.request_load_floppy(i, &path, self.floppy_wp_default);
                             }
                         }
                         if self.settings.recent_floppy_images.is_empty() {
@@ -2166,7 +2172,11 @@ impl SnowGui {
                     {
                         self.emu.reload_floppy(i);
                     }
-                    ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
+                    ui.checkbox(&mut self.floppy_wp_default, "Mount write-protected")
+                        .on_hover_text(
+                            "Floppy images are mounted write-protected. The file \
+                             dialog starts with write-protect checked.",
+                        );
                     {
                         let mut wb = d.writeback_enabled;
                         let resp = ui.add_enabled(
@@ -2668,7 +2678,7 @@ impl SnowGui {
                 && d.present
                 && d.ejected
             {
-                self.request_load_floppy(i, path, false);
+                self.request_load_floppy(i, path, self.floppy_wp_default);
                 return true;
             }
         }
@@ -3091,9 +3101,6 @@ impl SnowGui {
         self.floppy_dialog_last_type = snow_floppy::loaders::Autodetect::detect(&data).ok();
         self.floppy_dialog_last_image =
             snow_floppy::loaders::Autodetect::load(&data, Some(d.file_name())).ok();
-        if let Some(img) = self.floppy_dialog_last_image.as_ref() {
-            self.floppy_dialog_wp = img.get_write_protect();
-        }
 
         Ok(())
     }
@@ -3900,13 +3907,14 @@ impl eframe::App for SnowGui {
                         }
 
                         ui.separator();
-                        ui.add_enabled(
-                            !img.get_write_protect(),
-                            egui::Checkbox::new(
-                                &mut self.floppy_dialog_wp,
-                                "Mount write-protected",
-                            ),
-                        );
+                        if img.get_write_protect() {
+                            ui.add_enabled(
+                                false,
+                                egui::Checkbox::new(&mut true, "Mount write-protected"),
+                            );
+                        } else {
+                            ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
+                        }
                     }
                 }
             });
