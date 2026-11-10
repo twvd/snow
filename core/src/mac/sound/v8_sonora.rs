@@ -15,8 +15,38 @@
 //! left and the second fully right. The Sound Manager writes mono sounds to
 //! both FIFOs, so they play in full.
 //!
-//! Sound input is not implemented, except that PrimeTime records silence: FIFO
-//! A is read by the CPU and fills at the record rate, as on the EASC.
+//! PrimeTime and the IOSB have the same sound, version $BB: the registers of
+//! the EASC and the two channels of the Sonora. In its FIFO status register:
+//!
+//! - Bits 2 and 3 are the level of the fuller of the FIFOs that play, as on
+//!   the Sonora (ASCTester on a LC 475).
+//! - When not recording, bit 1 is set and bit 0 clear (ASCTester).
+//! - When recording, FIFO A fills at the record rate and bits 0 and 1 are its
+//!   level: bit 0 is set when it is more than half full, the opposite of the
+//!   EASC, and bit 1 when it is full. The Quadra 800 ROM expects these bits
+//!   when it tests recording, and NetBSD's ascaudio(4) driver reads bit 0 the
+//!   same way.
+//!
+//! Not measured, and modelled as on the EASC, where each FIFO has its own
+//! status:
+//!
+//! - While recording, FIFO A is left out of bits 2 and 3 and of the
+//!   interrupt of FIFO B, so FIFO B goes on playing. A/UX 3 depends on it:
+//!   it plays all its sounds on FIFO B, and can leave the chip recording.
+//! - Bit 1 is also set when recording with FIFO A empty.
+//!
+//! Where the CPU reads the recorded samples:
+//!
+//! - On this chip, from FIFO A at 0x000, as on the EASC. The sound input
+//!   driver of System 7.5.5 reads them there.
+//! - On the $BB chip that System 7.5.5 reports as 'whit', the same driver
+//!   reads them at 0x1000 instead. That chip's volume register keeps all 8
+//!   bits. On the LC 475 and the Quadra 610 it keeps only bits 7 to 5
+//!   (ASCTester), so 0x1000 isn't modelled.
+//! - Whether 0x1000 is a FIFO of its own or another port to FIFO A isn't
+//!   known.
+//!
+//! Sound input is not implemented: PrimeTime records silence.
 //!
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
@@ -68,9 +98,11 @@ bitfield! {
     /// FIFO status register
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub struct FifoStatus(pub Byte): Debug, FromStorage, IntoStorage, DerefStorage {
-        /// FIFO half full or less (V8)
+        /// FIFO half full or less (V8), FIFO A more than half full while
+        /// recording (PrimeTime)
         pub half: bool @ 0,
-        /// FIFO empty or full (V8), not recording (Sonora)
+        /// FIFO empty or full (V8), not recording (Sonora), FIFO A empty or
+        /// full while recording (PrimeTime)
         pub fullempty: bool @ 1,
         /// FIFOs half full or less (Sonora)
         pub half_b: bool @ 2,
@@ -170,8 +202,12 @@ impl V8Sound {
     }
 
     fn fifo_status(&self) -> FifoStatus {
-        // The status follows the fuller FIFO
-        let ch = &self.channels;
+        // The status follows the fuller FIFO that plays
+        let ch = if self.recording() {
+            &self.channels[1..]
+        } else {
+            &self.channels[..]
+        };
         let half = ch.iter().all(Channel::half);
         let fullempty = ch.iter().any(Channel::full) || ch.iter().all(Channel::empty);
         match self.kind {
@@ -181,8 +217,20 @@ impl V8Sound {
             // reads $0E empty, $0A full, $02 above half and $06 half full or
             // less, whether FIFO A, FIFO B or both are filled. A LC 475
             // reads the same.
-            V8Variant::Sonora | V8Variant::PrimeTime => FifoStatus(0)
+            V8Variant::Sonora => FifoStatus(0)
                 .with_fullempty(self.play_record & 1 == 0)
+                .with_half_b(half)
+                .with_fullempty_b(fullempty),
+            V8Variant::PrimeTime if self.recording() => {
+                let a = &self.channels[0];
+                FifoStatus(0)
+                    .with_half(!a.half())
+                    .with_fullempty(a.full() || a.empty())
+                    .with_half_b(half)
+                    .with_fullempty_b(fullempty)
+            }
+            V8Variant::PrimeTime => FifoStatus(0)
+                .with_fullempty(true)
                 .with_half_b(half)
                 .with_fullempty_b(fullempty),
         }
@@ -200,12 +248,11 @@ impl V8Sound {
                     || (status.half_b() && !self.channels[1].irq_disable)
             }
             // A LC 475 has no interrupt at full, only at half empty, and $F29
-            // masks it
-            // While recording, FIFO A is the other way around, as on the EASC
+            // masks it. While recording, FIFO A has an interrupt when more
+            // than half full, which $F09 masks, as on the EASC.
             V8Variant::PrimeTime => {
                 let [a, b] = [&self.channels[0], &self.channels[1]];
-                let a_irq = self.recording() && !a.half() && !a.irq_disable;
-                a_irq || (status.half_b() && !b.irq_disable)
+                (status.half() && !a.irq_disable) || (status.half_b() && !b.irq_disable)
             }
         }
     }
@@ -479,13 +526,16 @@ mod tests {
 
         // Record at 22 kHz: FIFO A fills and has an interrupt above half
         sound.write(REG_PLAY_RECORD, 3);
-        assert_eq!(sound.read(REG_FIFO_STATUS).unwrap() & 2, 0);
-        sound.write(0xF29, 1);
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0E));
+        sound.write(REG_FIFO_B_IRQ, 1);
         assert!(!sound.irq());
         for _ in 0..600 {
             sound.tick(false, 0.0).unwrap();
         }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0D));
         assert!(sound.irq());
+        sound.write(REG_FIFO_A_IRQ, 1);
+        assert!(!sound.irq());
         assert_eq!(sound.read(0x000), Some(0x80));
 
         // And doesn't go past full
@@ -493,6 +543,33 @@ mod tests {
             sound.tick(false, 0.0).unwrap();
         }
         assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0F));
+    }
+
+    #[test]
+    fn primetime_plays_while_recording() {
+        // As A/UX does: FIFO B plays with the chip recording and FIFO A full
+        let mut sound = V8Sound::new(V8Variant::PrimeTime);
+        sound.write(REG_FIFO_A_IRQ, 1);
+        sound.write(REG_PLAY_RECORD, 1);
+        for _ in 0..3000 {
+            sound.tick(false, 0.0).unwrap();
+        }
+        assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
+
+        // FIFO B empty, then full, then at half
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0F));
+        assert!(sound.irq());
+        for _ in 0..PRIMETIME_FIFO_SIZE {
+            sound.write(0x400, 0x80);
+        }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0B));
+        assert!(!sound.irq());
+        for _ in 0..PRIMETIME_FIFO_HALF {
+            sound.tick(false, 0.0).unwrap();
+        }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x07));
+        assert!(sound.irq());
     }
 
     #[test]
