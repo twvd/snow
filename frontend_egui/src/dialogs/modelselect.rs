@@ -825,6 +825,18 @@ impl ModelSelectionDialog {
                                 .small()
                                 .weak(),
                             );
+                            ui.checkbox(
+                                &mut self.init_args.vm_pflush_workaround,
+                                "MacOS VM flush workaround",
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "A user-mode PFLUSH flushes the ATC instead of trapping.\n\
+                                     Works around a Mac OS 8.1 virtual memory bug that loses writes.",
+                                )
+                                .small()
+                                .weak(),
+                            );
                         }
                         if self.selected_model == MacModel::SE30 {
                             let mut x = false;
