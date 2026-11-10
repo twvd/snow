@@ -879,9 +879,12 @@ impl ScsiTarget for ScsiTargetEthernet {
                 Ok(ScsiCmdResult::DataIn(response))
             }
             0x09 => {
-                // Stats
+                // Stats, no more than the allocation length in bytes 3 and 4
+                // (SCSI-2 7.2.6)
+                let alloc_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
                 let mut result = vec![0; 18];
                 result[0..6].copy_from_slice(&self.macaddress);
+                result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x0A => {
