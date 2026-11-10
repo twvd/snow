@@ -60,8 +60,8 @@
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
 
-use super::audiopath::AudioPath;
-use super::channel::{CHANNEL_REG_SCALE_L, CHANNEL_REG_SCALE_R, Channel, channel_reg, mix};
+use super::audiopath::{AudioPath, Panning, sample16};
+use super::channel::{Channel, channel_reg, panning};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::renderer::AudioSink;
@@ -300,25 +300,17 @@ impl V8Sound {
             *sample = channel.fifo.pop();
         }
         if queue_sample {
-            if self.kind == V8Variant::PrimeTime {
-                let (l, r) = self.scaled(samples);
-                self.out.push16_mixed(l, r, input)?;
+            let [a, b] = samples.map(sample16);
+            if let [ca, cb] = &self.channels[..]
+                && self.kind == V8Variant::PrimeTime
+            {
+                self.out.push([a, b], panning(ca, cb), input)?;
             } else {
                 // The first channel goes to both sides
-                self.out.push_mixed(samples[0], samples[0], input)?;
+                self.out.push([a, 0], Panning::MONO, input)?;
             }
         }
         Ok(())
-    }
-
-    /// Left and right outputs of PrimeTime for a sample of each FIFO
-    fn scaled(&self, samples: [u8; 2]) -> (i16, i16) {
-        let [a, b] = [&self.channels[0], &self.channels[1]];
-        let samples = (sample16(samples[0]), sample16(samples[1]));
-        (
-            mix(a, b, samples, CHANNEL_REG_SCALE_L),
-            mix(a, b, samples, CHANNEL_REG_SCALE_R),
-        )
     }
 
     /// Time between two samples, in cycles of C16M (15.6672 MHz): 22254.5
@@ -335,11 +327,6 @@ impl V8Sound {
     pub fn after_deserialize(&mut self) {
         self.out.after_deserialize();
     }
-}
-
-/// A sample of a FIFO, in binary offset, as a 16-bit signed sample
-fn sample16(sample: u8) -> i16 {
-    i16::from((sample ^ 0x80) as i8) << 8
 }
 
 impl BusMember<Address> for V8Sound {
@@ -425,6 +412,7 @@ impl Debuggable for V8Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::sound::audiopath::mix;
 
     const REG_FIFO_A_IRQ: Address = 0xF09;
     const REG_FIFO_B_IRQ: Address = 0xF29;
@@ -600,18 +588,23 @@ mod tests {
     #[test]
     fn primetime_scales() {
         let mut sound = V8Sound::new(V8Variant::PrimeTime);
-        assert_eq!(sound.scaled([0xC0, 0x40]), (0, 0));
+        let output = |sound: &V8Sound, samples: [u8; 2]| {
+            let p = panning(&sound.channels[0], &sound.channels[1]);
+            let samples = samples.map(sample16);
+            (mix(samples, p.left), mix(samples, p.right))
+        };
+        assert_eq!(output(&sound, [0xC0, 0x40]), (0, 0));
 
-        // As the ROM sets them at full volume: A on the left, B on the right
+        // As the ROM sets them at boot: A on the left, B on the right
         sound.write(0xF06, 0x7F);
         sound.write(0xF27, 0x7F);
-        assert_eq!(sound.scaled([0xC0, 0x40]), (0x3F80, -0x3F80));
+        assert_eq!(output(&sound, [0xC0, 0x40]), (0x3F80, -0x3F80));
 
         // As A/UX sets them at times: B on both sides
         sound.write(0xF06, 0x70);
         sound.write(0xF26, 0x70);
         sound.write(0xF27, 0x70);
-        assert_eq!(sound.scaled([0x80, 0x40]), (-0x3800, -0x3800));
+        assert_eq!(output(&sound, [0x80, 0x40]), (-0x3800, -0x3800));
     }
 
     #[test]
