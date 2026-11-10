@@ -6,7 +6,7 @@ use crate::bus::Address;
 use crate::bus::access::{
     BusAccess, BusResponse, CpuBus, bus_access_long, bus_access_word, write_lanes,
 };
-use crate::debuggable::Debuggable;
+use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::EmuContext;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
@@ -244,6 +244,88 @@ where
         bus_access_word(acc, waits, &mut card, read, write)
     } else {
         bus_access_long(acc, waits, &mut card, read, write)
+    }
+}
+
+/// The cards in the NuBus slots of a machine, $9 to $E
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Nubus<TRenderer: Renderer> {
+    cards: [Option<NubusCard<TRenderer>>; 6],
+}
+
+impl<TRenderer> Default for Nubus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn default() -> Self {
+        Self {
+            cards: core::array::from_fn(|_| None),
+        }
+    }
+}
+
+impl<TRenderer> Nubus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    /// Puts `card` in `slot`, $9 to $E
+    pub fn insert(&mut self, slot: u8, card: NubusCard<TRenderer>) {
+        self.cards[usize::from(slot - 0x9)] = Some(card);
+    }
+
+    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard<TRenderer>> {
+        self.cards.iter_mut().flatten()
+    }
+
+    /// A CPU cycle in the standard slot space ($Fsxx_xxxx) or the super slot
+    /// space ($sxxx_xxxx) of slot s, for the card in that slot. None if the
+    /// slot is empty.
+    pub fn access<B: CpuBus>(&mut self, acc: BusAccess<B>, waits: Ticks) -> Option<BusResponse> {
+        let slot = match acc.addr >> 28 {
+            0xF => (acc.addr >> 24) & 0xF,
+            s => s,
+        };
+        let card = self.cards.get_mut((slot as usize).checked_sub(0x9)?)?;
+        Some(card_access(acc, waits, card.as_mut()?))
+    }
+
+    pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
+        for card in self.cards_mut() {
+            card.tick(ticks, ctx)?;
+        }
+        Ok(())
+    }
+
+    /// The interrupt request of each slot, bit n for slot $9 + n, as VIA 2
+    /// port A has them on every machine, but active high
+    pub fn irqs(&self) -> u8 {
+        self.cards
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| card.as_ref().is_some_and(|c| c.get_irq()))
+            .fold(0, |irqs, (i, _)| irqs | (1 << i))
+    }
+
+    pub fn reset(&mut self) {
+        for card in self.cards_mut() {
+            card.reset();
+        }
+    }
+
+    /// The debugger's entry for each of the machine's `slots`, with its card
+    /// or empty
+    pub fn debug_properties(&self, slots: &[u8]) -> DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_group, dbgprop_nest};
+
+        slots
+            .iter()
+            .map(|&slot| match &self.cards[usize::from(slot - 0x9)] {
+                Some(card) => dbgprop_nest!(format!("NuBus slot ${:1X} ({})", slot, card), card),
+                None => dbgprop_group!(format!("NuBus slot ${:1X} (empty)", slot), vec![]),
+            })
+            .collect()
     }
 }
 
