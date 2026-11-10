@@ -3,9 +3,9 @@
 
 use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::M68040;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
+use crate::cpu_m68k::{M68030, M68040};
 use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow};
@@ -199,10 +199,10 @@ where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
-    /// Enlarges ATC size if needed by configuration. The 68040 has its own
-    /// ATCs, of a fixed size.
+    /// Enlarges ATC size if needed by configuration. The 68030 and 68040
+    /// have their own ATCs, of a fixed size.
     pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {
-        if CPU_TYPE == M68040 || !self.regs.pmmu.tc.enable() {
+        if CPU_TYPE >= M68030 || !self.regs.pmmu.tc.enable() {
             return;
         }
         let cache_size =
@@ -292,6 +292,10 @@ where
         self.pmmu_translation_changed();
         if CPU_TYPE == M68040 {
             self.atc040.iter_mut().for_each(|atc| atc.flush_all(false));
+            return;
+        }
+        if CPU_TYPE == M68030 {
+            self.atc030.flush_all();
             return;
         }
         // Incrementing generation invalidates all entries with a lower generation,

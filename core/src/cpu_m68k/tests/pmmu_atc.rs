@@ -4,14 +4,16 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PmmuAtcEntry};
-use crate::cpu_m68k::{CpuM68030, FPU_M68882, M68030_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020, FPU_M68882, M68020_ADDRESS_MASK};
 
-type TestCpu = CpuM68030<Testbus<Address, u8, Bus68020>>;
+/// The 68851's ATC: the 68030 and 68040 have ATCs of their own
+type TestCpu = CpuM68020<Testbus<Address, u8, Bus68020>>;
 
 const KEY: usize = 4;
 
 fn testcpu() -> TestCpu {
-    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK), FPU_M68882);
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK), FPU_M68882);
+    cpu.add_68851();
     cpu.pmmu_atc.iter_mut().for_each(|t| t.resize(16, None));
     cpu
 }

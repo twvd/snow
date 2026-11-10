@@ -2,13 +2,14 @@
 //! translation registers added
 
 use crate::bus::{Address, Bus, InspectableBus, IrqSource};
-use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
+use crate::cpu_m68k::pmmu::atc030::{Atc030, Atc030Entry};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
 };
+use crate::cpu_m68k::{CpuM68kType, M68030};
 use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow, bail};
@@ -447,6 +448,11 @@ where
     /// served any function code the mask selects. Mask bits are don't-cares:
     /// a code `f` is selected when `(f ^ fc) & mask == 0`.
     pub(in crate::cpu_m68k) fn pmmu_flush(&mut self, fc: u8, mask: u8, vaddr: Address) {
+        if CPU_TYPE == M68030 {
+            let page = vaddr & !((1 << self.regs.pmmu.tc.ps()) - 1);
+            self.atc030.flush(|f, p| (f ^ fc) & mask == 0 && p == page);
+            return;
+        }
         let key = self.pmmu_atc_key(vaddr);
         let matched = Self::pmmu_fc_match_mask(fc, mask);
         for table in &mut self.pmmu_atc {
@@ -494,6 +500,10 @@ where
                 + self.regs.pmmu.tc.ps() as u32,
             32
         );
+
+        if CPU_TYPE == M68030 {
+            return self.mmu030_translate(fc, vaddr, writing);
+        }
 
         let supervisor = fc & (1 << 2) != 0;
         let atc = self.pmmu_atc_tableidx(fc);
@@ -556,6 +566,75 @@ where
         Ok(Translation { paddr, cache })
     }
 
+    /// Translates a logical address through the 68030's ATC, with translation
+    /// enabled and no TT register matching
+    fn mmu030_translate(&mut self, fc: u8, vaddr: Address, writing: bool) -> Result<Translation> {
+        let page_mask = (1 << self.regs.pmmu.tc.ps()) - 1;
+        let tag = Atc030::tag(vaddr, page_mask, fc);
+        match self.atc030.lookup(tag) {
+            Some(entry) if entry.bus_error => {
+                self.pmmu_record_pagefault(vaddr, writing);
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
+            Some(entry) if writing && entry.wp => {
+                self.pmmu_record_atc_fault(vaddr, writing, |psr| {
+                    psr.set_write_protected(true);
+                });
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
+            // A write to a page not marked modified searches the tables
+            // again, to set M (MC68030UM 9.4, M bit)
+            Some(entry) if !writing || entry.modified => {
+                return Ok(Translation {
+                    paddr: entry.paddr | (vaddr & page_mask),
+                    cache: entry.cache,
+                });
+            }
+            _ => (),
+        }
+
+        match self.pmmu_translate_lookup::<false>(fc, vaddr, writing, u8::MAX) {
+            Ok((paddr, wp, _, _, modified, ci)) => {
+                let entry = Atc030Entry {
+                    tag,
+                    paddr: paddr & !page_mask,
+                    bus_error: false,
+                    wp,
+                    modified,
+                    cache: cache_mode(ci),
+                };
+                self.atc030_insert(entry);
+                Ok(Translation {
+                    paddr,
+                    cache: entry.cache,
+                })
+            }
+            Err(e) => {
+                // A failed search makes an entry with B set, which faults
+                // until it is flushed or replaced (MC68030UM 9.4, B bit). A
+                // write to a write protected page doesn't: the search ended
+                // on a valid page.
+                let wp_write = writing && self.regs.pmmu.psr.write_protected();
+                if !wp_write && matches!(e.downcast_ref(), Some(CpuError::BusError(_))) {
+                    self.atc030_insert(Atc030Entry {
+                        tag,
+                        bus_error: true,
+                        ..Default::default()
+                    });
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Stores a 68030 ATC entry, and forgets the last translations made
+    /// with the one it replaces
+    fn atc030_insert(&mut self, entry: Atc030Entry) {
+        if let Some(old) = self.atc030.insert(entry) {
+            self.last_translation_forget(Atc030::tag_page(old), Atc030::tag_fc(old) & 0b100 != 0);
+        }
+    }
+
     /// Physical address from the page address of the descriptor that ended a
     /// table walk, which used `used_bits` of the logical address
     fn pmmu_walk_paddr(&self, page_addr: Address, vaddr: Address, used_bits: Address) -> Address {
@@ -587,9 +666,16 @@ where
             return Some(vaddr);
         }
 
+        let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
+        if CPU_TYPE == M68030 {
+            if let Some(entry) = self.atc030.peek(Atc030::tag(vaddr, page_mask, fc)) {
+                // An access through an entry with B set faults
+                return (!entry.bus_error).then_some(entry.paddr | (vaddr & page_mask));
+            }
+            return self.mmu851_inspect_walk(fc, vaddr);
+        }
         let atc = self.pmmu_atc_tableidx(fc);
         if let Some(entry) = self.pmmu_atc_lookup(atc, self.pmmu_atc_key(vaddr)) {
-            let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
             return Some(entry.paddr | (vaddr & page_mask));
         }
         self.mmu851_inspect_walk(fc, vaddr)
