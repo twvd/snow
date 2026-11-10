@@ -116,6 +116,12 @@ pub struct EthernetPort {
     #[serde(skip)]
     tap_stop: Arc<AtomicBool>,
 
+    /// The receive and transmit threads of the TAP bridge. They keep the TAP
+    /// device open until they exit.
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    #[serde(skip)]
+    tap_threads: Vec<std::thread::JoinHandle<()>>,
+
     /// Subscribed layer 2 multicast groups
     multicast_groups: Vec<[u8; 6]>,
 
@@ -147,6 +153,8 @@ impl EthernetPort {
             nat_stats: None,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            tap_threads: Vec::new(),
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stats: None,
             multicast_groups: Default::default(),
@@ -292,10 +300,7 @@ impl EthernetPort {
             self.nat_stats = None;
         }
         #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-        {
-            self.tap_stop
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
+        self.stop_tap_bridge();
         // Stays down if the new link fails to start, so that send() does
         // not retry it on every frame
         self.link = EthernetLinkType::Down;

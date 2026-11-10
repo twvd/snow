@@ -63,7 +63,7 @@ impl EthernetPort {
         let rx_stats = tap_stats;
 
         // TAP RX -> Emulator RX (Physical -> Virtual)
-        std::thread::spawn(move || {
+        let rx_thread = std::thread::spawn(move || {
             use nix::errno::Errno;
             use nix::poll;
             use std::os::fd::BorrowedFd;
@@ -74,6 +74,13 @@ impl EthernetPort {
             let mut buffer = vec![0u8; 65536];
 
             loop {
+                // Checked first, as the frames that are dropped below go
+                // straight to the next round
+                if rx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    log::info!("TAP bridge terminated (tap_stop)");
+                    return;
+                }
+
                 let mut pfd = [poll::PollFd::new(fd, poll::PollFlags::POLLIN)];
                 match poll::poll(&mut pfd, 100_u16) {
                     Ok(1) => match reader.read(&mut buffer) {
@@ -129,16 +136,11 @@ impl EthernetPort {
                         return;
                     }
                 }
-
-                if rx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    log::info!("TAP bridge terminated (tap_stop)");
-                    return;
-                }
             }
         });
 
         // Emulator TX -> TAP TX (Virtual -> Physical)
-        std::thread::spawn(move || {
+        let tx_thread = std::thread::spawn(move || {
             use crossbeam_channel::RecvTimeoutError;
 
             loop {
@@ -169,7 +171,28 @@ impl EthernetPort {
                 }
             }
         });
+        self.tap_threads = vec![rx_thread, tx_thread];
 
         Ok(())
+    }
+
+    /// Stops the threads of the TAP bridge and waits for them to exit, which
+    /// closes the TAP device. Each thread checks the stop signal at least
+    /// every 100 ms.
+    pub(super) fn stop_tap_bridge(&mut self) {
+        self.tap_stop.store(true, Ordering::Release);
+        for thread in self.tap_threads.drain(..) {
+            if thread.join().is_err() {
+                log::error!("A thread of the TAP bridge panicked");
+            }
+        }
+    }
+}
+
+impl Drop for EthernetPort {
+    /// Closes the TAP device when the port goes away, as when Load ROM
+    /// replaces the machine, so that the new machine can open it
+    fn drop(&mut self) {
+        self.stop_tap_bridge();
     }
 }
