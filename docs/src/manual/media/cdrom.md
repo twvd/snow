@@ -16,7 +16,7 @@ drives.
 
 ## Attaching a CD-ROM drive
 
-To attach a drive, use the 'Drives > SCSI #n > Attach CD-ROM drive'
+To attach a drive, use the 'Devices > SCSI #n > Attach CD-ROM drive'
 (where 'n' is the SCSI ID of the drive (0 to 6)) on an
 unused SCSI slot. You can either load an image immediately or attach an
 empty drive.

@@ -12,6 +12,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
+use crate::mac::nubus::Nubus;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
@@ -20,7 +21,7 @@ use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -51,6 +52,12 @@ const IO_BUS_WAITS: Ticks = 6;
 /// now the access is stretched by about two PCLK cycles. Not measured.
 const SCC_PCLK_WAITS: Ticks = 4;
 
+/// Wait states of a NuBus transaction, approximate: two cycles of the 10 MHz
+/// NuBus and the crossing between its clock and the 25 MHz bus add up to about
+/// 7 bus clocks. The YANCC takes a write in a buffer and lets the CPU go on
+/// before the transaction is done, which isn't modelled.
+const NUBUS_WAITS: Ticks = 5;
+
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
@@ -70,6 +77,8 @@ enum Region {
     SuperSlot,
     /// Built-in video (DAFB), slot $9
     Video,
+    /// NuBus standard slots
+    Slot,
 }
 
 const fn region(overlay: bool, block: usize) -> Region {
@@ -81,6 +90,7 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x58..=0x5F => Region::ExtRom,
         0x60..=0xEF => Region::SuperSlot,
         0xF9 => Region::Video,
+        0xF1..=0xFF => Region::Slot,
         _ => Region::None,
     }
 }
@@ -152,6 +162,9 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     /// Built-in video controller
     pub(crate) dafb: Dafb<TRenderer>,
 
+    /// The cards in the NuBus slots $D and $E
+    nubus: Nubus<TRenderer>,
+
     /// Mouse mode
     mouse_mode: MouseMode,
 }
@@ -177,10 +190,31 @@ where
         extension_rom: Option<&[u8]>,
         renderer: TRenderer,
         monitor: MacMonitor,
+        cards: &[NubusCardConfig],
+        card_renderers: Vec<TRenderer>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+
+        // The renderers of the cards with a display, in the order of the cards
+        let mut card_renderers = card_renderers.into_iter();
+        let mut nubus = Nubus::default();
+        for cfg in cards {
+            assert!(
+                model.nubus_slots().contains(&cfg.slot),
+                "NuBus slot {:#X} not available on {}",
+                cfg.slot,
+                model
+            );
+            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
+            let renderer = if cfg.has_display() {
+                card_renderers.next()
+            } else {
+                None
+            };
+            nubus.insert_card(cfg, renderer);
+        }
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -224,6 +258,7 @@ where
                 DafbKind::Dafb,
                 Dafb::<TRenderer>::VRAM_SIZE,
             ),
+            nubus,
             mouse_mode,
         };
 
@@ -247,10 +282,33 @@ where
         self.ram[index..index + 4].copy_from_slice(&WARM_START_SIGNATURE.1.to_be_bytes());
     }
 
+    /// The display outputs of this machine: the built-in video, then one per
+    /// video card with a monitor, in NuBus slot order
+    pub fn display_names(&self) -> Vec<String> {
+        std::iter::once("Built-in display".to_string())
+            .chain(self.nubus.display_names())
+            .collect()
+    }
+
+    /// The slot of each display, in the order of display_names(): the slot
+    /// whose address space its framebuffer is in, $9 for the built-in video
+    pub fn display_slots(&self) -> Vec<u8> {
+        std::iter::once(0x9)
+            .chain(self.nubus.display_slots())
+            .collect()
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        // Renderers are matched to displays in the order display_names() reports them
+        let mut renderers = renderers.into_iter();
+        self.dafb.renderer = renderers.next();
         self.dafb.render().unwrap();
+        self.nubus.set_renderers(&mut renderers);
 
         self.asc.after_deserialize();
     }
@@ -681,7 +739,13 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
+        self.dafb.blank()?;
+        for card in self.nubus.cards_mut() {
+            if let Some(video) = card.video() {
+                video.blank()?;
+            }
+        }
+        Ok(())
     }
 
     /// Dispatches a key event to the keyboard
@@ -748,15 +812,24 @@ where
 
         let mut resp = match region {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Region::SuperSlot | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
+            Region::SuperSlot | Region::Video | Region::Slot if acc.pending > 0 => {
+                BusResponse::Stall(0)
+            }
             Region::Ram => bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
             Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
-            Region::SuperSlot => {
-                bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
-            }
+            // What the card of the slot doesn't answer, or an empty slot, stays as
+            // superslot_read() and superslot_write() have it
+            Region::SuperSlot => match self.nubus.access(acc, NUBUS_WAITS) {
+                Some(resp) if resp != BusResponse::BusError => resp,
+                _ => bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write),
+            },
             Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
+            Region::Slot => self
+                .nubus
+                .access(acc, NUBUS_WAITS)
+                .unwrap_or(BusResponse::BusError),
             Region::None => BusResponse::BusError,
         };
 
@@ -790,6 +863,7 @@ where
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Self::new_via2(self.model);
         self.dafb.reset();
+        self.nubus.reset();
         self.asc.reset();
         // The DAFB drives the 53C96 reset
         self.scsi.reset();
@@ -900,9 +974,19 @@ where
         self.dafb.tick(native_ticks, ctx)?;
         let video_irq = self.dafb.get_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
+
+        // The interrupt of slot $D is on PA4 and the one of slot $E on PA5
+        // (Designing Cards and Drivers for the Macintosh Family, 3rd ed.,
+        // table 16-6)
+        self.nubus.tick(native_ticks, ctx)?;
+        let slot_irqs = self.nubus.irqs();
+        self.via2.a_in.set_v2irqs(!slot_irqs);
+
+        // An OR gate of the slot and video interrupts makes /SLOTIRQ (same
+        // chapter)
         self.via2.set_line(
             ViaLine::CA1,
-            if video_irq {
+            if video_irq || slot_irqs != 0 {
                 LineState::Low
             } else {
                 LineState::High
@@ -1054,8 +1138,8 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
 
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
@@ -1067,12 +1151,7 @@ where
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for slot in self.model.nubus_slots() {
-            result.push(dbgprop_group!(
-                format!("NuBus slot ${:1X} (empty)", slot),
-                vec![]
-            ));
-        }
+        result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
         result
     }
 }
