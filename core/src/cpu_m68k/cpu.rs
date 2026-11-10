@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::pmmu::atc040::Atc040;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::{
@@ -546,6 +547,11 @@ where
     #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
     pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
 
+    /// 68040 data and instruction ATCs, indexed by ATC040_DATA and
+    /// ATC040_INSTRUCTION
+    #[serde(default)]
+    pub(in crate::cpu_m68k) atc040: [crate::cpu_m68k::pmmu::atc040::Atc040; 2],
+
     /// Last translations, for data reads, instruction fetches and data
     /// writes
     #[serde(
@@ -664,6 +670,7 @@ where
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
+            atc040: Default::default(),
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
@@ -4568,10 +4575,26 @@ where
             return self.raise_privilege_violation();
         }
 
-        // Just conservatively flush the entire ATC
-        // TODO targetted flushing (I dont think it matters on the Mac)
-        self.pmmu_cache_invalidate();
-        // Opmode 10 is PFLUSHAN
+        // Opmode: 00 PFLUSHN (An), 01 PFLUSH (An), 10 PFLUSHAN, 11 PFLUSHA
+        // (M68000PRM 6-36). The N variants keep the global entries.
+        let opmode = (instr.data >> 3) & 0b11;
+        let nonglobal = opmode & 0b01 == 0;
+        if opmode & 0b10 != 0 {
+            self.atc040
+                .iter_mut()
+                .for_each(|atc| atc.flush_all(nonglobal));
+        } else {
+            // The entries for the address in both ATCs, supervisor or user
+            // as DFC says
+            let laddr = self.regs.read_a::<Address>(instr.get_op2());
+            let supervisor = self.regs.dfc & 0b100 != 0;
+            let page_shift = self.mmu040_page_shift();
+            let tag = Atc040::tag(laddr, (1 << page_shift) - 1, supervisor);
+            for atc in &mut self.atc040 {
+                atc.flush_tag(tag, page_shift, nonglobal);
+            }
+        }
+        self.pmmu_translation_changed();
         account_040_time!(
             self,
             if instr.data & 0b11000 == 0b10000 {
@@ -4592,8 +4615,10 @@ where
         // The address space to search comes from DFC, the address from An.
         let fc = (self.regs.dfc & 0b111) as u8;
         let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        // R/W: 0 is PTESTW (M68000PRM 6-71)
+        let writing = instr.data & (1 << 5) == 0;
         account_040_time!(self, timing040::PTEST);
-        self.mmu040_ptest(fc, vaddr)
+        self.mmu040_ptest(fc, vaddr, writing)
     }
 
     /// MOVEC
