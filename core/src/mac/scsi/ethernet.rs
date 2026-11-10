@@ -733,7 +733,7 @@ impl ScsiTarget for ScsiTargetEthernet {
     }
 
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
-        let mut result = vec![0; 36];
+        let mut result = vec![0; 37];
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
         result[0] = 3; // Processor
@@ -756,7 +756,11 @@ impl ScsiTarget for ScsiTargetEthernet {
         // 32..36 Revision
         result[32..36].copy_from_slice(b"2.0f");
 
-        result.resize(cmd[4].min(36).into(), 0);
+        // The SCSI/Link returns up to 37 bytes of Inquiry data (DaynaPORT
+        // SCSI/Link command set, Inquiry), more than the additional length
+        // in byte 4 describes. The DaynaPORT Mac driver asks for exactly 37
+        // bytes and skips the device if it gets fewer.
+        result.resize(cmd[4].min(37).into(), 0);
         Ok(ScsiCmdResult::DataIn(result))
     }
 
