@@ -3,8 +3,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, Stream, StreamConfig};
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 struct CpalAudioCallback {
     recv: AudioReceiver,
@@ -83,13 +84,19 @@ impl CpalAudioCallback {
 struct CpalAudioExchange {
     mute: AtomicBool,
     underrun: AtomicBool,
+    /// The stream had an error, and is given up
+    dead: AtomicBool,
 }
 
 pub struct CpalAudioStream {
-    #[allow(unused)]
-    stream: Stream,
+    /// None once stopped after an error
+    stream: Mutex<Option<Stream>>,
     channel_sink: ChannelAudioSink,
     exch: Arc<CpalAudioExchange>,
+    /// Time a sample frame plays for, and channels per frame, to pace the
+    /// emulator once the stream is dead
+    frame_time: Duration,
+    channels: usize,
 }
 
 impl CpalAudioStream {
@@ -123,7 +130,16 @@ impl CpalAudioStream {
             active_samples: VecDeque::new(),
         };
 
-        let err_fn = |err| log::error!("Audio stream error: {}", err);
+        // cpal goes on reporting an error for as long as the device does,
+        // without recovering, which can be in a tight loop (a persistent
+        // POLLERR from ALSA). Give up on the stream at the first error: the
+        // provider stops it, and its sink drops the samples from then on.
+        let err_exch = exch.clone();
+        let err_fn = move |err| {
+            if !err_exch.dead.swap(true, Ordering::AcqRel) {
+                log::error!("Audio stream error, giving up on the stream: {}", err);
+            }
+        };
 
         let stream = device
             .build_output_stream(
@@ -150,10 +166,31 @@ impl CpalAudioStream {
             .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
 
         Ok(Self {
-            stream,
+            stream: Mutex::new(Some(stream)),
             channel_sink,
             exch,
+            frame_time: Duration::from_secs(1) / freq as u32,
+            channels: usize::from(channels),
         })
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.exch.dead.load(Ordering::Acquire)
+    }
+
+    /// Stops the stream if it is dead, which ends cpal's thread for it.
+    /// Returns true if it stopped it.
+    fn stop_if_dead(&self) -> bool {
+        if !self.is_dead() {
+            return false;
+        }
+        let Some(stream) = self.stream.lock().unwrap().take() else {
+            return false;
+        };
+        drop(stream);
+        // Let a sender blocked on a full queue go: nothing plays it anymore
+        self.channel_sink.clear();
+        true
     }
 
     pub fn is_underrun(&self) -> bool {
@@ -175,15 +212,22 @@ struct CpalAudioStreamSink {
 
 impl AudioSink for CpalAudioStreamSink {
     fn send(&self, buffer: AudioBuffer) -> Result<()> {
+        if self.stream.is_dead() {
+            // Take the time the samples would play for, as the emulator paces
+            // itself on the audio
+            let frames = (buffer.len() / self.stream.channels) as u32;
+            std::thread::sleep(self.stream.frame_time * frames);
+            return Ok(());
+        }
         self.stream.channel_sink.send(buffer)
     }
 
     fn is_full(&self) -> bool {
-        self.stream.channel_sink.is_full()
+        !self.stream.is_dead() && self.stream.channel_sink.is_full()
     }
 
     fn is_empty(&self) -> bool {
-        self.stream.channel_sink.is_empty()
+        self.stream.is_dead() || self.stream.channel_sink.is_empty()
     }
 }
 
@@ -212,6 +256,14 @@ impl CpalAudioProvider {
         for stream in &self.streams {
             stream.set_mute(mute);
         }
+    }
+
+    /// Stops the streams that had an error. Returns true if it stopped one.
+    pub fn stop_dead_streams(&self) -> bool {
+        // Not short-circuited: stop them all
+        self.streams
+            .iter()
+            .fold(false, |stopped, stream| stream.stop_if_dead() | stopped)
     }
 
     /// Clears the sinks of all channels from samples
