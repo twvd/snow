@@ -16,7 +16,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
-use crate::mac::sound::audiopath::{AudioPath, Panning, sample16};
+use crate::mac::sound::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
@@ -116,6 +116,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Last pushed audio sample
     last_audiosample: u8,
 
+    /// Sound volume, from VIA port A bits 0-2
+    sound_volume: u8,
+
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
     /// sleep for in Video speed mode.
@@ -185,7 +188,11 @@ where
             ram: vec![0; ram_size],
             via: Via::new(model),
             video: Video::new(renderer),
-            audio: AudioPath::default(),
+            audio: {
+                let mut audio = AudioPath::default();
+                audio.set_gain(volume_gain(0));
+                audio
+            },
             scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(
                 &fdds,
@@ -211,6 +218,7 @@ where
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(BUS_FREQUENCY),
             last_audiosample: 0,
+            sound_volume: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
@@ -889,7 +897,15 @@ where
             if self.video.get_clr_hblank() {
                 // Update floppy drive PWM and send next audio sample
                 let scanline = self.video.get_scanline();
-                let soundon = self.via.pa().sound() > 0 && !self.via.pb().sndenb();
+                // VIA port A bits 0-2 set the volume of the Sony sound chip, or
+                // of the resistor network of the Plus (Guide to the Macintosh
+                // Family Hardware, chapter 13)
+                let sound_volume = self.via.pa().sound();
+                if sound_volume != self.sound_volume {
+                    self.sound_volume = sound_volume;
+                    self.audio.set_gain(volume_gain(sound_volume));
+                }
+                let soundon = !self.via.pb().sndenb();
                 let soundbuf = self.soundbuf();
                 let pwm = soundbuf[scanline * 2 + 1];
                 let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
