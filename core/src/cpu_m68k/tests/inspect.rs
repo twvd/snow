@@ -178,6 +178,7 @@ fn translate_040_walks_without_a_trace() {
     let mut cpu = cpu040();
     let tables = cpu.bus.mem.clone();
     let atc = cpu.pmmu_atc.clone();
+    let atc040 = cpu.atc040.clone();
     let cycles = cpu.cycles;
 
     assert_eq!(
@@ -200,6 +201,7 @@ fn translate_040_walks_without_a_trace() {
 
     assert!(cpu.bus.mem == tables);
     assert!(cpu.pmmu_atc == atc);
+    assert!(cpu.atc040 == atc040);
     assert_eq!(cpu.cycles, cycles);
 }
 
@@ -264,11 +266,13 @@ macro_rules! assert_no_trace {
         let caches = $cpu.caches.clone();
         let mem = $cpu.bus.mem.clone();
         let atc = $cpu.pmmu_atc.clone();
+        let atc040 = $cpu.atc040.clone();
         let cycles = $cpu.cycles;
         $body;
         assert!($cpu.caches == caches);
         assert!($cpu.bus.mem == mem);
         assert!($cpu.pmmu_atc == atc);
+        assert!($cpu.atc040 == atc040);
         assert_eq!($cpu.cycles, cycles);
     }};
 }
