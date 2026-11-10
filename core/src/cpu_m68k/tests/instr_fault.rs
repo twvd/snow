@@ -85,6 +85,34 @@ macro_rules! tests {
             }
 
             #[test]
+            fn rte_from_address_error_frame_replays() {
+                // JMP (A0), A0 odd; the handler returns at once
+                let mut cpu = <$cpu>::new(Testbus::new($mask), $fpu);
+                for (a, b) in (CODE..).zip(0x4ED0_u16.to_be_bytes()) {
+                    cpu.bus.mem.insert(a, b);
+                }
+                for (a, b) in (HANDLER..).zip(0x4E73_u16.to_be_bytes()) {
+                    cpu.bus.mem.insert(a, b);
+                }
+                for (a, b) in (4 * 3..).zip((HANDLER as Long).to_be_bytes()) {
+                    cpu.bus.mem.insert(a, b);
+                }
+                cpu.regs.isp = STACK;
+                cpu.regs.sr.set_supervisor(true);
+                cpu.regs.a[0] = 0x3001;
+                cpu.set_pc(CODE).unwrap();
+                cpu.prefetch_refill().unwrap();
+                cpu.step().unwrap();
+                assert_eq!(cpu.regs.pc, HANDLER);
+
+                // DF is clear, but no data cycle was completed: RTE goes
+                // back to the instruction, it does not resume it
+                cpu.step().unwrap();
+                assert_eq!(cpu.regs.pc, CODE);
+                assert_eq!(*cpu.regs.ssp(), STACK);
+            }
+
+            #[test]
             fn odd_fetch_address_error_sets_only_rerun_bits() {
                 // JMP (A0), A0 odd
                 let (format, ssw, stage_b) = fault_frame!($cpu, $fpu, $mask, &[0x4ED0], 3);

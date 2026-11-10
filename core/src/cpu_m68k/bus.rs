@@ -10,7 +10,7 @@ use crate::cpu_m68k::pmmu::translate::{
     CacheMode, LAST_TRANSLATION_FETCH, LAST_TRANSLATION_READ, LAST_TRANSLATION_WRITE, Translation,
 };
 use crate::cpu_m68k::{
-    CpuM68kType, CpuSized, M68000, M68020, M68040, TORDER_HIGHLOW, TORDER_LOWHIGH,
+    CpuM68kType, CpuSized, M68000, M68020, M68030, M68040, TORDER_HIGHLOW, TORDER_LOWHIGH,
 };
 use crate::tickable::Ticks;
 use crate::types::Word;
@@ -294,6 +294,7 @@ where
 
                     // Filled in later
                     start_pc: 0,
+                    data: 0,
                 }));
             }
         }
@@ -440,9 +441,17 @@ where
             .pmmu_translate(fc, acc.laddr, acc.fault.write)
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::BusError(details)) => {
+                    // The 68020 and 68030 report the bytes of the operand
+                    // left (MC68030UM 8.2.1)
+                    let (size, data) = if (M68020..=M68030).contains(&CPU_TYPE) {
+                        (acc.size as usize, acc.wdata.unwrap_or(0))
+                    } else {
+                        (acc.fault.size, 0)
+                    };
                     anyhow!(CpuError::BusError(Group0Details {
-                        size: acc.fault.size,
+                        size,
                         address: acc.laddr,
+                        data,
                         ..*details
                     }))
                 }
@@ -539,7 +548,21 @@ where
         let cacr = self.regs.cacr;
         let (data, len) = self
             .caches
-            .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)?;
+            .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)
+            .map_err(|e| match e.downcast_ref() {
+                // The 68020 and 68030 report the faulted cycle, with the
+                // bytes of the operand left (MC68030UM 8.2.1)
+                Some(CpuError::BusError(details))
+                    if (M68020..=M68030).contains(&CPU_TYPE) && !details.atc_fault =>
+                {
+                    let done = acc.size.saturating_sub(details.size as u32);
+                    anyhow!(CpuError::BusError(Group0Details {
+                        address: acc.laddr.wrapping_add(done) & ADDRESS_MASK,
+                        ..*details
+                    }))
+                }
+                _ => e,
+            })?;
 
         if self.watch_active && acc.wdata.is_some() {
             self.watch_write(paddr, len);
@@ -671,6 +694,10 @@ where
             // is only described for translation, after a cache miss.
             let mut ticks = 0;
             let laddr = o_addr & ADDRESS_MASK;
+            // Handle RTE resuming from bus error
+            if let Some(data) = self.take_completed_cycle(kind, fault.fc, true, laddr, len) {
+                return Ok(data);
+            }
             let data = match self.read_hit(kind, fault.fc, laddr, len, &mut ticks) {
                 Some((data, _)) => data,
                 None => {
@@ -704,12 +731,58 @@ where
                 size: len - done,
                 wdata: None,
             };
+            // Handle RTE resuming from bus error
+            if let Some(data) = self.take_completed_cycle(kind, fault.fc, true, acc.laddr, acc.size)
+            {
+                result = (result << (8 * acc.size)) | u64::from(data);
+                break;
+            }
             let (data, n) = self.cpu_access(&acc, &mut ticks)?;
             result = (result << (8 * n)) | u64::from(data);
             done += n;
         }
         self.advance_cycles(ticks)?;
         Ok(result as Long)
+    }
+
+    /// Takes the faulted data cycle that the bus error handler completed, if
+    /// it is the one at `laddr` with `size` bytes of the operand left, and
+    /// returns its data input buffer (68020, 68030)
+    #[inline(always)]
+    fn take_completed_cycle(
+        &mut self,
+        kind: AccessKind,
+        fc: u8,
+        read: bool,
+        laddr: Address,
+        size: u32,
+    ) -> Option<Long> {
+        if !(M68020..=M68030).contains(&CPU_TYPE) || self.completed_cycle.is_none() {
+            return None;
+        }
+        self.take_completed_cycle_slow(kind, fc, read, laddr, size)
+    }
+
+    /// take_completed_cycle() once there is one
+    #[cold]
+    #[inline(never)]
+    fn take_completed_cycle_slow(
+        &mut self,
+        kind: AccessKind,
+        fc: u8,
+        read: bool,
+        laddr: Address,
+        size: u32,
+    ) -> Option<Long> {
+        if kind == AccessKind::Physical {
+            return None;
+        }
+        let c = self.completed_cycle?;
+        if (c.function_code, c.read, c.address, c.size) != (fc, read, laddr, size) {
+            return None;
+        }
+        self.completed_cycle = None;
+        Some(low_bytes(c.data, size))
     }
 
     /// Reads a data operand of `len` bytes (1-4) and spends ticks (68020+).
@@ -866,6 +939,13 @@ where
                 size: len - done,
                 wdata: Some(low_bytes(value, len - done)),
             };
+            // Handle RTE resuming from bus error
+            if self
+                .take_completed_cycle(kind, fault.fc, false, acc.laddr, acc.size)
+                .is_some()
+            {
+                break;
+            }
             match self.cpu_access(&acc, &mut ticks) {
                 Ok((_, n)) => done += n,
                 Err(e) if kind != AccessKind::Physical && self.wb040_defer => {
