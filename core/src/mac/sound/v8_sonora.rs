@@ -60,7 +60,7 @@
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
 
-use super::audiopath::{AudioPath, Panning, sample16};
+use super::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use super::channel::{Channel, channel_reg, panning};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -176,7 +176,10 @@ pub struct V8Sound {
     /// One channel in the V8, left and right in the Sonora
     channels: Vec<Channel>,
 
-    /// Volume register. The volume is not applied.
+    /// Volume register, with the volume in bits 5-7. No attenuator follows
+    /// the sound chip on the Quadra 800 (its schematic), so it applies the
+    /// volume itself there. The LC III's ROM leaves it at 7 and sets the
+    /// volume in the DFAC instead.
     volume: u8,
 
     /// Play and record register, for the sound input
@@ -188,7 +191,7 @@ pub struct V8Sound {
 
 impl V8Sound {
     pub fn new(kind: V8Variant) -> Self {
-        Self {
+        let mut sound = Self {
             kind,
             out: AudioPath::default(),
             channels: (0..kind.channels())
@@ -197,14 +200,16 @@ impl V8Sound {
             volume: 0,
             play_record: 0,
             record_clock: 0,
-        }
+        };
+        sound.set_volume(0);
+        sound
     }
 
     pub fn reset(&mut self) {
         for channel in &mut self.channels {
             *channel = Channel::new(self.kind.fifo_size().0, self.kind.fifo_size().1);
         }
-        self.volume = 0;
+        self.set_volume(0);
         self.play_record = 0;
         self.record_clock = 0;
         self.out.reset();
@@ -264,6 +269,17 @@ impl V8Sound {
                 (status.half() && !a.irq_disable) || (status.half_b() && !b.irq_disable)
             }
         }
+    }
+
+    /// Sets the volume register. PrimeTime keeps only bits 5-7 (ASCTester on
+    /// a LC 475).
+    fn set_volume(&mut self, val: u8) {
+        self.volume = if self.kind == V8Variant::PrimeTime {
+            val & 0xE0
+        } else {
+            val
+        };
+        self.out.set_gain(volume_gain(self.volume >> 5));
     }
 
     /// PrimeTime is recording: FIFO A goes to the CPU
@@ -368,9 +384,7 @@ impl BusMember<Address> for V8Sound {
                     }
                 }
             }
-            // ASCTester on a LC 475: only bits 7-5 are stored
-            REG_VOLUME if self.kind == V8Variant::PrimeTime => self.volume = val & 0xE0,
-            REG_VOLUME => self.volume = val,
+            REG_VOLUME => self.set_volume(val),
             REG_PLAY_RECORD => self.play_record = val,
             0xF00..=0xF3F if self.kind.channel_regs() => {
                 let (channel, reg) = channel_reg(addr);
