@@ -173,8 +173,10 @@ fn translation_fault_pushes_resumable_format_b_frame() {
 }
 
 /// The fix-and-rerun path: the vector-2 handler materializes the page
-/// descriptor and RTEs with DF still set, and the restarted instruction
-/// completes against the new mapping.
+/// descriptor, flushes the ATC entry of the failed search and RTEs with DF
+/// still set, and the restarted instruction completes against the new
+/// mapping. Without the flush, the entry's B bit would fault again
+/// (MC68030UM 9.4).
 #[test]
 fn rte_with_df_set_restarts_the_faulted_access() {
     let mut cpu = user_mode_030_with_table(0);
@@ -189,11 +191,12 @@ fn rte_with_df_set_restarts_the_faulted_access() {
     write_word(&mut cpu.bus, HANDLER, 0x23FC);
     write_long(&mut cpu.bus, HANDLER + 2, 0x0000_0001);
     write_long(&mut cpu.bus, HANDLER + 6, FAULT_DESC);
-    write_word(&mut cpu.bus, HANDLER + 10, 0x4E73); // RTE
+    write_long(&mut cpu.bus, HANDLER + 10, 0xF000_2400); // PFLUSHA
+    write_word(&mut cpu.bus, HANDLER + 14, 0x4E73); // RTE
     reload(&mut cpu);
 
-    // Fault + handler (2 instructions) + rerun + NOP.
-    step_n(&mut cpu, 5);
+    // Fault + handler (3 instructions) + rerun + NOP.
+    step_n(&mut cpu, 6);
     assert!(!cpu.regs.sr.supervisor(), "back in user mode after RTE");
     assert_eq!(cpu.regs.pc, CODE + 4, "past the NOP");
     // Logical 0x10000 now maps to physical 0: D0 = longword at 0 (only
