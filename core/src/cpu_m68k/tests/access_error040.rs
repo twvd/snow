@@ -203,6 +203,7 @@ fn address_error_frame() {
             start_pc: CODE,
             size: 2,
             atc_fault: false,
+            data: 0,
         }),
     )
     .unwrap();

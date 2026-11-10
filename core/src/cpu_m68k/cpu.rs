@@ -78,6 +78,23 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) size: usize,
     /// M68040 only (MMU page fault)
     pub(in crate::cpu_m68k) atc_fault: bool,
+    /// Bytes of a faulted write left to write, right-justified
+    pub(in crate::cpu_m68k) data: Long,
+}
+
+/// 68020/68030: the faulted data cycle of a bus error frame that the handler
+/// completed, which it tells RTE by clearing DF in the SSW. RTE resumes the
+/// instruction without running that cycle: a read takes the data input
+/// buffer of the frame, a write is done (MC68030UM 8.2.1, 8.2.2).
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cpu_m68k) struct CompletedDataCycle {
+    pub(in crate::cpu_m68k) function_code: u8,
+    pub(in crate::cpu_m68k) read: bool,
+    pub(in crate::cpu_m68k) address: Address,
+    /// Bytes of the operand left at the faulted cycle
+    pub(in crate::cpu_m68k) size: u32,
+    /// Data input buffer, right-justified
+    pub(in crate::cpu_m68k) data: Long,
 }
 
 /// M68040: a faulted data write waiting in a write-back slot for the access
@@ -565,6 +582,11 @@ where
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 
+    /// Faulted data cycle completed by the bus error handler, from the RTE
+    /// that resumes the instruction to the end of its step()
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) completed_cycle: Option<CompletedDataCycle>,
+
     /// The host watches physical address ranges: CPU writes check `watch_ranges`
     #[serde(skip)]
     pub(in crate::cpu_m68k) watch_active: bool,
@@ -667,6 +689,7 @@ where
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
+            completed_cycle: None,
             watch_active: false,
             watch_ranges: Vec::new(),
             watch_hit: false,
@@ -812,6 +835,7 @@ where
                 address: fetch_addr,
                 // Filled in later
                 start_pc: 0,
+                data: 0,
             }));
         }
 
@@ -898,6 +922,7 @@ where
                 address,
                 // ??? is this filled correctly later?
                 start_pc: 0,
+                data: 0,
             })),
         }
     }
@@ -949,6 +974,59 @@ where
             self.sync_bus()?;
         }
 
+        // Flag exceptions before executing the instruction to act on them later
+        let mut trace_exception = self.regs.sr.trace() && !self.trace_mask;
+        let irq_exception = self.bus.get_irq();
+
+        let mut irq_taken = false;
+        let mut resuming = false;
+        loop {
+            let result = self.step_instruction(trace_exception);
+            if resuming {
+                self.completed_cycle = None;
+            }
+            let Some(taken) = result? else {
+                return Ok(());
+            };
+            irq_taken |= taken;
+
+            // An RTE that leaves the faulted data cycle completed by the bus
+            // error handler resumes the instruction, which the 68030 finishes
+            // before a trace or an interrupt (MC68030UM 8.2.2): it runs again
+            // and takes the completed cycle instead of running it
+            if resuming || !(M68020..=M68030).contains(&CPU_TYPE) || self.completed_cycle.is_none()
+            {
+                break;
+            }
+            resuming = true;
+            trace_exception = self.regs.sr.trace() && !self.trace_mask;
+        }
+
+        // Check pending trace
+        if trace_exception && !self.step_inhibit_trace {
+            advance_cycles!(self, m68000: 0, m68020: 3, m68030: 6)?;
+            self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
+        }
+
+        // Check pending interrupts
+        if !irq_taken {
+            let level = self.irq_level(irq_exception);
+            if level != 0 {
+                self.take_irq(level, false)?;
+            }
+        }
+
+        if !self.breakpoints.is_empty() {
+            self.test_pc_breakpoints();
+        }
+
+        Ok(())
+    }
+
+    /// Runs the instruction at PC and takes the exception of a fault in it.
+    /// Returns whether an interrupt was taken, or None if the step ends.
+    #[inline(always)]
+    fn step_instruction(&mut self, trace_exception: bool) -> Result<Option<bool>> {
         self.step_ea_addr = None;
         self.step_exception = false;
         self.step_inhibit_trace = false;
@@ -960,10 +1038,6 @@ where
         if CPU_TYPE >= M68020 {
             self.restart_regs.get_or_insert_default().save(&self.regs);
         }
-
-        // Flag exceptions before executing the instruction to act on them later
-        let trace_exception = self.regs.sr.trace() && !self.trace_mask;
-        let irq_exception = self.bus.get_irq();
 
         // Start of instruction execution
         if self.history_enabled {
@@ -991,6 +1065,7 @@ where
                             VECTOR_BUS_ERROR,
                             Some(details),
                         )
+                        .map(|()| None)
                     }
                     _ => Err(e),
                 };
@@ -1010,7 +1085,7 @@ where
                         "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
                         self.regs.pc, opcode, opcode, e
                     );
-                    return self.raise_illegal_instruction();
+                    return self.raise_illegal_instruction().map(|()| None);
                 }
             }
         }
@@ -1173,25 +1248,7 @@ where
             self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
         }
 
-        // Check pending trace
-        if trace_exception && !self.step_inhibit_trace {
-            advance_cycles!(self, m68000: 0, m68020: 3, m68030: 6)?;
-            self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
-        }
-
-        // Check pending interrupts
-        if !irq_taken {
-            let level = self.irq_level(irq_exception);
-            if level != 0 {
-                self.take_irq(level, false)?;
-            }
-        }
-
-        if !self.breakpoints.is_empty() {
-            self.test_pc_breakpoints();
-        }
-
-        Ok(())
+        Ok(Some(irq_taken))
     }
 
     /// Tests the breakpoints on the next PC location
@@ -1477,6 +1534,8 @@ where
     ) -> Result<()> {
         let start_cycles = self.cycles;
         let mut saved_sr = self.regs.sr.sr();
+        // The resumed instruction does not run
+        self.completed_cycle = None;
 
         // Stacking faults are not deferred
         self.wb040_defer = false;
@@ -1652,7 +1711,12 @@ where
                             log::error!("Cannot reset registers for stacking a bus error frame");
                         }
 
-                        if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
+                        // Data read faults only stack the long frame
+                        // (MC68030UM 8.2.2)
+                        if self.regs.pc == details.start_pc
+                            && self.prefetch.len() == 2
+                            && !details.read
+                        {
                             // Bus error at instruction boundary
                             advance_cycles!(self, m68000: 0, m68020: 6, m68030: 10)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
@@ -1694,7 +1758,7 @@ where
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
                             // Data output buffer
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), details.data)?;
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
                         } else {
@@ -1740,6 +1804,8 @@ where
                             for i in (0x14..0x5C).step_by(4) {
                                 self.write_ticks(self.regs.ssp().wrapping_add(i), 0u32)?;
                             }
+                            // Data output buffer
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), details.data)?;
                         }
                     }
                 }
@@ -3700,6 +3766,32 @@ where
         Ok(())
     }
 
+    /// The faulted data cycle of the bus error frame on the stack, if the
+    /// handler completed it by clearing DF. Only the long frame has a data
+    /// input buffer (MC68030UM 8.2.1, 8.2.2).
+    fn rte_completed_cycle(&mut self, long: bool) -> Result<Option<CompletedDataCycle>> {
+        let ssp = *self.regs.ssp();
+        let ssw = Group0Ssw(self.read_ticks(ssp.wrapping_add(0x0A))?);
+        if ssw.df() || ssw.fb() || ssw.fc() {
+            return Ok(None);
+        }
+        let data = if long {
+            self.read_ticks(ssp.wrapping_add(0x2C))?
+        } else {
+            0
+        };
+        Ok(Some(CompletedDataCycle {
+            function_code: ssw.function_code(),
+            read: ssw.read(),
+            address: self.read_ticks(ssp.wrapping_add(0x10))?,
+            size: match ssw.size() {
+                0 => 4,
+                n => n as u32,
+            },
+            data,
+        }))
+    }
+
     fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
             return self.raise_privilege_violation();
@@ -3771,6 +3863,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 self.rte_fault_frame(6)?;
+                self.completed_cycle = self.rte_completed_cycle(false)?;
                 advance_cycles!(self, m68000: 0, m68020: 9, m68030: 2)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
                 self.set_sr(sr);
@@ -3781,6 +3874,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 self.rte_fault_frame(if CPU_TYPE == M68030 { 21 } else { 20 })?;
+                self.completed_cycle = self.rte_completed_cycle(true)?;
                 // The 68030 takes 3 clocks more than the manual: our reads take 3 clocks
                 advance_cycles!(self, m68020: 16)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
@@ -4684,6 +4778,7 @@ where
                 atc_fault: false,
                 // Filled in later
                 start_pc: 0,
+                data: 0,
             }));
         }
         Ok(true)

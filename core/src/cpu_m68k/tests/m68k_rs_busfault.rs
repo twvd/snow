@@ -4,10 +4,6 @@
 //! resumable frame, and the RTE continuation protocol (DF set reruns the
 //! instruction; DF clear completes the data cycle from the frame buffers).
 //!
-//! The DF-cleared vectors are `#[ignore]`d: Snow does not model the
-//! fault-completion half of the protocol (data input/output buffer supply),
-//! replaying the whole instruction instead, which is safe for RAM targets.
-//!
 //! Portions derived from m68k-rs (https://github.com/benletchford/m68k-rs),
 //! Copyright (c) 2026 Ben Letchford, used under the MIT License:
 //!
@@ -212,7 +208,6 @@ fn rte_with_df_set_restarts_the_faulted_access() {
 ///
 /// Ignored: Snow does not model fault completion through the frame buffers.
 #[test]
-#[ignore = "Snow replays the whole instruction on a format-$B RTE; the DF-cleared data-input-buffer completion path is not modeled"]
 fn rte_with_df_cleared_supplies_the_data_input_buffer() {
     let mut cpu = user_mode_030_with_table(0);
 
@@ -229,9 +224,10 @@ fn rte_with_df_cleared_supplies_the_data_input_buffer() {
     write_word(&mut cpu.bus, HANDLER + 14, 0x4E73); // RTE
     reload(&mut cpu);
 
-    // Fault + handler (3 instructions) + completed re-execution + NOP.
-    step_n(&mut cpu, 6);
+    // Fault + handler (3 instructions, RTE resuming the instruction) + NOP.
+    step_n(&mut cpu, 5);
     assert!(!cpu.regs.sr.supervisor());
+    assert_eq!(cpu.regs.pc, CODE + 4);
     assert_eq!(cpu.regs.d[0], 0xCAFE_BABE, "read completed from the DIB");
     assert_eq!(
         read_long(&cpu.bus, FAULT_DESC),
@@ -246,7 +242,6 @@ fn rte_with_df_cleared_supplies_the_data_input_buffer() {
 ///
 /// Ignored: Snow does not model write absorption through the DOB.
 #[test]
-#[ignore = "Snow replays the whole instruction on a format-$B RTE; the DF-cleared write-absorption path (data output buffer) is not modeled"]
 fn rte_with_df_cleared_absorbs_the_faulted_write() {
     let mut cpu = user_mode_030_with_table(0);
 
@@ -277,7 +272,7 @@ fn rte_with_df_cleared_absorbs_the_faulted_write() {
         "data output buffer holds the faulted write's value"
     );
 
-    step_n(&mut cpu, 5); // handler (3) + suppressed rerun + NOP
+    step_n(&mut cpu, 4); // handler (3, RTE resuming the instruction) + NOP
     assert!(!cpu.regs.sr.supervisor());
     assert_eq!(cpu.regs.d[7], 0x1234_5678, "handler saw the write data");
     assert_eq!(cpu.regs.pc, CODE + 4, "no re-fault loop");
