@@ -12,6 +12,7 @@ use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
 
+use super::atc030::Atc030;
 use super::instruction::Pmove1Extword;
 use super::regs::{RegisterPSR, TcReg, TrTranslationReg};
 
@@ -360,6 +361,19 @@ where
                 // M68030UM Table 9-3: T set; the remaining bits are
                 // undefined.
                 psr.set_transparent(true);
+            } else if CPU_TYPE == M68030 {
+                // M68000PRM 6-65: B and W and M of the entry; I if there is
+                // no entry or B is set
+                let page_mask = (1 << self.regs.pmmu.tc.ps()) - 1;
+                match self.atc030.peek(Atc030::tag(vaddr, page_mask, fc)) {
+                    Some(entry) => {
+                        psr.set_bus_error(entry.bus_error);
+                        psr.set_invalid(entry.bus_error);
+                        psr.set_write_protected(entry.wp);
+                        psr.set_modified(entry.modified);
+                    }
+                    None => psr.set_invalid(true),
+                }
             } else if let Some(entry) = self.pmmu_atc_probe(fc, vaddr) {
                 // Snow's ATC entries carry no bus-error bit, so B stays
                 // clear.
@@ -458,7 +472,12 @@ where
         match mode {
             // PFLUSHA: invalidate all entries (mask and FC field are zero).
             0b001 => self.pmmu_cache_invalidate(),
-            // PFLUSH fc,#mask: flush by function code. Snow's ATC slot for a
+            // PFLUSH fc,#mask: flush by function code
+            0b100 if CPU_TYPE == M68030 => {
+                let fc = self.decode_pmmu_fc(fc_field)?;
+                self.atc030.flush(|f, _| (f ^ fc) & mask == 0);
+            }
+            // PFLUSH fc,#mask on the 68851. Snow's ATC slot for a
             // page is shared across function codes and there is no per-FC
             // index, so honouring this precisely would mean scanning every
             // slot (up to 2^20). The hardware may drop ATC entries at any
@@ -510,9 +529,13 @@ where
 
         // M68030UM 9.8: any existing entry translating this address is
         // flushed before the search, so a failed walk leaves the address
-        // untranslated rather than served by a stale entry. Mask 0 matches
-        // every function code the shared slot has served.
-        self.pmmu_flush(0, 0, vaddr);
+        // untranslated rather than served by a stale entry. On the 68851,
+        // mask 0 matches every function code the shared slot has served.
+        if CPU_TYPE == M68030 {
+            self.pmmu_flush(fc, 0b111, vaddr);
+        } else {
+            self.pmmu_flush(0, 0, vaddr);
+        }
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;

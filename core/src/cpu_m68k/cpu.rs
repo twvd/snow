@@ -552,6 +552,10 @@ where
     #[serde(default)]
     pub(in crate::cpu_m68k) atc040: [crate::cpu_m68k::pmmu::atc040::Atc040; 2],
 
+    /// 68030 ATC
+    #[serde(default)]
+    pub(in crate::cpu_m68k) atc030: crate::cpu_m68k::pmmu::atc030::Atc030,
+
     /// Last translations, for data reads, instruction fetches and data
     /// writes
     #[serde(
@@ -671,6 +675,7 @@ where
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
             atc040: Default::default(),
+            atc030: Default::default(),
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
