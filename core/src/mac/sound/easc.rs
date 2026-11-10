@@ -22,7 +22,7 @@
 //! record rate, as there is no sound input. Its interrupt is then asserted
 //! while it is more than half full. Not tested on a machine yet.
 
-use super::audiopath::AudioPath;
+use super::audiopath::{AudioPath, volume_gain};
 use super::cdxa::CdxaDecoder;
 use super::channel::{Channel, channel_reg, panning};
 use super::rate_converter::RateConverter;
@@ -44,7 +44,8 @@ const REG_MODE: Address = 0x801;
 const REG_CONTROL: Address = 0x802;
 const REG_FIFO_MODE: Address = 0x803;
 const REG_FIFO_STATUS: Address = 0x804;
-/// Volume, in bits 5-7
+/// Volume, in bits 5-7, 0 at power-up. The chip doesn't apply it: it goes
+/// to the volume control of the amplifier, Sporty on the Quadra 700.
 const REG_VOLUME: Address = 0x806;
 const REG_CLOCK: Address = 0x807;
 /// Play or record, and the record rate. Bit 1 (22 kHz) is set at power-up.
@@ -119,8 +120,10 @@ pub struct Easc {
 
 impl Default for Easc {
     fn default() -> Self {
+        let mut out = AudioPath::default();
+        out.set_gain(volume_gain(0));
         Self {
-            out: AudioPath::default(),
+            out,
             channels: [
                 Channel::new(FIFO_SIZE, FIFO_HALF),
                 Channel::new(FIFO_SIZE, FIFO_HALF),
@@ -155,6 +158,7 @@ impl Easc {
         self.record_clock = 0;
         self.fifo_mode = false;
         self.regs = Self::power_up_regs();
+        self.out.set_gain(volume_gain(0));
         self.out.reset();
     }
 
@@ -319,7 +323,10 @@ impl BusMember<Address> for Easc {
             }
             // Fixed, or following the FIFOs
             REG_VERSION | REG_CONTROL | REG_FIFO_STATUS | REG_CLOCK => (),
-            REG_VOLUME => self.regs[(addr - 0x800) as usize] = val & 0xE0,
+            REG_VOLUME => {
+                self.regs[(addr - 0x800) as usize] = val & 0xE0;
+                self.out.set_gain(volume_gain(val >> 5));
+            }
             0x805 | REG_PLAY_RECORD | 0x80F => self.regs[(addr - 0x800) as usize] = val,
             0xF00..=0xF3F => {
                 let (channel, reg) = channel_reg(addr);
