@@ -1,5 +1,6 @@
-//! Audio output of the sound chips: the output stage, from the samples of
-//! the channels to the audio sink
+//! Audio output of the sound models (the sound chips, and the sound buffer
+//! of the compact Macs): the output stage, from the samples of the channels
+//! to the audio sink
 
 use crate::audio_filter::AudioFilter;
 use crate::renderer::{AUDIO_BUFFER_SIZE, AudioSink, null_audio_sink};
@@ -75,7 +76,7 @@ pub const fn volume_gain(volume: u8) -> f32 {
 /// Gain of 1, in the 1/32768ths of [`AudioPath::gain`]
 const GAIN_ONE: i32 = 0x8000;
 
-/// Takes the samples of the channels of a sound chip to the audio sink:
+/// Takes the samples of the channels of a sound model to the audio sink:
 /// mixes them by their scales, applies the volume, adds the analog input
 /// and filters the result
 #[derive(Serialize, Deserialize)]

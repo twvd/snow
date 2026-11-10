@@ -6,6 +6,5 @@
 //!  * Macintosh SE
 //!  * Macintosh Classic
 
-pub mod audio;
 pub mod bus;
 pub mod video;
