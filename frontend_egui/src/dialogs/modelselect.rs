@@ -309,8 +309,8 @@ impl ModelSelectionDialog {
         self.do_validate_roms();
     }
 
-    /// The SE/30 has its video, and a Mac II gets a card in its first slot, which the user can
-    /// move or take out
+    /// The SE/30 has its video, a Mac II gets a card in its first slot, which the user can
+    /// move or take out, and a machine with built-in video keeps the cards its slots take
     fn fit_cards(&mut self) {
         let slots = self.selected_model.nubus_slots();
         if self.selected_model == MacModel::SE30 {
@@ -327,6 +327,9 @@ impl ModelSelectionDialog {
             {
                 self.put_card(slot, NubusDeviceKind::default());
             }
+        } else if self.takes_cards() {
+            self.cards
+                .retain(|slot, c| slots.contains(slot) && c.kind != NubusDeviceKind::SE30Video);
         } else {
             self.cards.clear();
         }
@@ -356,7 +359,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIcx
                 | MacModel::SE30
         );
-        if !self.display_rom_required {
+        if !self.display_rom_required && !self.takes_cards() {
             self.cards.clear();
         }
     }
@@ -375,6 +378,12 @@ impl ModelSelectionDialog {
                     | MacModel::LCII
                     | MacModel::LCIII
             )
+    }
+
+    /// Whether the machine has built-in video and NuBus slots that take video
+    /// cards beside it
+    fn takes_cards(&self) -> bool {
+        matches!(self.selected_model, MacModel::Quadra700)
     }
 
     /// The monitor of the built-in video. A card's is in its slot's rows.
@@ -691,7 +700,9 @@ impl ModelSelectionDialog {
                     ui.end_row();
                 }
                 // A row per NuBus slot, with the card's own rows under it
-                if self.display_rom_required && self.selected_model != MacModel::SE30 {
+                if (self.display_rom_required && self.selected_model != MacModel::SE30)
+                    || self.takes_cards()
+                {
                     self.nubus_rows(ui, settings);
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
@@ -860,9 +871,8 @@ impl ModelSelectionDialog {
                 |_ui| {},
                 |ui| {
                     let can_proceed = self.main_rom_valid
-                        && (!self.display_rom_required
-                            || (!self.cards.is_empty()
-                                && self.cards.values().all(|c| c.rom_valid)));
+                        && (!self.display_rom_required || !self.cards.is_empty())
+                        && self.cards.values().all(|c| c.rom_valid);
 
                     if ui
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
@@ -983,7 +993,7 @@ impl ModelSelectionDialog {
                 self.card_monitor_row(ui, slot);
             }
         }
-        if self.cards.is_empty() {
+        if self.display_rom_required && self.cards.is_empty() {
             ui.label("");
             ui.label(
                 egui::RichText::new(format!(
@@ -994,7 +1004,10 @@ impl ModelSelectionDialog {
             );
             ui.end_row();
         }
-        if self.cards.values().filter(|c| c.has_display()).count() > 1 {
+        // The built-in video is a display too
+        let displays = self.cards.values().filter(|c| c.has_display()).count()
+            + usize::from(self.takes_cards());
+        if displays > 1 {
             ui.label("");
             ui.label(
                 egui::RichText::new(format!(

@@ -407,7 +407,11 @@ const fn fits_nubus(mac: crate::mac::MacModel) -> bool {
     use crate::mac::MacModel;
     matches!(
         mac,
-        MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx
+        MacModel::MacII
+            | MacModel::MacIIFDHD
+            | MacModel::MacIIx
+            | MacModel::MacIIcx
+            | MacModel::Quadra700
     )
 }
 

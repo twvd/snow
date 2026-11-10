@@ -774,15 +774,21 @@ impl Emulator {
                     _ => None,
                 });
 
-                // Initialize bus and CPU
+                // Initialize bus and CPU. The displays of the cards come after the
+                // built-in one.
                 let renderer = ChannelRenderer::new(0, 0)?;
                 receivers.push(renderer.get_receiver());
+                let mut cards = video_cards.to_vec();
+                cards.sort_by_key(|c| c.slot);
+                let card_renderers = make_renderers(&cards, &mut receivers)?;
                 let bus = Quadra700Bus::new(
                     model,
                     rom,
                     extension_rom,
                     renderer,
                     monitor.unwrap_or_default(),
+                    &cards,
+                    card_renderers,
                     mouse_mode,
                     ram_size,
                 );
@@ -1204,12 +1210,13 @@ impl Emulator {
         Ok(())
     }
 
-    /// The slot of each display, as the guest's drivers have it. Only a Mac II
-    /// has more than one.
+    /// The slot of each display, as the guest's drivers have it, on the
+    /// machines that can have more than one
     fn read_display_slots(&self) -> Vec<u8> {
         match &self.config {
             EmulatorConfig::MacII(inner) => inner.bus.macii().display_slots(),
             EmulatorConfig::MacII30(inner) => inner.bus.macii().display_slots(),
+            EmulatorConfig::Quadra700(inner) => inner.bus.quadra700().display_slots(),
             _ => vec![],
         }
     }
@@ -1288,6 +1295,7 @@ impl Emulator {
         let mode = match &self.config {
             EmulatorConfig::MacII(inner) => inner.bus.macii().mouse_mode(),
             EmulatorConfig::MacII30(inner) => inner.bus.macii().mouse_mode(),
+            EmulatorConfig::Quadra700(inner) => inner.bus.quadra700().mouse_mode(),
             _ => return false,
         };
         self.display_slots.len() > 1 && mode == MouseMode::Absolute
