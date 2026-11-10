@@ -24,7 +24,7 @@
 
 use super::audiopath::AudioPath;
 use super::cdxa::CdxaDecoder;
-use super::channel::{Channel, channel_reg};
+use super::channel::{CHANNEL_REG_SCALE_L, CHANNEL_REG_SCALE_R, Channel, channel_reg, mix};
 use super::rate_converter::RateConverter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -72,10 +72,6 @@ const FIFO_HALF: usize = FIFO_SIZE / 2;
 /// $812F, 22254 Hz.
 const CHANNEL_REG_SRC_H: usize = 0x04;
 const CHANNEL_REG_SRC_L: usize = 0x05;
-/// Scales of a channel for the left and right outputs, taken as fractions
-/// of $80
-const CHANNEL_REG_SCALE_L: usize = 0x06;
-const CHANNEL_REG_SCALE_R: usize = 0x07;
 /// FIFO control: bit 7 enables the sample rate conversion, bits 0-1 select
 /// a CD-XA mode: 0 off, 1 8-bit, 2 4-bit, 3 2-bit samples. Writing it with
 /// bit 7 clear resets the conversion, with bits 0-1 clear the decoder.
@@ -229,9 +225,7 @@ impl Easc {
     /// Mixes the samples of the channels for one output side
     fn mix(&self, a: i16, b: i16, scale_reg: usize) -> i16 {
         let [ca, cb] = &self.channels;
-        let a = i32::from(a) * i32::from(ca.read_reg(scale_reg));
-        let b = i32::from(b) * i32::from(cb.read_reg(scale_reg));
-        ((a + b) >> 7).clamp(-0x8000, 0x7FFF) as i16
+        mix(ca, cb, (a, b), scale_reg)
     }
 
     /// Plays a sample, at the sample rate

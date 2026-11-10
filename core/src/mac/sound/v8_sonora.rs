@@ -46,13 +46,22 @@
 //! - Whether 0x1000 is a FIFO of its own or another port to FIFO A isn't
 //!   known.
 //!
+//! Each output side mixes both channels, each by its scale for that side
+//! ($F06 and $F07 for FIFO A, $F26 and $F27 for FIFO B), as on the EASC.
+//! This isn't measured, but:
+//!
+//! - The ROM of the LC 475 and the Quadra 800 sets them at boot: $7F for FIFO
+//!   A on the left and FIFO B on the right, and 0 for the other side.
+//! - NetBSD's ascaudio(4) driver sets its volume with them.
+//! - A/UX 3 changes them to play FIFO B on the right side only, or on both.
+//!
 //! Sound input is not implemented: PrimeTime records silence.
 //!
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
 
 use super::audiopath::AudioPath;
-use super::channel::{Channel, channel_reg};
+use super::channel::{CHANNEL_REG_SCALE_L, CHANNEL_REG_SCALE_R, Channel, channel_reg, mix};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::renderer::AudioSink;
@@ -292,13 +301,24 @@ impl V8Sound {
         }
         if queue_sample {
             if self.kind == V8Variant::PrimeTime {
-                self.out.push_mixed(samples[0], samples[1], input)?;
+                let (l, r) = self.scaled(samples);
+                self.out.push16_mixed(l, r, input)?;
             } else {
                 // The first channel goes to both sides
                 self.out.push_mixed(samples[0], samples[0], input)?;
             }
         }
         Ok(())
+    }
+
+    /// Left and right outputs of PrimeTime for a sample of each FIFO
+    fn scaled(&self, samples: [u8; 2]) -> (i16, i16) {
+        let [a, b] = [&self.channels[0], &self.channels[1]];
+        let samples = (sample16(samples[0]), sample16(samples[1]));
+        (
+            mix(a, b, samples, CHANNEL_REG_SCALE_L),
+            mix(a, b, samples, CHANNEL_REG_SCALE_R),
+        )
     }
 
     /// Time between two samples, in cycles of C16M (15.6672 MHz): 22254.5
@@ -315,6 +335,11 @@ impl V8Sound {
     pub fn after_deserialize(&mut self) {
         self.out.after_deserialize();
     }
+}
+
+/// A sample of a FIFO, in binary offset, as a 16-bit signed sample
+fn sample16(sample: u8) -> i16 {
+    i16::from((sample ^ 0x80) as i8) << 8
 }
 
 impl BusMember<Address> for V8Sound {
@@ -570,6 +595,23 @@ mod tests {
         }
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x07));
         assert!(sound.irq());
+    }
+
+    #[test]
+    fn primetime_scales() {
+        let mut sound = V8Sound::new(V8Variant::PrimeTime);
+        assert_eq!(sound.scaled([0xC0, 0x40]), (0, 0));
+
+        // As the ROM sets them at full volume: A on the left, B on the right
+        sound.write(0xF06, 0x7F);
+        sound.write(0xF27, 0x7F);
+        assert_eq!(sound.scaled([0xC0, 0x40]), (0x3F80, -0x3F80));
+
+        // As A/UX sets them at times: B on both sides
+        sound.write(0xF06, 0x70);
+        sound.write(0xF26, 0x70);
+        sound.write(0xF27, 0x70);
+        assert_eq!(sound.scaled([0x80, 0x40]), (-0x3800, -0x3800));
     }
 
     #[test]
