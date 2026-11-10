@@ -134,6 +134,9 @@ pub struct EmulatorInitArgs {
 
     /// A data cache flush also clears the instruction cache (68040)
     pub cache_flush_workaround: bool,
+
+    /// A user-mode PFLUSH flushes the ATCs (68040)
+    pub vm_pflush_workaround: bool,
 }
 
 impl Default for EmulatorInitArgs {
@@ -155,6 +158,7 @@ impl Default for EmulatorInitArgs {
             video_card: Default::default(),
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
+            vm_pflush_workaround: Default::default(),
         }
     }
 }
@@ -333,6 +337,9 @@ impl EmulatorState {
         cmd.send(EmulatorCommand::SetOverclock(args.overclock))?;
         cmd.send(EmulatorCommand::SetCacheFlushWorkaround(
             args.cache_flush_workaround,
+        ))?;
+        cmd.send(EmulatorCommand::SetVmPflushWorkaround(
+            args.vm_pflush_workaround,
         ))?;
 
         if model.has_scsi() {

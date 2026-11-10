@@ -556,6 +556,11 @@ where
     #[serde(default)]
     pub(in crate::cpu_m68k) atc030: crate::cpu_m68k::pmmu::atc030::Atc030,
 
+    /// A user-mode PFLUSH flushes the ATCs instead of taking a privilege
+    /// violation (68040), see op_pflush040()
+    #[serde(default)]
+    pub(in crate::cpu_m68k) vm_pflush_workaround: bool,
+
     /// Last translations, for data reads, instruction fetches and data
     /// writes
     #[serde(
@@ -676,6 +681,7 @@ where
             pmmu_atc_generation: atc_generation_default(),
             atc040: Default::default(),
             atc030: Default::default(),
+            vm_pflush_workaround: false,
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
@@ -780,6 +786,12 @@ where
     /// Makes CPUSH of the data cache also invalidate the instruction cache
     pub fn set_cache_flush_workaround(&mut self, on: bool) {
         self.caches.set_flush_workaround(on);
+    }
+
+    /// Makes a user-mode PFLUSH flush the ATCs instead of taking a privilege
+    /// violation (68040)
+    pub fn set_vm_pflush_workaround(&mut self, on: bool) {
+        self.vm_pflush_workaround = on;
     }
 
     /// Gets the instruction history, if enabled
@@ -4576,7 +4588,14 @@ where
 
     /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
     fn op_pflush040(&mut self, instr: &Instruction) -> Result<()> {
-        if !self.regs.sr.supervisor() {
+        // Mac OS 8.1 virtual memory runs the system in user mode. When it
+        // releases a page it clears M in its descriptor and flushes with
+        // PFLUSHA, which its privilege violation handler takes for a cache
+        // instruction with no cache selected and skips. Writes then go
+        // through ATC entries that say modified, and VM pages the page out
+        // as unmodified. Found by tracing the page release of 8.1's VM. The
+        // workaround runs the flush instead.
+        if !self.regs.sr.supervisor() && !self.vm_pflush_workaround {
             return self.raise_privilege_violation();
         }
 

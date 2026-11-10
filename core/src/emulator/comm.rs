@@ -125,6 +125,8 @@ pub enum EmulatorCommand {
     SetOverclock(Option<u64>),
     /// Makes a data cache flush also clear the instruction cache (68040)
     SetCacheFlushWorkaround(bool),
+    /// Makes a user-mode PFLUSH flush the ATCs (68040)
+    SetVmPflushWorkaround(bool),
     ProgKey,
     #[serde(skip)]
     WriteRegister(Register, u32),

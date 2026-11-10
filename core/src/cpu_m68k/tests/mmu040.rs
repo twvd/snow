@@ -496,3 +496,31 @@ fn reloaded_entry_leaves_the_last_translations() {
     cpu.write_ticks::<Long>(LOGICAL + 4, 0).unwrap();
     assert_eq!(cpu.read_ticks::<Long>(LOGICAL).unwrap(), 0x5566_7788);
 }
+
+#[test]
+fn vm_pflush_workaround() {
+    // A user-mode PFLUSHA takes a privilege violation, or flushes with the
+    // workaround
+    for workaround in [false, true] {
+        let mut cpu = testcpu(0);
+        cpu.set_vm_pflush_workaround(workaround);
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+        cpu.regs.write(Register::ITT0, 0x0000_C000_u32);
+        cpu.regs.write(Register::DTT0, 0x0000_C000_u32);
+        cpu.bus.mem.insert(0x1000, 0xF5);
+        cpu.bus.mem.insert(0x1001, 0x18);
+        write_long(&mut cpu, 0x20, 0x2000);
+        cpu.regs.isp = 0x8000;
+        cpu.regs.sr.set_supervisor(false);
+        cpu.set_pc(0x1000).unwrap();
+        cpu.prefetch_refill().unwrap();
+        cpu.step().unwrap();
+        if workaround {
+            assert_eq!(cpu.regs.pc, 0x1002);
+            assert!(!in_data_atc(&cpu, LOGICAL));
+        } else {
+            assert_eq!(cpu.regs.pc, 0x2000);
+            assert!(in_data_atc(&cpu, LOGICAL));
+        }
+    }
+}
