@@ -67,6 +67,16 @@ impl AudioPath {
         self.queue(f32::from(l) / 32768.0, f32::from(r) / 32768.0)
     }
 
+    /// As [`Self::push16`], plus an analog input (-1.0 to 1.0) on both sides
+    pub fn push16_mixed(&mut self, l: i16, r: i16, input: f32) -> Result<()> {
+        if (l, r) != (0, 0) {
+            self.silent = false;
+        }
+        let sample_l = f32::from(l) / 32768.0 + input;
+        let sample_r = f32::from(r) / 32768.0 + input;
+        self.queue(sample_l.clamp(-1.0, 1.0), sample_r.clamp(-1.0, 1.0))
+    }
+
     fn queue(&mut self, sample_l: f32, sample_r: f32) -> Result<()> {
         // Apply filters
         let (filtered_l, filtered_r) = self.filter.filter_stereo(sample_l, sample_r);
