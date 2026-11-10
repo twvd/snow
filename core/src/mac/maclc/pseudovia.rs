@@ -119,6 +119,8 @@ pub struct PseudoVia {
     scsi_irq: bool,
     scsi_drq: bool,
     asc_irq: bool,
+    /// Interrupt of the card in the PDS slot
+    pds_irq: bool,
 
     /// Monitor sense lines
     sense: u8,
@@ -145,6 +147,7 @@ impl PseudoVia {
             scsi_irq: false,
             scsi_drq: false,
             asc_irq: false,
+            pds_irq: false,
             sense,
             addr_mask,
             vram: 0,
@@ -191,9 +194,15 @@ impl PseudoVia {
         self.asc_irq = level;
     }
 
+    #[cfg(feature = "ethernet")]
+    pub fn set_pds_irq(&mut self, level: bool) {
+        self.pds_irq = level;
+    }
+
     fn slot_ifr(&self) -> RegisterSlot {
-        // The expansion slot is not implemented
-        RegisterSlot(!0x80).with_vblank(!self.vblank)
+        RegisterSlot(!0x80)
+            .with_vblank(!self.vblank)
+            .with_slot(!self.pds_irq)
     }
 
     /// Interrupt flags, without the summary bit. They all follow their source.

@@ -60,19 +60,19 @@ pub const VRAM_SIZES: &[usize] = &[256 * 1024, 512 * 1024];
 /// lands).
 pub(super) fn decode(addr: Address, fc3: bool) -> Option<Region> {
     if fc3 && addr & (1 << 31) != 0 {
-        return (addr & 0x0F00_0000 == 0x0E00_0000).then_some(Region::IieCard(addr & 0x00FF_FFFF));
+        return (addr & 0x0F00_0000 == 0x0E00_0000).then_some(Region::Pds(addr & 0x00FF_FFFF));
     }
 
     let addr = addr & 0x00FF_FFFF;
     match addr {
         0x00_0000..=0x9F_FFFF => Some(Region::Ram(addr)),
         0xA0_0000..=0xAF_FFFF => Some(Region::Rom),
-        0xE0_0000..=0xEF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
+        0xE0_0000..=0xEF_FFFF => Some(Region::Pds(addr - PDS_BASE)),
         0xF0_0000..=0xF3_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
         0xF4_0000..=0xFB_FFFF => Some(Region::Vram((addr - VRAM_BASE) as usize)),
         // Pseudo-slot I/O window of the PDS card, above the video RAM
         // window
-        0xFC_0000..=0xFF_FFFF => Some(Region::IieCard(addr - 0xFC_0000 + 0x10_0000)),
+        0xFC_0000..=0xFF_FFFF => Some(Region::Pds(addr - 0xFC_0000 + 0x10_0000)),
         _ => None,
     }
 }
@@ -263,26 +263,26 @@ mod tests {
 
     #[test]
     fn pds_slot_space() {
-        assert!(matches!(decode(0xE0_0000, false), Some(Region::IieCard(0))));
+        assert!(matches!(decode(0xE0_0000, false), Some(Region::Pds(0))));
         assert!(matches!(
             decode(0xEF_FFFF, false),
-            Some(Region::IieCard(0xF_FFFF))
+            Some(Region::Pds(0xF_FFFF))
         ));
         assert!(decode(0xDF_FFFF, false).is_none());
         // 32-bit slot aliases: slot $E, but not slot $F
         assert!(matches!(
             decode(0xFEFF_FFFF, true),
-            Some(Region::IieCard(0xFF_FFFF))
+            Some(Region::Pds(0xFF_FFFF))
         ));
         assert!(decode(0xFFFF_FFFC, true).is_none());
         // Pseudo-slot I/O window of the card
         assert!(matches!(
             decode(0xFC_0000, false),
-            Some(Region::IieCard(0x10_0000))
+            Some(Region::Pds(0x10_0000))
         ));
         assert!(matches!(
             decode(0x50FC_0000, false),
-            Some(Region::IieCard(0x10_0000))
+            Some(Region::Pds(0x10_0000))
         ));
     }
 }

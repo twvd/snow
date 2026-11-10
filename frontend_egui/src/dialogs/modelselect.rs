@@ -1,15 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::emulator::EmulatorInitArgs;
 use crate::settings::AppSettings;
+use crate::workspace::VideoCardEntry;
 use anyhow::{Result, anyhow, bail};
 use eframe::egui;
-use sha2::{Digest, Sha256};
 use snow_core::cpu_m68k::M68040;
 use snow_core::emulator::MouseMode;
+use snow_core::emulator::devices::{BusKind, DeviceModel, models_for};
 use snow_core::mac::maclc::lc_475_bus;
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
@@ -19,20 +20,117 @@ use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use strum::IntoEnumIterator;
 
-/// Video cards selectable for NuBus-equipped models.
-const SELECTABLE_VIDEO_CARDS: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12, NubusDeviceKind::Toby];
-
-/// Video cards that support a user-selectable monitor.
-const VIDEO_CARDS_WITH_MONITOR: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12];
-
-/// Returns the card a display ROM belongs to, which is the onboard video for
-/// the SE/30 and the selected video card for the other models.
-pub fn video_rom_card(model: MacModel, video_card: NubusDeviceKind) -> NubusDeviceKind {
-    if model == MacModel::SE30 {
-        NubusDeviceKind::SE30Video
-    } else {
-        video_card
+/// The device model of a card kind the machine is built with
+const fn card_model(kind: NubusDeviceKind) -> DeviceModel {
+    match kind {
+        NubusDeviceKind::Toby => DeviceModel::MacIIVideoCard,
+        NubusDeviceKind::SE30Video => DeviceModel::SE30Video,
+        NubusDeviceKind::Mdc12 => DeviceModel::DisplayCard824,
+        #[cfg(feature = "ethernet")]
+        NubusDeviceKind::ApplNbSonicTp => DeviceModel::AppleEthernetNbTp,
     }
+}
+
+/// And back
+const fn card_kind(model: DeviceModel) -> NubusDeviceKind {
+    match model {
+        DeviceModel::MacIIVideoCard => NubusDeviceKind::Toby,
+        DeviceModel::SE30Video => NubusDeviceKind::SE30Video,
+        #[cfg(feature = "ethernet")]
+        DeviceModel::AppleEthernetNbTp => NubusDeviceKind::ApplNbSonicTp,
+        _ => NubusDeviceKind::Mdc12,
+    }
+}
+
+/// The device model of a card kind for the PDS slot
+const fn pds_model(kind: PdsCardKind) -> Option<DeviceModel> {
+    match kind {
+        PdsCardKind::None => None,
+        PdsCardKind::AppleIIe => Some(DeviceModel::AppleIIePdsCard),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::ApplLcSonic => Some(DeviceModel::AppleEthernetLc),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::ApplLcSonicTp => Some(DeviceModel::AppleEthernetLcTp),
+        #[cfg(feature = "ethernet")]
+        PdsCardKind::DaynaSi30 => Some(DeviceModel::DaynaPortEsi30),
+    }
+}
+
+/// Whether a PDS card kind fits a machine, in its PDS slot
+fn pds_fits(kind: PdsCardKind, mac: MacModel) -> bool {
+    let bus = if mac == MacModel::SE30 {
+        BusKind::Se30Pds
+    } else {
+        BusKind::LcPds
+    };
+    pds_model(kind).is_none_or(|model| models_for(bus, mac).any(|i| i.model == model))
+}
+
+/// The value of `rom_dialog_slot` for the PDS card's ROM: 0, as the NuBus slots start at $9
+const PDS_ROM_SLOT: u8 = 0;
+
+/// A card in a NuBus slot, or the SE/30's video, as the dialog has it
+struct SlotCard {
+    kind: NubusDeviceKind,
+    rom_path: String,
+    rom_valid: bool,
+    rom_error: String,
+    /// What's on its connector, among the card's monitors
+    monitor: Option<MacMonitor>,
+}
+
+impl SlotCard {
+    /// Whether the card shows a screen: a video card with a monitor
+    fn has_display(&self) -> bool {
+        match self.kind {
+            NubusDeviceKind::Mdc12 => self.monitor.is_some(),
+            kind => kind.is_video(),
+        }
+    }
+
+    fn new(kind: NubusDeviceKind, rom_path: String) -> Self {
+        let mut card = Self {
+            kind,
+            rom_path,
+            rom_valid: false,
+            rom_error: String::new(),
+            monitor: Some(MacMonitor::default()),
+        };
+        card.fit_monitor();
+        card
+    }
+
+    /// The monitors the card can have
+    fn monitors(&self) -> &'static [Option<MacMonitor>] {
+        card_model(self.kind).info().monitors
+    }
+
+    /// A monitor the card can't have becomes its first one
+    fn fit_monitor(&mut self) {
+        let monitors = self.monitors();
+        if !monitors.contains(&self.monitor) {
+            self.monitor = monitors.first().copied().flatten();
+        }
+    }
+
+    /// Whether the user loads the card's ROM: Snow builds the ROMs of some cards at run time
+    fn takes_rom(&self) -> bool {
+        card_model(self.kind).info().rom.is_some()
+    }
+
+    /// What the card's record calls its ROM
+    fn rom_description(&self) -> &'static str {
+        card_model(self.kind)
+            .info()
+            .rom
+            .as_ref()
+            .map_or("Video ROM", |rom| rom.label)
+    }
+}
+
+/// How the dialog names a monitor choice
+fn monitor_name(monitor: Option<MacMonitor>) -> String {
+    monitor.map_or_else(|| "None".to_owned(), |m| m.to_string())
 }
 
 /// The name of a device on the Apple IIe Card's external disk port
@@ -59,14 +157,16 @@ pub struct ModelSelectionDialog {
     main_rom_valid: bool,
     main_rom_dialog: SnowFileDialog,
 
-    // Display Card ROM (for applicable models)
-    display_rom_path: String,
-    display_rom_valid: bool,
+    // Video cards by NuBus slot, the SE/30's video in its slot $E
+    cards: BTreeMap<u8, SlotCard>,
+    // The card whose ROM the file dialog picks
+    rom_dialog_slot: u8,
+    // The PDS card's ROM, for a card that has one to load
+    pds_rom_path: String,
+    pds_rom_valid: bool,
     display_rom_dialog: SnowFileDialog,
     display_rom_required: bool,
-
-    // Selected NuBus video card and per-card remembered ROM paths
-    selected_video_card: NubusDeviceKind,
+    // Last ROM of each kind of card, for a card put in a slot
     card_rom_paths: HashMap<NubusDeviceKind, String>,
 
     // PRAM path
@@ -92,7 +192,6 @@ pub struct ModelSelectionDialog {
 
     // Error state
     main_rom_error: String,
-    display_rom_error: String,
 }
 
 fn format_ram(sz: usize) -> String {
@@ -106,7 +205,7 @@ fn format_ram(sz: usize) -> String {
 pub struct ModelSelectionResult {
     pub model: MacModel,
     pub main_rom_path: PathBuf,
-    pub display_rom_path: Option<PathBuf>,
+    pub video_cards: Vec<VideoCardEntry>,
     pub pram_path: Option<PathBuf>,
     pub extension_rom_path: Option<PathBuf>,
     pub init_args: EmulatorInitArgs,
@@ -130,14 +229,15 @@ impl Default for ModelSelectionDialog {
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
-            display_rom_path: String::new(),
-            display_rom_valid: false,
+            cards: BTreeMap::new(),
+            rom_dialog_slot: 0,
+            pds_rom_path: String::new(),
+            pds_rom_valid: false,
             display_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin", "uk6"])
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
-            selected_video_card: NubusDeviceKind::default(),
             card_rom_paths: HashMap::new(),
 
             pram_enabled: false,
@@ -159,7 +259,6 @@ impl Default for ModelSelectionDialog {
             result: None,
             disable_rom_validation: false,
             main_rom_error: String::new(),
-            display_rom_error: String::new(),
         }
     }
 }
@@ -175,7 +274,6 @@ impl ModelSelectionDialog {
         self.last_roms = last_roms;
         self.roms_by_card = roms_by_card;
         self.main_rom_error.clear();
-        self.display_rom_error.clear();
         self.result = None;
 
         self.do_model_changed();
@@ -187,7 +285,7 @@ impl ModelSelectionDialog {
         &mut self,
         model: Option<MacModel>,
         main_rom_path: Option<&Path>,
-        display_rom_path: Option<&Path>,
+        video_cards: &[VideoCardEntry],
         pram_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
         init_args: &EmulatorInitArgs,
@@ -195,12 +293,17 @@ impl ModelSelectionDialog {
         if let Some(model) = model {
             self.selected_model = model;
         }
-        self.selected_video_card = init_args.video_card;
         if let Some(monitor) = init_args.monitor {
             self.selected_monitor = monitor;
         }
         self.early_800k = init_args.override_fdd_type == Some(DriveType::GCR800KPWM);
         self.init_args = init_args.clone();
+        self.pds_rom_path = init_args
+            .pds_rom
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.validate_pds_rom();
 
         // Recompute model-dependent state (e.g. whether a display ROM is required).
         self.update_display_rom_requirement();
@@ -208,11 +311,18 @@ impl ModelSelectionDialog {
         if let Some(p) = main_rom_path {
             self.main_rom_path = p.to_string_lossy().to_string();
         }
-        if let Some(p) = display_rom_path {
-            self.display_rom_path = p.to_string_lossy().to_string();
-            self.card_rom_paths
-                .insert(self.rom_card(), self.display_rom_path.clone());
+        if !video_cards.is_empty() {
+            self.cards.clear();
         }
+        for entry in video_cards {
+            let rom_path = entry.rom.to_string_lossy().to_string();
+            self.card_rom_paths.insert(entry.kind, rom_path.clone());
+            let mut card = SlotCard::new(entry.kind, rom_path);
+            card.monitor = entry.monitor;
+            card.fit_monitor();
+            self.cards.insert(entry.slot, card);
+        }
+        self.fit_cards();
         self.pram_enabled = pram_path.is_some();
         self.pram_path = pram_path
             .map(|p| p.to_string_lossy().to_string())
@@ -227,7 +337,6 @@ impl ModelSelectionDialog {
     fn do_model_changed(&mut self) {
         // Reset ROM validation when dialog opens or model changes
         self.main_rom_valid = false;
-        self.display_rom_valid = false;
         self.update_display_rom_requirement();
 
         self.init_args.ram_size = None;
@@ -246,30 +355,41 @@ impl ModelSelectionDialog {
             self.card_rom_paths
                 .insert(*card, path.to_string_lossy().to_string());
         }
-        self.display_rom_path = self
-            .card_rom_paths
-            .get(&self.rom_card())
-            .cloned()
-            .unwrap_or_default();
-
+        self.fit_cards();
         self.do_validate_roms();
     }
 
-    /// The card the display ROM of the selected model belongs to
-    fn rom_card(&self) -> NubusDeviceKind {
-        video_rom_card(self.selected_model, self.selected_video_card)
+    /// The SE/30 has its video, a Mac II gets a card in its first slot, which the user can
+    /// move or take out, and a machine with built-in video keeps the cards its slots take
+    fn fit_cards(&mut self) {
+        let slots = self.selected_model.nubus_slots();
+        if self.selected_model == MacModel::SE30 {
+            self.cards
+                .retain(|_, c| c.kind == NubusDeviceKind::SE30Video);
+            if self.cards.is_empty() {
+                self.put_card(0xE, NubusDeviceKind::SE30Video);
+            }
+        } else if self.display_rom_required {
+            self.cards
+                .retain(|slot, c| slots.contains(slot) && c.kind != NubusDeviceKind::SE30Video);
+            if self.cards.is_empty()
+                && let Some(&slot) = slots.first()
+            {
+                self.put_card(slot, NubusDeviceKind::default());
+            }
+        } else if self.takes_cards() {
+            self.cards
+                .retain(|slot, c| slots.contains(slot) && c.kind != NubusDeviceKind::SE30Video);
+        } else {
+            self.cards.clear();
+        }
     }
 
-    /// Called when the selected video card changes
-    fn do_card_changed(&mut self, previous_card: NubusDeviceKind) {
-        self.card_rom_paths
-            .insert(previous_card, self.display_rom_path.clone());
-        self.display_rom_path = self
-            .card_rom_paths
-            .get(&self.selected_video_card)
-            .cloned()
-            .unwrap_or_default();
-        self.do_validate_display_rom();
+    /// Puts a card in a slot, with the last ROM of its kind
+    fn put_card(&mut self, slot: u8, kind: NubusDeviceKind) {
+        let rom_path = self.card_rom_paths.get(&kind).cloned().unwrap_or_default();
+        self.cards.insert(slot, SlotCard::new(kind, rom_path));
+        self.do_validate_card(slot);
     }
 
     pub fn is_open(&self) -> bool {
@@ -289,33 +409,43 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIcx
                 | MacModel::SE30
         );
-        if !self.display_rom_required {
-            self.display_rom_path.clear();
-            self.display_rom_valid = false;
+        if !self.display_rom_required && !self.takes_cards() {
+            self.cards.clear();
         }
     }
 
+    /// Whether the machine has settings under "Select peripherals": a monitor, cards or
+    /// options
+    fn has_peripherals(&self) -> bool {
+        self.monitor_selectable()
+            || matches!(
+                self.selected_model,
+                MacModel::MacII
+                    | MacModel::MacIIFDHD
+                    | MacModel::MacIIx
+                    | MacModel::MacIIcx
+                    | MacModel::SE30
+                    | MacModel::LC
+                    | MacModel::LCII
+                    | MacModel::LCIII
+            )
+    }
+
+    /// Whether the machine has built-in video and NuBus slots that take video
+    /// cards beside it
+    fn takes_cards(&self) -> bool {
+        matches!(
+            self.selected_model,
+            MacModel::Quadra700 | MacModel::Quadra800
+        )
+    }
+
+    /// The monitor of the built-in video. A card's is in its slot's rows.
     fn monitor_selectable(&self) -> bool {
-        match self.selected_model {
-            MacModel::Quadra700 | MacModel::LC475 | MacModel::Quadra800 => true,
-            MacModel::SE30 => false,
-            _ => {
-                self.display_rom_required
-                    && VIDEO_CARDS_WITH_MONITOR.contains(&self.selected_video_card)
-            }
-        }
-    }
-
-    fn video_rom_description(&self) -> &str {
-        if self.selected_model == MacModel::SE30 {
-            "SE/30 video ROM"
-        } else {
-            match self.selected_video_card {
-                NubusDeviceKind::Toby => "Toby video card ROM (342-0008)",
-                NubusDeviceKind::Mdc12 => "Display Card 8-24 ROM (341-0868)",
-                _ => todo!(),
-            }
-        }
+        matches!(
+            self.selected_model,
+            MacModel::Quadra700 | MacModel::LC475 | MacModel::Quadra800
+        )
     }
 
     fn validate_main_rom(&mut self) -> Result<()> {
@@ -349,55 +479,22 @@ impl ModelSelectionDialog {
         }
     }
 
-    fn validate_display_rom(&mut self) -> Result<()> {
-        if !self.display_rom_required {
-            self.display_rom_valid = true;
-            return Ok(());
-        }
-
-        self.display_rom_valid = false;
-        if self.display_rom_path.is_empty() {
-            return Ok(());
-        }
-
+    fn validate_card_rom(&self, card: &SlotCard) -> Result<()> {
         // Skip validation if disabled
         if self.disable_rom_validation {
             // Just check if the file exists and is readable
-            let _rom_data = std::fs::read(&self.display_rom_path)
-                .map_err(|e| anyhow!("Cannot read {}: {}", self.video_rom_description(), e))?;
-            self.display_rom_valid = true;
+            std::fs::read(&card.rom_path)
+                .map_err(|e| anyhow!("Cannot read {}: {}", card.rom_description(), e))?;
             return Ok(());
         }
 
-        // Validate checksum
-        let mut hash = Sha256::new();
-        hash.update(
-            std::fs::read(&self.display_rom_path)
-                .map_err(|e| anyhow!("Invalid {}: {}", self.video_rom_description(), e))?,
-        );
-        let digest = hash.finalize();
-
-        // Expected hash for the selected video card.
-        let expected: [u8; 32] = if self.selected_model == MacModel::SE30 {
-            hex_literal::hex!("8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409")
-        } else {
-            match self.selected_video_card {
-                NubusDeviceKind::Toby => hex_literal::hex!(
-                    "02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"
-                ),
-                NubusDeviceKind::Mdc12 => hex_literal::hex!(
-                    "e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"
-                ),
-                _ => todo!(),
-            }
-        };
-
-        if digest[..] == expected {
-            self.display_rom_valid = true;
+        // The card's record knows the ROMs it works with
+        let rom = std::fs::read(&card.rom_path)
+            .map_err(|e| anyhow!("Invalid {}: {}", card.rom_description(), e))?;
+        if card_model(card.kind).info().validate_rom(&rom) {
             Ok(())
         } else {
-            self.display_rom_valid = false;
-            bail!("Invalid {}.", self.video_rom_description())
+            bail!("Invalid {}.", card.rom_description())
         }
     }
 
@@ -427,8 +524,14 @@ impl ModelSelectionDialog {
         }
 
         if let Some(path) = self.display_rom_dialog.take_picked() {
-            self.display_rom_path = path.to_string_lossy().to_string();
-            self.do_validate_display_rom();
+            if self.rom_dialog_slot == PDS_ROM_SLOT {
+                self.pds_rom_path = path.to_string_lossy().to_string();
+                self.validate_pds_rom();
+            } else if let Some(card) = self.cards.get_mut(&self.rom_dialog_slot) {
+                card.rom_path = path.to_string_lossy().to_string();
+                self.card_rom_paths.insert(card.kind, card.rom_path.clone());
+                self.do_validate_card(self.rom_dialog_slot);
+            }
         }
 
         if let Some(path) = self.pram_dialog.take_picked() {
@@ -517,76 +620,20 @@ impl ModelSelectionDialog {
                 }
                 ui.end_row();
 
-                // Display Card ROM selection
-                if self.display_rom_required {
-                    // Video card selection
-                    if self.selected_model != MacModel::SE30 {
-                        ui.label("Video card");
-                        let prev_card = self.selected_video_card;
-                        egui::ComboBox::new(egui::Id::new("Select video card"), "")
-                            .selected_text(format!("{}", self.selected_video_card))
-                            .show_ui(ui, |ui| {
-                                for &card in SELECTABLE_VIDEO_CARDS {
-                                    ui.selectable_value(
-                                        &mut self.selected_video_card,
-                                        card,
-                                        card.to_string(),
-                                    );
-                                }
-                            });
-                        ui.label("");
-                        ui.end_row();
-                        if prev_card != self.selected_video_card {
-                            self.do_card_changed(prev_card);
-                        }
-                    }
-
-                    ui.label(self.video_rom_description());
-                    ui.horizontal(|ui| {
-                        if ui
-                            .text_edit_singleline(&mut self.display_rom_path)
-                            .lost_focus()
-                        {
-                            self.do_validate_display_rom();
-                        }
-                        if ui.button("Browse...").clicked() {
-                            self.display_rom_dialog
-                                .pick_file(settings.native_file_dialogs);
-                        }
-                    });
-
-                    // Validation indicator
-                    if !self.display_rom_path.is_empty() {
-                        let (icon, color) = if self.display_rom_valid {
-                            (
-                                egui_material_icons::icons::ICON_CHECK_CIRCLE,
-                                egui::Color32::DARK_GREEN,
-                            )
-                        } else {
-                            (
-                                egui_material_icons::icons::ICON_ERROR,
-                                egui::Color32::DARK_RED,
-                            )
-                        };
-                        ui.label(egui::RichText::new(icon).color(color));
-                    } else {
-                        ui.label("");
-                    }
-                    ui.end_row();
-
+                // The SE/30's video is on the logic board: only its ROM is asked for
+                if self.selected_model == MacModel::SE30 {
+                    self.video_rom_row(ui, settings, 0xE);
+                }
+                if self.has_peripherals() {
                     ui.label(egui::RichText::from("Select peripherals").strong());
                     ui.end_row();
                 }
 
                 // Monitors dropdown
                 if self.monitor_selectable() {
-                    let monitors: Vec<MacMonitor> = match self.selected_model {
-                        MacModel::Quadra700 => dafb::MONITORS.to_vec(),
+                    let monitors = match self.selected_model {
                         MacModel::LC475 | MacModel::Quadra800 => dafb::MONITORS_MEMCJR.to_vec(),
-                        // VGA and 19" monitors are not known to work with the video cards
-                        _ => MacMonitor::iter()
-                            .filter(|&m| m != MacMonitor::VGA && m != MacMonitor::RGB19)
-                            .collect(),
+                        _ => dafb::MONITORS.to_vec(),
                     };
                     if !monitors.contains(&self.selected_monitor) {
                         self.selected_monitor = MacMonitor::default();
@@ -661,7 +708,7 @@ impl ModelSelectionDialog {
                     }
                     ui.end_row();
 
-                    self.pds_slot_row(ui);
+                    self.pds_slot_row(ui, settings);
                 }
                 if self.selected_model == MacModel::LC475 {
                     // The CPU is socketed, and some owners fit a 68040
@@ -692,7 +739,10 @@ impl ModelSelectionDialog {
                         });
                     ui.end_row();
 
-                    self.pds_slot_row(ui);
+                    self.pds_slot_row(ui, settings);
+                }
+                if self.selected_model == MacModel::SE30 {
+                    self.pds_slot_row(ui, settings);
                 }
                 if self.selected_model == MacModel::Quadra800 {
                     ui.label("VRAM size:");
@@ -708,6 +758,12 @@ impl ModelSelectionDialog {
                             }
                         });
                     ui.end_row();
+                }
+                // A row per NuBus slot, with the card's own rows under it
+                if (self.display_rom_required && self.selected_model != MacModel::SE30)
+                    || self.takes_cards()
+                {
+                    self.nubus_rows(ui, settings);
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -835,7 +891,13 @@ impl ModelSelectionDialog {
             });
 
             // Error messages
-            if !self.main_rom_error.is_empty() || !self.display_rom_error.is_empty() {
+            let card_errors = self
+                .cards
+                .values()
+                .filter(|c| !c.rom_error.is_empty())
+                .map(|c| c.rom_error.clone())
+                .collect::<Vec<_>>();
+            if !self.main_rom_error.is_empty() || !card_errors.is_empty() {
                 ui.separator();
                 ui.add_space(10.0);
                 if !self.main_rom_error.is_empty() {
@@ -848,12 +910,12 @@ impl ModelSelectionDialog {
                         .color(egui::Color32::RED),
                     );
                 }
-                if !self.display_rom_error.is_empty() {
+                for error in card_errors {
                     ui.label(
                         egui::RichText::new(format!(
                             "    {} {}",
                             egui_material_icons::icons::ICON_ERROR,
-                            &self.display_rom_error
+                            error
                         ))
                         .color(egui::Color32::RED),
                     );
@@ -869,7 +931,10 @@ impl ModelSelectionDialog {
                 |_ui| {},
                 |ui| {
                     let can_proceed = self.main_rom_valid
-                        && (!self.display_rom_required || self.display_rom_valid);
+                        && (!self.display_rom_required
+                            || self.cards.values().any(|c| c.kind.is_video()))
+                        && self.cards.values().all(|c| c.rom_valid)
+                        && (!self.pds_takes_rom() || self.pds_rom_valid);
 
                     if ui
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
@@ -883,22 +948,30 @@ impl ModelSelectionDialog {
                             MacModel::LC | MacModel::LCII | MacModel::LCIII | MacModel::LC475
                         ) {
                             self.init_args.fpu_enabled = false;
-                            self.init_args.pds_card = PdsCardKind::None;
                             if self.selected_model != MacModel::Quadra800 {
                                 self.init_args.vram_size = None;
                             }
                         }
+                        if !pds_fits(self.init_args.pds_card, self.selected_model) {
+                            self.init_args.pds_card = PdsCardKind::None;
+                        }
+                        self.init_args.pds_rom = self
+                            .pds_takes_rom()
+                            .then(|| PathBuf::from(&self.pds_rom_path));
 
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
                             main_rom_path: PathBuf::from(&self.main_rom_path),
-                            display_rom_path: if self.display_rom_required
-                                && !self.display_rom_path.is_empty()
-                            {
-                                Some(PathBuf::from(&self.display_rom_path))
-                            } else {
-                                None
-                            },
+                            video_cards: self
+                                .cards
+                                .iter()
+                                .map(|(&slot, card)| VideoCardEntry {
+                                    slot,
+                                    kind: card.kind,
+                                    rom: PathBuf::from(&card.rom_path),
+                                    monitor: card.monitor,
+                                })
+                                .collect(),
                             pram_path: if self.pram_path.is_empty() {
                                 None
                             } else {
@@ -919,7 +992,6 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
-                                video_card: self.selected_video_card,
                                 // Deprecated
                                 mouse_disabled: None,
                                 override_fdd_type: if matches!(
@@ -931,7 +1003,7 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
-                                ..self.init_args
+                                ..self.init_args.clone()
                             },
                         });
                         self.open = false;
@@ -957,15 +1029,134 @@ impl ModelSelectionDialog {
         }
     }
 
+    /// The video ROM, under the card it belongs to
+    /// A row per NuBus slot, with the card's own rows under it
+    fn nubus_rows(&mut self, ui: &mut egui::Ui, settings: &AppSettings) {
+        let mac = self.selected_model;
+        for &slot in mac.nubus_slots() {
+            let current = self.cards.get(&slot).map(|c| card_model(c.kind));
+            ui.label(format!("NuBus slot {:X}", slot));
+            let mut choice = current;
+            egui::ComboBox::new(egui::Id::new(("nubus slot", slot)), "")
+                .selected_text(current.map_or("Empty", |m| m.name()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, "Empty");
+                    for info in models_for(BusKind::Nubus, mac) {
+                        ui.selectable_value(&mut choice, Some(info.model), info.name);
+                    }
+                });
+            ui.label("");
+            ui.end_row();
+            if choice != current {
+                match choice {
+                    Some(model) => self.put_card(slot, card_kind(model)),
+                    None => {
+                        self.cards.remove(&slot);
+                    }
+                }
+            }
+            if self.cards.contains_key(&slot) {
+                self.video_rom_row(ui, settings, slot);
+                self.card_monitor_row(ui, slot);
+            }
+        }
+        if self.display_rom_required && !self.cards.values().any(|c| c.kind.is_video()) {
+            ui.label("");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} This Macintosh needs a video card",
+                    egui_material_icons::icons::ICON_WARNING
+                ))
+                .color(ui.visuals().warn_fg_color),
+            );
+            ui.end_row();
+        }
+        // The built-in video is a display too
+        let displays = self.cards.values().filter(|c| c.has_display()).count()
+            + usize::from(self.takes_cards());
+        if displays > 1 {
+            ui.label("");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} More than one display is an experimental feature known to \
+                     have issues",
+                    egui_material_icons::icons::ICON_WARNING
+                ))
+                .color(egui::Color32::RED),
+            );
+            ui.end_row();
+        }
+    }
+
+    fn video_rom_row(&mut self, ui: &mut egui::Ui, settings: &AppSettings, slot: u8) {
+        let Some(card) = self.cards.get_mut(&slot).filter(|c| c.takes_rom()) else {
+            return;
+        };
+        ui.label(format!("    {}", card.rom_description()));
+        let mut edited = false;
+        ui.horizontal(|ui| {
+            edited = ui.text_edit_singleline(&mut card.rom_path).lost_focus();
+            if ui.button("Browse...").clicked() {
+                self.rom_dialog_slot = slot;
+                self.display_rom_dialog
+                    .pick_file(settings.native_file_dialogs);
+            }
+        });
+        if !card.rom_path.is_empty() {
+            let (icon, color) = if card.rom_valid {
+                (
+                    egui_material_icons::icons::ICON_CHECK_CIRCLE,
+                    egui::Color32::DARK_GREEN,
+                )
+            } else {
+                (
+                    egui_material_icons::icons::ICON_ERROR,
+                    egui::Color32::DARK_RED,
+                )
+            };
+            ui.label(egui::RichText::new(icon).color(color));
+        } else {
+            ui.label("");
+        }
+        ui.end_row();
+        if edited {
+            self.card_rom_paths.insert(card.kind, card.rom_path.clone());
+            self.do_validate_card(slot);
+        }
+    }
+
+    /// What's on the card's connector, among what the card can have
+    fn card_monitor_row(&mut self, ui: &mut egui::Ui, slot: u8) {
+        let Some(card) = self.cards.get_mut(&slot) else {
+            return;
+        };
+        let monitors = card.monitors();
+        if monitors.is_empty() {
+            return;
+        }
+        ui.label("    Monitor");
+        egui::ComboBox::new(egui::Id::new(("card monitor", slot)), "")
+            .selected_text(monitor_name(card.monitor))
+            .show_ui(ui, |ui| {
+                for &monitor in monitors {
+                    ui.selectable_value(&mut card.monitor, monitor, monitor_name(monitor));
+                }
+            });
+        ui.end_row();
+    }
+
     /// The Apple IIe Card settings, a dialog over the main one
-    /// The grid row choosing the card in the PDS slot
-    fn pds_slot_row(&mut self, ui: &mut egui::Ui) {
+    /// The grid row choosing the card in the PDS slot and, under it, the card's ROM for a card
+    /// whose ROM the user loads
+    fn pds_slot_row(&mut self, ui: &mut egui::Ui, settings: &AppSettings) {
         ui.label("PDS Slot");
+        let mac = self.selected_model;
+        let current = self.init_args.pds_card;
         ui.horizontal(|ui| {
             egui::ComboBox::new(egui::Id::new("Select PDS card"), "")
                 .selected_text(format!("{}", self.init_args.pds_card))
                 .show_ui(ui, |ui| {
-                    for card in PdsCardKind::iter() {
+                    for card in PdsCardKind::iter().filter(|&c| pds_fits(c, mac)) {
                         ui.selectable_value(&mut self.init_args.pds_card, card, card.to_string());
                     }
                 });
@@ -980,6 +1171,59 @@ impl ModelSelectionDialog {
             }
         });
         ui.end_row();
+        if self.init_args.pds_card != current {
+            self.validate_pds_rom();
+        }
+        if !self.pds_takes_rom() {
+            return;
+        }
+        let label = pds_model(self.init_args.pds_card)
+            .and_then(|m| m.info().rom.as_ref())
+            .map_or("ROM", |rom| rom.label);
+        ui.label(format!("    {}", label));
+        let mut edited = false;
+        ui.horizontal(|ui| {
+            edited = ui.text_edit_singleline(&mut self.pds_rom_path).lost_focus();
+            if ui.button("Browse...").clicked() {
+                self.rom_dialog_slot = PDS_ROM_SLOT;
+                self.display_rom_dialog
+                    .pick_file(settings.native_file_dialogs);
+            }
+        });
+        if self.pds_rom_path.is_empty() {
+            ui.label("");
+        } else if self.pds_rom_valid {
+            ui.label(
+                egui::RichText::new(egui_material_icons::icons::ICON_CHECK_CIRCLE)
+                    .color(egui::Color32::DARK_GREEN),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new(egui_material_icons::icons::ICON_ERROR)
+                    .color(egui::Color32::DARK_RED),
+            );
+        }
+        ui.end_row();
+        if edited {
+            self.validate_pds_rom();
+        }
+    }
+
+    /// Whether the user loads the ROM of the card in the PDS slot
+    fn pds_takes_rom(&self) -> bool {
+        pds_model(self.init_args.pds_card).is_some_and(|m| m.info().rom.is_some())
+    }
+
+    fn validate_pds_rom(&mut self) {
+        let Some(model) = pds_model(self.init_args.pds_card).filter(|_| self.pds_takes_rom())
+        else {
+            self.pds_rom_valid = true;
+            return;
+        };
+        self.pds_rom_valid = match std::fs::read(&self.pds_rom_path) {
+            Ok(rom) => self.disable_rom_validation || model.info().validate_rom(&rom),
+            Err(_) => false,
+        };
     }
 
     fn iie_settings_modal(&mut self, ctx: &egui::Context) {
@@ -1078,7 +1322,11 @@ impl ModelSelectionDialog {
     }
 
     fn do_validate_roms(&mut self) {
-        self.do_validate_display_rom();
+        let slots = self.cards.keys().copied().collect::<Vec<_>>();
+        for slot in slots {
+            self.do_validate_card(slot);
+        }
+        self.validate_pds_rom();
         self.do_validate_main_rom();
     }
 
@@ -1094,11 +1342,23 @@ impl ModelSelectionDialog {
         }
     }
 
-    fn do_validate_display_rom(&mut self) {
-        if let Err(e) = self.validate_display_rom() {
-            self.display_rom_error = e.to_string();
+    fn do_validate_card(&mut self, slot: u8) {
+        let Some(card) = self.cards.get(&slot) else {
+            return;
+        };
+        // No ROM yet: the row shows it
+        let result = if !card.takes_rom() {
+            Ok(())
+        } else if card.rom_path.is_empty() {
+            Err(None)
         } else {
-            self.display_rom_error.clear();
-        }
+            self.validate_card_rom(card).map_err(Some)
+        };
+        let card = self.cards.get_mut(&slot).unwrap();
+        card.rom_valid = result.is_ok();
+        card.rom_error = match result {
+            Err(Some(e)) => format!("NuBus slot {:X}: {}", slot, e),
+            _ => String::new(),
+        };
     }
 }

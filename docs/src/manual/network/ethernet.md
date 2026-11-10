@@ -6,7 +6,7 @@ can use this adapter on any emulated Mac model that supports SCSI.
 ## Installation
 
 To attach the emulated Ethernet adapter, use the 'Attach Ethernet adapter' option at any given SCSI ID in the menu:
-'Drives' -> 'SCSI ID #_n_' -> 'Attach Ethernet adapter'.
+'Devices' -> 'SCSI ID #_n_' -> 'Attach Ethernet adapter'.
 
 <div class="warning">
 Known issue: DaynaPORT drivers may not recognize the adapter. If you come across this, try to attach the Ethernet adapter
@@ -48,7 +48,7 @@ The NAT engine does not translate ICMP, which means you cannot ping through the 
 connections to the same remote host may work.
 </div>
 
-You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI ID #_n_'.
+You can select the Ethernet link type through the Devices menu: 'Devices' -> 'SCSI ID #_n_'.
 
 ![Ethernet link menu](../../images/ethernet_link.png)
 
@@ -117,7 +117,7 @@ For example, to create a tap interface owned by your current user:
 sudo ip tuntap add dev tap0 mode tap user $UID
 ```
 
-Then, you can select the tap interface in Snow through the menu: 'Drives' -> 'SCSI #_n_: Ethernet' -> 'TAP device:
+Then, you can select the tap interface in Snow through the menu: 'Devices' -> 'SCSI #_n_: Ethernet' -> 'TAP device:
 tap_n_'.
 
 ![Selecting tap0 tap device](../../images/ethernet_tap.png)

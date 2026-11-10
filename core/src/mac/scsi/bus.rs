@@ -3,22 +3,17 @@
 //! This models a SCSI bus independently from a controller.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 
 use crate::emulator::EmuContext;
+use crate::emulator::devices::FunctionMut;
 use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::ScsiTargetEthernet;
-#[cfg(feature = "printer")]
-use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
@@ -57,8 +52,8 @@ pub struct ScsiBus {
     /// Status of the last executed command
     pub(crate) status: u8,
 
-    /// Attached targets
-    #[serde(with = "BigArray")]
+    /// Attached targets. A save state holds them by slot, not here.
+    #[serde(skip)]
     pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
     /// Whether any target needs ticks, None when to be found out again
@@ -96,33 +91,9 @@ impl ScsiBus {
         }
     }
 
-    /// Returns the capacity of a target or None if detached or no media
-    pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
-        self.targets[id].as_ref().and_then(|t| t.capacity())
-    }
-
-    /// Returns the length of image data to write to savestates or None if no data
-    #[cfg(feature = "savestates")]
-    pub fn get_savestate_img_len(&self, id: usize) -> Option<usize> {
-        self.targets[id]
-            .as_ref()
-            .and_then(|t| t.savestate_img_len())
-    }
-
-    /// Returns the image filename of a target or None if detached or no media
-    pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.image_fn())
-    }
-
     /// Gets the target type (if attached) of an ID
     pub fn get_target_type(&self, id: usize) -> Option<ScsiTargetType> {
         self.targets[id].as_ref().map(|t| t.target_type())
-    }
-
-    /// Returns the Toolbox-managed image folder of a folder-backed CD-ROM at the
-    /// given ID, or None if the ID has no folder-backed CD-ROM attached.
-    pub fn get_cdrom_folder(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.cdrom_image_dir())
     }
 
     /// Builds the BlueSCSI Toolbox device-type map (one byte per SCSI ID) returned
@@ -148,15 +119,16 @@ impl ScsiBus {
         self.toolbox = BlueSCSI::new(path);
     }
 
-    /// Loads a disk image (filename) and attaches a hard drive at the given SCSI ID
-    pub fn attach_hdd_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
+    /// Puts a device at the given SCSI ID
+    pub(crate) fn attach_target_at(
+        &mut self,
+        scsi_id: usize,
+        target: Box<dyn ScsiTarget>,
+    ) -> Result<()> {
         if scsi_id >= Self::MAX_TARGETS {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
-        if !Path::new(filename).exists() {
-            bail!("File {} does not exist", filename.to_string_lossy());
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
+        self.targets[scsi_id] = Some(target);
         self.ticking = None;
         Ok(())
     }
@@ -167,45 +139,7 @@ impl ScsiBus {
         image: Box<dyn DiskImage>,
         scsi_id: usize,
     ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
-        self.ticking = None;
-        Ok(())
-    }
-
-    /// Attaches a CD-ROM drive at the given SCSI ID
-    pub fn attach_cdrom_at(
-        &mut self,
-        scsi_id: usize,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
-        self.ticking = None;
-    }
-
-    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
-    /// SCSI ID. The folder's images are exposed to the guest through the BlueSCSI
-    /// Toolbox CD commands (LIST_CDS / SET_NEXT_CD / COUNT_CDS) and the first
-    /// image found is mounted automatically.
-    pub fn attach_cdrom_folder_at(
-        &mut self,
-        scsi_id: usize,
-        dir: PathBuf,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        let mut cdrom = ScsiTargetCdrom::new(audio_provider);
-        cdrom.set_image_dir(Some(dir));
-        if let Err(e) = cdrom.mount_first_image() {
-            log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
-        }
-        self.targets[scsi_id] = Some(Box::new(cdrom));
-        self.ticking = None;
-        Ok(())
+        self.attach_target_at(scsi_id, Box::new(ScsiTargetDisk::new(image)))
     }
 
     /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.
@@ -220,21 +154,10 @@ impl ScsiBus {
         let Some(target) = self.targets[scsi_id].as_mut() else {
             bail!("No target attached at SCSI ID {}", scsi_id);
         };
-        target.load_image(image)
-    }
-
-    /// Attaches an Ethernet adapter at the given SCSI ID
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
-        self.ticking = None;
-    }
-
-    /// Attaches a LaserWriter IISC printer at the given SCSI ID
-    #[cfg(feature = "printer")]
-    pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
-        self.ticking = None;
+        match target.function() {
+            FunctionMut::Cdrom(cdrom) => cdrom.load_image(image),
+            _ => bail!("No CD-ROM drive at SCSI ID {}", scsi_id),
+        }
     }
 
     /// Detaches a target from the given SCSI ID

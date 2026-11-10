@@ -63,8 +63,14 @@ fn main() -> Result<()> {
             extra_roms.push(ExtraROMs::MDC12(display_rom));
         }
     }
-    let (mut emulator, frame_recv) = Emulator::new(&rom, &extra_roms, model)?;
+    let (mut emulator, mut displays) = Emulator::new(&rom, &extra_roms, model)?;
+    let frame_recv = displays.remove(0).receiver;
     let cmd = emulator.create_cmd_sender();
+    let floppy_slot = |slot: &str| {
+        emulator
+            .find_slot(snow_core::emulator::devices::bus_id::SWIM, slot)
+            .expect("This machine has no such floppy drive")
+    };
     let event_recv = emulator.create_event_recv();
     if let Some(floppy_fn) = args.floppy {
         // Model-specific replay file
@@ -82,11 +88,15 @@ fn main() -> Result<()> {
             secondary_fn.extension().unwrap().to_string_lossy()
         ));
 
-        cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn, false))?;
+        cmd.send(EmulatorCommand::LoadMedia(
+            floppy_slot("1"),
+            PathBuf::from(&floppy_fn),
+            false,
+        ))?;
         if secondary_fn.exists() {
-            cmd.send(EmulatorCommand::InsertFloppy(
-                1,
-                secondary_fn.to_string_lossy().to_string(),
+            cmd.send(EmulatorCommand::LoadMedia(
+                floppy_slot("2"),
+                secondary_fn.clone(),
                 false,
             ))?;
         }

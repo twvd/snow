@@ -83,8 +83,8 @@ pub(super) fn decode(addr: Address) -> Option<Region> {
         0x5FFF_FFFC..=0x5FFF_FFFF => Some(Region::CpuId(addr as usize & 3)),
         0x6000_0000..=0x6FFF_FFFF => Some(Region::Vram(addr as usize & 0x0F_FFFF)),
         // The super slot space and the standard slot space of slot $E
-        0xE000_0000..=0xEFFF_FFFF => Some(Region::IieCard(addr & 0x00FF_FFFF)),
-        0xFE00_0000..=0xFEFF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
+        0xE000_0000..=0xEFFF_FFFF => Some(Region::Pds(addr & 0x00FF_FFFF)),
+        0xFE00_0000..=0xFEFF_FFFF => Some(Region::Pds(addr - PDS_BASE)),
         _ => None,
     }
 }

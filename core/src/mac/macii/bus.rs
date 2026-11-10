@@ -13,10 +13,12 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::nubus::NubusCard;
-use crate::mac::nubus::mdc12::Mdc12;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::dayna_si30::DaynaSi30;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::sonic::SonicDma;
 use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::toby::Toby;
+use crate::mac::nubus::{Nubus, NubusSlot, VideoCard};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -24,9 +26,7 @@ use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{
-    AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE,
-};
+use crate::mac::{AbsoluteMouse, MacModel, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -155,7 +155,19 @@ pub struct MacIIBus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 
     /// NuBus cards (base address: $9)
-    nubus_devices: [Option<NubusCard<TRenderer>>; 6],
+    nubus: Nubus<TRenderer>,
+
+    /// The SE/30's video, which answers in slot $E like a card but is
+    /// hard-wired
+    se30_video: Option<SE30Video<TRenderer>>,
+
+    /// Ethernet card in the 030 PDS of the SE/30, answering as slot $9
+    #[cfg(feature = "ethernet")]
+    pds_card: Option<Box<DaynaSi30>>,
+    /// Changes when the PDS card's SONIC writes RAM, for inspect_generation()
+    #[cfg(feature = "ethernet")]
+    #[serde(skip)]
+    dma_generation: u32,
 
     /// Mouse mode
     mouse_mode: MouseMode,
@@ -215,20 +227,30 @@ where
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
+    /// `nubus` cards should be supplied in ascending slot order, and `renderers` in the
+    /// matching order, one per card that shows a screen, so that each is paired with the name
+    /// [`Self::display_names`] reports.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
         nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
-        monitor: MacMonitor,
+        renderers: Vec<TRenderer>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         amu: bool,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
-        let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
+        assert_eq!(
+            nubus.iter().filter(|c| c.has_display()).count(),
+            renderers.len(),
+            "expected one renderer per display"
+        );
+        // Build the NuBus cards from the provided configuration. Renderers are
+        // matched to cards in the order the cards are given.
+        let mut renderers = renderers.into_iter();
+        let mut cards = Nubus::default();
+        let mut se30_video = None;
         for cfg in nubus {
             assert!(
                 model.nubus_slots().contains(&cfg.slot),
@@ -236,19 +258,18 @@ where
                 cfg.slot,
                 model
             );
-            let idx = (cfg.slot - 0x9) as usize;
-            // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            nubus_devices[idx] = Some(match cfg.kind {
-                NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
-                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer)),
+            let renderer = if cfg.has_display() {
+                renderers.next()
+            } else {
+                None
+            };
+            match cfg.kind {
                 NubusDeviceKind::SE30Video => {
-                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer))
+                    se30_video = Some(SE30Video::new(cfg.rom, renderer.expect("no renderer")));
                 }
-            });
+                _ => cards.insert_card(cfg, renderer),
+            }
         }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let ram_config = Self::RAM_CONFIG
@@ -299,7 +320,12 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices,
+            nubus: cards,
+            se30_video,
+            #[cfg(feature = "ethernet")]
+            pds_card: None,
+            #[cfg(feature = "ethernet")]
+            dma_generation: 0,
             mouse_mode,
         };
 
@@ -312,16 +338,90 @@ where
         bus
     }
 
-    /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-            let slot = card.slot();
-            slot.set_renderer(renderer);
-            slot.render().unwrap();
+    /// The display outputs of this machine: the SE/30's video, or one per video card with a
+    /// monitor, in NuBus slot order
+    pub fn display_names(&self) -> Vec<String> {
+        if self.se30_video.is_some() {
+            return vec!["Built-in display".to_string()];
         }
+        self.nubus.display_names().collect()
+    }
 
+    /// The slot of each display, in the order of display_names(): the slot
+    /// whose address space its framebuffer is in
+    pub fn display_slots(&self) -> Vec<u8> {
+        if self.se30_video.is_some() {
+            return vec![0xE];
+        }
+        self.nubus.display_slots().collect()
+    }
+
+    /// Puts a DaynaPORT E/si30 in the SE/30's PDS, while the machine is built
+    #[cfg(feature = "ethernet")]
+    pub fn set_pds_card(&mut self, card: DaynaSi30) {
+        self.pds_card = Some(Box::new(card));
+    }
+
+    /// The Ethernet port of the card in the SE/30's PDS
+    #[cfg(feature = "ethernet")]
+    pub fn pds_ethernet_mut(&mut self) -> Option<&mut crate::net::EthernetPort> {
+        self.pds_card.as_mut().map(|c| c.port_mut())
+    }
+
+    /// Calls `f` with the PDS card and the memory that its DMA reaches
+    #[cfg(feature = "ethernet")]
+    fn with_pds_card<R>(
+        &mut self,
+        f: impl FnOnce(&mut DaynaSi30, &mut PdsDma<'_, TRenderer>) -> R,
+    ) -> Option<R> {
+        let mut card = self.pds_card.take()?;
+        let r = f(&mut card, &mut PdsDma(self));
+        self.pds_card = Some(card);
+        Some(r)
+    }
+
+    /// A CPU cycle to the PDS card, done as byte accesses
+    #[cfg(feature = "ethernet")]
+    fn pds_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let card = self.pds_card.as_ref()?;
+        Some((addr..addr + len).fold(0, |v, a| {
+            (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
+        }))
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn pds_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.with_pds_card(|card, dma| {
+            for a in addr..addr + len {
+                let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
+                Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val, dma));
+            }
+        })
+    }
+
+    /// The Ethernet port of the card in a NuBus slot, if it is an Ethernet card
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_card_mut(&mut self, slot: u8) -> Option<&mut crate::net::EthernetPort> {
+        self.nubus.card_mut(slot)?.ethernet_mut()
+    }
+
+    /// Reinstalls things that can't be serialized and does some updates upon deserialization
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        // Renderers are matched to displays in the order display_names() reports them
+        let mut renderers = renderers.into_iter();
+        if let Some(video) = self.se30_video.as_mut() {
+            video.set_renderer(renderers.next().expect("no renderer"));
+            video.render().unwrap();
+        }
+        for card in self.nubus.cards_mut() {
+            card.after_deserialize();
+        }
+        self.nubus.set_renderers(&mut renderers);
+
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.pds_card {
+            card.after_deserialize();
+        }
         self.asc.after_deserialize();
     }
 
@@ -464,27 +564,6 @@ where
         Some(())
     }
 
-    fn slot_card(&mut self, addr: Address) -> Option<&mut NubusCard<TRenderer>> {
-        self.nubus_devices[(addr >> 24) as usize - 0xF9].as_mut()
-    }
-
-    /// The cards are reached a byte at a time
-    fn slot_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        let card = self.slot_card(addr)?;
-        Some((addr..addr + len).fold(0, |v, a| {
-            (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
-        }))
-    }
-
-    fn slot_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
-        let card = self.slot_card(addr)?;
-        for a in addr..addr + len {
-            let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
-            Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val));
-        }
-        Some(())
-    }
-
     fn via1_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
         Some(Self::dev_read(addr, self.via1.read(addr)).into())
     }
@@ -492,10 +571,7 @@ where
     fn via1_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         Self::dev_write(addr, val as Byte, self.via1.write(addr, val as Byte));
         self.sync_via1_pa();
-        if self.model == MacModel::SE30 {
-            let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
-                unreachable!()
-            };
+        if let Some(d) = self.se30_video.as_mut() {
             d.vblank_enable = !self.via1.pb().se30_vblank_enable();
             d.fb_select = self.via1.pa().page2();
         }
@@ -691,6 +767,10 @@ where
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
     fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
         let idx = addr as usize & self.ram_mask;
@@ -786,8 +866,13 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
-        for d in self.nubus_devices.iter_mut().flatten() {
-            d.slot().blank()?;
+        if let Some(video) = self.se30_video.as_mut() {
+            video.blank()?;
+        }
+        for d in self.nubus.cards_mut() {
+            if let Some(video) = d.video() {
+                video.blank()?;
+            }
         }
         Ok(())
     }
@@ -841,15 +926,44 @@ where
             Region::ExtRom => {
                 bus_access_long(acc, mem_waits, self, Self::ext_rom_read, Self::no_write)
             }
-            Region::SuperSlot => bus_access_long(
-                acc,
-                NUBUS_WAITS,
-                self,
-                Self::superslot_read,
-                Self::superslot_write,
-            ),
+            // What the card of the slot doesn't answer, or an empty slot, stays as
+            // superslot_read() and superslot_write() have it
+            Region::SuperSlot => match self.nubus.access(acc, NUBUS_WAITS) {
+                Some(resp) if resp != BusResponse::BusError => resp,
+                _ => bus_access_long(
+                    acc,
+                    NUBUS_WAITS,
+                    self,
+                    Self::superslot_read,
+                    Self::superslot_write,
+                ),
+            },
+            #[cfg(feature = "ethernet")]
+            Region::Slot if acc.addr >> 24 == 0xF9 && self.pds_card.is_some() => {
+                // The SE/30's PDS is the 68030's own bus: the card takes the CPU's cycles
+                // directly, not as NuBus transactions
+                bus_access_long(acc, NUBUS_WAITS, self, Self::pds_read, Self::pds_write)
+            }
             Region::Slot => {
-                bus_access_long(acc, NUBUS_WAITS, self, Self::slot_read, Self::slot_write)
+                if let Some(resp) = self.nubus.access(acc, NUBUS_WAITS) {
+                    resp
+                } else if let Some(video) =
+                    self.se30_video.as_mut().filter(|_| acc.addr >> 24 == 0xFE)
+                {
+                    // The SE/30's video isn't on a NuBus and takes the CPU's cycles
+                    // as they are
+                    bus_access_long(
+                        acc,
+                        NUBUS_WAITS,
+                        video,
+                        |v, a, len| v.read_sized(crate::mac::nubus::card_address(a), len),
+                        |v, a, len, val| {
+                            v.write_sized(crate::mac::nubus::card_address(a), len, val)
+                        },
+                    )
+                } else {
+                    BusResponse::BusError
+                }
             }
             Region::None => BusResponse::BusError,
         };
@@ -886,8 +1000,13 @@ where
         self.swim.reset();
         self.scc = Scc::new(RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
-        for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
-            d.slot().reset();
+        self.nubus.reset();
+        if let Some(video) = self.se30_video.as_mut() {
+            video.reset();
+        }
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.pds_card {
+            card.reset();
         }
         self.asc.reset();
 
@@ -1000,14 +1119,23 @@ where
         }
 
         // NuBus slot IRQs and ticks
-        let mut slot_irqs = 0;
-        for slot in 0..(self.nubus_devices.len()) {
-            if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(native_ticks, ctx)?;
-                if dev.get_irq() {
-                    slot_irqs |= 1 << slot;
-                }
+        self.nubus.tick(native_ticks, ctx)?;
+        let mut slot_irqs = self.nubus.irqs();
+        if let Some(video) = self.se30_video.as_mut() {
+            video.tick(native_ticks, ctx)?;
+            if video.get_irq() {
+                // Slot $E
+                slot_irqs |= 1 << 5;
             }
+        }
+        // The SE/30's PDS card answers as slot $9
+        #[cfg(feature = "ethernet")]
+        if self.with_pds_card(|card, dma| {
+            card.tick(native_ticks, ctx.bus_frequency, dma);
+            card.irq()
+        }) == Some(true)
+        {
+            slot_irqs |= 1;
         }
         self.via2.a_in.set_v2irqs(!slot_irqs);
         // The GLUE combines the slot interrupts into /SLOTIRQ
@@ -1094,7 +1222,11 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay)
+        #[cfg(feature = "ethernet")]
+        let dma = self.dma_generation << 1;
+        #[cfg(not(feature = "ethernet"))]
+        let dma = 0;
+        u32::from(self.overlay) | dma
     }
 }
 
@@ -1103,8 +1235,8 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
 
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
@@ -1115,19 +1247,39 @@ where
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for (i, slot) in self.nubus_devices.iter().enumerate() {
-            if let Some(dev) = slot.as_ref() {
-                result.push(dbgprop_nest!(
-                    format!("NuBus slot ${:1X} ({})", i + 0x09, dev.to_string()),
-                    dev
-                ));
-            } else {
-                result.push(dbgprop_group!(
-                    format!("NuBus slot ${:1X} (empty)", i + 0x09),
-                    vec![]
-                ));
+        if let Some(video) = self.se30_video.as_ref() {
+            result.push(dbgprop_nest!("SE/30 video", video));
+            #[cfg(feature = "ethernet")]
+            if let Some(card) = self.pds_card.as_ref() {
+                result.push(dbgprop_nest!("DaynaPORT E/si30", card));
             }
+            return result;
         }
+        result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
         result
+    }
+}
+
+/// What the SONIC of the SE/30's PDS card reaches: the RAM
+#[cfg(feature = "ethernet")]
+struct PdsDma<'a, TRenderer: Renderer>(&'a mut MacIIBus<TRenderer>);
+
+#[cfg(feature = "ethernet")]
+impl<TRenderer: Renderer> SonicDma for PdsDma<'_, TRenderer> {
+    fn read_byte(&mut self, addr: Address) -> u8 {
+        if addr < 0x4000_0000 {
+            self.0.ram_read(addr, 1).unwrap_or(0xFF) as u8
+        } else {
+            MacIIBus::<TRenderer>::OPENBUS
+        }
+    }
+
+    fn write_byte(&mut self, addr: Address, val: u8) {
+        if addr < 0x4000_0000 {
+            self.0.ram_write(addr, 1, val.into());
+            // Memory notifiers only see the CPU's writes: a new DMA generation
+            // makes them read their ranges again
+            self.0.dma_generation = self.0.dma_generation.wrapping_add(1);
+        }
     }
 }

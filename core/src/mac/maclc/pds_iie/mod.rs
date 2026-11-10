@@ -1557,6 +1557,13 @@ pub struct PdsIIeCard {
     /// The 65C02, which owns the card's bus.
     pub(crate) cpu: Cpu<PdsIIeBus>,
 
+    /// The image in each drive of the chain, and whether it's write-protected. Skipped in save
+    /// states, like the images.
+    #[serde(skip, default)]
+    pub chain_media: [Option<std::path::PathBuf>; 2],
+    #[serde(skip, default)]
+    pub chain_read_only: [bool; 2],
+
     /// Data-out (`$19`): the value returned for a trapped read.
     data_out: u8,
     /// Slinky address (`$1C`).
@@ -1634,6 +1641,8 @@ impl PdsIIeCard {
             DiskII::new(settings.drives_525(), settings.has_unidisk());
         Self {
             cpu,
+            chain_media: Default::default(),
+            chain_read_only: [false; 2],
             data_out: 0,
             mem_addr: 0,
             clock_acc: 0,
@@ -2341,6 +2350,25 @@ impl Debuggable for PdsIIeCard {
         ]
     }
 }
+
+const fn fits_lc_pds(mac: crate::mac::MacModel) -> bool {
+    mac.has_lc_pds()
+}
+
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::AppleIIePdsCard,
+    name: "Apple IIe Card",
+    bus: crate::emulator::devices::BusKind::LcPds,
+    fits: fits_lc_pds,
+    function: crate::emulator::devices::FunctionKind::AppleIIe,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[crate::emulator::devices::BusKind::IieDisk],
+    monitors: &[],
+    create: None,
+};
 
 #[cfg(test)]
 mod tests {

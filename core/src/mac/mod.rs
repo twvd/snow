@@ -13,8 +13,11 @@ use crate::tickable::Ticks;
 pub mod adb;
 pub mod compact;
 pub mod cuda;
+pub mod declrom;
 pub mod egret;
 pub mod egret_common;
+#[cfg(feature = "ethernet")]
+pub mod ethernet;
 pub mod iic;
 pub mod localtalk_bridge;
 pub mod machine_bus;
@@ -553,6 +556,20 @@ pub enum NubusDeviceKind {
     Toby,
     /// Macintosh SE/30 onboard video
     SE30Video,
+    /// Apple Ethernet NB Twisted-Pair Card (ROM 341-1096, built at run time)
+    #[cfg(feature = "ethernet")]
+    ApplNbSonicTp,
+}
+
+impl NubusDeviceKind {
+    /// Whether it's a video card
+    pub const fn is_video(self) -> bool {
+        match self {
+            Self::Mdc12 | Self::Toby | Self::SE30Video => true,
+            #[cfg(feature = "ethernet")]
+            Self::ApplNbSonicTp => false,
+        }
+    }
 }
 
 impl Display for NubusDeviceKind {
@@ -564,12 +581,14 @@ impl Display for NubusDeviceKind {
                 Self::Mdc12 => "Macintosh Display Card 8-24",
                 Self::Toby => "Macintosh II Video Card (Toby)",
                 Self::SE30Video => "Macintosh SE/30 onboard video",
+                #[cfg(feature = "ethernet")]
+                Self::ApplNbSonicTp => "Apple Ethernet NB Twisted-Pair Card",
             }
         )
     }
 }
 
-/// Card in the PDS slot of the Macintosh LC family
+/// Card in the PDS slot of the Macintosh LC family or of the SE/30
 #[derive(
     Debug,
     Clone,
@@ -589,6 +608,15 @@ pub enum PdsCardKind {
     None,
     /// Apple IIe Card
     AppleIIe,
+    /// Apple Ethernet LC Card, with its declaration ROM
+    #[cfg(feature = "ethernet")]
+    ApplLcSonic,
+    /// Apple Ethernet LC Twisted-Pair Card
+    #[cfg(feature = "ethernet")]
+    ApplLcSonicTp,
+    /// DaynaPORT E/si30, in the SE/30
+    #[cfg(feature = "ethernet")]
+    DaynaSi30,
 }
 
 impl Display for PdsCardKind {
@@ -599,6 +627,12 @@ impl Display for PdsCardKind {
             match self {
                 Self::None => "None",
                 Self::AppleIIe => "Apple IIe Card",
+                #[cfg(feature = "ethernet")]
+                Self::ApplLcSonic => "Apple Ethernet LC Card",
+                #[cfg(feature = "ethernet")]
+                Self::ApplLcSonicTp => "Apple Ethernet LC Twisted-Pair Card",
+                #[cfg(feature = "ethernet")]
+                Self::DaynaSi30 => "DaynaPORT E/si30",
             }
         )
     }
@@ -606,6 +640,7 @@ impl Display for PdsCardKind {
 
 /// Configuration for a single NuBus slot: which card, in which slot, with which
 /// declaration ROM.
+#[derive(Clone, Copy)]
 pub struct NubusCardConfig<'a> {
     /// Slot number ($9-$E)
     pub slot: u8,
@@ -613,6 +648,18 @@ pub struct NubusCardConfig<'a> {
     pub kind: NubusDeviceKind,
     /// Declaration ROM for the card
     pub rom: &'a [u8],
+    /// The monitor on an 8-24's connector, None for nothing
+    pub monitor: Option<MacMonitor>,
+}
+
+impl NubusCardConfig<'_> {
+    /// Whether the card shows a screen, so needs a renderer
+    pub fn has_display(&self) -> bool {
+        match self.kind {
+            NubusDeviceKind::Mdc12 => self.monitor.is_some(),
+            kind => kind.is_video(),
+        }
+    }
 }
 
 /// Definitions of Macintosh monitors

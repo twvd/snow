@@ -267,6 +267,14 @@ pub(crate) struct FloppyDrive {
     #[serde(skip)]
     pub(crate) image_path: Option<PathBuf>,
 
+    /// The file the inserted image came from, if any: what a workspace remembers
+    #[serde(skip)]
+    pub(crate) media_path: Option<PathBuf>,
+
+    /// The inserted image was asked to be write-protected
+    #[serde(skip)]
+    pub(crate) media_read_only: bool,
+
     /// Per-drive writeback opt-in. Only meaningful when [`Self::image_path`]
     /// is set and `floppy.supports_writeback()`.
     #[serde(skip)]
@@ -322,6 +330,8 @@ impl FloppyDrive {
             weak_bit_rng: WeakBitRng::default(),
 
             image_path: None,
+            media_path: None,
+            media_read_only: false,
             writeback_enabled: false,
             pending_writeback: false,
             eject_writeback: None,
@@ -676,6 +686,8 @@ impl FloppyDrive {
             None
         };
         self.image_path = None;
+        self.media_path = None;
+        self.media_read_only = false;
         self.writeback_enabled = false;
         self.pending_writeback = false;
     }
@@ -715,6 +727,81 @@ impl Debuggable for FloppyDrive {
         ]
     }
 }
+
+/// The early Macs can be built with a drive other than their own
+const fn chosen_with_early_macs(mac: crate::mac::MacModel) -> bool {
+    matches!(
+        mac,
+        crate::mac::MacModel::Early128K | crate::mac::MacModel::Early512K
+    )
+}
+
+/// The drives the other Macs have, which aren't chosen
+const fn never_chosen(_mac: crate::mac::MacModel) -> bool {
+    false
+}
+
+pub const INFO_400K: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Mac400KDrive,
+    name: "400K drive",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: chosen_with_early_macs,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
+pub const INFO_800K: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::Mac800KDrive,
+    name: "800K drive",
+    bus: crate::emulator::devices::BusKind::Swim,
+    fits: never_chosen,
+    function: crate::emulator::devices::FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
+
+pub const INFO_800K_PWM: crate::emulator::devices::ModelInfo =
+    crate::emulator::devices::ModelInfo {
+        model: crate::emulator::devices::DeviceModel::Mac800KPwmDrive,
+        name: "800K drive (PWM)",
+        bus: crate::emulator::devices::BusKind::Swim,
+        fits: chosen_with_early_macs,
+        function: crate::emulator::devices::FunctionKind::Floppy,
+        fixed: true,
+        one_per_bus: false,
+        rom: None,
+        path_keys: &["media"],
+        adds_buses: &[],
+        monitors: &[],
+        create: None,
+    };
+
+pub const INFO_SUPERDRIVE: crate::emulator::devices::ModelInfo =
+    crate::emulator::devices::ModelInfo {
+        model: crate::emulator::devices::DeviceModel::MacSuperDrive,
+        name: "SuperDrive",
+        bus: crate::emulator::devices::BusKind::Swim,
+        fits: never_chosen,
+        function: crate::emulator::devices::FunctionKind::Floppy,
+        fixed: true,
+        one_per_bus: false,
+        rom: None,
+        path_keys: &["media"],
+        adds_buses: &[],
+        monitors: &[],
+        create: None,
+    };
 
 #[cfg(test)]
 mod tests {

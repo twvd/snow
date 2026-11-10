@@ -24,6 +24,10 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::cuda::Cuda;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::appl_lc_sonic::ApplLcSonic;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::sonic::SonicDma;
 use crate::mac::macii::via2::Via2;
 use crate::mac::maclc::pds_iie::{IieCardSettings, PdsIIeCard};
 use crate::mac::maclc::via::Via;
@@ -36,6 +40,8 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+#[cfg(feature = "ethernet")]
+use crate::net::EthernetPort;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -270,6 +276,13 @@ pub struct Lc475Bus<TRenderer: Renderer> {
 
     /// Apple IIe Card in the expansion slot, when installed
     iie_card: Option<PdsIIeCard>,
+    /// Apple Ethernet LC card in the expansion slot, when installed
+    #[cfg(feature = "ethernet")]
+    ethernet_card: Option<Box<ApplLcSonic>>,
+    /// Changes when the Ethernet card's SONIC writes RAM, for inspect_generation()
+    #[cfg(feature = "ethernet")]
+    #[serde(skip)]
+    dma_generation: u32,
 
     /// Built-in video
     pub(crate) dafb: Dafb<TRenderer>,
@@ -347,6 +360,10 @@ where
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
             iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
+            #[cfg(feature = "ethernet")]
+            ethernet_card: None,
+            #[cfg(feature = "ethernet")]
+            dma_generation: 0,
 
             dafb: Dafb::new(
                 renderer,
@@ -415,12 +432,45 @@ where
             .then(|| offset as usize + (addr as usize & ((1 << RAM_BLOCK_SHIFT) - 1)))
     }
 
+    /// The display outputs of this machine (the single built-in video output)
+    pub fn display_names(&self) -> Vec<String> {
+        vec!["Built-in display".to_string()]
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        self.dafb.renderer = renderers.into_iter().next();
         self.dafb.render().unwrap();
 
         self.sound.after_deserialize();
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            card.after_deserialize();
+        }
+    }
+
+    /// Puts an Apple Ethernet LC card in the expansion slot, while the machine is built
+    #[cfg(feature = "ethernet")]
+    pub fn set_ethernet_card(&mut self, card: ApplLcSonic) {
+        self.ethernet_card = Some(Box::new(card));
+    }
+
+    /// The Ethernet port of the card in the expansion slot, if it is an Ethernet card
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_card_mut(&mut self) -> Option<&mut EthernetPort> {
+        self.ethernet_card.as_mut().map(|c| c.port_mut())
+    }
+
+    /// Calls `f` with the Ethernet card and the memory that its DMA reaches
+    #[cfg(feature = "ethernet")]
+    fn with_ethernet_card<R>(
+        &mut self,
+        f: impl FnOnce(&mut ApplLcSonic, &mut PdsDma<'_, TRenderer>) -> R,
+    ) -> Option<R> {
+        let mut card = self.ethernet_card.take()?;
+        let r = f(&mut card, &mut PdsDma(self));
+        self.ethernet_card = Some(card);
+        Some(r)
     }
 
     pub fn model(&self) -> MacModel {
@@ -787,14 +837,27 @@ where
     /// One cycle of a card, with the offset in the slot: without a card
     /// nothing answers, which is a bus error, as the Slot Manager expects.
     fn slot_port_read(&mut self, offset: Address, len: u32) -> Option<u32> {
-        let card = self.iie_card.as_mut()?;
-        Some(card.slot_read(offset, len))
+        if let Some(card) = &mut self.iie_card {
+            return Some(card.slot_read(offset, len));
+        }
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            return Some(card.read(offset, len));
+        }
+        None
     }
 
     fn slot_port_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
-        let card = self.iie_card.as_mut()?;
-        card.slot_write(offset, len, val);
-        Some(())
+        if let Some(card) = &mut self.iie_card {
+            card.slot_write(offset, len, val);
+            return Some(());
+        }
+        #[cfg(feature = "ethernet")]
+        if self.ethernet_card.is_some() {
+            self.with_ethernet_card(|card, dma| card.write(offset, len, val, dma));
+            return Some(());
+        }
+        None
     }
 
     /// SLOTE_IRQ from a card (schematic: its own pin on PrimeTime)
@@ -805,9 +868,14 @@ where
     /// bits 0-5 are slots $9-$E and bit 6 is slot 0, the built-in video. Only bits
     /// 5 and 6 exist on this board. A machine with NuBus would wire its slots to
     /// the bits below 5 the same way, each also feeding CA1. The Developer Note
-    /// confirms bit 5 for /SLOTIRQ. Nothing interrupts through this yet, so
-    /// whether CA1 follows the line or latches is untested on the real thing.
+    /// confirms bit 5 for /SLOTIRQ. Only the SONIC of an Ethernet LC card
+    /// interrupts through this, and whether CA1 follows the line or latches is
+    /// untested on the real thing.
     fn slot_irq(&self) -> bool {
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &self.ethernet_card {
+            return card.irq();
+        }
         false
     }
 
@@ -1148,6 +1216,10 @@ where
                 card.reset(true);
             }
         }
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            card.reset();
+        }
 
         self.via1.reset();
         self.via1 = Via::new(self.model);
@@ -1286,6 +1358,9 @@ where
 
         self.dafb.tick(native_ticks, ctx)?;
         let video_irq = self.dafb.get_irq();
+        // The expansion slot runs at C16M
+        #[cfg(feature = "ethernet")]
+        self.with_ethernet_card(|card, dma| card.tick(c16m_ticks, C16M_FREQUENCY, dma));
         let slot_irq = self.slot_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
         self.via2.a_in.set_v2irq6(!slot_irq);
@@ -1400,11 +1475,17 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
+        #[cfg(feature = "ethernet")]
+        let dma = self.dma_generation;
+        #[cfg(not(feature = "ethernet"))]
+        let dma = 0;
         self.ram_map
             .iter()
             .fold(u32::from(self.overlay), |h, &block| {
                 h.wrapping_mul(31).wrapping_add(block)
             })
+            .wrapping_mul(31)
+            .wrapping_add(dma)
     }
 }
 
@@ -1416,7 +1497,8 @@ where
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
-        vec![
+        #[allow(unused_mut)]
+        let mut props = vec![
             dbgprop_nest!("Cuda", self.cuda),
             dbgprop_nest!("DFAC II", self.dfac2),
             dbgprop_nest!("Sound", self.sound),
@@ -1425,7 +1507,37 @@ where
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
-        ]
+        ];
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &self.ethernet_card {
+            props.push(dbgprop_nest!("Apple Ethernet LC card", card));
+        }
+        props
+    }
+}
+
+/// What the SONIC of an expansion card reaches: the RAM, through the memory
+/// map of the CPU. The model doesn't count the time its DMA cycles take on
+/// the bus.
+#[cfg(feature = "ethernet")]
+struct PdsDma<'a, TRenderer: Renderer>(&'a mut Lc475Bus<TRenderer>);
+
+#[cfg(feature = "ethernet")]
+impl<TRenderer: Renderer> SonicDma for PdsDma<'_, TRenderer> {
+    fn read_byte(&mut self, addr: Address) -> u8 {
+        match MAP[usize::from(self.0.overlay)][(addr >> 24) as usize] {
+            Region::Ram => self.0.ram_read(addr, 1).unwrap_or(0) as u8,
+            _ => Lc475Bus::<TRenderer>::OPENBUS,
+        }
+    }
+
+    fn write_byte(&mut self, addr: Address, val: u8) {
+        if MAP[usize::from(self.0.overlay)][(addr >> 24) as usize] == Region::Ram {
+            self.0.ram_write(addr, 1, val.into());
+            // Memory notifiers only see the CPU's writes: a new DMA generation
+            // makes them read their ranges again
+            self.0.dma_generation = self.0.dma_generation.wrapping_add(1);
+        }
     }
 }
 

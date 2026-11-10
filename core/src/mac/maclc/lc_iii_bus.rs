@@ -21,6 +21,10 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::egret::Egret;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::appl_lc_sonic::ApplLcSonic;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::sonic::SonicDma;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -28,6 +32,8 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+#[cfg(feature = "ethernet")]
+use crate::net::EthernetPort;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -67,8 +73,8 @@ pub(super) enum Region {
     Io(Address),
     /// Video RAM, with the offset in its window
     Vram(usize),
-    /// PDS slot $E card, with the offset in the slot window
-    IieCard(Address),
+    /// The card in PDS slot $E, with the offset in the slot window
+    Pds(Address),
     /// CPU ID register, with the number of the byte
     CpuId(usize),
 }
@@ -110,6 +116,13 @@ pub struct LcIIIBus<TRenderer: Renderer> {
 
     /// Apple IIe Card in the PDS slot, when installed
     iie_card: Option<PdsIIeCard>,
+    /// Apple Ethernet LC card in the PDS slot, when installed
+    #[cfg(feature = "ethernet")]
+    ethernet_card: Option<Box<ApplLcSonic>>,
+    /// Changes when the Ethernet card's SONIC writes RAM, for inspect_generation()
+    #[cfg(feature = "ethernet")]
+    #[serde(skip)]
+    dma_generation: u32,
 
     overlay: bool,
 
@@ -191,6 +204,10 @@ where
             sound_clock: 0,
 
             iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
+            #[cfg(feature = "ethernet")]
+            ethernet_card: None,
+            #[cfg(feature = "ethernet")]
+            dma_generation: 0,
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -207,10 +224,43 @@ where
         bus
     }
 
+    /// The display outputs of this machine (the single built-in video output)
+    pub fn display_names(&self) -> Vec<String> {
+        vec!["Built-in display".to_string()]
+    }
+
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.video.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self, renderers: Vec<TRenderer>) {
+        self.video.renderer = renderers.into_iter().next();
         self.sound.after_deserialize();
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            card.after_deserialize();
+        }
+    }
+
+    /// Puts an Apple Ethernet LC card in the PDS slot, while the machine is built
+    #[cfg(feature = "ethernet")]
+    pub fn set_ethernet_card(&mut self, card: ApplLcSonic) {
+        self.ethernet_card = Some(Box::new(card));
+    }
+
+    /// The Ethernet port of the card in the PDS slot, if it is an Ethernet card
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_card_mut(&mut self) -> Option<&mut EthernetPort> {
+        self.ethernet_card.as_mut().map(|c| c.port_mut())
+    }
+
+    /// Calls `f` with the Ethernet card and the memory that its DMA reaches
+    #[cfg(feature = "ethernet")]
+    fn with_ethernet_card<R>(
+        &mut self,
+        f: impl FnOnce(&mut ApplLcSonic, &mut PdsDma<'_, TRenderer>) -> R,
+    ) -> Option<R> {
+        let mut card = self.ethernet_card.take()?;
+        let r = f(&mut card, &mut PdsDma(self));
+        self.ethernet_card = Some(card);
+        Some(r)
     }
 
     pub fn model(&self) -> MacModel {
@@ -386,19 +436,25 @@ where
         }
     }
 
-    /// One cycle of the Apple IIe Card, with the offset in the slot: without
-    /// a card, the slot reads open bus and ignores writes.
-    fn iie_read(&mut self, offset: Address, len: u32) -> Option<u32> {
-        match &mut self.iie_card {
-            Some(card) => Some(card.slot_read(offset, len)),
-            None => Some(PdsIIeCard::open_bus(len)),
+    /// One cycle of the card in the PDS slot, with the offset in the slot:
+    /// without a card, the slot reads open bus and ignores writes.
+    fn pds_read(&mut self, offset: Address, len: u32) -> Option<u32> {
+        if let Some(card) = &mut self.iie_card {
+            return Some(card.slot_read(offset, len));
         }
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            return Some(card.read(offset, len));
+        }
+        Some(PdsIIeCard::open_bus(len))
     }
 
-    fn iie_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
+    fn pds_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
         if let Some(card) = &mut self.iie_card {
             card.slot_write(offset, len, val);
         }
+        #[cfg(feature = "ethernet")]
+        self.with_ethernet_card(|card, dma| card.write(offset, len, val, dma));
         Some(())
     }
 
@@ -417,7 +473,7 @@ where
             Region::CpuId(_) => (4, IO_WAITS),
             // The Apple IIe Card is a 16-bit port (its declaration ROM
             // sits on the odd bytes, byte lanes 1+3).
-            Region::IieCard(_) => (2, IO_WAITS),
+            Region::Pds(_) => (2, IO_WAITS),
         }
     }
 
@@ -745,7 +801,7 @@ where
     fn access(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
         let resp = match self.decode(acc.addr) {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Some(Region::Vram(_) | Region::CpuId(_) | Region::IieCard(_)) if acc.pending > 0 => {
+            Some(Region::Vram(_) | Region::CpuId(_) | Region::Pds(_)) if acc.pending > 0 => {
                 BusResponse::Stall(0)
             }
             // During the boot overlay, reads of the RAM area go to the ROM
@@ -794,11 +850,11 @@ where
                 },
                 Self::ignore_write,
             ),
-            Some(region @ Region::IieCard(offset)) => self.cycle(
+            Some(region @ Region::Pds(offset)) => self.cycle(
                 acc,
                 self.port(&region, acc.write),
-                move |s, _, len| s.iie_read(offset, len),
-                move |s, _, len, val| s.iie_write(offset, len, val),
+                move |s, _, len| s.pds_read(offset, len),
+                move |s, _, len, val| s.pds_write(offset, len, val),
             ),
             None => BusResponse::BusError,
         };
@@ -827,6 +883,10 @@ where
         self.swim.sel = self.via.pa().headsel();
         self.pseudovia.reset();
         self.sound.reset();
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &mut self.ethernet_card {
+            card.reset();
+        }
         self.overlay = true;
         self.mouse_ready = false;
         // The card is an independent computer: only a hard reset (power
@@ -904,6 +964,15 @@ where
         if let Some(card) = &mut self.iie_card {
             let ticks = native_ticks * C16M_FREQUENCY / bus_frequency;
             card.tick(ticks, ())?;
+        }
+
+        // The SONIC of an Ethernet card raises the slot interrupt of the gate array
+        #[cfg(feature = "ethernet")]
+        if let Some(irq) = self.with_ethernet_card(|card, dma| {
+            card.tick(native_ticks, bus_frequency, dma);
+            card.irq()
+        }) {
+            self.pseudovia.set_pds_irq(irq);
         }
 
         // Host frame pacing
@@ -1031,7 +1100,11 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay) | (u32::from(self.pseudovia.exp().0) << 1)
+        #[cfg(feature = "ethernet")]
+        let dma = self.dma_generation << 9;
+        #[cfg(not(feature = "ethernet"))]
+        let dma = 0;
+        u32::from(self.overlay) | (u32::from(self.pseudovia.exp().0) << 1) | dma
     }
 }
 
@@ -1044,7 +1117,8 @@ where
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
-        vec![
+        #[allow(unused_mut)]
+        let mut props = vec![
             dbgprop_nest!("Egret", self.egret),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("Sound", self.sound),
@@ -1056,7 +1130,37 @@ where
                 Some(card) => dbgprop_nest!("Apple IIe Card", card),
                 None => dbgprop_group!("Apple IIe Card (absent)", Vec::new()),
             },
-        ]
+        ];
+        #[cfg(feature = "ethernet")]
+        if let Some(card) = &self.ethernet_card {
+            props.push(dbgprop_nest!("Apple Ethernet LC card", card));
+        }
+        props
+    }
+}
+
+/// What the SONIC of a PDS card reaches: the RAM, through the gate array's
+/// address decode. The model doesn't count the time its DMA cycles take on
+/// the bus.
+#[cfg(feature = "ethernet")]
+struct PdsDma<'a, TRenderer: Renderer>(&'a mut LcIIIBus<TRenderer>);
+
+#[cfg(feature = "ethernet")]
+impl<TRenderer: Renderer> SonicDma for PdsDma<'_, TRenderer> {
+    fn read_byte(&mut self, addr: Address) -> u8 {
+        match self.0.decode(addr) {
+            Some(Region::Ram(a)) => self.0.read_ram_byte(a),
+            _ => LcIIIBus::<TRenderer>::OPENBUS,
+        }
+    }
+
+    fn write_byte(&mut self, addr: Address, val: u8) {
+        if let Some(Region::Ram(a)) = self.0.decode(addr) {
+            self.0.write_ram_byte(a, val);
+            // Memory notifiers only see the CPU's writes: a new DMA generation
+            // makes them read their ranges again
+            self.0.dma_generation = self.0.dma_generation.wrapping_add(1);
+        }
     }
 }
 
