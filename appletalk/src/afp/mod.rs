@@ -33,6 +33,7 @@ mod tree;
 use self::{params::*, path::*};
 
 /// AFP commands
+const CMD_BYTE_RANGE_LOCK: u8 = 1;
 const CMD_CLOSE_VOL: u8 = 2;
 const CMD_CLOSE_FORK: u8 = 4;
 const CMD_ENUMERATE: u8 = 9;
@@ -79,6 +80,10 @@ const ERR_EOF: i32 = -5009;
 const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_ITEM_NOT_FOUND: i32 = -5012;
 const ERR_PARAM: i32 = -5019;
+const ERR_LOCK: i32 = -5013;
+const ERR_NO_MORE_LOCKS: i32 = -5015;
+const ERR_RANGE_NOT_LOCKED: i32 = -5020;
+const ERR_RANGE_OVERLAP: i32 = -5021;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
 const ERR_FILE_BUSY: i32 = -5010;
 const ERR_OBJECT_LOCKED: i32 = -5032;
@@ -306,6 +311,9 @@ struct Fork {
     /// Whether this is the resource fork (writes go through the
     /// metadata backend; the data fork writes through the file)
     rsrc: bool,
+    /// The byte ranges locked through this fork (FPByteRangeLock), as
+    /// start and end offsets; they go with the fork when it closes
+    locks: Vec<(u64, u64)>,
 }
 
 /// AFP protocol module: the server
@@ -515,6 +523,12 @@ impl Afp {
                         self.cmd_write(flag, params)
                     }
                     CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
+                    CMD_BYTE_RANGE_LOCK => {
+                        // FPByteRangeLock's header byte holds the
+                        // Start/EndFlag (bit 7) and the UnlockFlag (bit 0)
+                        let flags = data.get(1).copied().unwrap_or(0);
+                        self.cmd_byte_range_lock(flags, params)
+                    }
                     CMD_SET_FORK_PARMS => self.cmd_set_fork_params(params),
                     CMD_SET_VOL_PARMS => self.cmd_set_vol_params(params),
                     CMD_CLOSE_FORK => self.cmd_close_fork(params),
