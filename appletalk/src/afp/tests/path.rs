@@ -537,3 +537,55 @@ fn a_real_name_wins_over_a_mangled_one() {
     let (_, f) = open(&mut s, &mac, false, 1);
     assert_eq!(read(&mut s, f, 0, 4).1, b"real");
 }
+
+#[cfg(unix)]
+#[test]
+fn special_files_never_hang_a_call() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (server, dir) = test_server_writable("special-files");
+    let outside = crate::test_dir("snow-afp-special-outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret"), b"x").unwrap();
+    let fifo = std::ffi::CString::new(dir.join("fifo").to_str().unwrap()).unwrap();
+    // SAFETY: a valid NUL-terminated path
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+    let _socket = std::os::unix::net::UnixListener::bind(dir.join("sock")).unwrap();
+    symlink("/dev/zero", dir.join("zero")).unwrap();
+    symlink(dir.join("loop2"), dir.join("loop1")).unwrap();
+    symlink(dir.join("loop1"), dir.join("loop2")).unwrap();
+    symlink(&outside, dir.join("out")).unwrap();
+    std::fs::create_dir(dir.join("closed")).unwrap();
+    std::fs::set_permissions(dir.join("closed"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+
+    // Every call on every entry, and the desktop scan, in a thread that
+    // must finish: an open of the FIFO or of /dev/zero would never return
+    let names = ["fifo", "sock", "zero", "loop1", "out", "closed", "plain"];
+    let root = dir.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = server;
+        let listed = enumerate_in_pages(&mut s, 3);
+        for name in names {
+            let _ = gfdp(&mut s, name, 0x0340, 0x0340);
+            let _ = open(&mut s, name, false, 1);
+            let _ = open(&mut s, name, true, 1);
+            let _ = gfdp(&mut s, &format!("{name}\0secret"), 0x0340, 0x0340);
+        }
+        let (batches, _) = std::sync::mpsc::channel();
+        let abort = std::sync::atomic::AtomicBool::new(false);
+        crate::dtdb::scan_volume(root, &batches, &abort, None, AfpSettings::default());
+        let escaped = gfdp(&mut s, "out\0secret", 0x0340, 0).0;
+        let _ = tx.send((listed, escaped));
+    });
+    let listed = rx.recv_timeout(std::time::Duration::from_secs(10));
+    std::fs::set_permissions(dir.join("closed"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (listed, escaped) = listed.expect("a call on a special file did not return");
+    assert_ne!(escaped, 0, "a link out of the share reached outside");
+    // Nothing a Mac cannot open is listed, and nothing reaches outside
+    assert!(listed.contains(&"plain".to_string()));
+    for gone in ["fifo", "sock", "zero", "loop1", "loop2"] {
+        assert!(!listed.contains(&gone.to_string()), "{gone} listed");
+    }
+    let _ = std::fs::remove_dir_all(&outside);
+}
