@@ -5,7 +5,8 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::atp::ATP_SOCKET;
+use crate::asp::Asp;
+use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
 use crate::link::{DdpHeaderKind, LinkEvent, Packet};
 use crate::nbp::{NBP_SOCKET, NBP_TYPE, Nbp, NbpEntity};
@@ -27,6 +28,8 @@ pub struct Node {
     #[cfg(feature = "test_module")]
     test: TestModule,
     nbp: Nbp,
+    atp: Atp,
+    asp: Asp,
 }
 
 impl Node {
@@ -51,6 +54,8 @@ impl Node {
                     enumerator: 1,
                 }],
             ),
+            atp: Atp::new(),
+            asp: Asp::new(&[]),
         }
     }
 
@@ -58,12 +63,17 @@ impl Node {
     pub fn handle_event(&mut self, event: LinkEvent) -> Vec<Packet> {
         match event {
             LinkEvent::Datagram(packet) => self.handle(&packet).unwrap_or_default(),
+            LinkEvent::NodeStarted(node) => {
+                if let Some(node) = self.asp.close_node_sessions(node) {
+                    self.atp.purge_node(node);
+                }
+                Vec::new()
+            }
             LinkEvent::AddressChanged(node) => {
                 self.nbp.set_address(node);
                 Vec::new()
             }
-            // No protocol keeps sessions or timers yet
-            LinkEvent::NodeStarted(_) | LinkEvent::Tick => Vec::new(),
+            LinkEvent::Tick => self.asp.tick(),
         }
     }
 
@@ -95,6 +105,9 @@ impl Node {
         }
         if header.dst_socket == NBP_SOCKET && header.ddp_type == NBP_TYPE {
             return self.nbp.handle(packet, data).map(|p| vec![p]);
+        }
+        if header.dst_socket == ATP_SOCKET && header.ddp_type == ATP_TYPE {
+            return self.atp.handle(packet, data, &mut self.asp);
         }
         #[cfg(feature = "test_module")]
         if header.dst_socket == TEST_SOCKET && header.ddp_type == TEST_TYPE {
@@ -214,6 +227,38 @@ mod tests {
         assert_eq!(reply.datagram[6], 7); // same NBP ID
         // The entity tuple carries the ATP socket
         assert_eq!(reply.datagram[10], ATP_SOCKET);
+    }
+
+    #[test]
+    fn test_a_starting_node_loses_its_sessions_and_cache() {
+        let mut node = node();
+        let open = Packet {
+            kind: DdpHeaderKind::Short,
+            node: 0x20,
+            datagram: build_short(
+                ATP_SOCKET,
+                0x30,
+                ATP_TYPE,
+                &[0x40 | 0x20, 0x01, 0x12, 0x34, 4, 0x64, 1, 0],
+            ),
+        };
+        node.handle(&open).unwrap();
+        assert!(node.handle_event(LinkEvent::NodeStarted(0x20)).is_empty());
+        // The session is gone: a command on it is dropped
+        let cmd = Packet {
+            kind: DdpHeaderKind::Short,
+            node: 0x20,
+            datagram: build_short(
+                ATP_SOCKET,
+                0x30,
+                ATP_TYPE,
+                &[0x40 | 0x20, 0x01, 0x12, 0x35, 2, 1, 0, 1, 16, 0],
+            ),
+        };
+        assert!(node.handle(&cmd).is_none());
+        // The cached reply is gone too: the same TID opens a new session
+        let reply = &node.handle(&open).unwrap()[0];
+        assert_eq!(reply.datagram[10], 2);
     }
 
     #[test]
