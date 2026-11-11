@@ -20,6 +20,7 @@ impl Afp {
             &self.volume_name,
             &self.root,
             self.settings.read_only,
+            matches!(version, AfpVersion::V21 | AfpVersion::V22),
             self.vol_modified,
         ))
     }
@@ -40,6 +41,7 @@ impl Afp {
             &self.volume_name,
             &self.root,
             self.settings.read_only,
+            matches!(version, AfpVersion::V21 | AfpVersion::V22),
             self.vol_modified,
         ))
     }
@@ -555,14 +557,19 @@ pub(super) fn vol_params(
     name: &str,
     root: &Path,
     read_only: bool,
+    supports_file_ids: bool,
     vol_modified: u32,
 ) -> Vec<u8> {
     let (bytes_free, bytes_total) = statvfs(root);
 
     let mut fixed = Vec::new();
     if bitmap & 0x0001 != 0 {
-        // Attributes: bit 0 = read-only
-        let attrs = if read_only { 1u16 } else { 0u16 };
+        // Attributes: bit 0 = read-only, bit 2 = supports file IDs
+        // (an AFP 2.1 session and up)
+        let mut attrs = if read_only { 1u16 } else { 0u16 };
+        if supports_file_ids {
+            attrs |= 0x0004;
+        }
         fixed.extend_from_slice(&attrs.to_be_bytes());
     }
     if bitmap & 0x0002 != 0 {

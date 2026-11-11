@@ -5,9 +5,9 @@
 //!
 //! Serves one volume, a host directory, to guests: the server information
 //! block (served as the ASP GetStatus status block), login with guest
-//! authentication, file and directory parameters, enumeration, forks and
-//! a desktop database. Read-only by default. Host file names are converted
-//! between UTF-8 and MacRoman.
+//! authentication, file and directory parameters, enumeration, forks, the
+//! file-ID calls and a desktop database. Read-only by default. Host file
+//! names are converted between UTF-8 and MacRoman.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -70,6 +70,10 @@ const CMD_SET_FORK_PARMS: u8 = 31;
 const CMD_SET_VOL_PARMS: u8 = 32;
 const CMD_WRITE: u8 = 33;
 const CMD_SET_FILE_DIR_PARMS: u8 = 35;
+const CMD_CREATE_ID: u8 = 39;
+const CMD_DELETE_ID: u8 = 40;
+const CMD_RESOLVE_ID: u8 = 41;
+const CMD_EXCHANGE_FILES: u8 = 42;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
 const ERR_ACCESS_DENIED: i32 = -5000;
@@ -86,6 +90,7 @@ const ERR_RANGE_NOT_LOCKED: i32 = -5020;
 const ERR_RANGE_OVERLAP: i32 = -5021;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
 const ERR_FILE_BUSY: i32 = -5010;
+const ERR_ID_NOT_FOUND: i32 = -5034;
 const ERR_OBJECT_LOCKED: i32 = -5032;
 const ERR_OBJECT_TYPE: i32 = -5025;
 const ERR_TOO_MANY_FILES_OPEN: i32 = -5026;
@@ -93,6 +98,12 @@ const ERR_DIR_NOT_FOUND: i32 = -5029;
 const ERR_DIR_NOT_EMPTY: i32 = -5007;
 const ERR_DISK_FULL: i32 = -5008;
 const ERR_CANT_MOVE: i32 = -5005;
+/// A file ID already exists for the file (kept for the error
+/// reference table; the identity-table design never reports it)
+#[allow(dead_code)]
+const ERR_ID_EXISTS: i32 = -5035;
+const ERR_SAME_OBJECT: i32 = -5038;
+const ERR_BAD_ID: i32 = -5039;
 const ERR_OBJECT_EXISTS: i32 = -5017;
 const ERR_VOL_LOCKED: i32 = -5031;
 
@@ -531,6 +542,16 @@ impl Afp {
                     }
                     CMD_SET_FORK_PARMS => self.cmd_set_fork_params(params),
                     CMD_SET_VOL_PARMS => self.cmd_set_vol_params(params),
+                    // The file-ID calls are AFP 2.1 and up
+                    CMD_CREATE_ID | CMD_DELETE_ID | CMD_RESOLVE_ID | CMD_EXCHANGE_FILES
+                        if !matches!(version, AfpVersion::V21 | AfpVersion::V22) =>
+                    {
+                        Err(ERR_CALL_NOT_SUPPORTED)
+                    }
+                    CMD_CREATE_ID => self.cmd_create_id(params),
+                    CMD_DELETE_ID => self.cmd_delete_id(params),
+                    CMD_RESOLVE_ID => self.cmd_resolve_id(params),
+                    CMD_EXCHANGE_FILES => self.cmd_exchange_files(params),
                     CMD_CLOSE_FORK => self.cmd_close_fork(params),
                     CMD_OPEN_DT => self.cmd_open_dt(params),
                     CMD_CLOSE_DT => self.cmd_close_dt(params),

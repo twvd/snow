@@ -847,6 +847,94 @@ pub fn set_rsrc_len(path: &Path, len: u64) -> io::Result<u64> {
     Ok(len)
 }
 
+/// Swap two host paths. Atomic where the host has a call for it; the three
+/// renames otherwise, on a file system or platform without one.
+pub fn exchange_paths(a: &Path, b: &Path) -> io::Result<()> {
+    if exchange_atomically(a, b)? {
+        return Ok(());
+    }
+    let tmp = a.with_file_name(format!(".snowswap.{}", std::process::id()));
+    fs::rename(a, &tmp)?;
+    if let Err(e) = fs::rename(b, a) {
+        let _ = fs::rename(&tmp, a);
+        return Err(e);
+    }
+    fs::rename(&tmp, b)
+}
+
+/// The host's atomic swap. False when it cannot do it here, which is not an
+/// error yet.
+#[cfg(target_os = "linux")]
+fn exchange_atomically(a: &Path, b: &Path) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let a = CString::new(a.as_os_str().as_bytes())?;
+    let b = CString::new(b.as_os_str().as_bytes())?;
+    // SAFETY: valid NUL-terminated paths and constants
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    swap_result(rc == 0)
+}
+
+#[cfg(target_os = "macos")]
+fn exchange_atomically(a: &Path, b: &Path) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let a = CString::new(a.as_os_str().as_bytes())?;
+    let b = CString::new(b.as_os_str().as_bytes())?;
+    // SAFETY: valid NUL-terminated paths and constants
+    let rc = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) };
+    swap_result(rc == 0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn exchange_atomically(_a: &Path, _b: &Path) -> io::Result<bool> {
+    Ok(false)
+}
+
+/// The result of a swap call, read from errno on failure
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn swap_result(done: bool) -> io::Result<bool> {
+    if done {
+        return Ok(true);
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP) => Ok(false),
+        _ => Err(e),
+    }
+}
+
+/// Read a file's whole resource fork
+pub fn read_rsrc(meta: &Meta) -> io::Result<Vec<u8>> {
+    let Some(container) = &meta.rsrc_file else {
+        return Ok(Vec::new());
+    };
+    let mut f = fs::File::open(container)?;
+    f.seek(SeekFrom::Start(meta.rsrc_offset))?;
+    let mut body = vec![0; meta.rsrc_fork_len as usize];
+    f.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// Replace a file's resource fork. An empty one on a file without a
+/// container creates none.
+pub fn set_rsrc(path: &Path, body: &[u8]) -> io::Result<()> {
+    set_rsrc_len(path, 0)?;
+    if !body.is_empty() {
+        write_rsrc(path, 0, body)?;
+    }
+    Ok(())
+}
+
 /// Remove a file's metadata containers (the caller deletes the file
 /// itself)
 pub fn remove_meta(path: &Path) {

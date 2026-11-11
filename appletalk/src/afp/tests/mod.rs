@@ -93,6 +93,13 @@ pub(super) fn enumerate_in_pages(server: &mut Afp, count: u16) -> Vec<String> {
     }
 }
 
+pub(super) fn exchange(s: &mut Afp, a: &str, b: &str) -> i32 {
+    let mut d = vec![42u8, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 2];
+    d.extend(mac_path(a));
+    d.extend(mac_path(b));
+    result_of(s.command(1, &d)).0
+}
+
 /// FPGetFileDirParms: the result and the parameters after the header
 pub(super) fn gfdp(s: &mut Afp, name: &str, fbm: u16, dbm: u16) -> (i32, Vec<u8>) {
     let mut d = vec![34u8, 0, 0, 1, 0, 0, 0, 2];
