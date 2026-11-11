@@ -17,6 +17,18 @@ use serde::{Deserialize, Serialize};
 
 use super::localtalk_bridge::LocalTalkStatus;
 
+/// The highest AFP version the built-in AppleTalk server advertises
+/// (re-exported from the AppleTalk stack)
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::afp::MaxVersion as AfpMaxVersion;
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::afp::{AfpSettings, HiddenFiles as AfpHiddenFiles};
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::name::volume_name_char_ok as afp_volume_name_char_ok;
+/// Turn the file server's wire-level logs on or off, without rebuilding it
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::wire::set_wire_debug as afp_set_wire_debug;
+
 /// Configuration for a serial bridge
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerialBridgeConfig {
@@ -26,6 +38,26 @@ pub enum SerialBridgeConfig {
     Tcp(u16),
     /// LocalTalk over UDP multicast
     LocalTalk,
+    /// Built-in AppleTalk stack on a private LocalTalk network (no
+    /// external connectivity), serving the given directory as an AFP
+    /// volume under the given volume name (default "Snow") and
+    /// advertising the given AFP version ceiling. The variant itself
+    /// exists in every build, so a workspace saved with the server on
+    /// deserializes without the afp_server feature too. Its fields are
+    /// not saved: the frontend keeps the server's settings and fills
+    /// them in each time it enables the server.
+    AppleTalk {
+        #[serde(skip)]
+        root: PathBuf,
+        #[serde(skip)]
+        volume_name: Option<String>,
+        #[cfg(feature = "afp_server")]
+        #[serde(skip)]
+        max_version: AfpMaxVersion,
+        #[cfg(feature = "afp_server")]
+        #[serde(skip)]
+        settings: snow_appletalk::afp::AfpSettings,
+    },
 }
 
 impl std::fmt::Display for SerialBridgeConfig {
@@ -34,6 +66,7 @@ impl std::fmt::Display for SerialBridgeConfig {
             Self::Pty => write!(f, "PTY"),
             Self::Tcp(port) => write!(f, "TCP:{}", port),
             Self::LocalTalk => write!(f, "LocalTalk"),
+            Self::AppleTalk { .. } => write!(f, "AppleTalk"),
         }
     }
 }
@@ -323,6 +356,15 @@ impl SerialBridge {
                     "LocalTalk should use SccBridge::new() instead",
                 ));
             }
+            // SccBridge::new() builds it when the feature is in; this is a
+            // build without it, such as one loading a workspace saved with
+            // the server on
+            SerialBridgeConfig::AppleTalk { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the built-in file server is not part of this build",
+                ));
+            }
         };
 
         Ok(Self {
@@ -395,14 +437,32 @@ impl SccBridge {
             SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
                 super::localtalk_bridge::LocalTalkBridge::new()?,
             )),
+            #[cfg(feature = "afp_server")]
+            SerialBridgeConfig::AppleTalk {
+                root,
+                volume_name,
+                max_version,
+                settings,
+            } => Ok(Self::LocalTalk(
+                super::localtalk_bridge::LocalTalkBridge::new_private(
+                    root.clone(),
+                    volume_name.clone(),
+                    *max_version,
+                    *settings,
+                )?,
+            )),
             _ => Ok(Self::Serial(SerialBridge::new(config)?)),
         }
     }
 
-    /// Write data from the SCC TX queue to the bridge
-    pub fn write_from_scc(&mut self, data: &[u8]) {
+    /// Write data from the SCC TX queue to the bridge.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    pub fn write_from_scc(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         match self {
-            Self::Serial(bridge) => bridge.write_from_scc(data),
+            Self::Serial(bridge) => {
+                bridge.write_from_scc(data);
+                Vec::new()
+            }
             Self::LocalTalk(bridge) => bridge.write_from_scc(data),
         }
     }
@@ -412,6 +472,29 @@ impl SccBridge {
         match self {
             Self::Serial(bridge) => bridge.read_to_scc(),
             Self::LocalTalk(bridge) => bridge.read_to_scc().unwrap_or_default(),
+        }
+    }
+
+    /// The guest ended a frame (LocalTalk only). Returns packets to inject
+    /// into the SCC RX buffer immediately.
+    pub fn end_tx_frame(&mut self) -> Vec<Vec<u8>> {
+        match self {
+            Self::LocalTalk(bridge) => bridge.end_tx_frame(),
+            Self::Serial(_) => Vec::new(),
+        }
+    }
+
+    /// Deliver a frame the guest did not read again (LocalTalk only)
+    pub fn return_frame(&mut self, frame: Vec<u8>) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.return_frame(frame);
+        }
+    }
+
+    /// Pass the emulated time on (LocalTalk only)
+    pub fn advance_time(&mut self, seconds: u64) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.advance_time(seconds);
         }
     }
 
@@ -449,11 +532,35 @@ impl SccBridge {
             bridge.set_address_search_mode(mode);
         }
     }
+}
 
-    /// Send a complete SDLC frame (LocalTalk only)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.send_frame(llap);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A saved workspace records only that the file server is on, in every
+    /// build, and reads what earlier versions saved
+    #[test]
+    fn a_saved_file_server_holds_no_settings() {
+        #[cfg(feature = "afp_server")]
+        {
+            let config = SerialBridgeConfig::AppleTalk {
+                root: PathBuf::from("/shared"),
+                volume_name: Some("Docs".to_string()),
+                max_version: AfpMaxVersion::default(),
+                settings: AfpSettings::default(),
+            };
+            assert_eq!(
+                serde_json::to_string(&config).unwrap(),
+                r#"{"AppleTalk":{}}"#
+            );
+        }
+        for saved in [
+            r#"{"AppleTalk":{}}"#,
+            r#"{"AppleTalk":{"root":"/x","volume_name":"Snow","max_version":"Max22"}}"#,
+        ] {
+            let config: SerialBridgeConfig = serde_json::from_str(saved).unwrap();
+            assert!(matches!(config, SerialBridgeConfig::AppleTalk { .. }));
         }
     }
 }

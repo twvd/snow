@@ -52,6 +52,12 @@ jobs:
         run: cargo llvm-cov --workspace --exclude snow_frontend_egui --codecov --output-path codecov.json
       - name: Test snow_frontend_egui separately
         run: cargo test -p snow_frontend_egui
+      - name: Test the AppleTalk stack with its test features
+        # The node's echo test module and the LocalTalk bridge's tests with
+        # the built-in node are behind features the workspace run leaves off
+        run: |
+          cargo test -p snow_appletalk --features test_module
+          cargo test -p snow_core --features afp_server,afp_server_test --lib -- localtalk
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
         with:
