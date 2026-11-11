@@ -9,3 +9,4 @@ Ensure you understand the risks and how to protect your network before proceedin
 
 * [Ethernet](ethernet.md)
 * [LocalTalk over UDP](ltoudp.md)
+* [Built-in file server](fileserver.md)
