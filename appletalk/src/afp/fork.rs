@@ -1,4 +1,4 @@
-//! Forks: open, read, write, flush and lengths
+//! Forks: open, read, write, flush, lengths and byte-range locks
 
 use super::*;
 
@@ -106,6 +106,7 @@ impl Afp {
                 container_path: file_path,
                 session,
                 rsrc,
+                locks: Vec::new(),
             },
         );
         let mac_name = fork_name;
@@ -453,6 +454,76 @@ impl Afp {
             }
         }
         Ok(Vec::new())
+    }
+
+    /// FPByteRangeLock: [fork ref][offset][length] → the start of the
+    /// locked range. A range conflicts with the ones other open forks
+    /// of the same fork of the file locked (LockErr) and with the ones
+    /// this fork locked (RangeOverlap); an unlock names a range as it
+    /// was locked, relative to the start. Reads and writes do not check
+    /// the locks: they only keep the clients' own protocol working (the
+    /// Finder locks the Trash Can Usage Map of the Network Trash Folder
+    /// and retries until it gets the lock).
+    pub(super) fn cmd_byte_range_lock(&mut self, flags: u8, params: &[u8]) -> Reply {
+        const MAX_LOCKS: usize = 256;
+        let mut r = Reader::new(params);
+        let fork_ref = r.u16()?;
+        let offset = r.u32()?;
+        let length = r.u32()?;
+        let fork = self.forks.get(&fork_ref).ok_or(ERR_PARAM)?;
+        // A positive length, or $FFFFFFFF for everything from the start
+        let length = match length {
+            0xFFFF_FFFF => u64::MAX,
+            l if (l as i32) > 0 => u64::from(l),
+            _ => return Err(ERR_PARAM),
+        };
+        let unlock = flags & 0x01 != 0;
+        let mut start = i64::from(offset as i32);
+        if !unlock && flags & 0x80 != 0 {
+            start += fork.len as i64;
+        }
+        if start < 0 {
+            return Err(ERR_PARAM);
+        }
+        let start = start as u64;
+        let end = start.saturating_add(length);
+        let range_start = (start.min(u64::from(u32::MAX)) as u32)
+            .to_be_bytes()
+            .to_vec();
+
+        if unlock {
+            let fork = self.forks.get_mut(&fork_ref).ok_or(ERR_PARAM)?;
+            let pos = fork
+                .locks
+                .iter()
+                .position(|&l| l == (start, end))
+                .ok_or(ERR_RANGE_NOT_LOCKED)?;
+            fork.locks.remove(pos);
+            return Ok(range_start);
+        }
+
+        let (path, rsrc) = (fork.path.clone(), fork.rsrc);
+        let mut count = 0;
+        for (other_ref, other) in &self.forks {
+            count += other.locks.len();
+            if other.path != path || other.rsrc != rsrc {
+                continue;
+            }
+            if other.locks.iter().any(|&(s, e)| s < end && start < e) {
+                let code = if *other_ref == fork_ref {
+                    ERR_RANGE_OVERLAP
+                } else {
+                    ERR_LOCK
+                };
+                return Err(code);
+            }
+        }
+        if count >= MAX_LOCKS {
+            return Err(ERR_NO_MORE_LOCKS);
+        }
+        let fork = self.forks.get_mut(&fork_ref).ok_or(ERR_PARAM)?;
+        fork.locks.push((start, end));
+        Ok(range_start)
     }
 }
 
