@@ -5,7 +5,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::afp::{Afp, AfpSettings, MaxVersion};
+use crate::afp::{Afp, AfpSettings, MaxVersion, ScanStatus};
 use crate::asp::Asp;
 use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
@@ -47,9 +47,14 @@ impl Node {
         share_root: std::path::PathBuf,
         volume_name: Option<String>,
         max_version: MaxVersion,
+        scan_status_tx: Option<crossbeam_channel::Sender<ScanStatus>>,
         settings: AfpSettings,
     ) -> Self {
-        let afp = Afp::new_with(share_root, volume_name, max_version, settings);
+        let mut afp = Afp::new_with(share_root, volume_name, max_version, settings);
+        if let Some(tx) = scan_status_tx {
+            afp.set_scan_status_tx(tx);
+        }
+        afp.start_scan();
         Self {
             rx,
             tx,
@@ -212,6 +217,7 @@ mod tests {
             share(),
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         )
     }
@@ -227,6 +233,7 @@ mod tests {
             share(),
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
@@ -313,6 +320,7 @@ mod tests {
             share(),
             Some("Docs".to_string()),
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
         // BrdRq for "=:AFPServer@*" from node 0x20, socket 0x64
@@ -375,6 +383,7 @@ mod tests {
             share(),
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
@@ -399,6 +408,7 @@ mod tests {
             share(),
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 

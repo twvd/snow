@@ -5,9 +5,9 @@
 //!
 //! Serves one volume, a host directory, to guests: the server information
 //! block (served as the ASP GetStatus status block), login with guest
-//! authentication, file and directory parameters, enumeration and forks.
-//! Read-only by default. Host file names are converted between UTF-8 and
-//! MacRoman.
+//! authentication, file and directory parameters, enumeration, forks and
+//! a desktop database. Read-only by default. Host file names are converted
+//! between UTF-8 and MacRoman.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -17,10 +17,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::dtdb::{DT_REF_NUM, DeskBatch, DeskDb, scan_volume};
 use crate::ids::{IdTable, ROOT_DIR_ID};
 use crate::meta::Meta;
 use crate::wire::wire_log;
 
+pub use crate::dtdb::ScanStatus;
+
+mod desktop;
 mod fork;
 mod params;
 mod path;
@@ -40,6 +44,17 @@ const CMD_OPEN_VOL: u8 = 24;
 const CMD_OPEN_FORK: u8 = 26;
 const CMD_READ: u8 = 27;
 const CMD_GET_FILE_DIR_PARMS: u8 = 34;
+const CMD_OPEN_DT: u8 = 48;
+const CMD_CLOSE_DT: u8 = 49;
+const CMD_GET_ICON: u8 = 51;
+const CMD_GET_ICON_INFO: u8 = 52;
+const CMD_ADD_APPL: u8 = 53;
+const CMD_RMV_APPL: u8 = 54;
+const CMD_GET_APPL: u8 = 55;
+const CMD_ADD_CMT: u8 = 56;
+const CMD_RMV_CMT: u8 = 57;
+const CMD_GET_CMT: u8 = 58;
+const CMD_ADD_ICON: u8 = 192;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
 const ERR_ACCESS_DENIED: i32 = -5000;
@@ -48,6 +63,7 @@ const ERR_BAD_VERS: i32 = -5003;
 const ERR_BITMAP: i32 = -5004;
 const ERR_EOF: i32 = -5009;
 const ERR_OBJECT_NOT_FOUND: i32 = -5018;
+const ERR_ITEM_NOT_FOUND: i32 = -5012;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
 const ERR_OBJECT_LOCKED: i32 = -5032;
@@ -176,8 +192,17 @@ impl std::fmt::Display for HiddenFiles {
 /// The advanced AFP server settings
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AfpSettings {
+    /// The maximum directory depth of the desktop scan (a bind-mount
+    /// loop cannot go deeper than this)
+    pub scan_depth: u32,
+    /// The maximum number of directory entries the scan visits (a
+    /// time and memory bound; the depth limit is the loop defense)
+    pub scan_entries_cap: u32,
     /// How hidden (dot-prefixed) host entries appear
     pub hidden_files: HiddenFiles,
+    /// Whether the desktop scan follows symlinks that stay inside the
+    /// share root (symlinks outside the root are never followed)
+    pub follow_symlinks: bool,
     /// Whether the AppleDouble metadata containers are read (the ._
     /// sidecars and the .AppleDouble directories)
     pub probe_apple_double: bool,
@@ -198,7 +223,10 @@ fn default_true() -> bool {
 impl Default for AfpSettings {
     fn default() -> Self {
         Self {
+            scan_depth: 16,
+            scan_entries_cap: 20_000_000,
             hidden_files: HiddenFiles::Hide,
+            follow_symlinks: false,
             probe_apple_double: true,
             wire_debug: false,
             read_only: true,
@@ -273,8 +301,28 @@ pub struct Afp {
     versions: HashMap<u8, AfpVersion>,
     /// The advanced server settings
     settings: AfpSettings,
+    /// The desktop database contents gathered so far: every APPL file
+    /// whose parameters the server has served, with its bundle icons
+    desktop: Option<DeskDb>,
+    /// The background desktop scan's progress batches
+    scan_rx: Option<std::sync::mpsc::Receiver<DeskBatch>>,
+    /// The background scan thread's abort flag
+    scan_abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether the background scan has been started (it runs once)
+    scan_started: bool,
+    /// Progress reports to the UI, if one is connected
+    scan_status_tx: Option<crossbeam_channel::Sender<ScanStatus>>,
     /// The listing Enumerate is paging through
     enum_cache: Option<EnumCache>,
+}
+
+impl Drop for Afp {
+    fn drop(&mut self) {
+        // Stop the background scan thread when the server goes away
+        if let Some(abort) = &self.scan_abort {
+            abort.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 impl Afp {
@@ -300,6 +348,11 @@ impl Afp {
             ids: IdTable::new(),
             versions: HashMap::new(),
             settings,
+            desktop: None,
+            scan_rx: None,
+            scan_abort: None,
+            scan_started: false,
+            scan_status_tx: None,
             enum_cache: None,
         }
     }
@@ -361,6 +414,8 @@ impl Afp {
             return (err(ERR_PARAM), Vec::new());
         }
         let cmd = data[0];
+        // Merge any findings the background desktop scan has reported
+        self.poll_scan();
         let reply = match cmd {
             // FPLogin and FPOpenFork have no reserved byte after the
             // function in either version
@@ -403,6 +458,23 @@ impl Afp {
                     },
                     CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
                     CMD_CLOSE_FORK => self.cmd_close_fork(params),
+                    CMD_OPEN_DT => self.cmd_open_dt(params),
+                    CMD_CLOSE_DT => self.cmd_close_dt(params),
+                    CMD_GET_ICON => self.cmd_get_icon(params),
+                    CMD_GET_ICON_INFO => self.cmd_get_icon_info(params),
+                    CMD_GET_APPL => self.cmd_get_appl(params),
+                    // The desktop database is synthesized server-side:
+                    // the client's updates are acknowledged but not
+                    // stored (its comments and icons are not persisted)
+                    CMD_ADD_APPL | CMD_RMV_APPL | CMD_ADD_CMT | CMD_RMV_CMT | CMD_ADD_ICON => {
+                        if self.settings.read_only {
+                            Err(ERR_VOL_LOCKED)
+                        } else {
+                            Ok(Vec::new())
+                        }
+                    }
+                    // Comments are not stored, so there never is one
+                    CMD_GET_CMT => Err(ERR_ITEM_NOT_FOUND),
                     _ => {
                         wire_log!("AFP: dropped unsupported command {}", cmd);
                         Err(ERR_CALL_NOT_SUPPORTED)
@@ -471,6 +543,76 @@ impl Afp {
     /// packets, MAX_RESPONSE bytes)
     pub(crate) fn set_request_capacity(&mut self, buffers: u8) {
         self.req_capacity = usize::from(buffers) * crate::atp::MAX_RESPONSE_DATA;
+    }
+
+    /// Connect the UI's progress reporting channel
+    pub fn set_scan_status_tx(&mut self, tx: crossbeam_channel::Sender<ScanStatus>) {
+        self.scan_status_tx = Some(tx);
+    }
+
+    /// Start the background desktop scan: the volume is walked on a
+    /// separate thread and its findings are merged as they arrive, so
+    /// the AFP thread never blocks on a large share
+    pub fn start_scan(&mut self) {
+        if self.scan_started {
+            return;
+        }
+        self.scan_started = true;
+        let root = self.root.clone();
+        let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel::<DeskBatch>();
+        self.scan_abort = Some(abort.clone());
+        self.scan_rx = Some(rx);
+        let status_tx = self.scan_status_tx.clone();
+        let settings = self.settings;
+        wire_log!("AFP: desktop scan started on '{}'", root.display());
+        std::thread::spawn(move || scan_volume(root, &tx, &abort, status_tx.as_ref(), settings));
+    }
+
+    /// Merge whatever the background desktop scan has reported so far
+    fn poll_scan(&mut self) {
+        let Some(rx) = self.scan_rx.take() else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(batch) => {
+                    for group in batch.groups {
+                        let dir_id = self.dir_id(&group.parent);
+                        let db = self.desktop.get_or_insert_with(DeskDb::new);
+                        db.merge_group(group, dir_id);
+                    }
+                    let (appls, icons) = self
+                        .desktop
+                        .as_ref()
+                        .map(|db| (db.application_count(), db.icon_count()))
+                        .unwrap_or((0, 0));
+                    wire_log!(
+                        "AFP: desktop scan progress: {} applications and {} icons",
+                        appls,
+                        icons
+                    );
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.scan_rx = Some(rx);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.scan_abort = None;
+                    let (appls, icons) = self
+                        .desktop
+                        .as_ref()
+                        .map(|db| (db.application_count(), db.icon_count()))
+                        .unwrap_or((0, 0));
+                    wire_log!(
+                        "AFP: desktop scan finished: {} applications and {} icons",
+                        appls,
+                        icons
+                    );
+                    return;
+                }
+            }
+        }
     }
 }
 

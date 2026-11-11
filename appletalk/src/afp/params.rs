@@ -123,6 +123,14 @@ impl Afp {
             self.mac_name_of(entry)
         };
         let parent_id = self.parent_id_of(&target);
+        // The desktop database is fed by the files the client asks
+        // about: register an application and its bundle icons now, so
+        // the desktop calls that follow find them
+        if !fs_meta.is_dir()
+            && let Some(db) = &mut self.desktop
+        {
+            db.register_appl(&target, &name, &meta, parent_id);
+        }
 
         let mut reply = Vec::new();
         reply.extend_from_slice(&file_bitmap.to_be_bytes());
