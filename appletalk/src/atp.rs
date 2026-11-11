@@ -50,6 +50,10 @@ const MAX_RESPONSE_BODY: usize = 578;
 /// The data bytes a response packet carries after the ATP header
 pub(crate) const MAX_RESPONSE_DATA: usize = MAX_RESPONSE_BODY;
 
+/// The largest reply a single transaction can carry: 8 packets. The
+/// ASP WriteContinue buffer size is this value.
+pub(crate) const MAX_RESPONSE: usize = MAX_RESPONSE_DATA * 8;
+
 /// ATP protocol module: the responder side
 pub struct Atp {
     /// Exactly-once retransmit cache: (requester node, requester socket,
