@@ -2843,6 +2843,7 @@ impl SnowGui {
                 self.framebuffer
                     .load_shader_defaults(self.emu.get_model().unwrap());
                 self.framebuffer.connect_receiver(p.frame_receiver);
+                self.apply_workspace_bridges();
             }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
@@ -2872,6 +2873,20 @@ impl SnowGui {
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
         self.workspace.model = model;
+    }
+
+    /// Start the workspace's serial bridges on a new emulator. Every start
+    /// builds a machine without bridges, so a model change would otherwise
+    /// drop them while the workspace and the menus still list them.
+    fn apply_workspace_bridges(&self) {
+        // Bridges given on the command line take precedence over the workspace
+        for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
+            if self.pending_serial_bridges[idx].is_none()
+                && let Some(config) = self.workspace.serial_bridges[idx].clone()
+            {
+                let _ = self.emu.enable_serial_bridge(ch, config);
+            }
+        }
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -2939,15 +2954,6 @@ impl SnowGui {
             {
                 self.emu
                     .set_eth_link(id, self.workspace.get_ethernet_link_type());
-            }
-
-            // Bridges given on the command line take precedence over the workspace
-            for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
-                if self.pending_serial_bridges[idx].is_none()
-                    && let Some(config) = self.workspace.serial_bridges[idx].clone()
-                {
-                    let _ = self.emu.enable_serial_bridge(ch, config);
-                }
             }
         } else {
             self.emu.deinit();
