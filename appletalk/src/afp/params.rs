@@ -42,6 +42,22 @@ impl Afp {
         ))
     }
 
+    /// The attribute bits of a file's open state: DAlreadyOpen when
+    /// a data fork is open, RAlreadyOpen when the resource fork is
+    pub(super) fn open_attrs(&self, path: &Path) -> u16 {
+        let mut attrs = 0;
+        for fork in self.forks.values() {
+            if fork.path == path {
+                if fork.rsrc {
+                    attrs |= 0x0010;
+                } else {
+                    attrs |= 0x0008;
+                }
+            }
+        }
+        attrs
+    }
+
     /// In "show as invisible" mode a dot-prefixed entry carries the
     /// attribute and the Finder's invisible flag, which is what the Finder
     /// looks at
@@ -96,7 +112,7 @@ impl Afp {
             return Err(ERR_OBJECT_NOT_FOUND);
         };
         let mut meta = self.meta_open(&target);
-        meta.attrs = v11_attrs(version, meta.attrs);
+        meta.attrs = v11_attrs(version, meta.attrs | self.open_attrs(&target));
         let name = if target == self.root {
             self.volume_name.clone()
         } else {
@@ -228,7 +244,7 @@ impl Afp {
             let entry = target;
             let target = linked.as_ref().unwrap_or(target);
             let mut meta = self.meta_open(target);
-            meta.attrs = v11_attrs(version, meta.attrs);
+            meta.attrs = v11_attrs(version, meta.attrs | self.open_attrs(target));
             self.mark_hidden(entry, &mut meta);
             let (flag, params) = if fs_meta.is_dir() {
                 let offspring_count = visible_offspring(target, self.settings.hidden_files);
