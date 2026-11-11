@@ -2259,7 +2259,19 @@ impl SnowGui {
         if self.workspace.afp_max_version != version_before && enabled {
             self.apply_afp_bridge();
         }
-        ui.small("The volume is read-only: files can be copied off it, not onto it.");
+        let read_only_before = self.workspace.afp_settings.read_only;
+        ui.checkbox(&mut self.workspace.afp_settings.read_only, "Read only");
+        if self.workspace.afp_settings.read_only {
+            ui.small("Files can be copied off the volume, not onto it.");
+        } else {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Writes will create .AppleDouble metadata folders in the shared directory.",
+            );
+        }
+        if self.workspace.afp_settings.read_only != read_only_before && enabled {
+            self.apply_afp_bridge();
+        }
 
         // The advanced settings live in their own dialog
         if ui.button("Advanced…").clicked() {
