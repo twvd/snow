@@ -1,4 +1,4 @@
-//! Forks: open, read and lengths
+//! Forks: open, read, write, flush and lengths
 
 use super::*;
 
@@ -101,6 +101,8 @@ impl Afp {
                 file_id: self.ids.id_of(&target).unwrap_or(0),
                 read: access & 0x0001 != 0,
                 write,
+                written: false,
+                date_set_by_client: false,
                 container_path: file_path,
                 session,
                 rsrc,
@@ -144,7 +146,19 @@ impl Afp {
     pub(super) fn cmd_close_fork(&mut self, params: &[u8]) -> Reply {
         let fork_ref = Reader::new(params).u16()?;
         // ch13: an unknown reference number is a parameter error
-        self.forks.remove(&fork_ref).ok_or(ERR_PARAM)?;
+        let fork = self.forks.remove(&fork_ref).ok_or(ERR_PARAM)?;
+        if fork.written && !fork.date_set_by_client {
+            // ch13: the modification date is set when a written fork is
+            // closed — unless the client set it itself during the session
+            // (the Finder copies dates with SetFileDirParms; a per-fork
+            // flag records that)
+            let meta = self.meta_open(&fork.path);
+            if crate::meta::set_dates(&fork.path, meta.create_date, afp_now(), meta.backup_date)
+                .is_ok()
+            {
+                self.refresh_forks(&fork.path);
+            }
+        }
         Ok(Vec::new())
     }
 
@@ -281,6 +295,164 @@ impl Afp {
             fork.len = len;
             fork.meta = meta.clone();
         }
+    }
+
+    /// Update the length fields of every fork open on a file after a
+    /// plain data-fork write: a write replaces nothing, so the ID
+    /// bindings and the handles stay valid, and only the lengths and
+    /// the recorded metadata need to follow
+    pub(super) fn bump_data_len(&mut self, path: &Path, new_len: u64) {
+        for fork in self.forks.values_mut() {
+            if fork.path == path {
+                fork.meta.data_len = new_len;
+                if !fork.rsrc {
+                    fork.len = new_len;
+                }
+            }
+        }
+    }
+
+    /// FPWrite: [fork ref][offset u32][request count u32]; the data
+    /// arrives through the ASP Write's WriteContinue. The request's
+    /// header byte is the Start/EndFlag: bit 7 means the offset is a
+    /// signed distance from the end of the fork. The reply carries
+    /// LastWritten: the offset just past the last byte written.
+    pub(super) fn cmd_write(&mut self, flag: u8, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let fork_ref = r.u16()?;
+        let offset = r.u32()?;
+        let count = r.u32()?;
+        // ch13: a write may ask for more than ASP's QuantumSize. The
+        // transfer is then cut short, this writes what arrived, and
+        // LastWritten tells the client where to continue.
+        if (count as i32) < 0 {
+            return Err(ERR_PARAM);
+        }
+        let data = r.rest();
+        let data_len = (count as usize).min(data.len());
+        let data = &data[..data_len];
+        let fork = self.forks.get_mut(&fork_ref).ok_or(ERR_PARAM)?;
+        if !fork.write {
+            return Err(ERR_ACCESS_DENIED);
+        }
+        let mut offset = u64::from(offset);
+        if flag & 0x80 != 0 {
+            // The offset is a SIGNED distance from the end of the fork
+            // (ch13: negative to indicate a byte within the fork; a
+            // positive value writes past the end)
+            let pos = fork.len as i64 + offset as i32 as i64;
+            if pos < 0 {
+                return Err(ERR_PARAM);
+            }
+            offset = pos as u64;
+        } else if (offset as i32) < 0 {
+            // A negative start-relative offset is an error
+            return Err(ERR_PARAM);
+        }
+        let last_written = (offset + data_len as u64) as u32;
+        let reply = last_written.to_be_bytes().to_vec();
+        if fork.rsrc {
+            // Resource forks write through the metadata backend
+            let path = fork.path.clone();
+            match crate::meta::write_rsrc(&path, offset, data) {
+                Ok(new_len) => {
+                    fork.len = new_len;
+                    fork.written = true;
+                    self.refresh_forks(&path);
+                }
+                Err(e) => return Err(io_err(&e)),
+            }
+            self.touch_volume();
+            return Ok(reply);
+        }
+        // The data fork writes through the open handle
+        let written = fork
+            .file
+            .seek(SeekFrom::Start(fork.offset + offset))
+            .and_then(|_| fork.file.write_all(data));
+        if let Err(e) = written {
+            return Err(io_err(&e));
+        }
+        let new_len = offset + data_len as u64;
+        fork.written = true;
+        if new_len > fork.len {
+            fork.len = new_len;
+            // The growth must show in this fork's parameters and in
+            // every other fork open on the file; a plain data write
+            // replaces nothing, so the IDs and handles stay valid
+            let path = fork.path.clone();
+            self.bump_data_len(&path, new_len);
+        }
+        self.touch_volume();
+        Ok(reply)
+    }
+
+    /// FPSetForkParms: [fork ref][bitmap 2][fork len u32]
+    pub(super) fn cmd_set_fork_params(&mut self, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let fork_ref = r.u16()?;
+        let bitmap = r.u16()?;
+        let len = r.u32()?;
+        let fork = self.forks.get_mut(&fork_ref).ok_or(ERR_PARAM)?;
+        if !fork.write {
+            return Err(ERR_ACCESS_DENIED);
+        }
+        // The bitmap must carry exactly the fork-length bit of the
+        // fork that is open: 0x0200 the data fork, 0x0400 the resource
+        // fork
+        let wanted = if fork.rsrc { 0x0400 } else { 0x0200 };
+        if bitmap != wanted {
+            return Err(ERR_BITMAP);
+        }
+        // ch13: a negative fork length is a parameter error
+        if (len as i32) < 0 {
+            return Err(ERR_PARAM);
+        }
+        let len = u64::from(len);
+        // The modification date follows, as it does for a write
+        fork.written = true;
+        if fork.rsrc {
+            let path = fork.path.clone();
+            match crate::meta::set_rsrc_len(&path, len) {
+                Ok(new_len) => {
+                    fork.len = new_len;
+                    self.refresh_forks(&path);
+                }
+                Err(e) => return Err(io_err(&e)),
+            }
+        } else {
+            if let Err(e) = fork.file.set_len(fork.offset + len) {
+                return Err(io_err(&e));
+            }
+            fork.len = len;
+            // The length change shows in every other fork open on the
+            // file, without a metadata re-read
+            let path = fork.path.clone();
+            self.bump_data_len(&path, len);
+        }
+        self.touch_volume();
+        Ok(Vec::new())
+    }
+
+    /// FPFlush / FPFlushFork: sync the open forks to disk
+    pub(super) fn cmd_flush(&self, cmd: u8, params: &[u8]) -> Reply {
+        let flush_all = cmd == CMD_FLUSH;
+        // FPFlush's parameter is the volume ID, FPFlushFork's the fork's
+        let id = Reader::new(params).u16()?;
+        for (fork_ref, fork) in &self.forks {
+            if !flush_all && id != *fork_ref {
+                continue;
+            }
+            // Only a written fork has anything to sync, and Windows refuses
+            // it on a handle opened for reading
+            if !fork.write {
+                continue;
+            }
+            if let Err(e) = fork.file.sync_all() {
+                return Err(io_err(&e));
+            }
+        }
+        Ok(Vec::new())
     }
 }
 

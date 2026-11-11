@@ -63,6 +63,155 @@ fn test_leftover_apple_single_reads_and_refuses_writes() {
 }
 
 #[test]
+fn test_write_end_flag_and_last_written() {
+    let (mut server, dir) = test_server_writable("write-endflag");
+    std::fs::write(dir.join("f.txt"), b"abcde").unwrap();
+    // Open for writing
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    // [Write][EndFlag 0x80][ref][offset -2 (signed)][count 2]
+    // [data]: 2 bytes before the end of the 5-byte fork = position 3
+    let mut write = vec![33, 0x80, 0, 0, 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 2];
+    write[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    write.extend_from_slice(b"XX");
+    let (r, reply) = result_of(server.command(1, &write));
+    assert_eq!(r, 0);
+    // LastWritten: the offset just past the last byte written
+    assert_eq!(reply, 5u32.to_be_bytes());
+    // An end-relative offset before the start of the fork is a
+    // parameter error
+    let mut write = vec![33, 0x80, 0, 0, 0xFF, 0xFF, 0xFF, 0xFA, 0, 0, 0, 1];
+    write[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    write.extend_from_slice(b"Z");
+    assert_eq!(result_of(server.command(1, &write)).0, ERR_PARAM);
+    // Read back through a fresh read-only fork: "abcXX"
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0];
+    read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    let (r, reply) = result_of(server.command(1, &read));
+    assert_eq!(r, 0);
+    assert_eq!(&reply[..5], b"abcXX");
+}
+
+#[test]
+fn test_write_and_read_data_fork() {
+    let (mut server, dir) = test_server_writable("write-data");
+    std::fs::write(dir.join("hello.txt"), b"Hello from the Snow AFP server!").unwrap();
+    // Open for writing: access byte 1
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 3, 2, 9];
+    data.extend_from_slice(b"hello.txt");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    // [Write][0][ref][offset 6][count 5][data]
+    let mut write = vec![33, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 5];
+    write[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    write.extend_from_slice(b"Snow!");
+    let (r, _) = result_of(server.command(1, &write));
+    assert_eq!(r, 0);
+    // Read it back through a fresh read-only fork
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 9];
+    data.extend_from_slice(b"hello.txt");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 0, 0];
+    read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    let (r, reply) = result_of(server.command(1, &read));
+    assert_eq!(r, 0);
+    assert_eq!(&reply[..11], b"Hello Snow!");
+    // The write extended nothing: the fork length is unchanged
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 9];
+    data.extend_from_slice(b"hello.txt");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let _ = fork_ref;
+}
+
+#[test]
+fn test_write_past_end_extends_the_fork() {
+    let (mut server, dir) = test_server_writable("write-extend");
+    std::fs::write(dir.join("f.txt"), b"abc").unwrap();
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 3, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    // Write 4 bytes at offset 8: the fork extends to 12
+    let mut write = vec![33, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 4];
+    write[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    write.extend_from_slice(b"WXYZ");
+    assert_eq!(result_of(server.command(1, &write)).0, 0);
+    // A fresh open reports the new length
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let len = u32::from_be_bytes(reply[4..8].try_into().unwrap());
+    assert_eq!(len, 12);
+    assert_eq!(std::fs::read(dir.join("f.txt")).unwrap().len(), 12);
+}
+
+#[test]
+fn test_set_fork_params_truncates() {
+    let (mut server, dir) = test_server_writable("write-trunc");
+    std::fs::write(dir.join("f.txt"), b"abcdefghij").unwrap();
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 3, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    // [SetForkParms][0][ref][bitmap 0x0200][len 3]
+    let mut set = vec![31, 0, 0, 0, 0x02, 0x00, 0, 0, 0, 3];
+    set[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &set)).0, 0);
+    assert_eq!(std::fs::read(dir.join("f.txt")).unwrap(), b"abc");
+}
+
+#[test]
+fn test_rsrc_fork_round_trip_apple_double() {
+    let (mut server, dir) = test_server_writable("write-rsrc");
+    std::fs::write(dir.join("app"), b"data").unwrap();
+    // Open the resource fork (flag 0x80) for writing
+    let mut data = vec![26, 0x80, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 3, 2, 3];
+    data.extend_from_slice(b"app");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let write_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut write = vec![33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8];
+    write[2..4].copy_from_slice(&write_ref.to_be_bytes());
+    write.extend_from_slice(b"resource");
+    assert_eq!(result_of(server.command(1, &write)).0, 0);
+    // The AppleDouble container now exists
+    assert!(dir.join(".AppleDouble").join("app").exists());
+    // The data fork is untouched
+    assert_eq!(std::fs::read(dir.join("app")).unwrap(), b"data");
+    // A fresh open reads the fork back
+    let mut data = vec![26, 0x80, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 3];
+    data.extend_from_slice(b"app");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0];
+    read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    let (r, reply) = result_of(server.command(1, &read));
+    assert_eq!(r, 0);
+    assert_eq!(reply, b"resource");
+    // Truncate it (through the write fork)
+    let mut set = vec![31, 0, 0, 0, 0x04, 0x00, 0, 0, 0, 4];
+    set[2..4].copy_from_slice(&write_ref.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &set)).0, 0);
+    let mut data = vec![26, 0x80, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 3];
+    data.extend_from_slice(b"app");
+    let (_, reply) = result_of(server.command(1, &data));
+    let len = u32::from_be_bytes(reply[4..8].try_into().unwrap());
+    assert_eq!(len, 4);
+}
+
+#[test]
 fn test_read_newline_mask_stops_at_the_newline_char() {
     let (mut server, dir) = test_server("nl-mask");
     std::fs::write(dir.join("text.txt"), b"hello\nworld\rend").unwrap();
@@ -184,6 +333,45 @@ fn test_open_resource_fork_from_sidecar() {
 }
 
 #[test]
+fn client_date_set_while_open_survives_close() {
+    let (mut server, dir) = test_server_writable("close");
+    std::fs::write(dir.join("f.txt"), b"").unwrap();
+    let f = open_rw(&mut server, "f.txt", false);
+    write(&mut server, f, 0, b"data");
+    // The client copies the original's dates while the fork is open
+    let old = (-157_785_600i32) as u32;
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x0C];
+    data.extend_from_slice(&mac_path("f.txt"));
+    if data.len() % 2 == 1 {
+        data.push(0);
+    }
+    data.extend_from_slice(&old.to_be_bytes());
+    data.extend_from_slice(&old.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let mut c = vec![4, 0];
+    c.extend_from_slice(&f.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &c)).0, 0);
+    let m = server
+        .meta_open(&dir.canonicalize().unwrap().join("f.txt"))
+        .mod_date;
+    assert_eq!(m, old, "the client's date was overwritten at close");
+}
+
+#[test]
+fn rsrc_fork_reads_back_after_first_write() {
+    let (mut server, dir) = test_server_writable("rsrc");
+    std::fs::write(dir.join("doc"), b"DATAFORKDATAFORK").unwrap();
+    let f = open_rw(&mut server, "doc", true);
+    write(&mut server, f, 0, b"RSRC");
+    let (r, got) = read(&mut server, f, 0, 4);
+    assert_eq!(
+        r, 0,
+        "the resource fork must be readable after its first write"
+    );
+    assert_eq!(got, b"RSRC");
+}
+
+#[test]
 fn a_write_inhibited_file_does_not_open_for_write() {
     let (mut s, dir) = test_server_writable("inhibit");
     std::fs::write(dir.join("f"), b"x").unwrap();
@@ -269,4 +457,57 @@ fn fork_references_skip_zero_and_open_forks() {
     // The wrap passes 0, and the fork still open at 1
     assert_eq!(first, 1);
     assert_eq!(open(&mut s, "f", false, 1).1, 2);
+}
+
+#[test]
+fn set_fork_parms_extends_a_resource_fork() {
+    let (mut s, dir) = test_server_writable("rsrc-grow");
+    std::fs::write(dir.join("f"), b"").unwrap();
+    let (_, f) = open(&mut s, "f", true, 3);
+    assert_eq!(set_fork_len(&mut s, f, 0x0400, 100), 0);
+    let mut g = vec![14u8, 0];
+    g.extend_from_slice(&f.to_be_bytes());
+    g.extend_from_slice(&0x0400u16.to_be_bytes());
+    let (_, reply) = result_of(s.command(1, &g));
+    assert_eq!(u32::from_be_bytes(reply[2..6].try_into().unwrap()), 100);
+    // It reads as zeros
+    let (r, data) = read(&mut s, f, 96, 4);
+    assert_eq!((r, data), (0, vec![0; 4]));
+    // A negative length is refused, and nothing changes
+    assert_eq!(set_fork_len(&mut s, f, 0x0400, 0x8000_0000), ERR_PARAM);
+}
+
+#[test]
+fn a_write_longer_than_the_quantum_writes_what_arrived() {
+    let (mut s, dir) = test_server_writable("partial");
+    std::fs::write(dir.join("f"), b"").unwrap();
+    let (_, f) = open(&mut s, "f", false, 3);
+    let mut d = vec![33u8, 0];
+    d.extend_from_slice(&f.to_be_bytes());
+    d.extend_from_slice(&0u32.to_be_bytes());
+    d.extend_from_slice(&8000u32.to_be_bytes());
+    d.extend_from_slice(&vec![1u8; 4624]);
+    let (r, reply) = result_of(s.command(1, &d));
+    assert_eq!(r, 0);
+    assert_eq!(reply, 4624u32.to_be_bytes());
+    assert_eq!(std::fs::metadata(dir.join("f")).unwrap().len(), 4624);
+}
+
+#[test]
+fn a_resource_fork_read_follows_a_container_rewrite() {
+    // Reading after a metadata write that rewrites the container
+    let (mut s, dir) = test_server_writable("rsrc-rewrite");
+    std::fs::write(dir.join("f"), b"").unwrap();
+    let mut open = vec![26u8, 0x80, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3];
+    open.extend(mac_path("f"));
+    let (_, reply) = result_of(s.command(1, &open));
+    let f = [reply[2], reply[3]];
+    let mut w = vec![33u8, 0, f[0], f[1], 0, 0, 0, 0, 0, 0, 0, 4];
+    w.extend_from_slice(b"RSRC");
+    assert_eq!(result_of(s.command(1, &w)).0, 0);
+    // Attributes are a new entry: the container is rewritten
+    assert_eq!(set_parms(&mut s, "f", 1, &0x8001u16.to_be_bytes()), 0);
+    let mut r = vec![27u8, 0, f[0], f[1], 0, 0, 0, 0, 0, 0, 0, 4];
+    r.extend_from_slice(&[0, 0]);
+    assert_eq!(result_of(s.command(1, &r)).1, b"RSRC");
 }

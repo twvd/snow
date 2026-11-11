@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,8 @@ use self::{params::*, path::*};
 const CMD_CLOSE_VOL: u8 = 2;
 const CMD_CLOSE_FORK: u8 = 4;
 const CMD_ENUMERATE: u8 = 9;
+const CMD_FLUSH: u8 = 10;
+const CMD_FLUSH_FORK: u8 = 11;
 const CMD_GET_FORK_PARMS: u8 = 14;
 const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
@@ -57,7 +59,9 @@ const CMD_GET_CMT: u8 = 58;
 const CMD_ADD_ICON: u8 = 192;
 const CMD_SET_DIR_PARMS: u8 = 29;
 const CMD_SET_FILE_PARMS: u8 = 30;
+const CMD_SET_FORK_PARMS: u8 = 31;
 const CMD_SET_VOL_PARMS: u8 = 32;
+const CMD_WRITE: u8 = 33;
 const CMD_SET_FILE_DIR_PARMS: u8 = 35;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
@@ -277,6 +281,11 @@ struct Fork {
     read: bool,
     /// Whether the fork was opened for writing
     write: bool,
+    /// Whether FPWrite data actually landed in this fork
+    written: bool,
+    /// Whether the client set the modification date while this fork
+    /// was open (close must not stamp it with "now" then)
+    date_set_by_client: bool,
     /// The host file the handle is open on: the file itself for a data
     /// fork, the metadata container for a resource fork or an AppleSingle
     /// file (an empty resource fork starts on the data file and moves into
@@ -471,12 +480,21 @@ impl Afp {
                     }
                     CMD_SET_FILE_PARMS => self.cmd_set_params(version, SetCall::File, params),
                     CMD_SET_DIR_PARMS => self.cmd_set_params(version, SetCall::Dir, params),
+                    CMD_FLUSH | CMD_FLUSH_FORK => self.cmd_flush(cmd, params),
                     // FPRead's EOF comes with the data read before it
                     CMD_READ => match self.cmd_read(params) {
                         Ok((data, eof)) => return (if eof { err(ERR_EOF) } else { ok() }, data),
                         Err(code) => Err(code),
                     },
+                    CMD_WRITE => {
+                        // FPWrite's header byte is the Start/EndFlag
+                        // (bit 7 = the offset is relative to the end
+                        // of the fork)
+                        let flag = data.get(1).copied().unwrap_or(0);
+                        self.cmd_write(flag, params)
+                    }
                     CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
+                    CMD_SET_FORK_PARMS => self.cmd_set_fork_params(params),
                     CMD_SET_VOL_PARMS => self.cmd_set_vol_params(params),
                     CMD_CLOSE_FORK => self.cmd_close_fork(params),
                     CMD_OPEN_DT => self.cmd_open_dt(params),
@@ -733,6 +751,11 @@ impl<'a> Reader<'a> {
         if self.offset % 2 == 1 && !self.data.is_empty() {
             let _ = self.skip(1);
         }
+    }
+
+    /// What is left of the request
+    fn rest(&self) -> &'a [u8] {
+        self.data
     }
 }
 

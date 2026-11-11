@@ -408,6 +408,7 @@ impl Afp {
         let mut finder_info = current.finder_info;
         let mut attrs_wanted = false;
         let mut dates_wanted = false;
+        let mut modify_set = false;
         for bit in 0..16 {
             if bitmap & (1 << bit) == 0 {
                 continue;
@@ -441,7 +442,10 @@ impl Afp {
                     if v != 0 {
                         match bit {
                             2 => create = v,
-                            3 => modify = v,
+                            3 => {
+                                modify = v;
+                                modify_set = true;
+                            }
                             _ => backup = v,
                         }
                     }
@@ -478,6 +482,15 @@ impl Afp {
         })();
         if let Err(e) = written {
             return Err(io_err(&e));
+        }
+        if modify_set {
+            // Close must not stamp a date the client set while the
+            // fork was open
+            for fork in self.forks.values_mut() {
+                if fork.path == target {
+                    fork.date_set_by_client = true;
+                }
+            }
         }
         self.touch_volume();
         self.refresh_forks(&target);

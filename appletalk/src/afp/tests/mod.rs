@@ -186,6 +186,27 @@ pub(super) fn open_fork(server: &mut Afp, name: &str, rsrc: bool) -> (i32, Vec<u
     result_of(server.command(1, &data))
 }
 
+pub(super) fn open_rw(server: &mut Afp, name: &str, rsrc: bool) -> u16 {
+    let mut data = vec![
+        26,
+        if rsrc { 0x80 } else { 0 },
+        0,
+        1,
+        0,
+        0,
+        0,
+        2,
+        0x00,
+        0x00,
+        0x00,
+        0x03,
+    ];
+    data.extend_from_slice(&mac_path(name));
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0, "open {name}");
+    u16::from_be_bytes([reply[2], reply[3]])
+}
+
 pub(super) fn read(s: &mut Afp, f: u16, off: u32, n: u32) -> (i32, Vec<u8>) {
     let mut d = vec![27u8, 0];
     d.extend_from_slice(&f.to_be_bytes());
@@ -197,6 +218,14 @@ pub(super) fn read(s: &mut Afp, f: u16, off: u32, n: u32) -> (i32, Vec<u8>) {
 
 pub(super) fn result_of(reply: (Vec<u8>, Vec<u8>)) -> (i32, Vec<u8>) {
     (i32::from_be_bytes(reply.0.try_into().unwrap()), reply.1)
+}
+
+pub(super) fn set_fork_len(s: &mut Afp, f: u16, bitmap: u16, len: u32) -> i32 {
+    let mut d = vec![31u8, 0];
+    d.extend_from_slice(&f.to_be_bytes());
+    d.extend_from_slice(&bitmap.to_be_bytes());
+    d.extend_from_slice(&len.to_be_bytes());
+    result_of(s.command(1, &d)).0
 }
 
 /// FPSetFileDirParms with one bitmap and the values at the next even offset
@@ -232,4 +261,13 @@ pub(super) fn test_server_writable(name: &str) -> (Afp, PathBuf) {
         Afp::new_with(dir.clone(), None, MaxVersion::default(), settings),
         dir,
     )
+}
+
+pub(super) fn write(server: &mut Afp, f: u16, off: u32, bytes: &[u8]) {
+    let mut w = vec![33, 0];
+    w.extend_from_slice(&f.to_be_bytes());
+    w.extend_from_slice(&off.to_be_bytes());
+    w.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    w.extend_from_slice(bytes);
+    assert_eq!(result_of(server.command(1, &w)).0, 0);
 }
