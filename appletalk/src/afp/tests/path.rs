@@ -729,3 +729,26 @@ fn special_files_never_hang_a_call() {
     }
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+/// A bench, not a test: Enumerate and delete in a folder of 10,000
+/// entries. Run with `cargo test -p snow_appletalk --release -- --ignored
+/// --nocapture large_folder`.
+#[test]
+#[ignore]
+fn large_folder_bench() {
+    let (mut server, dir) = test_server_writable("bench-large");
+    let names: Vec<String> = (0..10_000).map(|i| format!("file {i:05}")).collect();
+    for name in &names {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    let start = std::time::Instant::now();
+    let listed = enumerate_in_pages(&mut server, 50);
+    let enumerate = start.elapsed();
+    assert_eq!(listed.len(), names.len());
+    let start = std::time::Instant::now();
+    for name in &names {
+        assert_eq!(result_of(server.command(1, &simple(8, name))).0, 0);
+    }
+    let delete = start.elapsed();
+    eprintln!("10,000 entries: Enumerate in pages of 50 {enumerate:?}, delete each {delete:?}");
+}
