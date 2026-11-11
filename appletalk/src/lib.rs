@@ -21,6 +21,9 @@ pub mod rfork;
 pub mod test;
 pub mod wire;
 
+#[cfg(test)]
+mod no_panic_tests;
+
 /// A scratch folder for a test, under one folder per test process, so
 /// two test runs at once (from two worktrees) never share files
 #[cfg(test)]
