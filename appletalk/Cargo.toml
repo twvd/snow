@@ -9,6 +9,7 @@ test_module = []
 [dependencies]
 anyhow = "1.0"
 crossbeam-channel = "0.5"
+encoding_rs = "0.8"
 log = "0.4"
 
 [lints]
