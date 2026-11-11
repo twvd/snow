@@ -4,7 +4,9 @@
 //! directory convention and the macOS `._` sidecar convention) and
 //! AppleSingle containers, reading the resource fork, the Finder
 //! information and the file dates. Files without metadata fall back to
-//! their host file attributes.
+//! their host file attributes. Metadata is written to the AppleDouble
+//! container it was read from, or to a new one in `.AppleDouble/`;
+//! AppleSingle files are only read.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,11 @@ const ATTR_WRITE_INHIBIT: u16 = 0x0020;
 /// The DAlreadyOpen and RAlreadyOpen bits of the AFP file attributes
 const ATTR_ALREADY_OPEN: u16 = 0x0018;
 
+/// The longest resource fork. Inside Macintosh, Volume I, p. I-130: a
+/// resource's data offset in the resource map is 3 bytes long, so the
+/// Resource Manager cannot use a fork longer than 16 MiB.
+const MAX_RSRC_LEN: u64 = 16 << 20;
+
 /// Seconds between the Unix (1970) and AFP (2000-01-01) epochs
 const AFP_EPOCH_OFFSET: i64 = 946_684_800;
 
@@ -37,6 +44,17 @@ pub(crate) fn afp_date(time: std::time::SystemTime) -> u32 {
         Err(e) => -(e.duration().as_secs() as i64),
     };
     (unix - AFP_EPOCH_OFFSET).clamp(i32::MIN.into(), i32::MAX.into()) as i32 as u32
+}
+
+/// An AFP date as a host time
+fn host_time(afp: u32) -> std::time::SystemTime {
+    let unix = i64::from(afp as i32) + AFP_EPOCH_OFFSET;
+    let since_1970 = std::time::Duration::from_secs(unix.unsigned_abs());
+    if unix >= 0 {
+        std::time::UNIX_EPOCH + since_1970
+    } else {
+        std::time::UNIX_EPOCH - since_1970
+    }
 }
 
 /// The metadata of a volume file
@@ -316,7 +334,161 @@ fn base_meta(path: &Path) -> Meta {
     meta
 }
 
-use std::io::{Read, Seek, SeekFrom};
+/// Parse the entries of an AppleDouble or AppleSingle container:
+/// the (id, offset, length) table in its on-disk order, so callers
+/// can use the real body offsets
+fn parse_container(data: &[u8]) -> Option<Vec<(u32, u32, u32)>> {
+    if data.len() < 26
+        || !(data.starts_with(&APPLE_SINGLE_MAGIC) || data.starts_with(&APPLE_DOUBLE_MAGIC))
+    {
+        return None;
+    }
+    let num_entries = u16::from_be_bytes([data[24], data[25]]) as usize;
+    let mut entries = Vec::with_capacity(num_entries);
+    let mut pos = 26;
+    for _ in 0..num_entries {
+        if data.len() < pos + 12 {
+            return None;
+        }
+        let id = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        let offset =
+            u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+        let len =
+            u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+        entries.push((id, offset, len));
+        pos += 12;
+    }
+    Some(entries)
+}
+
+// ---------------------------------------------------------------------
+// The write side: metadata containers
+// ---------------------------------------------------------------------
+
+use std::io::{self, Read, Seek, SeekFrom, Write};
+
+/// An AppleDouble or AppleSingle container loaded into memory
+struct Container {
+    /// The magic, the version and the filler, kept as they were: a foreign
+    /// container's filler names who wrote it
+    head: [u8; 24],
+    /// The entries in table order with their real on-disk body offsets
+    /// (foreign containers do not pack the bodies right after the
+    /// table, so the offsets must be honored)
+    entries: Vec<(u32, u64, Vec<u8>)>,
+}
+
+impl Container {
+    /// An empty AppleDouble (version 2) container
+    fn new() -> Self {
+        let mut head = [0u8; 24];
+        head[..4].copy_from_slice(&APPLE_DOUBLE_MAGIC);
+        head[4..8].copy_from_slice(&0x0002_0000u32.to_be_bytes());
+        Self {
+            head,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Parse a container, or None when the data is not one
+    fn load(data: &[u8]) -> Option<Self> {
+        let entries = parse_container(data)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (id, offset, len) in entries {
+            let end = (offset as usize).checked_add(len as usize)?;
+            let body = data.get(offset as usize..end)?.to_vec();
+            out.push((id, u64::from(offset), body));
+        }
+        Some(Self {
+            head: data[..24].try_into().ok()?,
+            entries: out,
+        })
+    }
+
+    fn get(&self, id: u32) -> Option<&[u8]> {
+        self.entries
+            .iter()
+            .find(|(eid, ..)| *eid == id)
+            .map(|(_, _, body)| body.as_slice())
+    }
+
+    /// Replace the entry body, appending the entry when absent
+    fn set(&mut self, id: u32, body: &[u8]) {
+        if let Some((_, _, old)) = self.entries.iter_mut().find(|(eid, ..)| *eid == id) {
+            *old = body.to_vec();
+        } else {
+            self.entries.push((id, 0, body.to_vec()));
+        }
+    }
+
+    /// Whether the entry's body is the last one in the container (no
+    /// other non-empty body starts at or after its offset), so it can
+    /// grow in place
+    fn grows_in_place(&self, id: u32) -> bool {
+        let Some(&(_, off, _)) = self.entries.iter().find(|(eid, ..)| *eid == id) else {
+            return false;
+        };
+        !self
+            .entries
+            .iter()
+            .any(|(eid, o, b)| *eid != id && *o >= off && !b.is_empty())
+    }
+
+    /// The entry's real body offset in the loaded container
+    fn body_offset(&self, id: u32) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|(eid, ..)| *eid == id)
+            .map(|(_, off, _)| *off)
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.head);
+        out.extend_from_slice(&(self.entries.len() as u16).to_be_bytes());
+        let mut body = 26 + 12 * self.entries.len();
+        for (id, _, bytes) in &self.entries {
+            out.extend_from_slice(&id.to_be_bytes());
+            out.extend_from_slice(&(body as u32).to_be_bytes());
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            body += (bytes.len() + 3) & !3;
+        }
+        for (_, _, bytes) in &self.entries {
+            out.extend_from_slice(bytes);
+            let pad = (4 - bytes.len() % 4) % 4;
+            out.extend(std::iter::repeat_n(0, pad));
+        }
+        out
+    }
+
+    /// Replace the container on disk. The new one is complete before
+    /// it takes the old one's place: a resource fork in it may be the
+    /// only copy, and a crash or a full disk must not lose it.
+    fn save(&self, path: &Path) -> io::Result<()> {
+        let tmp = path.with_file_name(format!(".snowtmp.{}", std::process::id()));
+        let written = (|| {
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(&self.to_bytes())?;
+            f.sync_all()?;
+            if let Ok(md) = fs::metadata(path) {
+                let _ = fs::set_permissions(&tmp, md.permissions());
+            }
+            fs::rename(&tmp, path)
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        written
+    }
+
+    /// Patch one entry's length field in a container on disk, in place
+    fn patch_len(path: &Path, index: usize, len: u32) -> io::Result<()> {
+        let mut f = fs::OpenOptions::new().write(true).open(path)?;
+        f.seek(SeekFrom::Start((26 + index * 12 + 8) as u64))?;
+        f.write_all(&len.to_be_bytes())?;
+        Ok(())
+    }
+}
 
 /// The `._<name>` sidecar path next to a file (the macOS metadata
 /// convention the read side probes first)
@@ -327,10 +499,392 @@ pub fn sidecar_path(path: &Path) -> Option<PathBuf> {
     Some(path.with_file_name(name))
 }
 
+/// Remove a file's `._<name>` sidecar, if there is one
+pub fn remove_sidecar(path: &Path) {
+    if let Some(sidecar) = sidecar_path(path) {
+        let _ = fs::remove_file(&sidecar);
+    }
+}
+
 /// The container of a directory: inside the directory itself, so the
 /// volume root's stays inside the share (netatalk's convention)
 fn parent_container(dir: &Path) -> PathBuf {
     dir.join(".AppleDouble").join(".Parent")
+}
+
+/// The container path for a file or a directory
+fn double_path(path: &Path) -> Option<PathBuf> {
+    if fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Some(parent_container(path));
+    }
+    let name = path.file_name()?;
+    let mut dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    dir.push(".AppleDouble");
+    dir.push(name);
+    Some(dir)
+}
+
+/// Create the .AppleDouble directory a container goes in. Metadata is
+/// not a change to the folder holding it, so that folder keeps its
+/// modification date.
+fn create_double_dir(container: &Path) -> io::Result<()> {
+    let Some(double_dir) = container.parent() else {
+        return Ok(());
+    };
+    if double_dir.exists() {
+        return Ok(());
+    }
+    let owner = double_dir.parent();
+    let mtime = owner.and_then(|o| fs::metadata(o).and_then(|m| m.modified()).ok());
+    fs::create_dir_all(double_dir)?;
+    if let (Some(owner), Some(mtime)) = (owner, mtime)
+        && let Ok(f) = fs::File::open(owner)
+    {
+        let _ = f.set_modified(mtime);
+    }
+    Ok(())
+}
+
+/// The container a write goes to: the one the read side finds, so what is
+/// written is what is read back, or a new `.AppleDouble` one when there is
+/// none. A macOS `._` file is written where it is, never merged and
+/// deleted: macOS reads it too.
+fn write_path(path: &Path) -> Option<PathBuf> {
+    let candidates = containers(path);
+    let is_container = |c: &&PathBuf| {
+        let mut magic = [0u8; 4];
+        fs::File::open(c)
+            .and_then(|mut f| f.read_exact(&mut magic))
+            .is_ok()
+            && (magic == APPLE_DOUBLE_MAGIC || magic == APPLE_SINGLE_MAGIC)
+    };
+    candidates
+        .iter()
+        .find(is_container)
+        .or_else(|| candidates.last())
+        .cloned()
+}
+
+/// Load the container a write goes to, or a fresh one
+fn load_double(path: &Path) -> io::Result<(PathBuf, Container)> {
+    let container_path = write_path(path)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    // Only a missing container is a fresh one: any other read error would
+    // replace metadata that may still be there
+    let container = match fs::read(&container_path) {
+        Ok(data) => Container::load(&data).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "corrupt AppleDouble container")
+        })?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Every entry a write can change, in netatalk's order with the
+            // empty resource fork last, so later writes patch the container
+            // where it is and a resource fork grows in place. They start
+            // with the current (possibly synthesized) metadata, so writing
+            // only the dates or the attributes keeps the type.
+            let meta = open(path);
+            let mut container = Container::new();
+            container.set(
+                ENTRY_DATES,
+                &dates_body(meta.create_date, meta.mod_date, meta.backup_date),
+            );
+            container.set(ENTRY_FINDER_INFO, &meta.finder_info);
+            container.set(ENTRY_AFP_INFO, &u32::from(meta.attrs).to_be_bytes());
+            container.set(ENTRY_RSRC_FORK, &[]);
+            container
+        }
+        Err(e) => return Err(e),
+    };
+    Ok((container_path, container))
+}
+
+/// Overwrite an existing entry where it is, when the new body fits.
+///
+/// Most metadata writes are this one: the other entries are not touched,
+/// a foreign container (netatalk's fixed layout) keeps its shape, and a
+/// failure cannot take a resource fork with it. False when the container
+/// or a big enough entry is not there.
+fn patch_entry(container: &Path, id: u32, body: &[u8]) -> io::Result<bool> {
+    let mut f = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(container)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut head = [0u8; 26];
+    if f.read_exact(&mut head).is_err() || !head.starts_with(&APPLE_DOUBLE_MAGIC) {
+        return Ok(false);
+    }
+    let Some(entries) = read_entry_table(&mut f, &head) else {
+        return Ok(false);
+    };
+    let Some(&(_, offset, _)) = entries
+        .iter()
+        .find(|(eid, _, len)| *eid == id && *len as usize >= body.len())
+    else {
+        return Ok(false);
+    };
+    pwrite(&mut f, u64::from(offset), body)?;
+    Ok(true)
+}
+
+/// Set one small metadata entry
+fn set_entry(path: &Path, id: u32, body: &[u8]) -> io::Result<()> {
+    if let Some(container) = write_path(path)
+        && patch_entry(&container, id, body)?
+    {
+        return Ok(());
+    }
+    // An entry the container lacks means a rewrite with a longer entry
+    // table. A known limit: a macOS ._ file holds the extended attributes
+    // inside its Finder Info entry, at offsets from the start of the file,
+    // and macOS reads them only from a two-entry file, so after the
+    // rewrite macOS no longer finds them. Its other entries are kept.
+    let (container_path, mut container) = load_double(path)?;
+    container.set(id, body);
+    create_double_dir(&container_path)?;
+    container.save(&container_path)
+}
+
+/// Write bytes at an offset in an open file
+fn pwrite(file: &mut fs::File, offset: u64, data: &[u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(data)
+}
+
+/// Set a host file's modification time from an AFP date (0 = leave it)
+fn set_host_mtime(path: &Path, afp_seconds: u32) {
+    // Opening anything else than a file or a directory could wait, as a
+    // FIFO does for its writer
+    if afp_seconds == 0 || !fs::metadata(path).is_ok_and(|m| m.is_file() || m.is_dir()) {
+        return;
+    }
+    if let Ok(f) = fs::File::open(path) {
+        let _ = f.set_modified(host_time(afp_seconds));
+    }
+}
+
+/// The 16-byte File Dates entry body (create, modify, backup, access)
+fn dates_body(create: u32, modify: u32, backup: u32) -> Vec<u8> {
+    let mut dates = Vec::with_capacity(16);
+    dates.extend_from_slice(&create.to_be_bytes());
+    dates.extend_from_slice(&modify.to_be_bytes());
+    dates.extend_from_slice(&backup.to_be_bytes());
+    dates.extend_from_slice(&0u32.to_be_bytes()); // access date
+    dates
+}
+
+/// Set the 32-byte Finder information, creating the metadata container
+/// on first use
+pub fn set_finder_info(path: &Path, info: &[u8; 32]) -> io::Result<()> {
+    set_entry(path, ENTRY_FINDER_INFO, info)
+}
+
+/// Set the creation, modification and backup dates; the modification
+/// date also touches the host file so the data fork stays in sync
+pub fn set_dates(path: &Path, create: u32, modify: u32, backup: u32) -> io::Result<()> {
+    set_entry(path, ENTRY_DATES, &dates_body(create, modify, backup))?;
+    set_host_mtime(path, modify);
+    Ok(())
+}
+
+/// Set the AFP file attributes (invisible, locked, ...)
+pub fn set_attrs(path: &Path, attrs: u16) -> io::Result<()> {
+    set_entry(path, ENTRY_AFP_INFO, &u32::from(attrs).to_be_bytes())
+}
+
+/// Write into a resource fork that can take it where it is: its body is
+/// the last in the container (the shape we create, and netatalk's), and the
+/// write leaves no gap. Only the entry table is read: a large fork arrives
+/// in thousands of small writes. None when a rebuild is needed.
+fn write_rsrc_in_place(container: &Path, offset: u64, data: &[u8]) -> io::Result<Option<u64>> {
+    let mut f = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(container)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut head = [0u8; 26];
+    if f.read_exact(&mut head).is_err() || !head.starts_with(&APPLE_DOUBLE_MAGIC) {
+        return Ok(None);
+    }
+    let Some(entries) = read_entry_table(&mut f, &head) else {
+        return Ok(None);
+    };
+    let Some(index) = entries.iter().position(|(id, ..)| *id == ENTRY_RSRC_FORK) else {
+        return Ok(None);
+    };
+    let (_, body, len) = entries[index];
+    let last = !entries
+        .iter()
+        .any(|(id, off, l)| *id != ENTRY_RSRC_FORK && *off >= body && *l != 0);
+    if !last || offset > u64::from(len) {
+        return Ok(None);
+    }
+    pwrite(&mut f, u64::from(body) + offset, data)?;
+    let new_len = offset.saturating_add(data.len() as u64).max(u64::from(len));
+    if new_len > u64::from(len) {
+        drop(f);
+        Container::patch_len(container, index, new_len as u32)?;
+    }
+    Ok(Some(new_len))
+}
+
+/// A resource fork longer than MAX_RSRC_LEN is refused as a full disk.
+/// Both write paths build the whole fork in memory, so without the limit a
+/// 12-byte request could ask for gigabytes.
+fn check_rsrc_len(len: u64) -> io::Result<()> {
+    if len > MAX_RSRC_LEN {
+        return Err(io::Error::from(io::ErrorKind::StorageFull));
+    }
+    Ok(())
+}
+
+/// Write into the resource fork at the given fork offset (the fork
+/// extends when the write runs past its end), returning the new fork
+/// length
+pub fn write_rsrc(path: &Path, offset: u64, data: &[u8]) -> io::Result<u64> {
+    check_rsrc_len(offset.saturating_add(data.len() as u64))?;
+    if let Some(container) = write_path(path)
+        && let Some(new_len) = write_rsrc_in_place(&container, offset, data)?
+    {
+        return Ok(new_len);
+    }
+    let (container_path, mut container) = load_double(path)?;
+    create_double_dir(&container_path)?;
+    let old_len = container
+        .get(ENTRY_RSRC_FORK)
+        .map(|body| body.len() as u64)
+        .unwrap_or(0);
+    let new_len = offset.saturating_add(data.len() as u64).max(old_len);
+    // A new fork, a gap, or a foreign layout: rebuild
+    let mut body = container
+        .get(ENTRY_RSRC_FORK)
+        .map(|body| body.to_vec())
+        .unwrap_or_default();
+    if offset > body.len() as u64 {
+        body.extend(std::iter::repeat_n(
+            0,
+            (offset - body.len() as u64) as usize,
+        ));
+    }
+    let end = offset as usize + data.len();
+    if end > body.len() {
+        body.resize(end, 0);
+    }
+    body[offset as usize..end].copy_from_slice(data);
+    container.set(ENTRY_RSRC_FORK, &body);
+    // Move the resource fork to the end of the table so its
+    // body lands last in the rewritten container and the
+    // following writes grow in place
+    if let Some(pos) = container
+        .entries
+        .iter()
+        .position(|(id, ..)| *id == ENTRY_RSRC_FORK)
+    {
+        let entry = container.entries.remove(pos);
+        container.entries.push(entry);
+    }
+    container.save(&container_path)?;
+    Ok(new_len)
+}
+
+/// Set the resource fork's length: truncate it, or extend it with zeros,
+/// returning the new fork length
+pub fn set_rsrc_len(path: &Path, len: u64) -> io::Result<u64> {
+    check_rsrc_len(len)?;
+    // No container yet: an empty fork needs none, and a longer one is a
+    // write of nothing at its end
+    if !write_path(path).is_some_and(|c| c.exists()) {
+        return if len == 0 {
+            Ok(0)
+        } else {
+            write_rsrc(path, len, &[])
+        };
+    }
+    let (container_path, mut container) = load_double(path)?;
+    let Some(index) = container
+        .entries
+        .iter()
+        .position(|(id, ..)| *id == ENTRY_RSRC_FORK)
+    else {
+        if len > 0 {
+            // A new fork of that length
+            return write_rsrc(path, len, &[]);
+        }
+        return Ok(0);
+    };
+    if container.grows_in_place(ENTRY_RSRC_FORK) {
+        let body_offset = container.body_offset(ENTRY_RSRC_FORK).unwrap_or(0);
+        let f = fs::OpenOptions::new().write(true).open(&container_path)?;
+        f.set_len(body_offset + len)?;
+        Container::patch_len(&container_path, index, len as u32)?;
+    } else {
+        let mut body = container
+            .get(ENTRY_RSRC_FORK)
+            .map(|b| b.to_vec())
+            .unwrap_or_default();
+        body.resize(len as usize, 0);
+        container.set(ENTRY_RSRC_FORK, &body);
+        if let Some(pos) = container
+            .entries
+            .iter()
+            .position(|(id, ..)| *id == ENTRY_RSRC_FORK)
+        {
+            let entry = container.entries.remove(pos);
+            container.entries.push(entry);
+        }
+        container.save(&container_path)?;
+    }
+    Ok(len)
+}
+
+/// Remove a file's metadata containers (the caller deletes the file
+/// itself)
+pub fn remove_meta(path: &Path) {
+    remove_sidecar(path);
+    if let Some(container_path) = double_path(path)
+        && fs::remove_file(&container_path).is_ok()
+        && let Some(dir) = container_path.parent()
+    {
+        // Remove the .AppleDouble directory when it is now empty
+        let _ = fs::remove_dir(dir);
+    }
+}
+
+/// Move a file's metadata containers along with the file
+pub fn move_meta(from: &Path, to: &Path) -> io::Result<()> {
+    // The macOS `._` sidecar moves with the file (reads prefer it;
+    // a stale one would take the renamed file's metadata)
+    if let (Some(from_side), Some(to_side)) = (sidecar_path(from), sidecar_path(to))
+        && from_side.exists()
+    {
+        fs::rename(&from_side, &to_side)?;
+    }
+    // A directory's container is inside it and has moved with it
+    if fs::metadata(to).is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    let (Some(from), Some(to_container)) = (double_path(from), double_path(to)) else {
+        return Ok(());
+    };
+    if !from.exists() {
+        return Ok(());
+    }
+    create_double_dir(&to_container)?;
+    fs::rename(&from, &to_container)?;
+    if let Some(dir) = from.parent() {
+        let _ = fs::remove_dir(dir);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -468,6 +1022,91 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A netatalk-shaped container: fixed offsets, with the empty resource
+    /// fork last, at 741
+    fn netatalk_container(path: &Path, finder: &[u8; 32]) {
+        let mut data = vec![0u8; 741];
+        data[..4].copy_from_slice(&APPLE_DOUBLE_MAGIC);
+        data[4..8].copy_from_slice(&0x00020000u32.to_be_bytes());
+        data[24..26].copy_from_slice(&4u16.to_be_bytes());
+        let table: [(u32, u32, u32); 4] = [
+            (ENTRY_RSRC_FORK, 741, 0),
+            (ENTRY_DATES, 637, 16),
+            (ENTRY_FINDER_INFO, 653, 32),
+            (14, 689, 4),
+        ];
+        for (i, (id, off, len)) in table.iter().enumerate() {
+            let at = 26 + i * 12;
+            data[at..at + 4].copy_from_slice(&id.to_be_bytes());
+            data[at + 4..at + 8].copy_from_slice(&off.to_be_bytes());
+            data[at + 8..at + 12].copy_from_slice(&len.to_be_bytes());
+        }
+        data[653..685].copy_from_slice(finder);
+        data[689..693].copy_from_slice(&[0, 0, 1, 0xA1]);
+        fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn test_directory_metadata_lives_inside_the_directory() {
+        let dir = temp_dir("dir-inside");
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let mut info = [0u8; 32];
+        info[8] = 0x40;
+        set_finder_info(&sub, &info).unwrap();
+        assert!(sub.join(".AppleDouble/.Parent").is_file());
+        assert!(!dir.join(".AppleDouble").exists());
+        assert_eq!(open(&sub).finder_info, info);
+        // A file next to it keeps the usual place
+        let file = dir.join("file");
+        fs::write(&file, b"x").unwrap();
+        set_finder_info(&file, &info).unwrap();
+        assert!(dir.join(".AppleDouble/file").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_netatalk_parent_reads_and_keeps_its_layout() {
+        let dir = temp_dir("dir-netatalk");
+        let sub = dir.join("sub");
+        fs::create_dir_all(sub.join(".AppleDouble")).unwrap();
+        let parent = sub.join(".AppleDouble/.Parent");
+        let mut info = [0u8; 32];
+        info[..8].copy_from_slice(&[0, 0xBB, 0, 0x8C, 1, 0xAA, 2, 0x38]);
+        netatalk_container(&parent, &info);
+        assert_eq!(open(&sub).finder_info, info);
+        // A Finder info write stays in place: every other byte is kept
+        let before = fs::read(&parent).unwrap();
+        info[0] = 0x55;
+        set_finder_info(&sub, &info).unwrap();
+        let after = fs::read(&parent).unwrap();
+        assert_eq!(after.len(), 741);
+        assert_eq!(after[653], 0x55);
+        assert_eq!(before[..653], after[..653]);
+        assert_eq!(before[654..], after[654..]);
+        assert_eq!(open(&sub).finder_info, info);
+        // The attributes are netatalk's AFP File Info entry
+        assert_eq!(open(&sub).attrs, 0x01A1);
+        set_attrs(&sub, 0x0001).unwrap();
+        let after = fs::read(&parent).unwrap();
+        assert_eq!(after.len(), 741);
+        assert_eq!(&after[689..693], &[0, 0, 0, 1]);
+        assert_eq!(open(&sub).attrs, 0x0001);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_writing_a_folder_keeps_its_modification_date() {
+        let dir = temp_dir("dir-mtime");
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        fs::File::open(&sub).unwrap().set_modified(old).unwrap();
+        set_finder_info(&sub, &[1; 32]).unwrap();
+        assert_eq!(fs::metadata(&sub).unwrap().modified().unwrap(), old);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_an_already_open_bit_in_a_container_is_not_believed() {
         let dir = temp_dir("attrs-entries");
@@ -481,6 +1120,329 @@ mod tests {
             &[(ENTRY_AFP_INFO, &0x0000_0029u32.to_be_bytes())],
         );
         assert_eq!(open(&file).attrs, 0x0021);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_rewrite_keeps_a_foreign_filler() {
+        let dir = temp_dir("filler");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        let container = dir.join(".AppleDouble/f");
+        write_container(
+            &container,
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_FINDER_INFO, &[1; 32])],
+        );
+        let mut data = fs::read(&container).unwrap();
+        data[8..24].copy_from_slice(b"Netatalk        ");
+        fs::write(&container, data).unwrap();
+        // A new entry forces a rewrite
+        set_dates(&file, 1, 2, 3).unwrap();
+        assert_eq!(&fs::read(&container).unwrap()[8..24], b"Netatalk        ");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_non_utf8_host_name_keeps_its_metadata() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = temp_dir("non-utf8");
+        // MacRoman bytes, as vintage trees often have
+        let file = dir.join(std::ffi::OsStr::from_bytes(b"caf\x8E.txt"));
+        fs::write(&file, vec![1u8; 1000]).unwrap();
+        let meta = open(&file);
+        assert_eq!(meta.data_len, 1000);
+        assert_ne!(meta.mod_date, 0);
+        set_finder_info(&file, &[1; 32]).unwrap();
+        assert_eq!(open(&file).finder_info, [1; 32]);
+        assert_eq!(open(&file).data_len, 1000);
+        // The host modification time is set too, also before 1970
+        for afp in [1000i32, -1_000_000_000] {
+            set_dates(&file, 1, afp as u32, 0).unwrap();
+            let host = fs::metadata(&file).unwrap().modified().unwrap();
+            let expected = AFP_EPOCH_OFFSET + i64::from(afp);
+            let got = match host.duration_since(std::time::UNIX_EPOCH) {
+                Ok(d) => d.as_secs() as i64,
+                Err(e) => -(e.duration().as_secs() as i64),
+            };
+            assert_eq!(got, expected);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_netatalk_container_takes_a_resource_fork_in_place() {
+        let dir = temp_dir("rsrc-netatalk");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        let container = dir.join(".AppleDouble/f");
+        netatalk_container(&container, &[1; 32]);
+        let before = fs::read(&container).unwrap();
+        assert_eq!(write_rsrc(&file, 0, b"RSRC").unwrap(), 4);
+        assert_eq!(write_rsrc(&file, 4, b"MORE").unwrap(), 8);
+        let after = fs::read(&container).unwrap();
+        // Everything but the fork's length field stays where it was
+        assert_eq!(after.len(), 741 + 8);
+        assert_eq!(&after[741..], b"RSRCMORE");
+        assert_eq!(before[..34], after[..34]);
+        assert_eq!(before[38..741], after[38..741]);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 8);
+        assert_eq!(meta.rsrc_offset, 741);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_directory_reads_only_the_container_inside_it() {
+        let dir = temp_dir("dir-root");
+        let root = dir.join("root");
+        fs::create_dir(&root).unwrap();
+        write_container(
+            &dir.join("._root"),
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_FINDER_INFO, &[9; 32])],
+        );
+        fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        write_container(
+            &dir.join(".AppleDouble/root"),
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_FINDER_INFO, &[8; 32])],
+        );
+        assert_eq!(open(&root).finder_info, [0; 32]);
+        // A write never takes the sidecar with it
+        set_finder_info(&root, &[1; 32]).unwrap();
+        assert!(dir.join("._root").exists());
+        assert!(dir.join(".AppleDouble/root").exists());
+        assert_eq!(open(&root).finder_info, [1; 32]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_write_goes_to_the_sidecar_the_read_found() {
+        let dir = temp_dir("both");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        set_finder_info(&file, &[1; 32]).unwrap();
+        write_container(
+            &dir.join("._f"),
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_FINDER_INFO, &[2; 32])],
+        );
+        // The sidecar wins on the read side, as ever
+        assert_eq!(open(&file).finder_info, [2; 32]);
+        // A write goes to the sidecar, and the other container is left
+        // as it is
+        set_finder_info(&file, &[3; 32]).unwrap();
+        assert_eq!(open(&file).finder_info, [3; 32]);
+        fs::remove_file(dir.join("._f")).unwrap();
+        assert_eq!(open(&file).finder_info, [1; 32]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_failed_read_does_not_replace_the_container() {
+        let dir = temp_dir("readerr");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        // .AppleDouble is a file: the container cannot be read, and that
+        // is an error rather than a fresh start
+        fs::write(dir.join(".AppleDouble"), b"not a directory").unwrap();
+        assert!(set_finder_info(&file, &[1; 32]).is_err());
+        assert_eq!(
+            fs::read(dir.join(".AppleDouble")).unwrap(),
+            b"not a directory"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resource_fork_length_grows_and_shrinks() {
+        let dir = temp_dir("rsrc-len");
+        let file = dir.join("f");
+        fs::write(&file, b"").unwrap();
+        // No fork yet: a new one of that length, all zeros
+        assert_eq!(set_rsrc_len(&file, 100).unwrap(), 100);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 100);
+        // The Finder's copy: extend, write, shrink to the real size
+        assert_eq!(write_rsrc(&file, 0, b"RSRC").unwrap(), 100);
+        assert_eq!(set_rsrc_len(&file, 200).unwrap(), 200);
+        assert_eq!(set_rsrc_len(&file, 4).unwrap(), 4);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 4);
+        let data = fs::read(meta.rsrc_file.unwrap()).unwrap();
+        let at = meta.rsrc_offset as usize;
+        assert_eq!(&data[at..at + 4], b"RSRC");
+        // Growing again reads zeros, not what was cut off
+        assert_eq!(write_rsrc(&file, 4, b"XY").unwrap(), 6);
+        assert_eq!(set_rsrc_len(&file, 4).unwrap(), 4);
+        assert_eq!(set_rsrc_len(&file, 6).unwrap(), 6);
+        let meta = open(&file);
+        let data = fs::read(meta.rsrc_file.unwrap()).unwrap();
+        let at = meta.rsrc_offset as usize;
+        assert_eq!(&data[at + 4..at + 6], &[0, 0]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The bytes of `after` that differ from `before`, as ranges
+    fn changed(before: &[u8], after: &[u8]) -> Vec<std::ops::Range<usize>> {
+        assert_eq!(before.len(), after.len());
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        for i in (0..before.len()).filter(|&i| before[i] != after[i]) {
+            match out.last_mut() {
+                Some(r) if r.end == i => r.end = i + 1,
+                _ => out.push(i..i + 1),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_a_netatalk_container_changes_only_what_is_written() {
+        let dir = temp_dir("bytes-netatalk");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        let container = dir.join(".AppleDouble/f");
+        netatalk_container(&container, &[0x11; 32]);
+        let before = fs::read(&container).unwrap();
+        // Finder information (653..685), dates (637..653), attributes
+        // (the AFP File Info at 689..693): only their bytes change
+        set_finder_info(&file, &[0x22; 32]).unwrap();
+        set_dates(&file, 1, 2, 3).unwrap();
+        set_attrs(&file, 0x0021).unwrap();
+        let after = fs::read(&container).unwrap();
+        for r in changed(&before, &after) {
+            assert!(
+                [637..653, 653..685, 689..693]
+                    .iter()
+                    .any(|w| w.start <= r.start && r.end <= w.end),
+                "{r:?} changed"
+            );
+        }
+        // The resource fork grows at the end: only its length field (the
+        // first table entry, 26 + 8) changes before it
+        write_rsrc(&file, 0, b"fork").unwrap();
+        let grown = fs::read(&container).unwrap();
+        assert_eq!(&grown[741..], b"fork");
+        for r in changed(&after, &grown[..741]) {
+            assert!(34 <= r.start && r.end <= 38, "{r:?} changed");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_macos_sidecar_keeps_its_extended_attributes() {
+        let dir = temp_dir("bytes-macos");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        // macOS's layout: a 3,760-byte Finder Info entry, the Finder
+        // information followed by an "ATTR" block of extended attributes,
+        // and the resource fork last
+        let mut finder = vec![0u8; 3760];
+        finder[..4].copy_from_slice(b"TEXT");
+        finder[34..38].copy_from_slice(b"ATTR");
+        for (i, b) in finder[38..].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        write_container(
+            &dir.join("._f"),
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_FINDER_INFO, &finder), (ENTRY_RSRC_FORK, b"res")],
+        );
+        let before = fs::read(dir.join("._f")).unwrap();
+        set_finder_info(&file, &[0x33; 32]).unwrap();
+        let after = fs::read(dir.join("._f")).unwrap();
+        // The Finder Info entry starts at 26 + 2 * 12 = 50: only its first
+        // 32 bytes change, the attributes after them stay
+        for r in changed(&before, &after) {
+            assert!(50 <= r.start && r.end <= 82, "{r:?} changed");
+        }
+        assert_eq!(open(&file).finder_info, [0x33; 32]);
+        // The accepted limit: an entry the file lacks rewrites it with
+        // three entries, which moves the attributes. The Finder
+        // information and the resource fork still read back.
+        set_attrs(&file, 0x0001).unwrap();
+        let after = fs::read(dir.join("._f")).unwrap();
+        let entries = parse_container(&after).unwrap();
+        assert_eq!(entries.len(), 3);
+        let meta = open(&file);
+        assert_eq!(meta.finder_info, [0x33; 32]);
+        assert_eq!(meta.attrs, 0x0001);
+        assert_eq!(meta.rsrc_fork_len, 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_failed_rewrite_leaves_the_container_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid() has no preconditions
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores the permissions this test relies on
+        }
+        let dir = temp_dir("bytes-failed");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        // The resource fork before another entry: a write to it rebuilds
+        // the container through a temporary file
+        let container = dir.join(".AppleDouble/f");
+        write_container(
+            &container,
+            &APPLE_DOUBLE_MAGIC,
+            &[(ENTRY_RSRC_FORK, b"old"), (ENTRY_FINDER_INFO, &[7; 32])],
+        );
+        let before = fs::read(&container).unwrap();
+        let folder = dir.join(".AppleDouble");
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = write_rsrc(&file, 3, b"new");
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&container).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_new_container_takes_later_writes_in_place() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = temp_dir("in-place");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        set_finder_info(&file, &[1; 32]).unwrap();
+        let container = dir.join(".AppleDouble/f");
+        let inode = fs::metadata(&container).unwrap().ino();
+        // The other entries are already there: these patch the same file
+        set_dates(&file, 10, 20, 30).unwrap();
+        set_attrs(&file, 0x0001).unwrap();
+        write_rsrc(&file, 0, b"fork").unwrap();
+        assert_eq!(fs::metadata(&container).unwrap().ino(), inode);
+        let meta = open(&file);
+        assert_eq!(meta.finder_info, [1; 32]);
+        assert_eq!((meta.create_date, meta.backup_date), (10, 30));
+        assert_eq!(meta.attrs, 0x0001);
+        assert_eq!(meta.rsrc_fork_len, 4);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_resource_fork_stops_at_16_mib() {
+        let dir = temp_dir("rsrc-cap");
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        let full = |r: io::Result<u64>| r.unwrap_err().kind() == io::ErrorKind::StorageFull;
+        assert!(full(set_rsrc_len(&file, MAX_RSRC_LEN + 1)));
+        assert!(full(set_rsrc_len(&file, 0x7FFF_FFFF)));
+        assert!(full(write_rsrc(&file, MAX_RSRC_LEN, b"x")));
+        assert!(!dir.join(".AppleDouble").exists());
+        assert_eq!(
+            write_rsrc(&file, MAX_RSRC_LEN - 1, b"x").unwrap(),
+            MAX_RSRC_LEN
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -501,6 +1463,144 @@ mod tests {
     }
 
     #[test]
+    fn test_writes_keep_a_macos_sidecar() {
+        let dir = crate::test_dir("snow-meta-sidecar");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        // A ._ file as macOS writes it: the Finder Info entry (the Finder
+        // information and a block of extended attributes), then the
+        // resource fork
+        let mut finder = vec![0u8; 3760];
+        finder[..4].copy_from_slice(b"TEXT");
+        finder[4..8].copy_from_slice(b"CARO");
+        finder[34..38].copy_from_slice(b"ATTR");
+        write_container(
+            &dir.join("._doc.txt"),
+            &APPLE_DOUBLE_MAGIC,
+            &[(9, &finder), (2, b"rsrc!")],
+        );
+        // A write goes into the sidecar: no .AppleDouble container is
+        // made, and the resource fork grows there too
+        set_attrs(&file, 0x0001).unwrap();
+        assert_eq!(write_rsrc(&file, 5, b"more").unwrap(), 9);
+        assert!(!dir.join(".AppleDouble").exists());
+        let meta = open(&file);
+        assert_eq!(
+            meta.rsrc_file.as_deref(),
+            Some(dir.join("._doc.txt").as_path())
+        );
+        assert_eq!(&meta.finder_info[..4], b"TEXT");
+        assert_eq!(&meta.finder_info[4..8], b"CARO");
+        assert_eq!(meta.rsrc_fork_len, 9);
+        assert_eq!(meta.attrs, 0x0001);
+        let rsrc_file = meta.rsrc_file.clone().unwrap();
+        let raw = fs::read(rsrc_file).unwrap();
+        let start = meta.rsrc_offset as usize;
+        assert_eq!(&raw[start..start + 9], b"rsrc!more");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_apple_double_moves_and_removes_sidecars() {
+        let dir = crate::test_dir("snow-meta-sidecar2");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mv.txt");
+        fs::write(&file, b"x").unwrap();
+        let mut finder = [0u8; 32];
+        finder[..4].copy_from_slice(b"TEXT");
+        write_container(&dir.join("._mv.txt"), &APPLE_DOUBLE_MAGIC, &[(9, &finder)]);
+        // Moving the file moves the sidecar (no container was ever
+        // written, so the read side still prefers it)
+        let renamed = dir.join("renamed.txt");
+        move_meta(&file, &renamed).unwrap();
+        assert!(!dir.join("._mv.txt").exists());
+        assert!(dir.join("._renamed.txt").exists());
+        let meta = open(&renamed);
+        assert_eq!(&meta.finder_info[..4], b"TEXT");
+        // Deleting removes the sidecar too
+        remove_meta(&renamed);
+        assert!(!dir.join("._renamed.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_foreign_container_layout_survives_chunked_writes() {
+        let dir = crate::test_dir("snow-meta-foreign");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("foreign");
+        fs::write(&file, b"hostdata").unwrap();
+        let ad = dir.join(".AppleDouble");
+        fs::create_dir_all(&ad).unwrap();
+        let container_path = ad.join("foreign");
+
+        // A foreign layout: Finder info, the resource fork, then a
+        // trailing AFP info entry whose body sits AFTER the fork, at
+        // non-packed offsets (the reader must use the real offsets)
+        let mut finder = [0u8; 32];
+        finder[..4].copy_from_slice(b"TEXT");
+        let rsrc = vec![0x11; 100];
+        let attrs = 0x0100u32.to_be_bytes();
+        let mut data = Vec::new();
+        data.extend_from_slice(&APPLE_DOUBLE_MAGIC);
+        data.extend_from_slice(&0x00020000u32.to_be_bytes());
+        data.extend_from_slice(&[0; 16]);
+        data.extend_from_slice(&3u16.to_be_bytes());
+        for (id, off, len) in [(9u32, 62u32, 32u32), (2, 164, 100), (14, 264, 4)] {
+            data.extend_from_slice(&id.to_be_bytes());
+            data.extend_from_slice(&off.to_be_bytes());
+            data.extend_from_slice(&len.to_be_bytes());
+        }
+        data.resize(62, 0);
+        data.extend_from_slice(&finder); // -> 94
+        data.resize(164, 0);
+        data.extend_from_slice(&rsrc); // -> 264
+        data.resize(264, 0);
+        data.extend_from_slice(&attrs); // -> 268
+        fs::write(&container_path, data).unwrap();
+
+        // Chunked writes: the first rebuilds (the fork is not the last
+        // body), moving the fork to the end; the rest grow in place
+        for chunk in 0..8u64 {
+            let chunk_data = vec![0x22 + chunk as u8; 100];
+            let new_len = write_rsrc(&file, chunk * 100, &chunk_data).unwrap();
+            assert_eq!(new_len, (chunk + 1) * 100);
+        }
+
+        // The rewritten container is intact: the other entries
+        // survived with their bodies, and the fork holds the last
+        // chunk
+        let data = fs::read(&container_path).unwrap();
+        let entries = parse_container(&data).unwrap();
+        let get = |id: u32| -> (usize, usize) {
+            let &(_, off, len) = entries.iter().find(|(eid, ..)| *eid == id).unwrap();
+            (off as usize, len as usize)
+        };
+        let (off, len) = get(ENTRY_AFP_INFO);
+        assert_eq!(&data[off..off + len], &0x0100u32.to_be_bytes());
+        let (off, len) = get(ENTRY_FINDER_INFO);
+        assert_eq!(len, 32);
+        assert_eq!(&data[off..off + 4], b"TEXT");
+        let (off, len) = get(ENTRY_RSRC_FORK);
+        assert_eq!(len, 800);
+        // Each chunk landed at its offset (chunk 0 at the start,
+        // chunk 7 at the end)
+        assert_eq!(&data[off..off + 100], &[0x22; 100]);
+        assert_eq!(&data[off + 700..off + 800], &[0x29; 100]);
+
+        // The read side sees the same file
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 800);
+        assert_eq!(meta.attrs, 0x0100);
+        assert_eq!(&meta.finder_info[..4], b"TEXT");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_afp_dates_at_the_edges() {
         use std::time::{Duration, UNIX_EPOCH};
         let at = |unix: i64| {
@@ -511,13 +1611,39 @@ mod tests {
                 UNIX_EPOCH - d
             }
         };
-        // 2000 is 0, 1970 and before are negative
+        // 2000 is 0, 1970 and before are negative, the round trip holds
         for unix in [AFP_EPOCH_OFFSET, 0, -86_400, 2_000_000_000] {
             let afp = afp_date(at(unix));
             assert_eq!(i64::from(afp as i32), unix - AFP_EPOCH_OFFSET);
+            assert_eq!(host_time(afp), at(unix));
         }
         // Past the signed 32-bit range (2068) the date stays at its end
         assert_eq!(afp_date(at(4_000_000_000)), i32::MAX as u32);
+    }
+
+    #[test]
+    fn test_pre_2000_dates_round_trip() {
+        let dir = crate::test_dir("snow-meta-old");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("old.txt");
+        fs::write(&file, b"x").unwrap();
+        // 1995-01-01 in AFP seconds (negative on the wire)
+        let afp_1995 = (-157_785_600i32) as u32;
+        set_dates(&file, afp_1995, afp_1995, 0x8000_0000).unwrap();
+        let meta = open(&file);
+        assert_eq!(meta.create_date as i32, -157_785_600);
+        assert_eq!(meta.mod_date as i32, -157_785_600);
+        // The host mtime is 1995, not ~2136 (the unsigned bug)
+        let host = fs::metadata(&file)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!((host - 788_918_400).abs() < 86400, "host mtime {host}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -539,6 +1665,142 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A test Finder info: type TEXT, creator ttxt
+    fn text_finder() -> [u8; 32] {
+        let mut finder = [0u8; 32];
+        finder[..4].copy_from_slice(b"TEXT");
+        finder[4..8].copy_from_slice(b"ttxt");
+        finder
+    }
+
+    #[test]
+    fn double_set_finder_info_creates_the_container() {
+        let dir = temp_dir("write-finder");
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        set_finder_info(&file, &text_finder()).unwrap();
+        // The container exists and the data fork is untouched
+        let container = dir.join(".AppleDouble").join("doc.txt");
+        assert!(container.exists());
+        assert_eq!(fs::read(&file).unwrap(), b"hello");
+        let meta = open(&file);
+        assert_eq!(&meta.finder_info[..4], b"TEXT");
+        assert_eq!(&meta.finder_info[4..8], b"ttxt");
+        assert_eq!(meta.data_len, 5);
+        assert_eq!(meta.data_offset, 0);
+        assert_eq!(meta.rsrc_fork_len, 0);
+        // A second write replaces the Finder info
+        let mut other = text_finder();
+        other[4..8].copy_from_slice(b"CARO");
+        set_finder_info(&file, &other).unwrap();
+        let meta = open(&file);
+        assert_eq!(&meta.finder_info[4..8], b"CARO");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_rsrc_round_trip() {
+        let dir = temp_dir("write-rsrc");
+        let file = dir.join("app");
+        fs::write(&file, b"data").unwrap();
+        // The first write creates the fork
+        let len = write_rsrc(&file, 0, b"resource").unwrap();
+        assert_eq!(len, 8);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 8);
+        assert_eq!(meta.data_len, 4);
+        // A write inside the fork is in place
+        let len = write_rsrc(&file, 4, b"XXXX").unwrap();
+        assert_eq!(len, 8);
+        // A write past the end extends the fork, zero-filling the gap
+        let len = write_rsrc(&file, 10, b"YY").unwrap();
+        assert_eq!(len, 12);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 12);
+        assert_eq!(meta.data_len, 4);
+        let rsrc = fs::read(meta.rsrc_file.as_ref().unwrap()).unwrap();
+        let offset = meta.rsrc_offset as usize;
+        assert_eq!(&rsrc[offset..offset + 12], b"resoXXXX\0\0YY");
+        // Truncate
+        let len = set_rsrc_len(&file, 6).unwrap();
+        assert_eq!(len, 6);
+        let meta = open(&file);
+        assert_eq!(meta.rsrc_fork_len, 6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_dates_touch_the_container_and_the_host_file() {
+        let dir = temp_dir("write-dates");
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        set_dates(&file, 1000, 2000, 0x8000_0000).unwrap();
+        let meta = open(&file);
+        assert_eq!(meta.create_date, 1000);
+        assert_eq!(meta.mod_date, 2000);
+        assert_eq!(meta.backup_date, 0x8000_0000);
+        // The host mtime follows the modification date
+        let md = fs::metadata(&file).unwrap();
+        let mtime = md
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(mtime, 2000 + AFP_EPOCH_OFFSET as u64);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_attrs_round_trip() {
+        let dir = temp_dir("write-attrs");
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        set_attrs(&file, 0x8001).unwrap();
+        let meta = open(&file);
+        assert_eq!(meta.attrs, 0x8001);
+        // The Finder info a client writes does not clobber the attrs
+        set_finder_info(&file, &text_finder()).unwrap();
+        let meta = open(&file);
+        assert_eq!(meta.attrs, 0x8001);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_remove_and_move_meta() {
+        let dir = temp_dir("write-remove");
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let file = sub.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        set_finder_info(&file, &text_finder()).unwrap();
+        let container = sub.join(".AppleDouble").join("doc.txt");
+        assert!(container.exists());
+        // Move
+        let moved = dir.join("renamed.txt");
+        move_meta(&file, &moved).unwrap();
+        assert!(!container.exists());
+        assert!(dir.join(".AppleDouble").join("renamed.txt").exists());
+        // Remove
+        remove_meta(&moved);
+        assert!(!dir.join(".AppleDouble").join("renamed.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fresh_containers_keep_the_synthesized_finder_info() {
+        let dir = temp_dir("write-seed");
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        // A date-only write creates the container; the synthesized
+        // TEXT/ttxt Finder info must survive
+        set_dates(&file, 1, 2, 3).unwrap();
+        let meta = open(&file);
+        assert_eq!(&meta.finder_info[..4], b"TEXT");
+        assert_eq!(meta.create_date, 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
