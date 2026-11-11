@@ -5,24 +5,34 @@
 //!
 //! Serves one volume, a host directory, to guests: the server information
 //! block (served as the ASP GetStatus status block), login with guest
-//! authentication and the volume parameters. Read-only by default.
+//! authentication, file and directory parameters and enumeration.
+//! Read-only by default. Host file names are converted between UTF-8 and
+//! MacRoman.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
+use crate::ids::{IdTable, ROOT_DIR_ID};
+use crate::meta::Meta;
 use crate::wire::wire_log;
 
 mod params;
+mod path;
+
+use self::{params::*, path::*};
 
 /// AFP commands
 const CMD_CLOSE_VOL: u8 = 2;
+const CMD_ENUMERATE: u8 = 9;
 const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
 const CMD_LOGIN: u8 = 18;
 const CMD_LOGOUT: u8 = 20;
 const CMD_OPEN_VOL: u8 = 24;
+const CMD_GET_FILE_DIR_PARMS: u8 = 34;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
 const ERR_BAD_UAM: i32 = -5002;
@@ -31,9 +41,13 @@ const ERR_BITMAP: i32 = -5004;
 const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
+const ERR_OBJECT_TYPE: i32 = -5025;
+const ERR_DIR_NOT_FOUND: i32 = -5029;
 
 /// The identifier of the single volume
 const VOLUME_ID: u16 = 1;
+/// The identifier of the root directory's parent (the HFS convention)
+const ROOT_PARENT_DIR_ID: u32 = 1;
 
 /// The AFP protocol versions the server speaks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,9 +123,36 @@ impl std::fmt::Display for MaxVersion {
     }
 }
 
+/// How hidden (dot-prefixed) host entries appear on the wire
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HiddenFiles {
+    /// Not addressable at all
+    #[default]
+    Hide,
+    /// Addressable, with the Finder's invisible attribute set
+    Invisible,
+    /// Fully visible
+    Show,
+}
+
+impl std::fmt::Display for HiddenFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hide => write!(f, "Hide"),
+            Self::Invisible => write!(f, "Show as invisible"),
+            Self::Show => write!(f, "Show"),
+        }
+    }
+}
+
 /// The advanced AFP server settings
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AfpSettings {
+    /// How hidden (dot-prefixed) host entries appear
+    pub hidden_files: HiddenFiles,
+    /// Whether the AppleDouble metadata containers are read (the ._
+    /// sidecars and the .AppleDouble directories)
+    pub probe_apple_double: bool,
     /// Whether the wire-level dumps print (a diagnostic; off by
     /// default, toggled from the advanced settings)
     #[serde(default)]
@@ -129,6 +170,8 @@ fn default_true() -> bool {
 impl Default for AfpSettings {
     fn default() -> Self {
         Self {
+            hidden_files: HiddenFiles::Hide,
+            probe_apple_double: true,
             wire_debug: false,
             read_only: true,
         }
@@ -146,10 +189,15 @@ pub struct Afp {
     volume_name: String,
     /// The highest AFP version to advertise and accept
     max_version: MaxVersion,
+    /// The volume's ID table: one ID per file and directory, keyed
+    /// by the object's identity (see the ids module)
+    ids: IdTable,
     /// The AFP version negotiated at login, per session
     versions: HashMap<u8, AfpVersion>,
     /// The advanced server settings
     settings: AfpSettings,
+    /// The listing Enumerate is paging through
+    enum_cache: Option<EnumCache>,
 }
 
 impl Afp {
@@ -169,8 +217,10 @@ impl Afp {
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "Snow".to_string()),
             max_version,
+            ids: IdTable::new(),
             versions: HashMap::new(),
             settings,
+            enum_cache: None,
         }
     }
 
@@ -221,6 +271,11 @@ impl Afp {
     /// Handle an AFP command, returning the 4-byte command result and
     /// the reply data
     pub fn command(&mut self, session: u8, data: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let version = self
+            .versions
+            .get(&session)
+            .copied()
+            .unwrap_or(AfpVersion::V20);
         // A 1.1 request is just the function byte for several commands
         if data.is_empty() {
             return (err(ERR_PARAM), Vec::new());
@@ -230,6 +285,13 @@ impl Afp {
             // FPLogin has no reserved byte after the function in either
             // version
             CMD_LOGIN => self.cmd_login(session, data.get(1..).unwrap_or(&[])),
+            // FPEnumerate in 1.1 carries a FileFlag byte where 2.0 has
+            // the reserved byte
+            CMD_ENUMERATE if version == AfpVersion::V11 => {
+                let file_flag = data.get(1).copied();
+                self.cmd_enumerate(version, data.get(2..).unwrap_or(&[]), file_flag)
+            }
+            CMD_ENUMERATE => self.cmd_enumerate(version, data.get(2..).unwrap_or(&[]), None),
             // FPGetSrvrParms and FPLogout carry no SRefNum: the
             // function byte stands alone in every AFP version (both
             // the 1.1 and the 2.1 clients send a bare byte)
@@ -252,6 +314,7 @@ impl Afp {
                     CMD_OPEN_VOL => self.cmd_open_vol(params),
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(params),
                     CMD_CLOSE_VOL => Ok(Vec::new()),
+                    CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
                     _ => {
                         wire_log!("AFP: dropped unsupported command {}", cmd);
                         Err(ERR_CALL_NOT_SUPPORTED)
@@ -357,6 +420,11 @@ impl<'a> Reader<'a> {
         Ok(field)
     }
 
+    /// Skip `n` bytes (a reserved byte, a pad)
+    fn skip(&mut self, n: usize) -> Result<(), i32> {
+        self.bytes(n).map(|_| ())
+    }
+
     fn u8(&mut self) -> Result<u8, i32> {
         Ok(self.bytes(1)?[0])
     }
@@ -365,11 +433,22 @@ impl<'a> Reader<'a> {
         Ok(u16::from_be_bytes(self.bytes(2)?.try_into().unwrap()))
     }
 
+    fn u32(&mut self) -> Result<u32, i32> {
+        Ok(u32::from_be_bytes(self.bytes(4)?.try_into().unwrap()))
+    }
+
     /// A Pascal string: a length byte and that many MacRoman characters
     fn pstring(&mut self) -> Result<String, i32> {
         let len = usize::from(self.u8()?);
         let (s, _, _) = encoding_rs::MACINTOSH.decode(self.bytes(len)?);
         Ok(s.into_owned())
+    }
+
+    /// A path name: its path type byte, then a Pascal string. The type is
+    /// not looked at: long and short names are the same here.
+    fn path(&mut self) -> Result<String, i32> {
+        self.skip(1)?;
+        self.pstring()
     }
 }
 

@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 
 use super::localtalk_bridge::LocalTalkStatus;
 
-#[cfg(feature = "afp_server")]
-pub use snow_appletalk::afp::AfpSettings;
 /// The highest AFP version the built-in AppleTalk server advertises
 /// (re-exported from the AppleTalk stack)
 #[cfg(feature = "afp_server")]
 pub use snow_appletalk::afp::MaxVersion as AfpMaxVersion;
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::afp::{AfpSettings, HiddenFiles as AfpHiddenFiles};
 #[cfg(feature = "afp_server")]
 pub use snow_appletalk::name::volume_name_char_ok as afp_volume_name_char_ok;
 /// Turn the file server's wire-level logs on or off, without rebuilding it

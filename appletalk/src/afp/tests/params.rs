@@ -1,7 +1,6 @@
-//! Tests of the volume parameters, logins and versions
+//! Tests of the volume, file and directory parameters, logins and versions
 
 use super::*;
-use crate::afp::params::{clamp32, vol_params};
 
 #[test]
 fn legacy_volume_size_is_positive() {
@@ -51,6 +50,57 @@ fn test_volume_attributes_follow_read_only() {
     let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
     assert_eq!(r, 0);
     assert_eq!(reply, [0, 1, 0, 0]);
+}
+
+#[test]
+fn test_access_rights_wire_order() {
+    // Big-endian: [UARights][world][group][owner]; UARights has
+    // the owner bit set plus search and read, and the write bits
+    // only on a writable volume
+    assert_eq!(access_rights(true), [0x83, 0x03, 0x03, 0x03]);
+    assert_eq!(access_rights(false), [0x87, 0x07, 0x07, 0x07]);
+}
+
+#[test]
+fn test_dir_params_access_rights_bit() {
+    let meta = crate::meta::open(Path::new("/nonexistent"));
+    // Bit 12 (Access Rights) + bit 6 (Long Name)
+    let params = dir_params(0x1000 | 0x0040, "sub", &meta, 0, ROOT_DIR_ID, 1, true);
+    // Long-name offset (2 bytes) then the 4-byte access rights,
+    // then the name
+    assert_eq!(&params[0..2], &[0x00, 0x06]);
+    assert_eq!(&params[2..6], &[0x83, 0x03, 0x03, 0x03]);
+    assert_eq!(&params[6..10], &[3, b's', b'u', b'b']);
+}
+
+#[test]
+fn test_file_dir_parms_finder_info() {
+    let (mut server, dir) = test_server("finder-info");
+    std::fs::write(dir.join("doc.txt"), b"body").unwrap();
+    let mut finder = [0u8; 32];
+    finder[..4].copy_from_slice(b"ttro");
+    let sidecar = apple_double(&[(9, &finder)]); // entry 9: Finder info
+    std::fs::write(dir.join("._doc.txt"), sidecar).unwrap();
+
+    // [GetFileDirParms][0][vol 1][dir 2][file bm 0x0007][dir bm 0]
+    // [path type 2]["doc.txt"]
+    let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0x00, 0xE0, 0, 0, 2, 7];
+    data.extend_from_slice(b"doc.txt");
+    let (result, reply) = result_of(server.command(1, &data));
+    assert_eq!(result, 0);
+    assert_eq!(reply[0..2], [0x00, 0xE0]); // file bitmap
+    assert_eq!(reply[2..4], [0, 0]); // directory bitmap
+    assert_eq!(reply[4], 0); // a file
+    assert_eq!(reply[5], 0); // the reserved byte after the flag
+    // Parameters: Finder info, then the long-name and short-name
+    // offsets, then the names. The offsets live after the 32-byte
+    // Finder info block, at the end of the fixed parameters.
+    let long_off = u16::from_be_bytes([reply[38], reply[39]]) as usize;
+    let short_off = u16::from_be_bytes([reply[40], reply[41]]) as usize;
+    assert_eq!(long_off, 36);
+    assert_eq!(short_off, 44);
+    assert_eq!(&reply[6..10], b"ttro"); // the Finder info
+    assert_eq!(&reply[6 + long_off..6 + long_off + 8], b"\x07doc.txt");
 }
 
 #[test]

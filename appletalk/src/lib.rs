@@ -8,6 +8,7 @@ pub mod afp;
 pub mod asp;
 pub mod atp;
 pub mod ddp;
+pub mod ids;
 pub mod link;
 pub mod meta;
 pub mod name;
