@@ -540,6 +540,61 @@ fn a_real_name_wins_over_a_mangled_one() {
 
 #[cfg(unix)]
 #[test]
+fn a_symlink_reports_its_own_name_and_its_targets_metadata() {
+    let (mut s, dir) = test_server_writable("link-name");
+    std::fs::write(dir.join("real.txt"), b"x").unwrap();
+    std::os::unix::fs::symlink("real.txt", dir.join("link.txt")).unwrap();
+    let mut info = [0u8; 32];
+    info[..8].copy_from_slice(b"ABCDEFGH");
+    assert_eq!(set_parms(&mut s, "real.txt", 0x0020, &info), 0);
+    // Finder Info (bit 5) and the long name (bit 6)
+    let (r, p) = gfdp(&mut s, "link.txt", 0x0060, 0);
+    assert_eq!(r, 0);
+    assert_eq!(&p[..8], b"ABCDEFGH");
+    let off = u16::from_be_bytes([p[32], p[33]]) as usize;
+    assert_eq!(&p[off + 1..off + 1 + p[off] as usize], b"link.txt");
+    // Enumerate agrees
+    let mut e = vec![
+        9u8, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x60, 0, 0, 0, 20, 0, 1, 0x10, 0, 2, 0,
+    ];
+    let (r, reply) = result_of(s.command(1, &e));
+    assert_eq!(r, 0);
+    e.clear();
+    let mut at = 6;
+    let mut seen = 0;
+    while at < reply.len() {
+        let len = reply[at] as usize;
+        let rec = &reply[at + 2..at + len];
+        let off = u16::from_be_bytes([rec[32], rec[33]]) as usize;
+        let name = &rec[off + 1..off + 1 + rec[off] as usize];
+        if name == b"link.txt" || name == b"real.txt" {
+            assert_eq!(&rec[..8], b"ABCDEFGH", "{name:?}");
+            seen += 1;
+        }
+        at += len;
+    }
+    assert_eq!(seen, 2);
+}
+
+#[test]
+fn root_metadata_stays_inside_the_share() {
+    let (mut s, dir) = nested("root");
+    let outside = dir.parent().unwrap();
+    // What a host tool left beside the share, under the share's name
+    std::fs::write(outside.join("._share"), b"keep me").unwrap();
+    // The volume window's DInfo on the root
+    let mut info = [0u8; 32];
+    info[0] = 0x11;
+    assert_eq!(set_parms(&mut s, "", 0x0020, &info), 0);
+    assert_eq!(set_parms(&mut s, "", 0x000C, &[0, 0, 0, 1, 0, 0, 0, 2]), 0);
+    assert!(!outside.join(".AppleDouble").exists());
+    assert_eq!(std::fs::read(outside.join("._share")).unwrap(), b"keep me");
+    assert!(dir.join(".AppleDouble/.Parent").is_file());
+    assert_eq!(gfdp(&mut s, "", 0, 0x0020).1[..1], [0x11]);
+}
+
+#[cfg(unix)]
+#[test]
 fn special_files_never_hang_a_call() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let (server, dir) = test_server_writable("special-files");

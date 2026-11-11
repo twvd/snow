@@ -10,7 +10,7 @@ fn legacy_volume_size_is_positive() {
 
 #[test]
 fn test_vol_params_layout() {
-    let vol = vol_params(0x0120, "Snow", Path::new("/"), true);
+    let vol = vol_params(0x0120, "Snow", Path::new("/"), true, 0);
     // Bitmap, then the volume ID, then the name offset, then "Snow"
     assert_eq!(
         &vol[..10],
@@ -18,7 +18,7 @@ fn test_vol_params_layout() {
     );
     assert_eq!(&vol[10..], b"w");
     // The backup date is "never"
-    let vol = vol_params(0x0010, "Snow", Path::new("/"), true);
+    let vol = vol_params(0x0010, "Snow", Path::new("/"), true, 0);
     assert_eq!(&vol[2..], &0x8000_0000u32.to_be_bytes());
 }
 
@@ -27,7 +27,7 @@ fn test_vol_params_name_offset_precedes_extended_fields() {
     // Bits 8 (name), 10 (extended total) and 11 (block size): the
     // name-offset field comes first in bitmap order, the name
     // follows all the fixed fields at the recorded offset
-    let vol = vol_params(0x0D00, "Snow", Path::new("/"), true);
+    let vol = vol_params(0x0D00, "Snow", Path::new("/"), true, 0);
     assert_eq!(&vol[..2], &[0x0D, 0x00]);
     assert_eq!(&vol[2..4], &14u16.to_be_bytes()); // the name offset
     assert_eq!(&vol[12..16], &4096u32.to_be_bytes()); // block size
@@ -68,6 +68,137 @@ fn test_volume_attributes_follow_read_only() {
     let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
     assert_eq!(r, 0);
     assert_eq!(reply, [0, 1, 0, 0]);
+}
+
+#[test]
+fn test_attr_set_clear_bit() {
+    let (mut server, dir) = test_server_writable("write-attrs-sc");
+    std::fs::write(dir.join("f.txt"), b"x").unwrap();
+    std::fs::create_dir(dir.join("d")).unwrap();
+    // Set Invisible (Set/Clear bit = 1): attrs becomes 0x0001
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x01];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&0x8001u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let meta = crate::meta::open(&dir.join("f.txt"));
+    assert_eq!(meta.attrs, 0x0001);
+    // Clear it again (Set/Clear bit = 0)
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x01];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&0x0001u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let meta = crate::meta::open(&dir.join("f.txt"));
+    assert_eq!(meta.attrs, 0x0000);
+    // The already-open bit (3) is never stored
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x01];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&0x8008u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let meta = crate::meta::open(&dir.join("f.txt"));
+    assert_eq!(meta.attrs, 0x0000);
+    // The file-only bit (5) is ignored on directories
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x01];
+    data.extend_from_slice(&long_path("d"));
+    data.push(0);
+    data.extend_from_slice(&0x8020u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let meta = crate::meta::open(&dir.join("d"));
+    assert_eq!(meta.attrs, 0x0000);
+}
+
+#[test]
+fn test_set_dir_and_file_params() {
+    let (mut server, dir) = test_server_writable("write-setdirparms");
+    std::fs::write(dir.join("f.txt"), b"x").unwrap();
+    std::fs::create_dir(dir.join("d")).unwrap();
+    // The Finder's request after a New Folder: the parent's group
+    // and access rights on the new folder, by its ID
+    let d_id = server.dir_id(&dir.join("d"));
+    let mut data = vec![29, 0, 0, 1];
+    data.extend_from_slice(&d_id.to_be_bytes());
+    data.extend_from_slice(&[0x18, 0x00, 2, 0]);
+    data.extend_from_slice(&[0, 0, 0, 0, 0x00, 0x07, 0x07, 0x07]);
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    // The Finder's request on the Network Trash Folder it creates:
+    // owner ID 1, group ID 0 and rights $00070007 are accepted, and
+    // the folder still reads as owned by owner 0
+    let mut data = vec![29, 0, 0, 1];
+    data.extend_from_slice(&d_id.to_be_bytes());
+    data.extend_from_slice(&[0x1C, 0x00, 2, 0]);
+    data.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0x00, 0x07, 0x00, 0x07]);
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let mut data = vec![34, 0, 0, 1];
+    data.extend_from_slice(&d_id.to_be_bytes());
+    data.extend_from_slice(&[0x00, 0x00, 0x04, 0x00, 2, 0]);
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert_eq!(reply[6..10], [0, 0, 0, 0]);
+    // FPSetDirParms on a file, and FPSetFileParms on a directory
+    let mut data = vec![29, 0, 0, 1, 0, 0, 0, 2, 0x10, 0x00];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&[0x00, 0x07, 0x07, 0x07]);
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+    let mut data = vec![30, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x20];
+    data.extend_from_slice(&long_path("d"));
+    data.push(0);
+    data.extend_from_slice(&[0; 32]);
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+    // The privileges are for directories only
+    let mut data = vec![30, 0, 0, 1, 0, 0, 0, 2, 0x10, 0x00];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&[0x00, 0x07, 0x07, 0x07]);
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_BITMAP);
+    // FPSetFileParms sets a file's Finder info
+    let mut finder = [0u8; 32];
+    finder[..4].copy_from_slice(b"TEXT");
+    let mut data = vec![30, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x20];
+    data.extend_from_slice(&long_path("f.txt"));
+    data.push(0);
+    data.extend_from_slice(&finder);
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    assert_eq!(
+        &crate::meta::open(&dir.join("f.txt")).finder_info[..4],
+        b"TEXT"
+    );
+}
+
+#[test]
+fn test_set_file_dir_params_apple_double() {
+    let (mut server, dir) = test_server_writable("write-setparms");
+    std::fs::write(dir.join("doc.txt"), b"hello").unwrap();
+    // Set Finder info (bit 5), dates (bits 2-4) and attributes
+    // (bit 0): the values follow in ascending bit order
+    let mut finder = [0u8; 32];
+    finder[..4].copy_from_slice(b"TEXT");
+    finder[4..8].copy_from_slice(b"CARO");
+    let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x3D];
+    data.extend_from_slice(&long_path("doc.txt"));
+    data.push(0); // the values start at the next even offset
+    data.extend_from_slice(&0x8001u16.to_be_bytes()); // attrs: set Invisible
+    data.extend_from_slice(&100u32.to_be_bytes()); // create
+    data.extend_from_slice(&200u32.to_be_bytes()); // modify
+    data.extend_from_slice(&300u32.to_be_bytes()); // backup
+    data.extend_from_slice(&finder);
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    // The container exists and the data fork is untouched
+    assert!(dir.join(".AppleDouble").join("doc.txt").exists());
+    assert_eq!(std::fs::read(dir.join("doc.txt")).unwrap(), b"hello");
+    // GetFileDirParms reads it all back
+    let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x3D, 0x00, 0x3D, 2, 7];
+    data.extend_from_slice(b"doc.txt");
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert_eq!(reply[6..8], [0x00, 0x01]); // attributes: Invisible set
+    assert_eq!(reply[8..12], 100u32.to_be_bytes()); // create
+    assert_eq!(reply[12..16], 200u32.to_be_bytes()); // modify
+    assert_eq!(reply[16..20], 300u32.to_be_bytes()); // backup
+    assert_eq!(&reply[20..24], b"TEXT");
+    assert_eq!(&reply[24..28], b"CARO");
 }
 
 #[test]
@@ -307,7 +438,7 @@ fn test_max22_accepts_22_and_lists_it_first() {
 fn test_vol_params_extended_size_bits() {
     // AFP 2.2's bits 0x0200/0x0400 are 64-bit sizes, 0x0800 the
     // 4-byte block size, in bitmap order
-    let params = vol_params(0x0E00, "Snow", Path::new("/"), true);
+    let params = vol_params(0x0E00, "Snow", Path::new("/"), true, 0);
     assert_eq!(&params[0..2], &[0x0E, 0x00]); // the bitmap
     assert_eq!(params.len(), 2 + 8 + 8 + 4);
 }
@@ -341,6 +472,23 @@ fn the_uam_count_matches_the_list() {
     assert_eq!(block[at], 1);
     assert_eq!(block[at + 1] as usize, b"No User Authent".len());
     assert_eq!(&block[at + 2..], b"No User Authent");
+}
+
+#[test]
+fn afp_1_1_read_only_stands_for_the_three_inhibit_bits() {
+    let (mut s, dir) = test_server_writable("readonly");
+    login_ok(&mut s, "AFPVersion 1.1");
+    std::fs::write(dir.join("f"), b"x").unwrap();
+    // Setting ReadOnly locks against rename and delete as well
+    assert_eq!(set_parms(&mut s, "f", 1, &0x8020u16.to_be_bytes()), 0);
+    assert_eq!(crate::meta::open(&dir.join("f")).attrs & 0x01A0, 0x01A0);
+    // Writing is AccessDenied in 1.1
+    assert_eq!(open(&mut s, "f", false, 3).0, ERR_ACCESS_DENIED);
+    // Any one inhibit bit reads as ReadOnly
+    assert_eq!(set_parms(&mut s, "f", 1, &0x0020u16.to_be_bytes()), 0);
+    assert_eq!(set_parms(&mut s, "f", 1, &0x8100u16.to_be_bytes()), 0);
+    let attrs = gfdp(&mut s, "f", 1, 0).1;
+    assert_eq!(u16::from_be_bytes([attrs[0], attrs[1]]) & 0x0020, 0x0020);
 }
 
 #[test]

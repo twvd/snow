@@ -55,6 +55,10 @@ const CMD_ADD_CMT: u8 = 56;
 const CMD_RMV_CMT: u8 = 57;
 const CMD_GET_CMT: u8 = 58;
 const CMD_ADD_ICON: u8 = 192;
+const CMD_SET_DIR_PARMS: u8 = 29;
+const CMD_SET_FILE_PARMS: u8 = 30;
+const CMD_SET_VOL_PARMS: u8 = 32;
+const CMD_SET_FILE_DIR_PARMS: u8 = 35;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
 const ERR_ACCESS_DENIED: i32 = -5000;
@@ -271,6 +275,13 @@ struct Fork {
     file_id: u32,
     /// Whether the fork was opened for reading
     read: bool,
+    /// Whether the fork was opened for writing
+    write: bool,
+    /// The host file the handle is open on: the file itself for a data
+    /// fork, the metadata container for a resource fork or an AppleSingle
+    /// file (an empty resource fork starts on the data file and moves into
+    /// its container after the first write)
+    container_path: PathBuf,
     /// The session that opened the fork (its close takes the fork)
     session: u8,
     /// Whether this is the resource fork (writes go through the
@@ -289,6 +300,9 @@ pub struct Afp {
     /// Open forks by reference number
     forks: HashMap<u16, Fork>,
     next_fork_ref: u16,
+    /// The server-side volume modification stamp (every write command
+    /// bumps it)
+    vol_modified: u32,
     /// The response capacity of the request being served (the ATP
     /// requester's offered buffers in bytes): FPRead caps its read at
     /// it. MAX_RESPONSE until the ASP layer records the real value,
@@ -344,6 +358,7 @@ impl Afp {
             max_version,
             forks: HashMap::new(),
             next_fork_ref: 1,
+            vol_modified: 0,
             req_capacity: crate::atp::MAX_RESPONSE,
             ids: IdTable::new(),
             versions: HashMap::new(),
@@ -451,12 +466,18 @@ impl Afp {
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(version, params),
                     CMD_CLOSE_VOL => Ok(Vec::new()),
                     CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
+                    CMD_SET_FILE_DIR_PARMS => {
+                        self.cmd_set_params(version, SetCall::FileDir, params)
+                    }
+                    CMD_SET_FILE_PARMS => self.cmd_set_params(version, SetCall::File, params),
+                    CMD_SET_DIR_PARMS => self.cmd_set_params(version, SetCall::Dir, params),
                     // FPRead's EOF comes with the data read before it
                     CMD_READ => match self.cmd_read(params) {
                         Ok((data, eof)) => return (if eof { err(ERR_EOF) } else { ok() }, data),
                         Err(code) => Err(code),
                     },
                     CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
+                    CMD_SET_VOL_PARMS => self.cmd_set_vol_params(params),
                     CMD_CLOSE_FORK => self.cmd_close_fork(params),
                     CMD_OPEN_DT => self.cmd_open_dt(params),
                     CMD_CLOSE_DT => self.cmd_close_dt(params),
@@ -527,6 +548,18 @@ impl Afp {
         reply.push(0); // flags: no password, no Apple II config info
         reply.extend_from_slice(&pstring(&self.volume_name));
         Ok(reply)
+    }
+
+    /// Bump the volume modification stamp: every write command calls
+    /// this, so the client's 10-second volume poll sees server-side
+    /// changes anywhere in the tree (a directory's mtime only moves
+    /// when its own entries change, and a host-side change deep in the
+    /// tree does not show). The kept Enumerate listing is dropped too:
+    /// a file system with coarse times may give the folder the same
+    /// modification time after the change.
+    fn touch_volume(&mut self) {
+        self.vol_modified = afp_now();
+        self.enum_cache = None;
     }
 
     /// Close everything a session owns: its open forks (their handles
@@ -689,6 +722,17 @@ impl<'a> Reader<'a> {
     fn path(&mut self) -> Result<String, i32> {
         self.skip(1)?;
         self.pstring()
+    }
+
+    /// Skip to an even offset from the start of the request: the values
+    /// that follow a path name start there (the wire convention). The
+    /// reader starts where the caller cut the request, 2 bytes in for
+    /// most commands, so offsets keep their parity. FPLogin and
+    /// FPOpenFork start 1 byte in, and neither aligns.
+    fn align(&mut self) {
+        if self.offset % 2 == 1 && !self.data.is_empty() {
+            let _ = self.skip(1);
+        }
     }
 }
 

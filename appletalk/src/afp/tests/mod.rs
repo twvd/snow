@@ -112,12 +112,43 @@ pub(super) fn login(server: &mut Afp, session: u8, version: &str) -> i32 {
     result
 }
 
+pub(super) fn login_ok(s: &mut Afp, version: &str) {
+    let mut d = vec![18u8, version.len() as u8];
+    d.extend_from_slice(version.as_bytes());
+    d.push(15);
+    d.extend_from_slice(b"No User Authent");
+    assert_eq!(result_of(s.command(1, &d)).0, 0);
+}
+
+/// An AFP 2.x path name: [type 2][Pascal string]
+pub(super) fn long_path(name: &str) -> Vec<u8> {
+    let mut out = vec![2, name.len() as u8];
+    out.extend_from_slice(name.as_bytes());
+    out
+}
+
 pub(super) fn mac_path(name: &str) -> Vec<u8> {
     // The wire carries MacRoman bytes
     let (b, _, _) = encoding_rs::MACINTOSH.encode(name);
     let mut v = vec![2, b.len() as u8];
     v.extend_from_slice(&b);
     v
+}
+
+/// A share with a directory above it, to see what lands outside
+pub(super) fn nested(name: &str) -> (Afp, PathBuf) {
+    let top = crate::test_dir(format!("snow-afp-{name}"));
+    let _ = std::fs::remove_dir_all(&top);
+    let share = top.join("share");
+    std::fs::create_dir_all(&share).unwrap();
+    let settings = AfpSettings {
+        read_only: false,
+        ..AfpSettings::default()
+    };
+    (
+        Afp::new_with(share.clone(), None, MaxVersion::default(), settings),
+        share.canonicalize().unwrap(),
+    )
 }
 
 /// FPOpenFork: the result and the fork reference
@@ -166,6 +197,18 @@ pub(super) fn read(s: &mut Afp, f: u16, off: u32, n: u32) -> (i32, Vec<u8>) {
 
 pub(super) fn result_of(reply: (Vec<u8>, Vec<u8>)) -> (i32, Vec<u8>) {
     (i32::from_be_bytes(reply.0.try_into().unwrap()), reply.1)
+}
+
+/// FPSetFileDirParms with one bitmap and the values at the next even offset
+pub(super) fn set_parms(s: &mut Afp, name: &str, bitmap: u16, vals: &[u8]) -> i32 {
+    let mut d = vec![35u8, 0, 0, 1, 0, 0, 0, 2];
+    d.extend_from_slice(&bitmap.to_be_bytes());
+    d.extend(mac_path(name));
+    if d.len() % 2 == 1 {
+        d.push(0);
+    }
+    d.extend_from_slice(vals);
+    result_of(s.command(1, &d)).0
 }
 
 /// A server rooted at a fresh temporary directory
