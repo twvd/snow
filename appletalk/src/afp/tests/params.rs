@@ -464,6 +464,44 @@ fn test_server_info_lists_versions_high_first() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn volume_mod_date_compares_signed_dates() {
+    let (mut server, dir) = test_server_writable("volmod");
+    // A share root whose mtime predates 2000 (a restored vintage
+    // tree): a negative AFP date
+    let set_1995 = || {
+        let c = std::ffi::CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let t = [
+            libc::timespec {
+                tv_sec: 788_918_400,
+                tv_nsec: 0,
+            },
+            libc::timespec {
+                tv_sec: 788_918_400,
+                tv_nsec: 0,
+            },
+        ];
+        // SAFETY: valid C path and timespec array
+        unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), t.as_ptr(), 0) };
+    };
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    set_1995();
+    // A server-side write below the root
+    let mut data = vec![7, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&mac_path("sub\0new"));
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    set_1995();
+    // GetVolParms, bitmap 0x0008: the modification date
+    let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0x00, 0x08]));
+    assert_eq!(r, 0);
+    let date = u32::from_be_bytes(reply[2..6].try_into().unwrap()) as i32;
+    assert!(
+        date > 0,
+        "the write stamp must beat a pre-2000 root mtime (got {date})"
+    );
+}
+
 #[test]
 fn the_uam_count_matches_the_list() {
     let (s, _) = test_server_writable("uams");

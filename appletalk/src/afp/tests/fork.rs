@@ -212,6 +212,57 @@ fn test_rsrc_fork_round_trip_apple_double() {
 }
 
 #[test]
+fn test_mod_date_follows_writes_with_a_container() {
+    let (mut server, dir) = test_server_writable("rv3-moddate");
+    std::fs::write(dir.join("f.txt"), b"abc").unwrap();
+    std::fs::create_dir(dir.join("D")).unwrap();
+    let old = (-157_785_600i32) as u32; // 1995
+    let set_dates = |server: &mut Afp, name: &str, d: u32| {
+        let mut data = vec![35, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x0C];
+        data.extend_from_slice(&long_path(name));
+        if data.len() % 2 == 1 {
+            data.push(0);
+        }
+        data.extend_from_slice(&d.to_be_bytes());
+        data.extend_from_slice(&d.to_be_bytes());
+        assert_eq!(result_of(server.command(1, &data)).0, 0);
+    };
+    let mod_date = |server: &mut Afp, name: &str, is_dir: bool| {
+        let (fb, db) = if is_dir {
+            (0u16, 0x0008u16)
+        } else {
+            (0x0008, 0)
+        };
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2];
+        data.extend_from_slice(&fb.to_be_bytes());
+        data.extend_from_slice(&db.to_be_bytes());
+        data.extend_from_slice(&long_path(name));
+        let (r, reply) = result_of(server.command(1, &data));
+        assert_eq!(r, 0);
+        u32::from_be_bytes(reply[6..10].try_into().unwrap())
+    };
+    set_dates(&mut server, "f.txt", old);
+    set_dates(&mut server, "D", old);
+    // Write the file through AFP and create a file inside D: both
+    // modification dates must move off the stored value
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x00, 0x00, 0x00, 0x03, 2, 5];
+    data.extend_from_slice(b"f.txt");
+    let (_, reply) = result_of(server.command(1, &data));
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut w = vec![33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, b'Z'];
+    w[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &w)).0, 0);
+    let mut c = vec![4, 0];
+    c.extend_from_slice(&fork_ref.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &c)).0, 0);
+    let mut cr = vec![7, 0, 0, 1, 0, 0, 0, 2];
+    cr.extend_from_slice(&long_path("D\0new"));
+    assert_eq!(result_of(server.command(1, &cr)).0, 0);
+    assert_ne!(mod_date(&mut server, "f.txt", false), old);
+    assert_ne!(mod_date(&mut server, "D", true), old);
+}
+
+#[test]
 fn test_read_newline_mask_stops_at_the_newline_char() {
     let (mut server, dir) = test_server("nl-mask");
     std::fs::write(dir.join("text.txt"), b"hello\nworld\rend").unwrap();

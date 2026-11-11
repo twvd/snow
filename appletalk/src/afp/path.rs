@@ -193,6 +193,36 @@ impl Afp {
         None
     }
 
+    /// The first case-folded entry of `dir` matching `host` that is
+    /// NOT `source` itself: a rename's own source is not a conflict
+    /// (the case-only rename must stay allowed even where the host
+    /// holds several spellings)
+    pub(super) fn case_variant_other(
+        &self,
+        dir: &Path,
+        host: &str,
+        source: &Path,
+    ) -> Option<PathBuf> {
+        let wanted = host.nfc().collect::<String>().to_lowercase();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let name = entry.file_name();
+            if name
+                .to_string_lossy()
+                .nfc()
+                .collect::<String>()
+                .to_lowercase()
+                != wanted
+            {
+                continue;
+            }
+            let found = dir.join(name);
+            if !same_file(&found, source) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// The host directory a Directory ID refers to (the root is the
     /// fixed ID 2), only while the recorded path still holds the
     /// recorded directory
@@ -225,6 +255,39 @@ impl Afp {
             .unwrap_or_default();
         crate::name::to_mac(&host_name).0
     }
+}
+
+/// Whether two paths are the same object (device and inode where the
+/// platform exposes them; a canonical-path comparison elsewhere). The
+/// rename path must compare identities, not paths: on a
+/// case-insensitive host the destination spelling resolves to the
+/// source itself, while on a case-sensitive host two spellings are
+/// two files.
+pub(super) fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return ma.dev() == mb.dev() && ma.ino() == mb.ino();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        if let (Ok(ca), Ok(cb)) = (a.canonicalize(), b.canonicalize()) {
+            return ca == cb;
+        }
+        false
+    }
+}
+
+/// The canonical target of a symlink; None for anything else, and for a
+/// dangling link, which has no target to protect
+pub(super) fn symlink_target(path: &Path) -> Option<PathBuf> {
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return None;
+    }
+    path.canonicalize().ok()
 }
 
 /// Whether a directory entry is listed: a file, a directory, or a symbolic

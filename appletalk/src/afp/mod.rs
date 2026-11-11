@@ -28,6 +28,7 @@ mod desktop;
 mod fork;
 mod params;
 mod path;
+mod tree;
 
 use self::{params::*, path::*};
 
@@ -57,6 +58,11 @@ const CMD_ADD_CMT: u8 = 56;
 const CMD_RMV_CMT: u8 = 57;
 const CMD_GET_CMT: u8 = 58;
 const CMD_ADD_ICON: u8 = 192;
+const CMD_CREATE_DIR: u8 = 6;
+const CMD_CREATE_FILE: u8 = 7;
+const CMD_DELETE: u8 = 8;
+const CMD_MOVE: u8 = 23;
+const CMD_RENAME: u8 = 28;
 const CMD_SET_DIR_PARMS: u8 = 29;
 const CMD_SET_FILE_PARMS: u8 = 30;
 const CMD_SET_FORK_PARMS: u8 = 31;
@@ -74,11 +80,15 @@ const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_ITEM_NOT_FOUND: i32 = -5012;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
+const ERR_FILE_BUSY: i32 = -5010;
 const ERR_OBJECT_LOCKED: i32 = -5032;
 const ERR_OBJECT_TYPE: i32 = -5025;
 const ERR_TOO_MANY_FILES_OPEN: i32 = -5026;
 const ERR_DIR_NOT_FOUND: i32 = -5029;
+const ERR_DIR_NOT_EMPTY: i32 = -5007;
 const ERR_DISK_FULL: i32 = -5008;
+const ERR_CANT_MOVE: i32 = -5005;
+const ERR_OBJECT_EXISTS: i32 = -5017;
 const ERR_VOL_LOCKED: i32 = -5031;
 
 /// The identifier of the single volume
@@ -480,6 +490,17 @@ impl Afp {
                     }
                     CMD_SET_FILE_PARMS => self.cmd_set_params(version, SetCall::File, params),
                     CMD_SET_DIR_PARMS => self.cmd_set_params(version, SetCall::Dir, params),
+                    // FPCreateFile's header byte is the CreateFlag
+                    // (bit 7 = hard create); FPCreateDir's is the
+                    // plain reserved byte
+                    CMD_CREATE_FILE => {
+                        let flag = data.get(1).copied().unwrap_or(0);
+                        self.cmd_create(false, flag, params)
+                    }
+                    CMD_CREATE_DIR => self.cmd_create(true, 0, params),
+                    CMD_DELETE => self.cmd_delete(params),
+                    CMD_RENAME => self.cmd_rename(params),
+                    CMD_MOVE => self.cmd_move_and_rename(params),
                     CMD_FLUSH | CMD_FLUSH_FORK => self.cmd_flush(cmd, params),
                     // FPRead's EOF comes with the data read before it
                     CMD_READ => match self.cmd_read(params) {

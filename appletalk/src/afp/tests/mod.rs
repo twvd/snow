@@ -240,6 +240,12 @@ pub(super) fn set_parms(s: &mut Afp, name: &str, bitmap: u16, vals: &[u8]) -> i3
     result_of(s.command(1, &d)).0
 }
 
+pub(super) fn simple(cmd: u8, name: &str) -> Vec<u8> {
+    let mut d = vec![cmd, 0, 0, 1, 0, 0, 0, 2];
+    d.extend(mac_path(name));
+    d
+}
+
 /// A server rooted at a fresh temporary directory
 pub(super) fn test_server(name: &str) -> (Afp, PathBuf) {
     let dir = crate::test_dir(format!("snow-afp-{}", name));

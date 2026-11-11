@@ -7,7 +7,7 @@
 //! current path is kept alongside for reverse resolution
 //! (FPResolveID). The IDs are in-memory, for the life of the server.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// The reserved Directory ID of the volume root
@@ -64,6 +64,10 @@ fn identity(path: &Path) -> Option<(u64, u64)> {
 pub(crate) struct IdTable {
     by_inode: HashMap<(u64, u64), u32>,
     by_id: HashMap<u32, (PathBuf, (u64, u64))>,
+    /// The recorded paths in path order, with their IDs. A folder's
+    /// descendants sort right after it (paths compare component by
+    /// component), so a delete or a move finds them without a scan.
+    by_path: BTreeSet<(PathBuf, u32)>,
     allocator: IdAllocator,
 }
 
@@ -72,6 +76,7 @@ impl IdTable {
         Self {
             by_inode: HashMap::new(),
             by_id: HashMap::new(),
+            by_path: BTreeSet::new(),
             allocator: IdAllocator::new(),
         }
     }
@@ -94,7 +99,27 @@ impl IdTable {
 
     /// Record an ID's current path and identity
     fn record(&mut self, id: u32, path: PathBuf, key: (u64, u64)) {
-        self.by_id.insert(id, (path, key));
+        if let Some((old, _)) = self.by_id.insert(id, (path.clone(), key)) {
+            self.by_path.remove(&(old, id));
+        }
+        self.by_path.insert((path, id));
+    }
+
+    /// Forget an ID's path and its identity binding
+    fn forget(&mut self, id: u32) {
+        if let Some((path, key)) = self.by_id.remove(&id) {
+            self.by_path.remove(&(path, id));
+            self.by_inode.remove(&key);
+        }
+    }
+
+    /// The IDs recorded at a path or below it
+    fn ids_under(&self, path: &Path) -> Vec<u32> {
+        self.by_path
+            .range((path.to_path_buf(), 0)..)
+            .take_while(|(p, _)| p.starts_with(path))
+            .map(|(_, id)| *id)
+            .collect()
     }
 
     /// The host path an ID refers to, only while the recorded path
@@ -106,6 +131,46 @@ impl IdTable {
             Some(path.as_path())
         } else {
             None
+        }
+    }
+
+    /// Drop a deleted object: the reverse entries of the path and
+    /// everything below it AND their identity bindings, so a future
+    /// file reusing one of the inodes gets a fresh ID (a stale
+    /// reference must fail, never alias the new object)
+    pub(crate) fn remove_path(&mut self, path: &Path) {
+        for id in self.ids_under(path) {
+            self.forget(id);
+        }
+    }
+
+    /// Update the recorded paths after a rename or move: every path
+    /// at or below `from` moves under `to`, and a path-derived
+    /// identity (a platform without inodes) re-keys with it
+    pub(crate) fn move_path(&mut self, from: &Path, to: &Path) {
+        for id in self.ids_under(from) {
+            let (p, mut key) = self.by_id[&id].clone();
+            let Ok(rest) = p.strip_prefix(from) else {
+                continue;
+            };
+            // An empty remainder is the moved entry itself: join("")
+            // would append a trailing separator, which fails to stat for
+            // files
+            let moved = if rest.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(rest)
+            };
+            // A path-derived identity (a platform without inodes) re-keys
+            // with the moved path
+            if let Some(new_key) = identity(&moved)
+                && key != new_key
+            {
+                self.by_inode.remove(&key);
+                self.by_inode.insert(new_key, id);
+                key = new_key;
+            }
+            self.record(id, moved, key);
         }
     }
 }
@@ -152,6 +217,73 @@ mod tests {
         // The root's reserved ID is never minted
         assert_ne!(id, ROOT_DIR_ID);
         assert_ne!(other_id, ROOT_DIR_ID);
+        // Rename moves the recorded path, keeps the ID (the identity
+        // binding means the same file still resolves to the same ID)
+        let renamed = dir.join("renamed.txt");
+        std::fs::rename(&file, &renamed).unwrap();
+        table.move_path(&file, &renamed);
+        assert_eq!(table.verified_path(id), Some(renamed.as_path()));
+        assert_eq!(table.id_of(&renamed), Some(id));
+        // A subtree move rewrites the paths of everything below the
+        // directory too
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let child = sub.join("child.txt");
+        std::fs::write(&child, b"c").unwrap();
+        let sub_id = table.id_of(&sub).unwrap();
+        let child_id = table.id_of(&child).unwrap();
+        let moved = dir.join("moved");
+        std::fs::rename(&sub, &moved).unwrap();
+        table.move_path(&sub, &moved);
+        assert_eq!(table.verified_path(sub_id), Some(moved.as_path()));
+        assert_eq!(
+            table.verified_path(child_id),
+            Some(moved.join("child.txt").as_path())
+        );
+        // The verified path serves an object only while the recorded
+        // path still holds the recorded identity
+        assert_eq!(
+            table.verified_path(child_id),
+            Some(moved.join("child.txt").as_path())
+        );
+        // Delete drops the reverse entry AND the identity binding: a
+        // new file (even one reusing the inode) gets a fresh ID
+        table.remove_path(&renamed);
+        assert_eq!(table.verified_path(id), None);
+        let again_id = table.id_of(&renamed).unwrap();
+        assert_ne!(again_id, id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_delete_or_a_move_takes_exactly_the_subtree() {
+        let dir = crate::test_dir("snow-ids-subtree");
+        let _ = std::fs::remove_dir_all(&dir);
+        for sub in ["b/c", "b-x", "bb", "b c"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let mut table = IdTable::new();
+        let id = |t: &mut IdTable, p: &str| t.id_of(&dir.join(p)).unwrap();
+        let (b, c, bx, bb, bsp) = (
+            id(&mut table, "b"),
+            id(&mut table, "b/c"),
+            id(&mut table, "b-x"),
+            id(&mut table, "bb"),
+            id(&mut table, "b c"),
+        );
+        // A move rewrites b and b/c only
+        std::fs::rename(dir.join("b"), dir.join("z")).unwrap();
+        table.move_path(&dir.join("b"), &dir.join("z"));
+        assert_eq!(table.verified_path(c), Some(dir.join("z/c").as_path()));
+        // A delete drops z and z/c only
+        table.remove_path(&dir.join("z"));
+        assert_eq!(
+            (table.verified_path(b), table.verified_path(c)),
+            (None, None)
+        );
+        for (other, name) in [(bx, "b-x"), (bb, "bb"), (bsp, "b c")] {
+            assert_eq!(table.verified_path(other), Some(dir.join(name).as_path()));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

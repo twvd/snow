@@ -101,6 +101,13 @@ impl DeskDb {
         self.icons(creator).into_iter().find(|i| i.ftype == ftype)
     }
 
+    /// Drop a file's APPL entry (after a delete or rename); the
+    /// bundle icons stay (they are shared between applications of a
+    /// creator)
+    pub(crate) fn remove_appl(&mut self, target: &Path) {
+        self.appls.retain(|a| a.path != target);
+    }
+
     /// Register an APPL file and its bundle icons while its parameters
     /// are being served, so the desktop calls that follow find them
     /// without any volume walk

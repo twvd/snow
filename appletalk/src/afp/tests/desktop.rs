@@ -32,6 +32,14 @@ fn test_desktop_database_commands() {
     gfd.extend_from_slice(b"App");
     let (r, _) = result_of(server.command(1, &gfd));
     assert_eq!(r, 0);
+    // Registered again, as after a rename, it adds no second copy of
+    // its icons
+    let icons = server.desktop.as_ref().unwrap().icon_count();
+    let app = server.root.join("App");
+    server.desktop.as_mut().unwrap().remove_appl(&app);
+    assert_eq!(result_of(server.command(1, &gfd)).0, 0);
+    assert_eq!(server.desktop.as_ref().unwrap().application_count(), 1);
+    assert_eq!(server.desktop.as_ref().unwrap().icon_count(), icons);
 
     // FPGetAPPL: creator 'TEST', index 0, bitmap 0x0340 (long name,
     // file number, data fork length)
