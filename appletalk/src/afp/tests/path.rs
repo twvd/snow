@@ -161,6 +161,34 @@ fn every_page_size_lists_each_entry_once() {
 }
 
 #[test]
+fn the_next_page_sees_the_servers_own_create() {
+    let (mut server, dir) = test_server_writable("enumerate-own-create");
+    for name in ["a", "b", "c"] {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    login_ok(&mut server, "AFP2.1");
+    let page = |server: &mut Afp, start: u16| {
+        // [Enumerate][0][vol 1][dir 2][file bm 0x0040][dir bm 0x0040]
+        // [count 3][start][max 4000][path type 2][path ""]
+        let mut data = vec![9, 0, 0, 1, 0, 0, 0, 2, 0, 0x40, 0, 0x40, 0, 3];
+        data.extend_from_slice(&start.to_be_bytes());
+        data.extend_from_slice(&[0x0F, 0xA0, 2, 0]);
+        result_of(server.command(1, &data)).1
+    };
+    let mtime = std::fs::metadata(&dir).unwrap().modified().unwrap();
+    page(&mut server, 1);
+    let mut create = vec![7, 0, 0, 1, 0, 0, 0, 2];
+    create.extend(mac_path("aa"));
+    assert_eq!(result_of(server.command(1, &create)).0, 0);
+    // A file system with coarse times gives the folder its old time back
+    std::fs::File::open(&dir)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert!(page(&mut server, 2).windows(3).any(|w| w == b"\x02aa"));
+}
+
+#[test]
 fn test_nul_separated_path_grammar() {
     let (mut server, dir) = test_server("nul-paths");
     std::fs::create_dir(dir.join("a")).unwrap();
@@ -282,6 +310,41 @@ fn test_root_parent_is_one() {
     let (result, reply) = result_of(server.command(1, &data));
     assert_eq!(result, 0);
     assert_eq!(reply[6..10], [0, 0, 0, 2]);
+}
+
+#[test]
+fn test_name_bijection_on_writes() {
+    let (mut server, dir) = test_server_writable("write-names");
+    // A Mac name containing '/' (the separator) maps to ':' on the
+    // host
+    let mut data = vec![7, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("a/b"));
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    assert!(dir.join("a:b").is_file());
+    assert!(!dir.join("a").exists());
+    // The enumeration serves it back as "a/b"
+    let data = [
+        9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 0,
+    ];
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert!(reply.windows(3).any(|w| w == b"a/b"));
+    // GetFileDirParms by "a/b" resolves to "a:b"
+    let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0x00, 0xE0, 0, 0, 2, 3];
+    data.extend_from_slice(b"a/b");
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    // Rename "a/b" to "c/d": the host file moves to "c:d"
+    let mut data = vec![28, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("a/b"));
+    data.extend_from_slice(&long_path("c/d"));
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    assert!(!dir.join("a:b").exists());
+    assert!(dir.join("c:d").is_file());
+    // Delete by "c/d"
+    let mut data = vec![8, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("c/d"));
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    assert!(!dir.join("c:d").exists());
 }
 
 #[test]
@@ -525,6 +588,11 @@ fn a_mangled_name_resolves_without_having_been_served() {
     assert_eq!(gfdp(&mut s, &mac, 0x0040, 0).0, 0);
     // In any case, as the Mac file system folds it
     assert_eq!(gfdp(&mut s, &mac.to_uppercase(), 0x0040, 0).0, 0);
+    // Creating under it is that file, not a second one
+    assert_eq!(
+        result_of(s.command(1, &simple(7, &mac))).0,
+        ERR_OBJECT_EXISTS
+    );
 }
 
 #[test]
@@ -536,6 +604,23 @@ fn a_real_name_wins_over_a_mangled_one() {
     std::fs::write(dir.join(&mac), b"real").unwrap();
     let (_, f) = open(&mut s, &mac, false, 1);
     assert_eq!(read(&mut s, f, 0, 4).1, b"real");
+}
+
+#[test]
+fn a_name_cannot_reach_out_of_its_directory() {
+    let (mut s, dir) = test_server_writable("escape");
+    for name in ["..", "."] {
+        assert_eq!(
+            result_of(s.command(1, &simple(7, name))).0,
+            ERR_PARAM,
+            "{name}"
+        );
+        let mut d = simple(28, "a");
+        d.extend(mac_path(name));
+        std::fs::write(dir.join("a"), b"x").unwrap();
+        assert_eq!(result_of(s.command(1, &d)).0, ERR_PARAM, "{name}");
+    }
+    assert_eq!(gfdp(&mut s, "..", 0x0040, 0x0040).0, ERR_OBJECT_NOT_FOUND);
 }
 
 #[cfg(unix)]
