@@ -5061,6 +5061,7 @@ dependencies = [
  "serde-big-array",
  "serde_json",
  "sha2",
+ "snow_appletalk",
  "snow_floppy",
  "snow_nat",
  "socket2",
