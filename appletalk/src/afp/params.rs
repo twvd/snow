@@ -4,7 +4,7 @@ use super::*;
 
 impl Afp {
     /// FPOpenVol: make the volume available, returning the volume ID
-    pub(super) fn cmd_open_vol(&self, params: &[u8]) -> Reply {
+    pub(super) fn cmd_open_vol(&self, version: AfpVersion, params: &[u8]) -> Reply {
         let mut r = Reader::new(params);
         let bitmap = r.u16()?;
         let name = r.pstring()?;
@@ -12,7 +12,7 @@ impl Afp {
             wire_log!("AFP: open of unknown volume '{}'", name);
             return Err(ERR_OBJECT_NOT_FOUND);
         }
-        if !vol_bitmap_ok(bitmap) {
+        if !vol_bitmap_ok(version, bitmap) {
             return Err(ERR_BITMAP);
         }
         Ok(vol_params(
@@ -24,14 +24,14 @@ impl Afp {
     }
 
     /// FPGetVolParms: the volume parameters
-    pub(super) fn cmd_get_vol_parms(&self, params: &[u8]) -> Reply {
+    pub(super) fn cmd_get_vol_parms(&self, version: AfpVersion, params: &[u8]) -> Reply {
         let mut r = Reader::new(params);
         let volume_id = r.u16()?;
         if volume_id != VOLUME_ID {
             return Err(ERR_OBJECT_NOT_FOUND);
         }
         let bitmap = r.u16()?;
-        if !vol_bitmap_ok(bitmap) {
+        if !vol_bitmap_ok(version, bitmap) {
             return Err(ERR_BITMAP);
         }
         Ok(vol_params(
@@ -361,11 +361,17 @@ pub(super) fn v11_attrs(version: AfpVersion, attrs: u16) -> u16 {
     }
 }
 
-/// Whether a session may ask for these volume parameters. ch13
-/// (FPGetVolParms): BitmapErr for a parameter "that cannot be obtained
-/// with this call; bitmap is null". Bits 0 to 8 are ch13's.
-pub(super) fn vol_bitmap_ok(bitmap: u16) -> bool {
-    bitmap != 0 && bitmap & !0x01FF == 0
+/// Whether a session of this version may ask for these volume parameters.
+/// ch13 (FPGetVolParms): BitmapErr for a parameter "that cannot be
+/// obtained with this call; bitmap is null". Bits 0 to 8 are ch13's; AFP
+/// 2.2 adds bits 9 to 11, the extended byte counts and the block size.
+pub(super) fn vol_bitmap_ok(version: AfpVersion, bitmap: u16) -> bool {
+    let known = if version == AfpVersion::V22 {
+        0x0FFF
+    } else {
+        0x01FF
+    };
+    bitmap != 0 && bitmap & !known == 0
 }
 
 /// The volume parameters requested by a bitmap: the fixed parameters in
@@ -373,7 +379,9 @@ pub(super) fn vol_bitmap_ok(bitmap: u16) -> bool {
 ///
 /// Bit 0: attributes, bit 1: signature, bit 2: creation date, bit 3:
 /// modification date, bit 4: backup date, bit 5: volume ID, bit 6:
-/// bytes free, bit 7: bytes total, bit 8: volume name
+/// bytes free, bit 7: bytes total, bit 8: volume name, bit 9 (0x0200):
+/// extended bytes free (8 bytes), bit 10 (0x0400): extended bytes
+/// total (8 bytes), bit 11 (0x0800): block size
 pub(super) fn vol_params(bitmap: u16, name: &str, root: &Path, read_only: bool) -> Vec<u8> {
     let (bytes_free, bytes_total) = statvfs(root);
 
@@ -405,17 +413,30 @@ pub(super) fn vol_params(bitmap: u16, name: &str, root: &Path, read_only: bool) 
         fixed.extend_from_slice(&VOLUME_ID.to_be_bytes());
     }
     if bitmap & 0x0040 != 0 {
-        // The 32-bit byte counts clamp below 2 GiB
+        // The legacy 32-bit byte counts clamp below 2 GiB (the 2.2
+        // extended bits below carry the real values)
         fixed.extend_from_slice(&clamp32(bytes_free).to_be_bytes());
     }
     if bitmap & 0x0080 != 0 {
         fixed.extend_from_slice(&clamp32(bytes_total).to_be_bytes());
     }
+    // The name-offset field (bit 8) comes before the 2.2 extended
+    // fields in bitmap order
     let mut name_off_pos = None;
     if bitmap & 0x0100 != 0 {
         // Placeholder for the offset to the volume name
         name_off_pos = Some(fixed.len());
         fixed.extend_from_slice(&0u16.to_be_bytes());
+    }
+    // The AFP 2.2 extended volume-size bits: the 64-bit values
+    if bitmap & 0x0200 != 0 {
+        fixed.extend_from_slice(&bytes_free.to_be_bytes());
+    }
+    if bitmap & 0x0400 != 0 {
+        fixed.extend_from_slice(&bytes_total.to_be_bytes());
+    }
+    if bitmap & 0x0800 != 0 {
+        fixed.extend_from_slice(&4096u32.to_be_bytes()); // block size
     }
     let name_offset = fixed.len() as u16;
     if let Some(pos) = name_off_pos {

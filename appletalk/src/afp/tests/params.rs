@@ -23,6 +23,18 @@ fn test_vol_params_layout() {
 }
 
 #[test]
+fn test_vol_params_name_offset_precedes_extended_fields() {
+    // Bits 8 (name), 10 (extended total) and 11 (block size): the
+    // name-offset field comes first in bitmap order, the name
+    // follows all the fixed fields at the recorded offset
+    let vol = vol_params(0x0D00, "Snow", Path::new("/"), true);
+    assert_eq!(&vol[..2], &[0x0D, 0x00]);
+    assert_eq!(&vol[2..4], &14u16.to_be_bytes()); // the name offset
+    assert_eq!(&vol[12..16], &4096u32.to_be_bytes()); // block size
+    assert_eq!(&vol[16..21], &[4, b'S', b'n', b'o', b'w']); // "Snow"
+}
+
+#[test]
 fn test_open_vol_spec_layout() {
     let (mut server, _dir) = test_server("open-vol");
     // [OpenVol][0][bitmap 0x0120]["Snow"]
@@ -31,12 +43,18 @@ fn test_open_vol_spec_layout() {
     assert_eq!(result, 0);
     assert_eq!(&reply[..6], &[0x01, 0x20, 0x00, 0x01, 0x00, 0x04]);
     assert_eq!(&reply[7..11], b"Snow");
-    // A null bitmap and a bit the call does not define are BitmapErr
+    // A null bitmap and a bit no version defines are BitmapErr, and
+    // the 2.2 bits are only for a 2.2 session
     for bitmap in [0x0000u16, 0x1000, 0x0200] {
         let mut data = vec![17, 0, 0, 1];
         data.extend_from_slice(&bitmap.to_be_bytes());
         assert_eq!(result_of(server.command(1, &data)).0, ERR_BITMAP);
     }
+    server.versions.insert(1, AfpVersion::V22);
+    assert_eq!(
+        result_of(server.command(1, &[17, 0, 0, 1, 0x02, 0x00])).0,
+        0
+    );
 }
 
 #[test]
@@ -270,21 +288,47 @@ fn test_max20_rejects_21() {
 }
 
 #[test]
+fn test_max22_accepts_22_and_lists_it_first() {
+    let dir = crate::test_dir("snow-afp-max22");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut server = Afp::new_with(dir.clone(), None, MaxVersion::Max22, AfpSettings::default());
+    assert_eq!(login(&mut server, 1, "AFP2.2"), 0);
+    assert_eq!(login(&mut server, 2, "AFPVersion 2.1"), 0);
+    assert_eq!(login(&mut server, 3, "AFPVersion 1.1"), 0);
+    let info = server.server_info();
+    let versions_off = u16::from_be_bytes([info[2], info[3]]) as usize;
+    assert_eq!(info[versions_off], 4); // four version strings
+    assert_eq!(&info[versions_off + 1..versions_off + 8], b"\x06AFP2.2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_vol_params_extended_size_bits() {
+    // AFP 2.2's bits 0x0200/0x0400 are 64-bit sizes, 0x0800 the
+    // 4-byte block size, in bitmap order
+    let params = vol_params(0x0E00, "Snow", Path::new("/"), true);
+    assert_eq!(&params[0..2], &[0x0E, 0x00]); // the bitmap
+    assert_eq!(params.len(), 2 + 8 + 8 + 4);
+}
+
+#[test]
 fn test_server_info_lists_versions_high_first() {
     let (server, _dir) = test_server("versions-info");
     let info = server.server_info();
     let versions_off = u16::from_be_bytes([info[2], info[3]]) as usize;
-    assert_eq!(info[versions_off], 3); // three version strings
+    assert_eq!(info[versions_off], 4); // four version strings
+    assert_eq!(&info[versions_off + 1..versions_off + 8], b"\x06AFP2.2");
     assert_eq!(
-        &info[versions_off + 1..versions_off + 16],
+        &info[versions_off + 8..versions_off + 23],
         b"\x0eAFPVersion 2.1"
     );
     assert_eq!(
-        &info[versions_off + 16..versions_off + 31],
+        &info[versions_off + 23..versions_off + 38],
         b"\x0eAFPVersion 2.0"
     );
     assert_eq!(
-        &info[versions_off + 31..versions_off + 46],
+        &info[versions_off + 38..versions_off + 53],
         b"\x0eAFPVersion 1.1"
     );
 }
