@@ -1,4 +1,4 @@
-//! The tree: create, delete, rename and move
+//! The tree: create, delete, rename, move, file IDs and FPExchangeFiles
 
 use super::*;
 
@@ -343,6 +343,197 @@ impl Afp {
         }
         if let Some(db) = &mut self.desktop {
             db.remove_appl(&target);
+        }
+        self.touch_volume();
+        Ok(Vec::new())
+    }
+
+    /// FPCreateID: [vol][dir id][path name] → the file ID (the
+    /// identity table's ID, minted on first contact)
+    pub(super) fn cmd_create_id(&mut self, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let dir_id = r.u32()?;
+        let name = r.path()?;
+        let target = self
+            .resolve_path(dir_id, &name)
+            .ok_or(ERR_OBJECT_NOT_FOUND)?;
+        if std::fs::metadata(&target).is_ok_and(|m| m.is_dir()) {
+            return Err(ERR_OBJECT_TYPE);
+        }
+        // The identity table mints the ID on first contact and keeps
+        // it stable thereafter
+        let id = self.ids.id_of(&target).ok_or(ERR_OBJECT_NOT_FOUND)?;
+        Ok(id.to_be_bytes().to_vec())
+    }
+
+    /// FPDeleteID: [vol][file id] — invalidate a file ID
+    pub(super) fn cmd_delete_id(&mut self, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let id = r.u32()?;
+        // Only a file's ID can be invalidated: a directory's ID is the
+        // server's own naming, an unknown or replaced ID answers
+        // afpIDNotFound
+        let path = self
+            .ids
+            .verified_path(id)
+            .map(|p| p.to_path_buf())
+            .ok_or(ERR_ID_NOT_FOUND)?;
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_dir() => return Err(ERR_OBJECT_TYPE),
+            Ok(_) => {}
+            Err(_) => return Err(ERR_ID_NOT_FOUND),
+        }
+        self.ids.remove_id(id);
+        Ok(Vec::new())
+    }
+
+    /// FPResolveID: [vol][file id][file bitmap] → the file parameters
+    pub(super) fn cmd_resolve_id(&mut self, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let id = r.u32()?;
+        let bitmap = r.u16()?;
+        if bitmap & !FILE_BITMAP_ALLOWED != 0 {
+            return Err(ERR_BITMAP);
+        }
+        // The recorded path must still hold the recorded file: a host
+        // save-by-rename replaces the inode, and the old ID must fail,
+        // never alias the replacement. The AFP 2.1 specification
+        // (afpResolveID): IDNotFound when the "File ID was not found",
+        // BadIDErr when the number "is not a defined FileID". An ID whose
+        // file has gone is still defined; one never handed out, or removed
+        // by FPDeleteID, is not.
+        let Some(target) = self.ids.verified_path(id).map(|p| p.to_path_buf()) else {
+            let code = if self.ids.is_defined(id) {
+                ERR_ID_NOT_FOUND
+            } else {
+                ERR_BAD_ID
+            };
+            return Err(code);
+        };
+        // A directory's ID is not a file ID
+        if std::fs::metadata(&target).is_ok_and(|m| m.is_dir()) {
+            return Err(ERR_OBJECT_TYPE);
+        }
+        let mut meta = self.meta_open(&target);
+        meta.attrs |= self.open_attrs(&target);
+        let name = self.mac_name_of(&target);
+        let parent_id = self.parent_id_of(&target);
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap.to_be_bytes());
+        // The resolved ID itself is the file number (the CNID)
+        reply.extend_from_slice(&file_params(bitmap, &name, &meta, parent_id, id));
+        Ok(reply)
+    }
+
+    /// FPExchangeFiles: [vol][source dir][dest dir][source path][dest path]
+    ///
+    /// A safe save: the application writes a temporary file, then exchanges
+    /// it with the original, whose ID its aliases hold. The data, the
+    /// resource fork, the modification date, the fork reference numbers
+    /// and the locks change hands; the name, the parent, the file ID and
+    /// the rest of the metadata stay with the file.
+    pub(super) fn cmd_exchange_files(&mut self, params: &[u8]) -> Reply {
+        if self.settings.read_only {
+            return Err(ERR_VOL_LOCKED);
+        }
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let src_dir = r.u32()?;
+        let dst_dir = r.u32()?;
+        let src_name = r.path()?;
+        let dst_name = r.path()?;
+        let (Some(a), Some(b)) = (
+            self.resolve_path(src_dir, &src_name),
+            self.resolve_path(dst_dir, &dst_name),
+        ) else {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        };
+        if a == b {
+            return Err(ERR_SAME_OBJECT);
+        }
+        let (meta_a, meta_b) = (self.meta_open(&a), self.meta_open(&b));
+        for path in [&a, &b] {
+            if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+                return Err(ERR_OBJECT_TYPE);
+            }
+        }
+        // In the book's model the two catalog entries swap names, so a
+        // rename inhibit refuses the exchange as a write inhibit does,
+        // although this server swaps the contents instead. The write
+        // inhibit also covers an AppleSingle file, whose data cannot be
+        // separated from its container.
+        if (meta_a.attrs | meta_b.attrs) & (ATTR_WRITE_INHIBIT | 0x0080) != 0 {
+            return Err(ERR_OBJECT_LOCKED);
+        }
+        let (Some(id_a), Some(id_b)) = (self.ids.id_of(&a), self.ids.id_of(&b)) else {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        };
+        // Inside Macintosh: Files, p. 1-26: "Fields that describe the
+        // data remain with the data; fields that describe the file remain
+        // with the file". The data forks, the resource forks and the
+        // modification dates change hands. The Finder information, the
+        // attributes, the creation and backup dates and the file IDs stay
+        // with the names, and so do the metadata containers.
+        let (rsrc_a, rsrc_b) = match (
+            crate::meta::read_rsrc(&meta_a),
+            crate::meta::read_rsrc(&meta_b),
+        ) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => return Err(io_err(&e)),
+        };
+        if let Err(e) = crate::meta::exchange_paths(&a, &b) {
+            return Err(io_err(&e));
+        }
+        let swap = |rsrc_a: &[u8], mod_a: u32, rsrc_b: &[u8], mod_b: u32| {
+            crate::meta::set_rsrc(&a, rsrc_a)?;
+            crate::meta::set_rsrc(&b, rsrc_b)?;
+            crate::meta::set_dates(&a, meta_a.create_date, mod_a, meta_a.backup_date)?;
+            crate::meta::set_dates(&b, meta_b.create_date, mod_b, meta_b.backup_date)
+        };
+        if let Err(e) = swap(&rsrc_b, meta_b.mod_date, &rsrc_a, meta_a.mod_date) {
+            // Each name would be left with half of the other file: put
+            // everything back
+            let _ = crate::meta::exchange_paths(&a, &b);
+            let _ = swap(&rsrc_a, meta_a.mod_date, &rsrc_b, meta_b.mod_date);
+            return Err(io_err(&e));
+        }
+        self.ids.exchange((id_a, &a), (id_b, &b));
+        // An open fork stays with its data, under its new name
+        let (name_a, name_b) = (self.mac_name_of(&a), self.mac_name_of(&b));
+        let (parent_a, parent_b) = (self.parent_id_of(&a), self.parent_id_of(&b));
+        for fork in self.forks.values_mut() {
+            if fork.path == a {
+                fork.path = b.clone();
+                fork.name = name_b.clone();
+                fork.parent = parent_b;
+                fork.file_id = id_b;
+            } else if fork.path == b {
+                fork.path = a.clone();
+                fork.name = name_a.clone();
+                fork.parent = parent_a;
+                fork.file_id = id_a;
+            }
+        }
+        self.refresh_forks(&a);
+        self.refresh_forks(&b);
+        if let Some(db) = &mut self.desktop {
+            db.remove_appl(&a);
+            db.remove_appl(&b);
         }
         self.touch_volume();
         Ok(Vec::new())

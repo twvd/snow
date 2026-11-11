@@ -10,7 +10,7 @@ fn legacy_volume_size_is_positive() {
 
 #[test]
 fn test_vol_params_layout() {
-    let vol = vol_params(0x0120, "Snow", Path::new("/"), true, 0);
+    let vol = vol_params(0x0120, "Snow", Path::new("/"), true, true, 0);
     // Bitmap, then the volume ID, then the name offset, then "Snow"
     assert_eq!(
         &vol[..10],
@@ -18,7 +18,7 @@ fn test_vol_params_layout() {
     );
     assert_eq!(&vol[10..], b"w");
     // The backup date is "never"
-    let vol = vol_params(0x0010, "Snow", Path::new("/"), true, 0);
+    let vol = vol_params(0x0010, "Snow", Path::new("/"), true, true, 0);
     assert_eq!(&vol[2..], &0x8000_0000u32.to_be_bytes());
 }
 
@@ -27,7 +27,7 @@ fn test_vol_params_name_offset_precedes_extended_fields() {
     // Bits 8 (name), 10 (extended total) and 11 (block size): the
     // name-offset field comes first in bitmap order, the name
     // follows all the fixed fields at the recorded offset
-    let vol = vol_params(0x0D00, "Snow", Path::new("/"), true, 0);
+    let vol = vol_params(0x0D00, "Snow", Path::new("/"), true, true, 0);
     assert_eq!(&vol[..2], &[0x0D, 0x00]);
     assert_eq!(&vol[2..4], &14u16.to_be_bytes()); // the name offset
     assert_eq!(&vol[12..16], &4096u32.to_be_bytes()); // block size
@@ -438,7 +438,7 @@ fn test_max22_accepts_22_and_lists_it_first() {
 fn test_vol_params_extended_size_bits() {
     // AFP 2.2's bits 0x0200/0x0400 are 64-bit sizes, 0x0800 the
     // 4-byte block size, in bitmap order
-    let params = vol_params(0x0E00, "Snow", Path::new("/"), true, 0);
+    let params = vol_params(0x0E00, "Snow", Path::new("/"), true, true, 0);
     assert_eq!(&params[0..2], &[0x0E, 0x00]); // the bitmap
     assert_eq!(params.len(), 2 + 8 + 8 + 4);
 }

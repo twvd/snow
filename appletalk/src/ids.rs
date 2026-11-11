@@ -7,7 +7,7 @@
 //! current path is kept alongside for reverse resolution
 //! (FPResolveID). The IDs are in-memory, for the life of the server.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The reserved Directory ID of the volume root
@@ -68,6 +68,8 @@ pub(crate) struct IdTable {
     /// descendants sort right after it (paths compare component by
     /// component), so a delete or a move finds them without a scan.
     by_path: BTreeSet<(PathBuf, u32)>,
+    /// The IDs FPDeleteID removed: no longer defined
+    deleted: HashSet<u32>,
     allocator: IdAllocator,
 }
 
@@ -77,6 +79,7 @@ impl IdTable {
             by_inode: HashMap::new(),
             by_id: HashMap::new(),
             by_path: BTreeSet::new(),
+            deleted: HashSet::new(),
             allocator: IdAllocator::new(),
         }
     }
@@ -173,6 +176,32 @@ impl IdTable {
             self.record(id, moved, key);
         }
     }
+
+    /// Two files swapped their contents, which is to say their inodes, and
+    /// each path keeps its ID (FPExchangeFiles): the IDs go with the names,
+    /// so each identity now maps to the other ID
+    pub(crate) fn exchange(&mut self, a: (u32, &Path), b: (u32, &Path)) {
+        for (id, path) in [a, b] {
+            if let Some(key) = identity(path) {
+                self.by_inode.insert(key, id);
+                self.record(id, path.to_path_buf(), key);
+            }
+        }
+    }
+
+    /// Invalidate one ID (FPDeleteID). The ID stays reserved: a stale
+    /// reference must fail, never alias another file (IDs are not
+    /// reused, like CNIDs)
+    pub(crate) fn remove_id(&mut self, id: u32) {
+        self.forget(id);
+        self.deleted.insert(id);
+    }
+
+    /// Whether an ID was handed out and not removed by FPDeleteID, even
+    /// if its file has gone since
+    pub(crate) fn is_defined(&self, id: u32) -> bool {
+        (3..self.allocator.next).contains(&id) && !self.deleted.contains(&id)
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +281,14 @@ mod tests {
         assert_eq!(table.verified_path(id), None);
         let again_id = table.id_of(&renamed).unwrap();
         assert_ne!(again_id, id);
+        // remove_id (FPDeleteID) invalidates the ID permanently: the
+        // next mint gets a fresh one, never the dead ID
+        table.remove_id(sub_id);
+        assert_eq!(table.verified_path(sub_id), None);
+        let third = dir.join("third.txt");
+        std::fs::write(&third, b"x").unwrap();
+        let third_id = table.id_of(&third).unwrap();
+        assert_ne!(third_id, sub_id);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
