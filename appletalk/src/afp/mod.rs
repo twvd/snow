@@ -1,4 +1,4 @@
-//! AppleTalk Filing Protocol (AFP) 1.1 to 2.1, server side
+//! AppleTalk Filing Protocol (AFP) 1.1 to 2.2, server side
 //!
 //! See Inside AppleTalk, 2nd edition, chapter 13, and the AFP 2.1
 //! specification.
@@ -72,6 +72,9 @@ pub enum AfpVersion {
     V20,
     /// AFP 2.1: handled on the same wire as 2.0
     V21,
+    /// AFP 2.2 (without TCP): same wire plus the extended volume
+    /// bitmap bits
+    V22,
 }
 
 impl AfpVersion {
@@ -80,6 +83,7 @@ impl AfpVersion {
             "AFPVersion 1.1" => Some(Self::V11),
             "AFPVersion 2.0" | "AFP2.0" => Some(Self::V20),
             "AFPVersion 2.1" | "AFP2.1" => Some(Self::V21),
+            "AFP2.2" => Some(Self::V22),
             _ => None,
         }
     }
@@ -89,6 +93,7 @@ impl AfpVersion {
             Self::V11 => "AFPVersion 1.1",
             Self::V20 => "AFPVersion 2.0",
             Self::V21 => "AFPVersion 2.1",
+            Self::V22 => "AFP2.2",
         }
     }
 }
@@ -106,8 +111,11 @@ pub enum MaxVersion {
     Max20,
     /// Advertise and accept AFP up to 2.1
     #[serde(alias = "Both21First", alias = "V21Only")]
-    #[default]
     Max21,
+    /// Advertise and accept AFP up to 2.2 (without TCP; the default:
+    /// some Mac OS versions only request color icons over 2.2)
+    #[default]
+    Max22,
 }
 
 impl MaxVersion {
@@ -117,6 +125,12 @@ impl MaxVersion {
             Self::Max11 => &[AfpVersion::V11],
             Self::Max20 => &[AfpVersion::V20, AfpVersion::V11],
             Self::Max21 => &[AfpVersion::V21, AfpVersion::V20, AfpVersion::V11],
+            Self::Max22 => &[
+                AfpVersion::V22,
+                AfpVersion::V21,
+                AfpVersion::V20,
+                AfpVersion::V11,
+            ],
         }
     }
 
@@ -132,6 +146,7 @@ impl std::fmt::Display for MaxVersion {
             Self::Max11 => write!(f, "1.1"),
             Self::Max20 => write!(f, "2.0"),
             Self::Max21 => write!(f, "2.1"),
+            Self::Max22 => write!(f, "2.2"),
         }
     }
 }
@@ -377,8 +392,8 @@ impl Afp {
                 // parameter error, never a panic
                 let params = data.get(2..).unwrap_or(&[]);
                 match cmd {
-                    CMD_OPEN_VOL => self.cmd_open_vol(params),
-                    CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(params),
+                    CMD_OPEN_VOL => self.cmd_open_vol(version, params),
+                    CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(version, params),
                     CMD_CLOSE_VOL => Ok(Vec::new()),
                     CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
                     // FPRead's EOF comes with the data read before it
