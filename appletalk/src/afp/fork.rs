@@ -100,6 +100,8 @@ impl Afp {
                 path: target.clone(),
                 file_id: self.ids.id_of(&target).unwrap_or(0),
                 read: access & 0x0001 != 0,
+                write,
+                container_path: file_path,
                 session,
                 rsrc,
             },
@@ -246,6 +248,39 @@ impl Afp {
             fork.file_id,
         ));
         Ok(reply)
+    }
+
+    /// Refresh the open forks of a file after a metadata write: the
+    /// lengths and the metadata follow the container, and a resource
+    /// fork's handle moves into the container once there is one
+    pub(super) fn refresh_forks(&mut self, target: &Path) {
+        let meta = self.meta_open(target);
+        for fork in self.forks.values_mut() {
+            if fork.path != target {
+                continue;
+            }
+            let (file_path, offset, len) = if fork.rsrc {
+                match meta.rsrc_file.clone() {
+                    // An absent resource fork is empty: reads end at
+                    // EOF before the placeholder handle is touched
+                    Some(file) => (file, meta.rsrc_offset, u64::from(meta.rsrc_fork_len)),
+                    None => (target.to_path_buf(), meta.rsrc_offset, 0),
+                }
+            } else {
+                (target.to_path_buf(), meta.data_offset, meta.data_len)
+            };
+            // A container rewrite replaces the file, so a resource fork's
+            // handle always reopens
+            if (fork.rsrc || fork.container_path != file_path)
+                && let Ok(file) = open_with_access(&file_path, fork.write)
+            {
+                fork.file = file;
+                fork.container_path = file_path.clone();
+            }
+            fork.offset = offset;
+            fork.len = len;
+            fork.meta = meta.clone();
+        }
     }
 }
 

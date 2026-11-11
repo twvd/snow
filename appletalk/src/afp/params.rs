@@ -1,4 +1,4 @@
-//! Parameters: the volume, file and directory parameters and Enumerate
+//! Parameters: the volume, file and directory parameters, Enumerate and the calls that set parameters
 
 use super::*;
 
@@ -20,6 +20,7 @@ impl Afp {
             &self.volume_name,
             &self.root,
             self.settings.read_only,
+            self.vol_modified,
         ))
     }
 
@@ -39,6 +40,7 @@ impl Afp {
             &self.volume_name,
             &self.root,
             self.settings.read_only,
+            self.vol_modified,
         ))
     }
 
@@ -342,6 +344,151 @@ impl Afp {
         offspring.sort_by(|a, b| a.1.cmp(&b.1));
         Ok(offspring)
     }
+
+    /// FPSetVolParms: the volume dates are ignored (they stay unknown)
+    pub(super) fn cmd_set_vol_params(&self, params: &[u8]) -> Reply {
+        if self.settings.read_only {
+            return Err(ERR_VOL_LOCKED);
+        }
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        Ok(Vec::new())
+    }
+
+    /// FPSetFileDirParms, FPSetFileParms and FPSetDirParms: [vol]
+    /// [dir id][bitmap][path name][parameters]; the settable bits are
+    /// the attributes (0), the dates (2-4) and the Finder information
+    /// (5), and for a directory the owner ID, group ID and access
+    /// rights (10-12)
+    pub(super) fn cmd_set_params(
+        &mut self,
+        version: AfpVersion,
+        call: SetCall,
+        params: &[u8],
+    ) -> Reply {
+        if self.settings.read_only {
+            return Err(ERR_VOL_LOCKED);
+        }
+        let settable: u16 = match call {
+            SetCall::FileDir | SetCall::File => 0x003D, // bits 0, 2, 3, 4, 5
+            SetCall::Dir => 0x1C3D,                     // and 10, 11, 12
+        };
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let dir_id = r.u32()?;
+        let bitmap = r.u16()?;
+        if bitmap & !settable != 0 {
+            return Err(ERR_BITMAP);
+        }
+        let name = r.path()?;
+        let target = self
+            .resolve_path(dir_id, &name)
+            .ok_or(ERR_OBJECT_NOT_FOUND)?;
+        let is_dir = std::fs::metadata(&target).is_ok_and(|m| m.is_dir());
+        if (call == SetCall::File && is_dir) || (call == SetCall::Dir && !is_dir) {
+            return Err(ERR_OBJECT_TYPE);
+        }
+        r.align();
+        // The parameter values in ascending bit order
+        let current = self.meta_open(&target);
+        if current.single {
+            // This server does not write AppleSingle containers, and an
+            // AppleDouble one beside it would not be read back
+            return Err(ERR_OBJECT_LOCKED);
+        }
+        let mut attrs = current.attrs;
+        let (mut create, mut modify, mut backup) =
+            (current.create_date, current.mod_date, current.backup_date);
+        let mut finder_info = current.finder_info;
+        let mut attrs_wanted = false;
+        let mut dates_wanted = false;
+        for bit in 0..16 {
+            if bitmap & (1 << bit) == 0 {
+                continue;
+            }
+            match bit {
+                0 => {
+                    let v = r.u16()?;
+                    // Bit 15 is Set/Clear: 1 sets the given bits, 0
+                    // clears them. The already-open bits (3, 4) can
+                    // never be requested and the file-only bits (5, 6)
+                    // do not apply to directories.
+                    let mask = 0x0018 | if is_dir { 0x0060 } else { 0 };
+                    let mut change = v & 0x7FFF & !mask;
+                    // ch13's rule for a 1.1 client: ReadOnly stands for
+                    // all three inhibit bits
+                    if version == AfpVersion::V11 && change & ATTR_WRITE_INHIBIT != 0 {
+                        change |= ATTR_RENAME_DELETE_INHIBIT;
+                    }
+                    attrs = if v & 0x8000 != 0 {
+                        attrs | change
+                    } else {
+                        attrs & !change
+                    };
+                    attrs_wanted = true;
+                }
+                2..=4 => {
+                    // A zero date means "no change" (the convention
+                    // the classic clients send)
+                    let v = r.u32()?;
+                    dates_wanted = true;
+                    if v != 0 {
+                        match bit {
+                            2 => create = v,
+                            3 => modify = v,
+                            _ => backup = v,
+                        }
+                    }
+                }
+                5 => {
+                    finder_info.copy_from_slice(r.bytes(32)?);
+                }
+                10..=12 => {
+                    // ch13 has the server store the owner ID, group ID
+                    // and access rights it is given. This server has no
+                    // users: it accepts them, drops them, and always
+                    // reports owner 0 ("unowned or owned by any user")
+                    // with full access rights (access_rights()). The
+                    // Finder sets owner ID 1 on the Network Trash Folder
+                    // it creates, and deletes a file dragged to the
+                    // Trash at once if that call fails (seen in a wire
+                    // log).
+                    r.skip(4)?;
+                }
+                _ => return Err(ERR_PARAM),
+            }
+        }
+        let written = (|| {
+            if attrs_wanted && attrs != current.attrs {
+                crate::meta::set_attrs(&target, attrs)?;
+            }
+            if dates_wanted {
+                crate::meta::set_dates(&target, create, modify, backup)?;
+            }
+            if finder_info != current.finder_info {
+                crate::meta::set_finder_info(&target, &finder_info)?;
+            }
+            std::io::Result::Ok(())
+        })();
+        if let Err(e) = written {
+            return Err(io_err(&e));
+        }
+        self.touch_volume();
+        self.refresh_forks(&target);
+        let meta = self.meta_open(&target);
+        let parent_id = self.parent_id_of(&target);
+        let fork_name = self.mac_name_of(&target);
+        if let Some(db) = &mut self.desktop {
+            db.register_appl(&target, &fork_name, &meta, parent_id);
+        }
+        Ok(Vec::new())
+    }
 }
 
 /// The File/DirFlag value marking a directory in GetFileDirParms and
@@ -390,7 +537,13 @@ pub(super) fn vol_bitmap_ok(version: AfpVersion, bitmap: u16) -> bool {
 /// bytes free, bit 7: bytes total, bit 8: volume name, bit 9 (0x0200):
 /// extended bytes free (8 bytes), bit 10 (0x0400): extended bytes
 /// total (8 bytes), bit 11 (0x0800): block size
-pub(super) fn vol_params(bitmap: u16, name: &str, root: &Path, read_only: bool) -> Vec<u8> {
+pub(super) fn vol_params(
+    bitmap: u16,
+    name: &str,
+    root: &Path,
+    read_only: bool,
+    vol_modified: u32,
+) -> Vec<u8> {
     let (bytes_free, bytes_total) = statvfs(root);
 
     let mut fixed = Vec::new();
@@ -407,9 +560,12 @@ pub(super) fn vol_params(bitmap: u16, name: &str, root: &Path, read_only: bool) 
         fixed.extend_from_slice(&0u32.to_be_bytes()); // creation date
     }
     if bitmap & 0x0008 != 0 {
-        // The root's modification time (a host-side change deeper in
-        // the tree does not show here)
-        fixed.extend_from_slice(&host_mtime_date(root).to_be_bytes());
+        // The newer of the server's own write stamp and the root mtime
+        // (a host-side change deeper in the tree does not show here).
+        // The AFP dates are signed: the comparison must be too, or a
+        // pre-2000 root mtime would always win as a u32
+        let modify = (vol_modified as i32).max(host_mtime_date(root) as i32);
+        fixed.extend_from_slice(&(modify as u32).to_be_bytes());
     }
     if bitmap & 0x0010 != 0 {
         // ch13: "When a volume is created, its backup date-time is set to
@@ -588,6 +744,15 @@ pub(super) fn file_params(
         13 => vec![0; 6], // ProDOS info
         _ => Vec::new(),  // filtered by the allowed mask
     })
+}
+
+/// Which of the calls that set parameters: FPSetFileDirParms takes
+/// either, FPSetFileParms a file and FPSetDirParms a directory
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SetCall {
+    FileDir,
+    File,
+    Dir,
 }
 
 /// The directory parameters requested by a bitmap
