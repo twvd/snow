@@ -31,6 +31,78 @@ fn test_write_commands_are_locked_when_read_only() {
 }
 
 #[test]
+fn test_file_id_calls_and_volume_attributes() {
+    let (mut server, dir) = test_server_writable("file-ids");
+    std::fs::write(dir.join("f.txt"), b"x").unwrap();
+    // A 2.0 session sees no SupportsFileIDs bit and the file-ID
+    // calls answer afpCallNotSupported
+    let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
+    assert_eq!(r, 0);
+    assert_eq!(reply, [0, 1, 0, 0]);
+    let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("f.txt"));
+    assert_eq!(
+        result_of(server.command(1, &data)).0,
+        ERR_CALL_NOT_SUPPORTED
+    );
+    // A 2.1 session sees the bit, and FPCreateID answers the
+    // file's ID
+    server.versions.insert(1, AfpVersion::V21);
+    let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
+    assert_eq!(r, 0);
+    assert_eq!(reply, [0, 1, 0, 4]);
+    let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("f.txt"));
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let id = u32::from_be_bytes(reply.try_into().unwrap());
+    // FPResolveID serves the file's parameters by ID
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    data.extend_from_slice(&0x0340u16.to_be_bytes());
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert_eq!(reply[0..2], 0x0340u16.to_be_bytes());
+    assert_eq!(reply[4..8], id.to_be_bytes()); // the file number
+    // FPResolveID on a directory's ID answers afpObjectTypeErr
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    let dir_id = server.dir_id(&dir.join("sub"));
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&dir_id.to_be_bytes());
+    data.extend_from_slice(&0x0340u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+    // FPDeleteID on a directory's ID answers afpObjectTypeErr too
+    let mut data = vec![40, 0, 0, 1];
+    data.extend_from_slice(&dir_id.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+    // FPDeleteID on an unknown ID answers afpIDNotFound
+    let data = vec![40, 0, 0, 1, 0x7F, 0xFF, 0xFF, 0xFE];
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_ID_NOT_FOUND);
+    // FPDeleteID on the file's ID invalidates it permanently
+    let mut data = vec![40, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    data.extend_from_slice(&0x0340u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_BAD_ID);
+    // A number never handed out is not defined either
+    let data = vec![41, 0, 0, 1, 0x7F, 0xFF, 0xFF, 0xFE, 0x03, 0x40];
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_BAD_ID);
+    // The ID of a file deleted on the host is defined, but its file is
+    // not found
+    std::fs::write(dir.join("g.txt"), b"g").unwrap();
+    let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("g.txt"));
+    let (_, reply) = result_of(server.command(1, &data));
+    std::fs::remove_file(dir.join("g.txt")).unwrap();
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&reply);
+    data.extend_from_slice(&0x0340u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_ID_NOT_FOUND);
+}
+
+#[test]
 fn test_create_enumerate_delete() {
     let (mut server, dir) = test_server_writable("write-create");
     // Create a file and a directory
@@ -439,6 +511,41 @@ fn test_mangled_name_rename_and_delete() {
 }
 
 #[test]
+fn test_file_id_commands() {
+    let (mut server, dir) = test_server_writable("write-fileids");
+    server.versions.insert(1, AfpVersion::V21);
+    std::fs::write(dir.join("f.txt"), b"data").unwrap();
+    // [CreateID][0][vol 1][dir 2][type 2][len 5]["f.txt"]
+    let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("f.txt"));
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    let id = u32::from_be_bytes(reply[..4].try_into().unwrap());
+    // [ResolveID][0][vol 1][id][file bm 0x0040: the long name]
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    data.extend_from_slice(&0x0040u16.to_be_bytes());
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert_eq!(reply[0..2], [0x00, 0x40]); // bitmap
+    assert!(reply.windows(5).any(|w| w == b"f.txt"));
+    // [DeleteID][0][vol 1][id]
+    let mut data = vec![40, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    // Resolving the deleted ID fails with afpBadIDErr
+    let mut data = vec![41, 0, 0, 1];
+    data.extend_from_slice(&id.to_be_bytes());
+    data.extend_from_slice(&0x0040u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &data)).0, -5039);
+    // CreateID on a directory: afpObjectTypeErr
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+    data.extend_from_slice(&long_path("sub"));
+    assert_eq!(result_of(server.command(1, &data)).0, -5025);
+}
+
+#[test]
 fn create_case_variant_is_object_exists() {
     let (mut server, dir) = test_server_writable("case");
     std::fs::write(dir.join("foo"), b"x").unwrap();
@@ -542,6 +649,95 @@ fn a_delete_leaves_a_same_named_file_elsewhere_reachable() {
     );
     assert!(!dir.join("one").join(&long).exists());
     assert_eq!(gfdp(&mut s, &format!("two\0{mac}"), 0x0040, 0).0, 0);
+}
+
+#[test]
+fn exchange_files_swaps_the_data_and_its_modification_date() {
+    // The example in the AFP 2.1 specification
+    let (mut s, dir) = test_server_writable("exchange");
+    login_ok(&mut s, "AFP2.2");
+    std::fs::write(dir.join("Blue"), b"blue data").unwrap();
+    std::fs::write(dir.join("Red"), b"red").unwrap();
+    // Finder info and creation dates tell them apart
+    let mut info = [0u8; 32];
+    info[..4].copy_from_slice(b"BLUE");
+    assert_eq!(set_parms(&mut s, "Blue", 0x0020, &info), 0);
+    info[..4].copy_from_slice(b"REDD");
+    assert_eq!(set_parms(&mut s, "Red", 0x0020, &info), 0);
+    let dates = |c: u32, m: u32| {
+        let mut v = c.to_be_bytes().to_vec();
+        v.extend_from_slice(&m.to_be_bytes());
+        v
+    };
+    assert_eq!(set_parms(&mut s, "Blue", 0x000C, &dates(1000, 2000)), 0);
+    assert_eq!(set_parms(&mut s, "Red", 0x000C, &dates(3000, 4000)), 0);
+    let id = |s: &mut Afp, name: &str| {
+        let p = gfdp(s, name, 0x0100, 0).1;
+        u32::from_be_bytes(p[..4].try_into().unwrap())
+    };
+    let (id_blue, id_red) = (id(&mut s, "Blue"), id(&mut s, "Red"));
+    // A fork stays with its data
+    let (_, fork) = open(&mut s, "Blue", false, 1);
+
+    assert_eq!(exchange(&mut s, "Blue", "Red"), 0);
+
+    // The data moved, the Finder info stayed with the name
+    assert_eq!(std::fs::read(dir.join("Blue")).unwrap(), b"red");
+    assert_eq!(std::fs::read(dir.join("Red")).unwrap(), b"blue data");
+    assert_eq!(&gfdp(&mut s, "Blue", 0x0020, 0).1[..4], b"BLUE");
+    assert_eq!(&gfdp(&mut s, "Red", 0x0020, 0).1[..4], b"REDD");
+    let d = gfdp(&mut s, "Blue", 0x000C, 0).1;
+    // The creation date stayed with the name, the modification date
+    // went with the data
+    assert_eq!(u32::from_be_bytes(d[..4].try_into().unwrap()), 1000);
+    assert_eq!(u32::from_be_bytes(d[4..8].try_into().unwrap()), 4000);
+    // The file IDs stayed with the names
+    assert_eq!((id(&mut s, "Blue"), id(&mut s, "Red")), (id_blue, id_red));
+    // The open fork still reads its data, and knows its new name
+    assert_eq!(read(&mut s, fork, 0, 9).1, b"blue data");
+    assert_eq!(s.forks[&fork].path, dir.canonicalize().unwrap().join("Red"));
+    assert_eq!(s.forks[&fork].file_id, id_red);
+}
+
+#[test]
+fn exchange_files_with_a_resource_fork_on_one_side() {
+    let (mut s, dir) = test_server_writable("exchange-rsrc");
+    login_ok(&mut s, "AFP2.2");
+    std::fs::write(dir.join("a"), b"A").unwrap();
+    std::fs::write(dir.join("b"), b"B").unwrap();
+    let (_, f) = open(&mut s, "a", true, 3);
+    let mut w = vec![33u8, 0];
+    w.extend_from_slice(&f.to_be_bytes());
+    w.extend_from_slice(&0u32.to_be_bytes());
+    w.extend_from_slice(&4u32.to_be_bytes());
+    w.extend_from_slice(b"RSRC");
+    assert_eq!(result_of(s.command(1, &w)).0, 0);
+    assert_eq!(exchange(&mut s, "a", "b"), 0);
+    // The open resource fork read its data, now under b
+    assert_eq!(read(&mut s, f, 0, 4).1, b"RSRC");
+    let (_, rb) = open(&mut s, "b", true, 1);
+    assert_eq!(read(&mut s, rb, 0, 4).1, b"RSRC");
+    let (r, ra) = open(&mut s, "a", true, 1);
+    assert_eq!(r, 0);
+    assert_eq!(read(&mut s, ra, 0, 4).0, ERR_EOF);
+}
+
+#[test]
+fn exchange_files_errors() {
+    let (mut s, dir) = test_server_writable("exchange-err");
+    std::fs::write(dir.join("a"), b"A").unwrap();
+    std::fs::write(dir.join("b"), b"B").unwrap();
+    std::fs::create_dir(dir.join("d")).unwrap();
+    // Before 2.1 the call does not exist
+    login_ok(&mut s, "AFPVersion 2.0");
+    assert_eq!(exchange(&mut s, "a", "b"), ERR_CALL_NOT_SUPPORTED);
+    login_ok(&mut s, "AFP2.2");
+    assert_eq!(exchange(&mut s, "a", "gone"), ERR_OBJECT_NOT_FOUND);
+    assert_eq!(exchange(&mut s, "a", "d"), ERR_OBJECT_TYPE);
+    assert_eq!(exchange(&mut s, "a", "a"), ERR_SAME_OBJECT);
+    assert_eq!(set_parms(&mut s, "b", 1, &0x8020u16.to_be_bytes()), 0);
+    assert_eq!(exchange(&mut s, "a", "b"), ERR_OBJECT_LOCKED);
+    assert_eq!(std::fs::read(dir.join("a")).unwrap(), b"A");
 }
 
 #[cfg(unix)]
