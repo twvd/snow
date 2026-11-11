@@ -1,4 +1,4 @@
-//! Parameters: the volume parameters
+//! Parameters: the volume, file and directory parameters and Enumerate
 
 use super::*;
 
@@ -40,6 +40,308 @@ impl Afp {
             &self.root,
             self.settings.read_only,
         ))
+    }
+
+    /// In "show as invisible" mode a dot-prefixed entry carries the
+    /// attribute and the Finder's invisible flag, which is what the Finder
+    /// looks at
+    pub(super) fn mark_hidden(&self, entry: &Path, meta: &mut Meta) {
+        if self.settings.hidden_files == HiddenFiles::Invisible
+            && entry
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        {
+            meta.attrs |= 0x0001;
+            meta.finder_info[8] |= 0x40;
+        }
+    }
+
+    /// The metadata of a host file, honoring the server's probe
+    /// settings
+    pub(super) fn meta_open(&self, path: &Path) -> Meta {
+        // A writable volume always reads back what it writes
+        crate::meta::open_with(
+            path,
+            self.settings.probe_apple_double || !self.settings.read_only,
+        )
+    }
+
+    /// FPGetFileDirParms: parameters of a file or directory
+    pub(super) fn cmd_get_file_dir_parms(&mut self, version: AfpVersion, params: &[u8]) -> Reply {
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let dir_id = r.u32()?;
+        let file_bitmap = r.u16()?;
+        let dir_bitmap = r.u16()?;
+        let path = r.path()?;
+        if file_bitmap & !FILE_BITMAP_ALLOWED != 0 || dir_bitmap & !DIR_BITMAP_ALLOWED != 0 {
+            return Err(ERR_BITMAP);
+        }
+        wire_log!(
+            "AFP: GetFileDirParms dir {} path {:?} file bm {:04x} dir bm {:04x}",
+            dir_id,
+            path,
+            file_bitmap,
+            dir_bitmap
+        );
+
+        // Resolve relative to the given directory
+        let target = self
+            .resolve_path(dir_id, &path)
+            .ok_or(ERR_OBJECT_NOT_FOUND)?;
+        let Ok(fs_meta) = std::fs::metadata(&target) else {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        };
+        let mut meta = self.meta_open(&target);
+        meta.attrs = v11_attrs(version, meta.attrs);
+        let name = if target == self.root {
+            self.volume_name.clone()
+        } else {
+            // A symlink's parameters are its target's, under its own name
+            let entry = self.resolve_entry(dir_id, &path);
+            let entry = entry.as_deref().unwrap_or(&target);
+            self.mark_hidden(entry, &mut meta);
+            self.mac_name_of(entry)
+        };
+        let parent_id = self.parent_id_of(&target);
+
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&file_bitmap.to_be_bytes());
+        reply.extend_from_slice(&dir_bitmap.to_be_bytes());
+        if fs_meta.is_dir() {
+            let offspring = visible_offspring(&target, self.settings.hidden_files);
+            reply.push(DIR_FLAG);
+            // The reserved byte after the File/DirFlag exists in both
+            // AFP 1.1 and AFP 2.0
+            reply.push(0);
+            reply.extend_from_slice(&dir_params(
+                dir_bitmap,
+                &name,
+                &meta,
+                offspring,
+                self.dir_id(&target),
+                parent_id,
+                self.settings.read_only,
+            ));
+        } else {
+            reply.push(0);
+            reply.push(0);
+            let file_id = self.ids.id_of(&target).unwrap_or(0);
+            reply.extend_from_slice(&file_params(file_bitmap, &name, &meta, parent_id, file_id));
+        }
+        Ok(reply)
+    }
+
+    /// FPEnumerate: list the offspring of a directory
+    pub(super) fn cmd_enumerate(
+        &mut self,
+        version: AfpVersion,
+        params: &[u8],
+        file_flag: Option<u8>,
+    ) -> Reply {
+        let mut r = Reader::new(params);
+        let volume_id = r.u16()?;
+        if volume_id != VOLUME_ID {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+        let dir_id = r.u32()?;
+        let file_bitmap = r.u16()?;
+        let dir_bitmap = r.u16()?;
+        let req_count = r.u16()?;
+        let start_index = r.u16()?;
+        let max_reply_size = r.u16()?;
+        let path = r.path()?;
+        if file_bitmap & !FILE_BITMAP_ALLOWED != 0 || dir_bitmap & !DIR_BITMAP_ALLOWED != 0 {
+            return Err(ERR_BITMAP);
+        }
+        // Both bitmaps null is a bitmap error; a null File Bitmap
+        // enumerates only directories, a null Directory Bitmap only
+        // files
+        if file_bitmap == 0 && dir_bitmap == 0 {
+            return Err(ERR_BITMAP);
+        }
+
+        let dir = self.resolve_path(dir_id, &path).ok_or(ERR_DIR_NOT_FOUND)?;
+        // Enumerating a file answers afpObjectTypeErr
+        if !std::fs::metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            return Err(ERR_OBJECT_TYPE);
+        }
+        // The parent Directory ID the offspring report
+        let parent_id = self.dir_id(&dir);
+
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&file_bitmap.to_be_bytes());
+        reply.extend_from_slice(&dir_bitmap.to_be_bytes());
+        reply.extend_from_slice(&0u16.to_be_bytes()); // actual count, filled in
+
+        // An empty request enumerates nothing
+        if req_count == 0 {
+            return Ok(reply);
+        }
+
+        // The null bitmaps and the 1.1 FileFlag filter the record set;
+        // the Start Index counts the filtered list
+        let files_included = file_flag.is_none_or(|f| f & 0x80 == 0);
+        let filter = if file_bitmap == 0 || !files_included {
+            Offspring::Folders
+        } else if dir_bitmap == 0 {
+            Offspring::Files
+        } else {
+            Offspring::All
+        };
+        // The client pages through a folder from Start Index 1 on. The
+        // listing of the first page serves the following ones while the
+        // folder does not change; otherwise a folder of N entries would be
+        // read, converted and sorted N / count times.
+        let mtime = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+        let cached = self.enum_cache.take().filter(|c| {
+            start_index > 1 && c.dir == dir && c.filter == filter && Some(c.mtime) == mtime
+        });
+        let offspring = match cached {
+            Some(cache) => cache.offspring,
+            None => self.list_offspring(&dir, filter)?,
+        };
+        // The enumeration index space: the book's ObjectNotFound means
+        // "no more offspring exist to be enumerated" — the client pages
+        // until it gets that error, so a Start Index past the last
+        // visible offspring must end the enumeration
+        let skip = usize::from(start_index.saturating_sub(1));
+        if skip >= offspring.len() {
+            return Err(ERR_OBJECT_NOT_FOUND);
+        }
+
+        let mut count = 0u16;
+        for (target, mac_name) in offspring.iter().skip(skip) {
+            let Ok(fs_meta) = std::fs::metadata(target) else {
+                continue;
+            };
+            // A symlink's metadata is its target's, as GetFileDirParms
+            // reports it
+            let linked = target
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+                .then(|| self.jailed(target))
+                .flatten();
+            let entry = target;
+            let target = linked.as_ref().unwrap_or(target);
+            let mut meta = self.meta_open(target);
+            meta.attrs = v11_attrs(version, meta.attrs);
+            self.mark_hidden(entry, &mut meta);
+            let (flag, params) = if fs_meta.is_dir() {
+                let offspring_count = visible_offspring(target, self.settings.hidden_files);
+                (
+                    DIR_FLAG,
+                    dir_params(
+                        dir_bitmap,
+                        mac_name,
+                        &meta,
+                        offspring_count,
+                        self.dir_id(target),
+                        parent_id,
+                        self.settings.read_only,
+                    ),
+                )
+            } else {
+                let file_id = self.ids.id_of(target).unwrap_or(0);
+                (
+                    0,
+                    file_params(file_bitmap, mac_name, &meta, parent_id, file_id),
+                )
+            };
+            let mut record = Vec::new();
+            record.push(0); // struct length, filled in
+            record.push(flag);
+            record.extend_from_slice(&params);
+            if record.len() % 2 != 0 {
+                record.push(0);
+            }
+            record[0] = record.len() as u8;
+            // Honor the client's MaxReplySize: no partial offspring
+            // structures are returned. ch13: ParamErr when "MaxReplySize
+            // is too small to hold a single offspring structure", rather
+            // than noErr with nothing, which gives the client no way on.
+            if reply.len() + record.len() > max_reply_size as usize {
+                if count == 0 {
+                    return Err(ERR_PARAM);
+                }
+                break;
+            }
+            reply.extend_from_slice(&record);
+            count += 1;
+            if count >= req_count {
+                break;
+            }
+        }
+        reply[4..6].copy_from_slice(&count.to_be_bytes());
+        if let Some(mtime) = mtime {
+            self.enum_cache = Some(EnumCache {
+                dir,
+                mtime,
+                filter,
+                offspring,
+            });
+        }
+        Ok(reply)
+    }
+
+    /// The visible offspring of a folder with their wire names (dotfiles,
+    /// .AppleDouble entries and ._ sidecars are hidden), sorted by wire
+    /// name for a stable enumeration order.
+    fn list_offspring(&self, dir: &Path, filter: Offspring) -> Result<Vec<(PathBuf, String)>, i32> {
+        let entries = std::fs::read_dir(dir).map_err(|_| ERR_DIR_NOT_FOUND)?;
+        let mut offspring: Vec<(PathBuf, String)> = entries
+            .flatten()
+            .filter(listable)
+            .map(|e| e.path())
+            .filter_map(|p| {
+                let host_name = p.file_name()?.to_string_lossy().into_owned();
+                let hidden = crate::name::is_hidden(&host_name);
+                if hidden && self.settings.hidden_files == HiddenFiles::Hide {
+                    return None;
+                }
+                if crate::name::is_meta_name(&host_name) {
+                    // The server's metadata store is never enumerated
+                    return None;
+                }
+                Some((p, crate::name::to_mac(&host_name).0))
+            })
+            .collect();
+        let is_dir_entry = |p: &PathBuf| std::fs::metadata(p).is_ok_and(|m| m.is_dir());
+        match filter {
+            Offspring::Folders => offspring.retain(|(p, _)| is_dir_entry(p)),
+            Offspring::Files => offspring.retain(|(p, _)| !is_dir_entry(p)),
+            Offspring::All => {}
+        }
+        offspring.sort_by(|a, b| a.1.cmp(&b.1));
+        Ok(offspring)
+    }
+}
+
+/// The File/DirFlag value marking a directory in GetFileDirParms and
+/// Enumerate replies: bit 7 (0x80) in every AFP version. The book's
+/// reply diagrams draw the flag as the high bit of the byte, and the
+/// "0 = file, 1 = directory" text gives the bit value; CAP's
+/// FDP_DIRFLG is 0x80 too. A 1.1 client tests bit 7, so the value 1
+/// would make every subdirectory look like a file.
+pub(super) const DIR_FLAG: u8 = 0x80;
+
+/// The WriteInhibit bit of the file attributes (ReadOnly in AFP 1.1)
+pub(super) const ATTR_WRITE_INHIBIT: u16 = 0x0020;
+
+/// The RenameInhibit and DeleteInhibit bits of the file attributes
+pub(super) const ATTR_RENAME_DELETE_INHIBIT: u16 = 0x0180;
+
+/// The attributes as a session sees them. ch13's rule for servers that
+/// speak both versions: a 1.1 client reads ReadOnly as the OR of the three
+/// inhibit bits.
+pub(super) fn v11_attrs(version: AfpVersion, attrs: u16) -> u16 {
+    if version == AfpVersion::V11 && attrs & ATTR_RENAME_DELETE_INHIBIT != 0 {
+        attrs | ATTR_WRITE_INHIBIT
+    } else {
+        attrs
     }
 }
 
@@ -169,4 +471,141 @@ pub(super) fn statvfs(path: &Path) -> (u64, u64) {
 #[cfg(not(any(unix, windows)))]
 pub(super) fn statvfs(_path: &Path) -> (u64, u64) {
     (0, 0)
+}
+
+/// Pack the parameters of a file or directory in bitmap order (bit 0
+/// first). The variable-length name fields (bits 6 and 7, the long and
+/// short names) are represented by offsets from the start of the
+/// parameters, with the names packed after all fixed parameters. The
+/// closure returns the bytes of each fixed parameter; for bits 6 and 7
+/// it returns the name to append.
+pub(super) fn pack_params<F>(bitmap: u16, mut param: F) -> Vec<u8>
+where
+    F: FnMut(usize) -> Vec<u8>,
+{
+    let mut out = Vec::new();
+    let mut name_offsets: Vec<usize> = Vec::new();
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    for bit in 0..16 {
+        if bitmap & (1 << bit) == 0 {
+            continue;
+        }
+        if bit == 6 || bit == 7 {
+            // A placeholder for the offset to this name
+            out.extend_from_slice(&0u16.to_be_bytes());
+            name_offsets.push(out.len() - 2);
+            names.push(param(bit));
+        } else {
+            out.extend_from_slice(&param(bit));
+        }
+    }
+    // The names follow the fixed parameters; patch the placeholders at
+    // their recorded positions
+    let mut pos = out.len();
+    for (i, off_pos) in name_offsets.iter().enumerate() {
+        out[*off_pos..*off_pos + 2].copy_from_slice(&(pos as u16).to_be_bytes());
+        pos += names[i].len();
+    }
+    for name in names {
+        out.extend_from_slice(&name);
+    }
+    out
+}
+
+/// The bits of the file bitmap a 2.0 server can return
+pub(super) const FILE_BITMAP_ALLOWED: u16 = 0x27FF; // bits 0-10 and 13
+
+/// The bits of the directory bitmap a 2.0 server can return
+pub(super) const DIR_BITMAP_ALLOWED: u16 = 0x3FFF; // bits 0-13
+
+/// The file parameters requested by a bitmap
+pub(super) fn file_params(
+    bitmap: u16,
+    name: &str,
+    meta: &Meta,
+    parent_id: u32,
+    file_id: u32,
+) -> Vec<u8> {
+    pack_params(bitmap, |bit| match bit {
+        0 => meta.attrs.to_be_bytes().to_vec(), // attributes
+        1 => parent_id.to_be_bytes().to_vec(),
+        2 => meta.create_date.to_be_bytes().to_vec(),
+        3 => meta.mod_date.to_be_bytes().to_vec(),
+        4 => meta.backup_date.to_be_bytes().to_vec(),
+        5 => meta.finder_info.to_vec(), // FInfo + FXInfo, 32 bytes in every version
+        6 => pstring(name),             // long name
+        7 => pstring(&short_name(name)),
+        8 => file_id.to_be_bytes().to_vec(),
+        9 => (meta.data_len.min(0x7FFF_FFFF) as u32)
+            .to_be_bytes()
+            .to_vec(),
+        10 => meta.rsrc_fork_len.to_be_bytes().to_vec(),
+        13 => vec![0; 6], // ProDOS info
+        _ => Vec::new(),  // filtered by the allowed mask
+    })
+}
+
+/// The directory parameters requested by a bitmap
+pub(super) fn dir_params(
+    bitmap: u16,
+    name: &str,
+    meta: &Meta,
+    offspring: u16,
+    self_id: u32,
+    parent_id: u32,
+    read_only: bool,
+) -> Vec<u8> {
+    pack_params(bitmap, |bit| match bit {
+        0 => meta.attrs.to_be_bytes().to_vec(), // attributes
+        1 => parent_id.to_be_bytes().to_vec(),
+        2 => meta.create_date.to_be_bytes().to_vec(),
+        3 => meta.mod_date.to_be_bytes().to_vec(),
+        4 => meta.backup_date.to_be_bytes().to_vec(),
+        5 => meta.finder_info.to_vec(), // DInfo + DXInfo, 32 bytes in every version
+        6 => pstring(name),
+        7 => pstring(&short_name(name)),
+        8 => self_id.to_be_bytes().to_vec(),
+        9 => offspring.to_be_bytes().to_vec(),
+        10 => 0u32.to_be_bytes().to_vec(), // owner ID
+        11 => 0u32.to_be_bytes().to_vec(), // group ID
+        12 => access_rights(read_only),
+        13 => vec![0; 6], // ProDOS info
+        _ => Vec::new(),  // filtered by the allowed mask
+    })
+}
+
+/// The 4-byte access rights long, big-endian on the wire:
+/// [UARights][world][group][owner], each byte bit 0 = search,
+/// bit 1 = read, bit 2 = write (make changes). The UARights owner bit
+/// is set because the volume is not owned by any registered user; a
+/// read-only volume strips the write bits everywhere, and the client
+/// checks them before allowing a New Folder or a drop.
+pub(super) fn access_rights(read_only: bool) -> Vec<u8> {
+    if read_only {
+        0x8303_0303u32.to_be_bytes().to_vec()
+    } else {
+        0x8707_0707u32.to_be_bytes().to_vec()
+    }
+}
+
+/// A short (12-character) form of a name, used for the Short Name
+/// parameter when requested
+pub(super) fn short_name(name: &str) -> String {
+    name.chars().take(12).collect()
+}
+
+/// The listing of the folder the client is paging through
+pub(super) struct EnumCache {
+    dir: PathBuf,
+    mtime: std::time::SystemTime,
+    filter: Offspring,
+    offspring: Vec<(PathBuf, String)>,
+}
+
+/// The offspring an Enumerate request lists
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Offspring {
+    All,
+    Folders,
+    Files,
 }
