@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 
 use super::localtalk_bridge::LocalTalkStatus;
 
+/// Turn the file server's wire-level logs on or off, without rebuilding it
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::wire::set_wire_debug as afp_set_wire_debug;
+
 /// Configuration for a serial bridge
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerialBridgeConfig {
@@ -26,6 +30,11 @@ pub enum SerialBridgeConfig {
     Tcp(u16),
     /// LocalTalk over UDP multicast
     LocalTalk,
+    /// Built-in AppleTalk stack on a private LocalTalk network (no
+    /// external connectivity). The variant exists in every build, so a
+    /// workspace saved with it deserializes without the afp_server
+    /// feature too.
+    AppleTalk {},
 }
 
 impl std::fmt::Display for SerialBridgeConfig {
@@ -34,6 +43,7 @@ impl std::fmt::Display for SerialBridgeConfig {
             Self::Pty => write!(f, "PTY"),
             Self::Tcp(port) => write!(f, "TCP:{}", port),
             Self::LocalTalk => write!(f, "LocalTalk"),
+            Self::AppleTalk { .. } => write!(f, "AppleTalk"),
         }
     }
 }
@@ -323,6 +333,15 @@ impl SerialBridge {
                     "LocalTalk should use SccBridge::new() instead",
                 ));
             }
+            // SccBridge::new() builds it when the feature is in; this is a
+            // build without it, such as one loading a workspace saved with
+            // the server on
+            SerialBridgeConfig::AppleTalk { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the built-in file server is not part of this build",
+                ));
+            }
         };
 
         Ok(Self {
@@ -395,14 +414,22 @@ impl SccBridge {
             SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
                 super::localtalk_bridge::LocalTalkBridge::new()?,
             )),
+            #[cfg(feature = "afp_server")]
+            SerialBridgeConfig::AppleTalk {} => Ok(Self::LocalTalk(
+                super::localtalk_bridge::LocalTalkBridge::new_private(),
+            )),
             _ => Ok(Self::Serial(SerialBridge::new(config)?)),
         }
     }
 
-    /// Write data from the SCC TX queue to the bridge
-    pub fn write_from_scc(&mut self, data: &[u8]) {
+    /// Write data from the SCC TX queue to the bridge.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    pub fn write_from_scc(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         match self {
-            Self::Serial(bridge) => bridge.write_from_scc(data),
+            Self::Serial(bridge) => {
+                bridge.write_from_scc(data);
+                Vec::new()
+            }
             Self::LocalTalk(bridge) => bridge.write_from_scc(data),
         }
     }
@@ -412,6 +439,29 @@ impl SccBridge {
         match self {
             Self::Serial(bridge) => bridge.read_to_scc(),
             Self::LocalTalk(bridge) => bridge.read_to_scc().unwrap_or_default(),
+        }
+    }
+
+    /// The guest ended a frame (LocalTalk only). Returns packets to inject
+    /// into the SCC RX buffer immediately.
+    pub fn end_tx_frame(&mut self) -> Vec<Vec<u8>> {
+        match self {
+            Self::LocalTalk(bridge) => bridge.end_tx_frame(),
+            Self::Serial(_) => Vec::new(),
+        }
+    }
+
+    /// Deliver a frame the guest did not read again (LocalTalk only)
+    pub fn return_frame(&mut self, frame: Vec<u8>) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.return_frame(frame);
+        }
+    }
+
+    /// Pass the emulated time on (LocalTalk only)
+    pub fn advance_time(&mut self, seconds: u64) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.advance_time(seconds);
         }
     }
 
@@ -449,11 +499,27 @@ impl SccBridge {
             bridge.set_address_search_mode(mode);
         }
     }
+}
 
-    /// Send a complete SDLC frame (LocalTalk only)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.send_frame(llap);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A saved workspace records only that the file server is on, in every
+    /// build, and reads what earlier versions saved
+    #[test]
+    fn a_saved_file_server_holds_no_settings() {
+        let config = SerialBridgeConfig::AppleTalk {};
+        assert_eq!(
+            serde_json::to_string(&config).unwrap(),
+            r#"{"AppleTalk":{}}"#
+        );
+        for saved in [
+            r#"{"AppleTalk":{}}"#,
+            r#"{"AppleTalk":{"root":"/x","volume_name":"Snow","max_version":"Max22"}}"#,
+        ] {
+            let config: SerialBridgeConfig = serde_json::from_str(saved).unwrap();
+            assert!(matches!(config, SerialBridgeConfig::AppleTalk { .. }));
         }
     }
 }

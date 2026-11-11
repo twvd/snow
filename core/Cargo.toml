@@ -33,6 +33,10 @@ mmap = ["dep:fs2", "dep:memmap2"]
 savestates = ["dep:binrw", "dep:postcard", "dep:zstd"]
 # Builds the 65816 in the Apple IIe Card's 6502-family CPU core (unused by Snow)
 w65816 = []
+# Enables the built-in AppleTalk stack and AFP server
+afp_server = ["dep:snow_appletalk"]
+# Enables the test protocol module on the AppleTalk node
+afp_server_test = ["afp_server", "snow_appletalk/test_module"]
 
 [lints]
 workspace = true
@@ -63,6 +67,7 @@ serde = { version = "1.0.203", features = ["serde_derive", "derive"] }
 serde_json = "1.0.117"
 snow_floppy = { version = "1.6.0", path = "../floppy" }
 snow_nat = { version = "1.6.0", path = "../nat", optional = true }
+snow_appletalk = { version = "0.1.0", path = "../appletalk", optional = true }
 strum = { version = "0.26.3", features = ["derive"] }
 symphonia = { version = "0.5.5", default-features = false, features = ["pcm", "wav"] }
 thiserror = "1.0.61"
