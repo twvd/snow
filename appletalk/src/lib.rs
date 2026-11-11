@@ -4,6 +4,7 @@
 //! and the built-in AFP file server, speaking to the emulated machine as a
 //! second node on its network.
 
+pub mod asp;
 pub mod atp;
 pub mod ddp;
 pub mod link;
