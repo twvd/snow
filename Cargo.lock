@@ -5022,6 +5022,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "encoding_rs",
+ "libc",
  "log",
 ]
 
