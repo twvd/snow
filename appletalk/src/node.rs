@@ -5,8 +5,10 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::atp::ATP_SOCKET;
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
 use crate::link::{DdpHeaderKind, LinkEvent, Packet};
+use crate::nbp::{NBP_SOCKET, NBP_TYPE, Nbp, NbpEntity};
 use crate::wire::wire_log;
 
 #[cfg(feature = "test_module")]
@@ -24,16 +26,31 @@ pub struct Node {
     tx: Sender<Packet>,
     #[cfg(feature = "test_module")]
     test: TestModule,
+    nbp: Nbp,
 }
 
 impl Node {
-    /// Create a node with the given packet channels
-    pub fn new(rx: Receiver<LinkEvent>, tx: Sender<Packet>) -> Self {
+    /// Create a node with the given node ID (its LLAP address on the
+    /// link) and network number (0 on a nonextended network). The node
+    /// registers "Snow:AFPServer@*" on the NBP socket, the entity the
+    /// Chooser will show once the AFP server exists.
+    pub fn new(node: u8, net: u16, rx: Receiver<LinkEvent>, tx: Sender<Packet>) -> Self {
         Self {
             rx,
             tx,
             #[cfg(feature = "test_module")]
             test: TestModule,
+            nbp: Nbp::new(
+                node,
+                net,
+                vec![NbpEntity {
+                    object: "Snow".to_string(),
+                    entity_type: "AFPServer".to_string(),
+                    zone: "*".to_string(),
+                    socket: ATP_SOCKET,
+                    enumerator: 1,
+                }],
+            ),
         }
     }
 
@@ -41,10 +58,12 @@ impl Node {
     pub fn handle_event(&mut self, event: LinkEvent) -> Vec<Packet> {
         match event {
             LinkEvent::Datagram(packet) => self.handle(&packet).unwrap_or_default(),
-            // No protocol keeps names, sessions or timers yet
-            LinkEvent::NodeStarted(_) | LinkEvent::AddressChanged(_) | LinkEvent::Tick => {
+            LinkEvent::AddressChanged(node) => {
+                self.nbp.set_address(node);
                 Vec::new()
             }
+            // No protocol keeps sessions or timers yet
+            LinkEvent::NodeStarted(_) | LinkEvent::Tick => Vec::new(),
         }
     }
 
@@ -73,6 +92,9 @@ impl Node {
         }
         if header.dst_socket == AEP_SOCKET && header.ddp_type == AEP_TYPE {
             return self.aep_echo(packet, &header, data).map(|p| vec![p]);
+        }
+        if header.dst_socket == NBP_SOCKET && header.ddp_type == NBP_TYPE {
+            return self.nbp.handle(packet, data).map(|p| vec![p]);
         }
         #[cfg(feature = "test_module")]
         if header.dst_socket == TEST_SOCKET && header.ddp_type == TEST_TYPE {
@@ -142,11 +164,17 @@ mod tests {
         }
     }
 
+    fn node() -> Node {
+        let (_, rx) = crossbeam_channel::bounded(16);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
+        drop(reply_rx);
+        Node::new(0xD7, 0, rx, reply_tx)
+    }
     #[test]
     fn test_echo() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(rx, reply_tx);
+        let node = Node::new(0xD7, 0, rx, reply_tx);
 
         tx.send(LinkEvent::Datagram(request(TEST_SOCKET, b"SNT1hello")))
             .unwrap();
@@ -164,10 +192,35 @@ mod tests {
     }
 
     #[test]
+    fn test_nbp_broadcast_gets_reply() {
+        // A BrdRq to the NBP socket is answered with a LkUp-Reply
+        let mut payload = vec![(1 << 4) | 1, 7];
+        payload.extend_from_slice(&[0, 0, 0x20, 0x30, 0]);
+        payload.extend_from_slice(&[1, b'=']);
+        payload.extend_from_slice(&[1, b'=']);
+        payload.extend_from_slice(&[1, b'*']);
+        let packet = Packet {
+            kind: DdpHeaderKind::Short,
+            node: 0x20,
+            datagram: build_short(NBP_SOCKET, 0x30, NBP_TYPE, &payload),
+        };
+
+        let reply = &node().handle(&packet).unwrap()[0];
+        assert_eq!(reply.node, 0x20);
+        assert_eq!(reply.datagram[2], 0x30); // dst = requester socket
+        assert_eq!(reply.datagram[3], NBP_SOCKET);
+        assert_eq!(reply.datagram[4], NBP_TYPE);
+        assert_eq!(reply.datagram[5], (3 << 4) | 1); // LkUp-Reply
+        assert_eq!(reply.datagram[6], 7); // same NBP ID
+        // The entity tuple carries the ATP socket
+        assert_eq!(reply.datagram[10], ATP_SOCKET);
+    }
+
+    #[test]
     fn test_unknown_socket() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(rx, reply_tx);
+        let node = Node::new(0xD7, 0, rx, reply_tx);
 
         tx.send(LinkEvent::Datagram(request(0x40, b"SNT1hello")))
             .unwrap();
@@ -182,7 +235,7 @@ mod tests {
     fn test_bad_magic() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(rx, reply_tx);
+        let node = Node::new(0xD7, 0, rx, reply_tx);
 
         tx.send(LinkEvent::Datagram(request(TEST_SOCKET, b"XXXXhello")))
             .unwrap();

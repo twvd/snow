@@ -5021,6 +5021,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "encoding_rs",
  "log",
 ]
 
