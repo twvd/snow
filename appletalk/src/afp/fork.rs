@@ -62,7 +62,11 @@ impl Afp {
             return Err(code);
         }
         let parent_id = self.parent_id_of(&target);
+        // Feed the desktop database while the file is in hand
         let fork_name = self.mac_name_of(&target);
+        if let Some(db) = &mut self.desktop {
+            db.register_appl(&target, &fork_name, &meta, parent_id);
+        }
 
         // The fork: the data fork lives at data_offset inside the host
         // file (nonzero for AppleSingle); the resource fork lives in

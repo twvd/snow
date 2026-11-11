@@ -78,13 +78,50 @@ pub struct LocalTalkStatus {
     pub tx_packets: u64,
     /// Number of packets received
     pub rx_packets: u64,
+    /// APPL files the desktop scan has found so far
+    #[cfg(feature = "afp_server")]
+    pub scan_apps: usize,
+    /// Icons the desktop scan has extracted so far
+    #[cfg(feature = "afp_server")]
+    pub scan_icons: usize,
+    /// Directory entries the desktop scan has visited so far
+    #[cfg(feature = "afp_server")]
+    pub scan_entries: usize,
+    /// Whether the desktop scan has finished
+    #[cfg(feature = "afp_server")]
+    pub scan_done: bool,
+}
+
+/// The desktop-scan part of the status line (empty without the AFP
+/// server)
+#[cfg(feature = "afp_server")]
+fn desktop_suffix(status: &LocalTalkStatus) -> String {
+    if status.scan_apps == 0 {
+        String::new()
+    } else {
+        format!(
+            ", desktop: {} apps, {} icons{}",
+            status.scan_apps,
+            status.scan_icons,
+            if status.scan_done {
+                " (done)"
+            } else {
+                " (scanning)"
+            }
+        )
+    }
+}
+
+#[cfg(not(feature = "afp_server"))]
+fn desktop_suffix(_status: &LocalTalkStatus) -> String {
+    String::new()
 }
 
 impl std::fmt::Display for LocalTalkStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "LocalTalk (node {}{}, tx:{} rx:{})",
+            "LocalTalk (node {}{}, tx:{} rx:{}{})",
             if self.node_address == 0 {
                 "?".to_string()
             } else {
@@ -96,7 +133,8 @@ impl std::fmt::Display for LocalTalkStatus {
                 format!(", server node {}", self.server_node)
             },
             self.tx_packets,
-            self.rx_packets
+            self.rx_packets,
+            desktop_suffix(self)
         )
     }
 }
@@ -135,6 +173,12 @@ pub struct LocalTalkBridge {
     /// Statistics
     tx_packets: u64,
     rx_packets: u64,
+    /// The desktop scan's progress reports, if the AFP server is on
+    #[cfg(feature = "afp_server")]
+    scan_status_rx: Option<crossbeam_channel::Receiver<snow_appletalk::afp::ScanStatus>>,
+    /// The latest desktop scan progress
+    #[cfg(feature = "afp_server")]
+    scan_status: snow_appletalk::afp::ScanStatus,
 }
 
 impl LocalTalkBridge {
@@ -195,6 +239,10 @@ impl LocalTalkBridge {
             node_rx: None,
             tx_packets: 0,
             rx_packets: 0,
+            #[cfg(feature = "afp_server")]
+            scan_status_rx: None,
+            #[cfg(feature = "afp_server")]
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
         })
     }
 
@@ -224,6 +272,7 @@ impl LocalTalkBridge {
         let server_node = 254;
         let (node_tx, thread_rx) = crossbeam_channel::bounded(256);
         let (thread_tx, node_rx) = crossbeam_channel::bounded(256);
+        let (scan_tx, scan_rx) = crossbeam_channel::unbounded();
         std::thread::spawn(move || {
             snow_appletalk::node::Node::new(
                 server_node,
@@ -233,6 +282,7 @@ impl LocalTalkBridge {
                 share_root,
                 volume_name,
                 max_version,
+                Some(scan_tx),
                 settings,
             )
             .run();
@@ -253,6 +303,8 @@ impl LocalTalkBridge {
             node_rx: Some(node_rx),
             tx_packets: 0,
             rx_packets: 0,
+            scan_status_rx: Some(scan_rx),
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
         })
     }
 
@@ -274,6 +326,14 @@ impl LocalTalkBridge {
             server_node: self.server_node,
             tx_packets: self.tx_packets,
             rx_packets: self.rx_packets,
+            #[cfg(feature = "afp_server")]
+            scan_apps: self.scan_status.apps,
+            #[cfg(feature = "afp_server")]
+            scan_icons: self.scan_status.icons,
+            #[cfg(feature = "afp_server")]
+            scan_entries: self.scan_status.entries,
+            #[cfg(feature = "afp_server")]
+            scan_done: self.scan_status.done,
         }
     }
 
@@ -466,6 +526,22 @@ impl LocalTalkBridge {
     /// every tick batch.
     pub fn poll(&mut self) -> bool {
         let mut received_any = false;
+
+        // Drain the desktop scan's progress reports
+        #[cfg(feature = "afp_server")]
+        {
+            if let Some(rx) = &self.scan_status_rx {
+                while let Ok(status) = rx.try_recv() {
+                    if status != self.scan_status {
+                        if Self::wire_debug() {
+                            log::debug!("LocalTalk: desktop scan status {:?}", status);
+                        }
+                        self.scan_status = status;
+                        received_any = true;
+                    }
+                }
+            }
+        }
 
         // Collect pending UDP packets. Not in the middle of a frame the guest
         // is sending: this runs for every byte it writes, and the line is
@@ -914,6 +990,8 @@ mod tests {
         #[test]
         fn test_poll_is_quiet_while_a_frame_waits() {
             let mut bridge = private_bridge();
+            // The desktop scan's reports would count as news
+            bridge.scan_status_rx = None;
             bridge
                 .rx_queue
                 .push_back(vec![0x20, bridge.server_node, 0x01]);
