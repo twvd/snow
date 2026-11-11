@@ -90,7 +90,7 @@ pub fn open_with(path: &Path, apple_double: bool) -> Meta {
             }
         }
     }
-    base_meta(path)
+    plain_meta(path)
 }
 
 /// The places a file's or a directory's AppleDouble container can be, in
@@ -108,6 +108,65 @@ fn containers(path: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     vec![sidecar, path.with_file_name(".AppleDouble").join(name)]
+}
+
+/// The metadata of a file without a container
+fn plain_meta(path: &Path) -> Meta {
+    let mut meta = base_meta(path);
+    // Synthesize a type/creator from the file extension, so plain host
+    // files get the standard icons of the classic type they map to
+    if let Some((file_type, creator)) = synthesized_finder(path) {
+        meta.finder_info[0..4].copy_from_slice(file_type);
+        meta.finder_info[4..8].copy_from_slice(creator);
+    }
+    meta
+}
+
+/// Synthesize a classic (type, creator) pair from a host file's
+/// extension, for files without real Finder information. The types are
+/// the standard ones the client's own desktop database has icons for,
+/// so plain Unix files show the right icons and open with the right
+/// application when one is present. Unknown extensions get nothing
+/// (the client shows the generic document).
+fn synthesized_finder(path: &Path) -> Option<(&'static [u8; 4], &'static [u8; 4])> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let (file_type, creator) = match ext.as_str() {
+        // Text and source code all read as TEXT (TeachText-compatible)
+        "txt" | "text" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "m" | "mm" | "s" | "asm"
+        | "rs" | "py" | "pl" | "sh" | "js" | "ts" | "java" | "go" | "lua" | "rb" | "swift"
+        | "kt" | "tex" | "csv" | "tsv" | "log" | "ini" | "cfg" | "conf" | "toml" | "yml"
+        | "yaml" | "xml" | "json" | "md" | "diff" | "patch" | "make" | "cmake" => {
+            (b"TEXT", b"ttxt")
+        }
+        "html" | "htm" | "css" => (b"TEXT", b"ttxt"),
+        // Images
+        "jpg" | "jpeg" => (b"JPEG", b"????"),
+        "gif" => (b"GIFf", b"????"),
+        "png" => (b"PNGf", b"????"),
+        "tif" | "tiff" => (b"TIFF", b"????"),
+        "bmp" => (b"BMPp", b"????"),
+        "pict" | "pct" => (b"PICT", b"????"),
+        "psd" => (b"8BPS", b"????"),
+        "eps" | "ps" => (b"EPSF", b"????"),
+        "tga" => (b"TPIC", b"????"),
+        "icns" => (b"icns", b"????"),
+        // Documents and archives
+        "pdf" => (b"PDF ", b"CARO"),
+        "rtf" => (b"RTF ", b"MSWD"),
+        "sit" => (b"SIT!", b"SIT!"),
+        "hqx" => (b"TEXT", b"BnHq"),
+        "zip" => (b"ZIP ", b"????"),
+        "gz" => (b"Gzip", b"????"),
+        "tgz" => (b"Gzip", b"????"),
+        "bz2" => (b"Bzip", b"????"),
+        // Audio and video
+        "wav" => (b"WAVE", b"????"),
+        "aif" | "aiff" => (b"AIFF", b"????"),
+        "mov" => (b"MooV", b"????"),
+        "avi" => (b"VfW ", b"????"),
+        _ => return None,
+    };
+    Some((file_type, creator))
 }
 
 /// Read an AppleDouble container (a sidecar or a `.AppleDouble` entry)
@@ -461,10 +520,37 @@ mod tests {
         assert_eq!(afp_date(at(4_000_000_000)), i32::MAX as u32);
     }
 
+    #[test]
+    fn synthesized_types_from_extensions() {
+        let t = |n: &str| synthesized_finder(Path::new(n)).map(|(ty, cr)| (*ty, *cr));
+        assert_eq!(t("notes.txt"), Some((*b"TEXT", *b"ttxt")));
+        assert_eq!(t("main.c"), Some((*b"TEXT", *b"ttxt")));
+        assert_eq!(t("Makefile"), None); // no extension
+        assert_eq!(t("photo.JPG"), Some((*b"JPEG", *b"????")));
+        assert_eq!(t("pic.gif"), Some((*b"GIFf", *b"????")));
+        assert_eq!(t("doc.pdf"), Some((*b"PDF ", *b"CARO")));
+        assert_eq!(t("arch.sit"), Some((*b"SIT!", *b"SIT!")));
+        assert_eq!(t("bin.hqx"), Some((*b"TEXT", *b"BnHq")));
+        assert_eq!(t("weird.zzz"), None);
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = crate::test_dir(format!("snow-meta-{}", name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn open_fills_synthesized_finder_info() {
+        let dir = crate::test_dir("snow-meta-synth");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hello.txt");
+        fs::write(&path, b"hello").unwrap();
+        let meta = super::open(&path);
+        assert_eq!(&meta.finder_info[0..4], b"TEXT");
+        assert_eq!(&meta.finder_info[4..8], b"ttxt");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
