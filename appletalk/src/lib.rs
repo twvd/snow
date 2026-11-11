@@ -7,6 +7,7 @@
 pub mod atp;
 pub mod ddp;
 pub mod link;
+pub mod nbp;
 pub mod node;
 
 #[cfg(feature = "test_module")]
