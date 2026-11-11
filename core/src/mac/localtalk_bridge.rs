@@ -13,6 +13,8 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+#[cfg(feature = "afp_server")]
+use std::path::PathBuf;
 
 use log::*;
 #[cfg(feature = "afp_server")]
@@ -198,9 +200,24 @@ impl LocalTalkBridge {
 
     /// Create a private bridge for the built-in AppleTalk node, with no
     /// connection to the outside network. The node runs on its own thread
-    /// and starts at node address 254, in the range for servers.
+    /// and starts at node address 254, in the range for servers. The AFP
+    /// server shares the given directory as a volume under the given name
+    /// (default "Snow"). A root that is not a folder is refused: an empty
+    /// path would share the working directory.
     #[cfg(feature = "afp_server")]
-    pub fn new_private() -> Self {
+    pub fn new_private(
+        share_root: PathBuf,
+        volume_name: Option<String>,
+        max_version: snow_appletalk::afp::MaxVersion,
+        settings: snow_appletalk::afp::AfpSettings,
+    ) -> std::io::Result<Self> {
+        if !share_root.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("the shared folder {:?} is not a folder", share_root),
+            ));
+        }
+        snow_appletalk::wire::set_wire_debug(settings.wire_debug);
         // The same address at every start, so traces compare between runs.
         // Inside AppleTalk, 2nd ed., chapter 1: node IDs 128 to 254 are
         // for servers. A guest that holds it moves the node elsewhere.
@@ -208,10 +225,20 @@ impl LocalTalkBridge {
         let (node_tx, thread_rx) = crossbeam_channel::bounded(256);
         let (thread_tx, node_rx) = crossbeam_channel::bounded(256);
         std::thread::spawn(move || {
-            snow_appletalk::node::Node::new(server_node, 0, thread_rx, thread_tx).run();
+            snow_appletalk::node::Node::new(
+                server_node,
+                0,
+                thread_rx,
+                thread_tx,
+                share_root,
+                volume_name,
+                max_version,
+                settings,
+            )
+            .run();
         });
 
-        Self {
+        Ok(Self {
             socket: None,
             sender_id: std::process::id(),
             node_address: 0,
@@ -226,7 +253,7 @@ impl LocalTalkBridge {
             node_rx: Some(node_rx),
             tx_packets: 0,
             rx_packets: 0,
-        }
+        })
     }
 
     /// Pick a random server node address, avoiding the given one
@@ -834,7 +861,31 @@ mod tests {
         use snow_appletalk::test::{TEST_SOCKET, TEST_TYPE};
 
         fn private_bridge() -> LocalTalkBridge {
-            LocalTalkBridge::new_private()
+            let root =
+                std::env::temp_dir().join(format!("snow-afp-bridge-tests-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            LocalTalkBridge::new_private(
+                root,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            )
+            .unwrap()
+        }
+
+        #[test]
+        fn a_missing_folder_is_refused() {
+            for root in [PathBuf::new(), PathBuf::from("/nonexistent-snow-share")] {
+                assert!(
+                    LocalTalkBridge::new_private(
+                        root,
+                        None,
+                        snow_appletalk::afp::MaxVersion::default(),
+                        snow_appletalk::afp::AfpSettings::default(),
+                    )
+                    .is_err()
+                );
+            }
         }
 
         #[test]

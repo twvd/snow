@@ -5024,6 +5024,8 @@ dependencies = [
  "encoding_rs",
  "libc",
  "log",
+ "serde",
+ "unicode-normalization",
 ]
 
 [[package]]
