@@ -30,6 +30,39 @@ fn test_open_fork_sets_already_open_bits() {
 }
 
 #[test]
+fn test_leftover_apple_single_reads_and_refuses_writes() {
+    let (mut server, dir) = test_server_writable("leftover-single");
+    // An AppleSingle file: its magic differs from AppleDouble's in
+    // the last byte
+    let mut data = apple_double(&[(9, b"TEXTttxt........................"), (1, b"hello")]);
+    data[3] = 0x00;
+    std::fs::write(dir.join("single"), &data).unwrap();
+    // The data fork reads from inside the container
+    let mut open = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1];
+    open.extend_from_slice(&long_path("single"));
+    let (result, reply) = result_of(server.command(1, &open));
+    assert_eq!(result, 0);
+    let mut read = vec![27, 0, reply[2], reply[3], 0, 0, 0, 0, 0, 0, 0, 5];
+    read.extend_from_slice(&[0, 0]);
+    assert_eq!(result_of(server.command(1, &read)).1, b"hello");
+    // It is not written, in either fork or in its metadata
+    for flag in [0x00, 0x80] {
+        let mut open = vec![26, flag, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3];
+        open.extend_from_slice(&long_path("single"));
+        assert_eq!(result_of(server.command(1, &open)).0, ERR_OBJECT_LOCKED);
+    }
+    let mut set = vec![35, 0, 0, 1, 0, 0, 0, 2, 0, 1];
+    set.extend_from_slice(&long_path("single"));
+    if set.len() % 2 == 1 {
+        set.push(0);
+    }
+    set.extend_from_slice(&0x8001u16.to_be_bytes());
+    assert_eq!(result_of(server.command(1, &set)).0, ERR_OBJECT_LOCKED);
+    assert_eq!(std::fs::read(dir.join("single")).unwrap(), data);
+    assert!(!dir.join(".AppleDouble/single").exists());
+}
+
+#[test]
 fn test_read_newline_mask_stops_at_the_newline_char() {
     let (mut server, dir) = test_server("nl-mask");
     std::fs::write(dir.join("text.txt"), b"hello\nworld\rend").unwrap();
@@ -148,6 +181,17 @@ fn test_open_resource_fork_from_sidecar() {
     let (result, reply) = result_of(server.command(1, &read));
     assert_eq!(result, 0);
     assert_eq!(reply, b"RESOURCE!");
+}
+
+#[test]
+fn a_write_inhibited_file_does_not_open_for_write() {
+    let (mut s, dir) = test_server_writable("inhibit");
+    std::fs::write(dir.join("f"), b"x").unwrap();
+    assert_eq!(set_parms(&mut s, "f", 1, &0x8020u16.to_be_bytes()), 0);
+    assert_eq!(open(&mut s, "f", false, 3).0, ERR_OBJECT_LOCKED);
+    assert_eq!(open(&mut s, "f", true, 2).0, ERR_OBJECT_LOCKED);
+    // Reading stays allowed
+    assert_eq!(open(&mut s, "f", false, 1).0, 0);
 }
 
 #[test]
