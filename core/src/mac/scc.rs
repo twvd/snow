@@ -227,6 +227,9 @@ struct SccChannel {
     tx_ip: bool,
     tx_ie: bool,
     rx_ip: bool,
+    /// TX underrun/EOM latch (RR0 bit 6): cleared by the WR0 crcreset
+    /// 0b11 command, set by the SCC when a frame finishes transmitting
+    tx_underrun: bool,
     /// RX interrupt mode from WR1 bits 3-4:
     /// 0 = disabled, 1 = first char or special, 2 = all chars or special, 3 = special only
     rx_int_mode: u8,
@@ -308,10 +311,17 @@ pub struct Scc {
 impl Scc {
     /// Creates an SCC whose RTxC pins get `rtxc_frequency`
     pub fn new(rtxc_frequency: Ticks) -> Self {
-        Self {
+        let mut scc = Self {
             rtxc_frequency,
             ..Self::default()
+        };
+        // The Z8530 resets with RR0 = 01xxx100: the Tx Underrun/EOM
+        // latch (bit 6) and Tx Empty (bit 2) both set (the
+        // datasheet's reset state)
+        for ch in &mut scc.ch {
+            ch.tx_underrun = true;
         }
+        scc
     }
 
     fn read_data(&mut self, ch: SccCh) -> u8 {
@@ -491,7 +501,7 @@ impl Scc {
                 .with_zero(self.ch[chi].zero_count)
                 .with_rx_char(rx_char_avail)
                 .with_tx_empty(true)
-                .with_tx_underrun(true)
+                .with_tx_underrun(self.ch[chi].tx_underrun)
                 .with_sync_hunt(self.ch[chi].hunt)
                 .with_dcd(self.ch[chi].dcd),
             (1 | 5, _) => *RdReg1::default()
@@ -556,7 +566,6 @@ impl Scc {
                     }
                     SccCommand::PointHigh => self.reg |= 1 << 3,
                     SccCommand::ResetExtStatusInt => {
-                        self.ch[chi].hunt = false;
                         self.ch[chi].ext_ip = false;
                         self.ch[chi].zero_count = false;
                         self.ch[chi].lt_end_of_frame = false;
@@ -585,10 +594,15 @@ impl Scc {
                         self.ch[chi].lt_tx_frame.clear();
                     }
                     0b11 => {
-                        // Reset TX Underrun/EOM Latch - signals end of SDLC frame
+                        // Reset TX Underrun/EOM Latch - the latch is set
+                        // again when the frame finishes transmitting
+                        self.ch[chi].tx_underrun = false;
                         if self.ch[chi].sdlc && !self.ch[chi].lt_tx_frame.is_empty() {
                             let frame = std::mem::take(&mut self.ch[chi].lt_tx_frame);
                             self.ch[chi].lt_tx_complete.push_back(frame);
+                            // The frame is fully transmitted at the
+                            // boundary, so the underrun/EOM latch sets
+                            self.ch[chi].tx_underrun = true;
                         }
                     }
                     _ => {}
@@ -616,19 +630,13 @@ impl Scc {
                 let r = WrReg3(val);
                 let was_rx_enabled = self.ch[chi].rx_enable;
 
-                // Enable SDLC mode FIRST if SDLC address search is enabled
-                // This must happen before the poll_needed check below
-                if r.sdlc_address_search() && !self.ch[chi].sdlc {
-                    log::info!("SCC {:?}: SDLC mode enabled via address search mode", ch);
-                    self.ch[chi].sdlc = true;
-                }
-
                 // Track SDLC address search mode for bridge filtering
                 self.ch[chi].sdlc_address_search_mode = r.sdlc_address_search();
 
-                // Enter Hunt Mode - but only clear frame if there isn't one already waiting
-                // The Mac writes hunt=1 to prepare for receiving, not to discard received data
-                if r.hunt() && self.ch[chi].lt_rx_frame.is_none() {
+                // Enter Hunt Mode takes effect immediately, even when a
+                // frame is still buffered: the receiver stops tracking the
+                // current frame (the buffered bytes stay readable)
+                if r.hunt() {
                     self.ch[chi].hunt = true;
                     self.ch[chi].lt_end_of_frame = false;
                 }
@@ -645,6 +653,8 @@ impl Scc {
                 // signal that LocalTalk bridge should be polled immediately
                 if r.rx_enable() && !was_rx_enabled && self.ch[chi].sdlc {
                     self.ch[chi].localtalk_poll_needed = true;
+                    // Start any frame that arrived while RX was disabled
+                    self.lt_check_queued_frame(chi);
                 }
             }
             5 => {
@@ -662,8 +672,33 @@ impl Scc {
                 // WR6: SDLC station address - used for LocalTalk node address
                 self.ch[chi].sdlc_address = val;
             }
+            4 => {
+                // Z8530 manual, WR4: bits 3-2 = 00 select the synchronous
+                // modes, and with them bits 5-4 = 10 select SDLC
+                let sdlc = val & 0x3C == 0x20;
+                if sdlc != self.ch[chi].sdlc {
+                    log::info!(
+                        "SCC {:?}: SDLC mode {}",
+                        ch,
+                        if sdlc { "on" } else { "off" }
+                    );
+                }
+                self.ch[chi].sdlc = sdlc;
+            }
             9 => {
                 self.mic.0 = val;
+                // Bits 7-6: 01 resets channel B, 10 channel A, 11 both.
+                // Z8530 manual, Table 2-7: either reset sets WR4 bit 2,
+                // which is asynchronous mode, and clears WR3 bit 0, the
+                // receiver enable, so what it had received is gone. Only
+                // the mode and the receive queue are reset here: the
+                // receiver enable and the other bits keep their value.
+                for (reset, chi) in [(0x40, 1), (0x80, 0)] {
+                    if val & reset != 0 {
+                        self.ch[chi].sdlc = false;
+                        self.ch[chi].rx_queue.clear();
+                    }
+                }
             }
             12 => {
                 self.ch[chi].brg_constant.set_lsb(val);
@@ -683,7 +718,7 @@ impl Scc {
             15 => {
                 // WR15 controls external/status interrupt enables
                 // Note: Bit 0 is WR7' enable, NOT SDLC mode enable
-                // SDLC mode is controlled only by WR3 address search mode
+                // (SDLC mode is selected in WR4)
                 let wrval = WrReg15(val);
                 self.ch[chi].dcd_ie = wrval.dcd();
                 self.ch[chi].zero_count_ie = val & (1 << 1) != 0;
@@ -770,7 +805,13 @@ impl Scc {
     /// Push a complete LocalTalk/SDLC frame for reception
     pub fn push_rx_frame(&mut self, ch: SccCh, frame: Vec<u8>) {
         let chi = ch.to_usize().unwrap();
+
+        // If the receiver is disabled, queue the frame and deliver it
+        // when the receiver is re-enabled
         if !self.ch[chi].rx_enable {
+            self.ch[chi].rx_queue.push_back((frame.len() >> 8) as u8);
+            self.ch[chi].rx_queue.push_back(frame.len() as u8);
+            self.ch[chi].rx_queue.extend(frame.iter());
             return;
         }
 
@@ -788,7 +829,9 @@ impl Scc {
         self.ch[chi].lt_rx_frame = Some(frame);
         self.ch[chi].lt_rx_offset = 0;
         self.ch[chi].lt_end_of_frame = false;
-        self.ch[chi].hunt = false; // Exit hunt mode
+        // The whole frame is received at once, so the receiver is already
+        // back in hunt mode and the line is idle (carrier sense)
+        self.ch[chi].hunt = true;
 
         // Pre-buffer the first byte
         self.lt_rx_buff_advance(chi);
@@ -796,6 +839,9 @@ impl Scc {
         // Set chr_avail and first_char to signal data is ready and trigger interrupt
         self.ch[chi].lt_rx_chr_avail = true;
         self.ch[chi].first_char = true; // For interrupt mode 1 ("int on first char")
+        if self.mic.mie() && self.check_rx_interrupt(chi) {
+            self.ch[chi].rx_ip = true;
+        }
     }
 
     /// Check if there's a queued frame and start receiving it
@@ -812,12 +858,15 @@ impl Scc {
                 self.ch[chi].lt_rx_frame = Some(frame);
                 self.ch[chi].lt_rx_offset = 0;
                 self.ch[chi].lt_end_of_frame = false;
-                self.ch[chi].hunt = false;
+                self.ch[chi].hunt = true;
 
                 // Pre-buffer the first byte
                 self.lt_rx_buff_advance(chi);
                 self.ch[chi].lt_rx_chr_avail = true;
                 self.ch[chi].first_char = true; // For interrupt mode 1
+                if self.mic.mie() && self.check_rx_interrupt(chi) {
+                    self.ch[chi].rx_ip = true;
+                }
             }
         }
     }
@@ -898,5 +947,154 @@ impl BusMember<Address> for Scc {
         } else {
             Some(self.write_data(ch, val))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An SCC with channel B in SDLC mode (WR4 = $20), as the LocalTalk
+    /// drivers set it up
+    fn sdlc_scc() -> Scc {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+        scc.write(0, 0x04);
+        scc.write(0, 0x20);
+        scc
+    }
+
+    /// Write a register of channel B
+    fn wr(scc: &mut Scc, reg: u8, val: u8) {
+        scc.write(0, reg);
+        scc.write(0, val);
+    }
+
+    /// Channel B in asynchronous mode (WR4 = $4C: x16 clock, 2 stop bits),
+    /// receiver and transmitter on, interrupts master-enabled
+    fn async_scc(wr1: u8) -> Scc {
+        let mut scc = Scc::new(RTXC_FREQUENCY);
+        wr(&mut scc, 4, 0x4C);
+        wr(&mut scc, 3, 0xC1);
+        wr(&mut scc, 5, 0x68);
+        wr(&mut scc, 1, wr1);
+        wr(&mut scc, 9, 0x08);
+        scc
+    }
+
+    #[test]
+    fn test_async_interrupt_driven_transmit() {
+        // WR1 bit 1: Tx Int Enable
+        let mut scc = async_scc(0x02);
+        scc.write(2, b'A');
+        // The interrupt says the buffer became empty, and RR0 bit 2 (Tx
+        // Buffer Empty) agrees from the first read on
+        assert!(scc.get_irq());
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x04);
+        // Reset Tx Int Pending (WR0 command 5) clears it
+        scc.write(0, 0x28);
+        assert!(!scc.get_irq());
+        assert_eq!(scc.take_tx(SccCh::B), b"A");
+    }
+
+    #[test]
+    fn test_async_polled_transmit_and_receive() {
+        // No interrupt enabled: the driver polls RR0
+        let mut scc = async_scc(0x00);
+        scc.write(2, b'B');
+        assert!(!scc.get_irq());
+        assert_eq!(scc.read(0).unwrap() & 0x04, 0x04);
+        assert_eq!(scc.take_tx(SccCh::B), b"B");
+        scc.push_rx(SccCh::B, b"xy");
+        // Rx Character Available (RR0 bit 0), and no interrupt, even after
+        // Enable Int on Next Rx Character (WR0 command 4): with receive
+        // interrupts off (WR1 mode 0) the chip does not interrupt
+        scc.write(0, 0x20);
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0x01);
+        assert!(!scc.get_irq());
+        assert_eq!(scc.read(2), Some(b'x'));
+        assert_eq!(scc.read(2), Some(b'y'));
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0);
+    }
+
+    #[test]
+    fn test_sdlc_mode_follows_wr4_and_resets() {
+        let mut scc = sdlc_scc();
+        assert!(scc.ch[1].sdlc);
+        // Asynchronous, x16 clock, 2 stop bits
+        scc.write(0, 0x04);
+        scc.write(0, 0x4C);
+        assert!(!scc.ch[1].sdlc);
+        // Back to SDLC, then a channel reset of B (WR9 = $40)
+        scc.write(0, 0x04);
+        scc.write(0, 0x20);
+        scc.write(0, 0x09);
+        scc.write(0, 0x40);
+        assert!(!scc.ch[1].sdlc);
+        // Address search alone does not select SDLC
+        scc.write(0, 0x03);
+        scc.write(0, 0x04);
+        assert!(!scc.ch[1].sdlc);
+    }
+
+    #[test]
+    fn test_tx_underrun_latch() {
+        let mut scc = sdlc_scc();
+
+        // The datasheet's reset state: RR0 = 01xxx100, so the
+        // underrun/EOM latch starts set
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0x40);
+        // Reset Tx Underrun/EOM with no frame in progress clears it
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0);
+
+        // Address search on (WR3)
+        scc.write(0, 0x03);
+        scc.write(0, 0x04);
+
+        // Frame bytes, then arm the latch and finish the frame
+        scc.write(2, 1);
+        scc.write(2, 2);
+        scc.write(2, 3);
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0x40);
+
+        // Re-arming with no frame in progress leaves the latch clear
+        scc.write(0, 0xC0);
+        assert_eq!(scc.read(0).unwrap() & 0x40, 0);
+    }
+
+    #[test]
+    fn test_enter_hunt_with_pending_frame() {
+        let mut scc = sdlc_scc();
+
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD); // WR3: address search, RX enabled, hunt
+        scc.push_rx_frame(SccCh::B, vec![10, 20, 30]);
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0x01);
+
+        // Enter Hunt again with the frame still buffered: hunt stays
+        // set and the buffered data stays readable
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        assert_eq!(scc.read(0).unwrap() & 0x10, 0x10);
+        assert_eq!(scc.read(2).unwrap(), 10);
+    }
+
+    #[test]
+    fn test_rx_frame_queued_while_disabled() {
+        let mut scc = sdlc_scc();
+
+        scc.write(0, 0x03);
+        scc.write(0, 0x0C); // WR3: address search, RX disabled
+        scc.push_rx_frame(SccCh::B, vec![7, 8, 9]);
+
+        // Not visible while RX is disabled
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0);
+
+        // Re-enabling RX surfaces the queued frame
+        scc.write(0, 0x03);
+        scc.write(0, 0xDD);
+        assert_eq!(scc.read(0).unwrap() & 0x01, 0x01);
+        assert_eq!(scc.read(2).unwrap(), 7);
     }
 }
