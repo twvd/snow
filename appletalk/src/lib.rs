@@ -5,3 +5,9 @@
 //! second node on its network.
 
 pub mod ddp;
+pub mod link;
+pub mod node;
+
+#[cfg(feature = "test_module")]
+pub mod test;
+pub mod wire;
