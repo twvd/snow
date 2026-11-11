@@ -212,6 +212,48 @@ fn test_rsrc_fork_round_trip_apple_double() {
 }
 
 #[test]
+fn test_byte_range_lock() {
+    let (mut server, dir) = test_server("byte-range-lock");
+    std::fs::write(dir.join("map"), b"0123456789").unwrap();
+    let open = |server: &mut Afp| {
+        let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 2, 3];
+        data.extend_from_slice(b"map");
+        let (r, reply) = result_of(server.command(1, &data));
+        assert_eq!(r, 0);
+        u16::from_be_bytes([reply[2], reply[3]])
+    };
+    let lock = |server: &mut Afp, flags: u8, fork: u16, offset: i32, length: u32| {
+        let mut data = vec![1, flags];
+        data.extend_from_slice(&fork.to_be_bytes());
+        data.extend_from_slice(&offset.to_be_bytes());
+        data.extend_from_slice(&length.to_be_bytes());
+        result_of(server.command(1, &data))
+    };
+    let a = open(&mut server);
+    let b = open(&mut server);
+    // The Finder's lock on the Trash Can Usage Map: one byte at 2
+    let (r, reply) = lock(&mut server, 0, a, 2, 1);
+    assert_eq!(r, 0);
+    assert_eq!(reply, 2u32.to_be_bytes());
+    assert_eq!(lock(&mut server, 0, a, 0, 4).0, ERR_RANGE_OVERLAP);
+    assert_eq!(lock(&mut server, 0, b, 2, 1).0, ERR_LOCK);
+    // Relative to the end: the last byte
+    let (r, reply) = lock(&mut server, 0x80, b, -1, 1);
+    assert_eq!(r, 0);
+    assert_eq!(reply, 9u32.to_be_bytes());
+    // An unlock names the range as it was locked
+    assert_eq!(lock(&mut server, 0x01, a, 2, 2).0, ERR_RANGE_NOT_LOCKED);
+    assert_eq!(lock(&mut server, 0x01, a, 2, 1).0, 0);
+    assert_eq!(lock(&mut server, 0, b, 2, 1).0, 0);
+    // Closing a fork releases its locks
+    let close = [4, 0, (b >> 8) as u8, b as u8];
+    assert_eq!(result_of(server.command(1, &close)).0, 0);
+    assert_eq!(lock(&mut server, 0, a, 0, 0xFFFF_FFFF).0, 0);
+    // A zero length is not a range
+    assert_eq!(lock(&mut server, 0, a, 0, 0).0, ERR_PARAM);
+}
+
+#[test]
 fn test_mod_date_follows_writes_with_a_container() {
     let (mut server, dir) = test_server_writable("rv3-moddate");
     std::fs::write(dir.join("f.txt"), b"abc").unwrap();

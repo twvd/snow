@@ -405,8 +405,9 @@ impl Asp {
     }
 
     /// Close every session of a node that is known to have restarted:
-    /// their forks go with them. Reports the node when there was anything
-    /// to close.
+    /// their forks and locks go with them, and a stale lock would otherwise
+    /// keep the Finder retrying for the Trash Can Usage Map. Reports the
+    /// node when there was anything to close.
     pub(crate) fn close_node_sessions(&mut self, node: u8) -> Option<u8> {
         let old: Vec<u8> = self
             .sessions
