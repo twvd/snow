@@ -229,6 +229,42 @@ fn test_nul_separated_path_grammar() {
 }
 
 #[test]
+fn test_metadata_store_hidden_in_every_mode() {
+    // Even with dotfiles shown, the server's own metadata is not
+    // addressable or enumerable
+    let dir = crate::test_dir("snow-afp-meta-hidden");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".secret"), b"s").unwrap();
+    std::fs::create_dir(dir.join(".AppleDouble")).unwrap();
+    std::fs::write(dir.join(".AppleDouble").join("x"), b"m").unwrap();
+    let mut server = Afp::new_with(
+        dir.clone(),
+        None,
+        MaxVersion::default(),
+        AfpSettings {
+            hidden_files: HiddenFiles::Show,
+            ..AfpSettings::default()
+        },
+    );
+    // The dotfile is addressable in Show mode, the metadata is not
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 2, 7];
+    data.extend_from_slice(b".secret");
+    assert_eq!(result_of(server.command(1, &data)).0, 0);
+    let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 2, 12];
+    data.extend_from_slice(b".AppleDouble");
+    assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_NOT_FOUND);
+    // Only the dotfile enumerates
+    let data = [
+        9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 0,
+    ];
+    let (r, reply) = result_of(server.command(1, &data));
+    assert_eq!(r, 0);
+    assert_eq!(reply[4..6], [0, 1]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_root_parent_is_one() {
     let (mut server, dir) = test_server("parent-chain");
     std::fs::create_dir(dir.join("child")).unwrap();
@@ -314,6 +350,64 @@ fn test_enumerate_hides_metadata() {
 }
 
 #[test]
+fn test_open_mangled_name_via_table() {
+    let (mut server, dir) = test_server("mangle");
+    std::fs::write(dir.join("你好.txt"), b"mangled!").unwrap();
+    let (result, _) = enumerate(&mut server, 0x0040);
+    assert_eq!(result, 0);
+    let mangled = crate::name::to_mac("你好.txt").0;
+    assert!(mangled.starts_with('#') && mangled.ends_with(".txt"));
+
+    let (result, reply) = open_fork(&mut server, &mangled, false);
+    assert_eq!(result, 0, "reply: {reply:?}");
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0];
+    read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    let (result, reply) = result_of(server.command(1, &read));
+    assert_eq!(result, 0);
+    assert_eq!(reply, b"mangled!");
+}
+
+#[test]
+fn test_open_colon_bijection() {
+    let (mut server, dir) = test_server("colon");
+    std::fs::write(dir.join("a:b.txt"), b"slash").unwrap();
+    // The wire name uses '/'
+    let (result, reply) = open_fork(&mut server, "a/b.txt", false);
+    assert_eq!(result, 0);
+    let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+    let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0];
+    read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+    let (result, reply) = result_of(server.command(1, &read));
+    assert_eq!(result, 0);
+    assert_eq!(reply, b"slash");
+    // The OpenFork reply reports the wire name
+    assert_eq!(reply, b"slash");
+}
+
+#[test]
+fn test_hidden_and_traversal_are_not_addressable() {
+    let (mut server, dir) = test_server("harden");
+    std::fs::write(dir.join(".secret"), b"s").unwrap();
+    std::fs::write(dir.join("ok.txt"), b"ok").unwrap();
+    for name in [".secret", "..", "a:b", ".AppleDouble"] {
+        let (result, _) = open_fork(&mut server, name, false);
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND, "opening {name:?}");
+    }
+    // A single leading NUL is ignored (the path stays relative);
+    // a trailing one is lenient; a colon is not path syntax
+    let (result, _) = open_fork(&mut server, "\0ok.txt", false);
+    assert_eq!(result, 0);
+    let (result, _) = open_fork(&mut server, "ok.txt\0", false);
+    assert_eq!(result, 0);
+    let (result, _) = open_fork(&mut server, ":ok.txt", false);
+    assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+    // The plain file still opens
+    let (result, _) = open_fork(&mut server, "ok.txt", false);
+    assert_eq!(result, 0);
+}
+
+#[test]
 fn test_v11_enumerate_has_file_flag() {
     let (mut server, dir) = test_server("versions-v11-enum");
     std::fs::write(dir.join("a.txt"), b"a").unwrap();
@@ -389,6 +483,38 @@ fn show_as_invisible_marks_dot_entries() {
     assert_eq!(rec[10] & 0x40, 0x40);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_host_file_reads_through_its_mangled_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let (mut s, dir) = test_server_writable("non-utf8");
+    let name = std::ffi::OsStr::from_bytes(b"caf\x8E.txt");
+    std::fs::write(dir.join(name), vec![1u8; 1000]).unwrap();
+    let e = [
+        9u8, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x40, 0, 0, 0, 20, 0, 1, 0x10, 0, 2, 0,
+    ];
+    let (r, reply) = result_of(s.command(1, &e));
+    assert_eq!(r, 0);
+    // The record holds the name offset, then the data fork length
+    let mut at = 6;
+    let mut wire = None;
+    while at < reply.len() {
+        let len = reply[at] as usize;
+        let rec = &reply[at + 2..at + len];
+        let off = u16::from_be_bytes([rec[0], rec[1]]) as usize;
+        let (name, _, _) =
+            encoding_rs::MACINTOSH.decode(&rec[off + 1..off + 1 + rec[off] as usize]);
+        if name.starts_with("caf") {
+            assert_eq!(u32::from_be_bytes(rec[2..6].try_into().unwrap()), 1000);
+            wire = Some(name.into_owned());
+        }
+        at += len;
+    }
+    let (r, f) = open(&mut s, &wire.unwrap(), false, 1);
+    assert_eq!(r, 0);
+    assert_eq!(read(&mut s, f, 0, 1000).1.len(), 1000);
+}
+
 #[test]
 fn a_mangled_name_resolves_without_having_been_served() {
     // An alias kept across a server restart
@@ -399,4 +525,15 @@ fn a_mangled_name_resolves_without_having_been_served() {
     assert_eq!(gfdp(&mut s, &mac, 0x0040, 0).0, 0);
     // In any case, as the Mac file system folds it
     assert_eq!(gfdp(&mut s, &mac.to_uppercase(), 0x0040, 0).0, 0);
+}
+
+#[test]
+fn a_real_name_wins_over_a_mangled_one() {
+    let long = "a".repeat(40) + ".txt";
+    let (mut s, dir) = test_server_writable("mangle-real");
+    let (mac, _) = crate::name::to_mac(&long);
+    std::fs::write(dir.join(&long), b"long").unwrap();
+    std::fs::write(dir.join(&mac), b"real").unwrap();
+    let (_, f) = open(&mut s, &mac, false, 1);
+    assert_eq!(read(&mut s, f, 0, 4).1, b"real");
 }

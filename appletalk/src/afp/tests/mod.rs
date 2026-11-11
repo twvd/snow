@@ -2,8 +2,10 @@
 
 use super::*;
 
+mod fork;
 mod params;
 mod path;
+mod tree;
 
 /// Build an AppleDouble container (version 2) holding the given
 /// entries
@@ -115,6 +117,50 @@ pub(super) fn mac_path(name: &str) -> Vec<u8> {
     let mut v = vec![2, b.len() as u8];
     v.extend_from_slice(&b);
     v
+}
+
+/// FPOpenFork: the result and the fork reference
+pub(super) fn open(s: &mut Afp, name: &str, rsrc: bool, access: u16) -> (i32, u16) {
+    let mut d = vec![26u8, if rsrc { 0x80 } else { 0 }, 0, 1, 0, 0, 0, 2, 0, 0];
+    d.extend_from_slice(&access.to_be_bytes());
+    d.extend(mac_path(name));
+    let (r, reply) = result_of(s.command(1, &d));
+    let f = if r == 0 {
+        u16::from_be_bytes([reply[2], reply[3]])
+    } else {
+        0
+    };
+    (r, f)
+}
+
+pub(super) fn open_fork(server: &mut Afp, name: &str, rsrc: bool) -> (i32, Vec<u8>) {
+    let mut data = vec![
+        26,
+        if rsrc { 0x80 } else { 0 },
+        0,
+        1,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        1,
+        2,
+        name.len() as u8,
+    ];
+    data.extend_from_slice(name.as_bytes());
+    result_of(server.command(1, &data))
+}
+
+pub(super) fn read(s: &mut Afp, f: u16, off: u32, n: u32) -> (i32, Vec<u8>) {
+    let mut d = vec![27u8, 0];
+    d.extend_from_slice(&f.to_be_bytes());
+    d.extend_from_slice(&off.to_be_bytes());
+    d.extend_from_slice(&n.to_be_bytes());
+    d.extend_from_slice(&[0, 0]);
+    result_of(s.command(1, &d))
 }
 
 pub(super) fn result_of(reply: (Vec<u8>, Vec<u8>)) -> (i32, Vec<u8>) {

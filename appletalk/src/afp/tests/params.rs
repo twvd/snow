@@ -298,3 +298,26 @@ fn the_uam_count_matches_the_list() {
     assert_eq!(block[at + 1] as usize, b"No User Authent".len());
     assert_eq!(&block[at + 2..], b"No User Authent");
 }
+
+#[test]
+fn host_errors_map_to_afp_errors() {
+    use std::io::{Error, ErrorKind};
+    assert_eq!(io_err(&Error::from(ErrorKind::StorageFull)), ERR_DISK_FULL);
+    assert_eq!(
+        io_err(&Error::from(ErrorKind::QuotaExceeded)),
+        ERR_DISK_FULL
+    );
+    assert_eq!(
+        io_err(&Error::from(ErrorKind::PermissionDenied)),
+        ERR_ACCESS_DENIED
+    );
+    assert_eq!(
+        io_err(&Error::from(ErrorKind::ReadOnlyFilesystem)),
+        ERR_VOL_LOCKED
+    );
+    assert_eq!(
+        io_err(&Error::from(ErrorKind::NotFound)),
+        ERR_OBJECT_NOT_FOUND
+    );
+    assert_eq!(io_err(&Error::from(ErrorKind::InvalidData)), ERR_PARAM);
+}

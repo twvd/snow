@@ -5,11 +5,13 @@
 //!
 //! Serves one volume, a host directory, to guests: the server information
 //! block (served as the ASP GetStatus status block), login with guest
-//! authentication, file and directory parameters and enumeration.
+//! authentication, file and directory parameters, enumeration and forks.
 //! Read-only by default. Host file names are converted between UTF-8 and
 //! MacRoman.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,7 @@ use crate::ids::{IdTable, ROOT_DIR_ID};
 use crate::meta::Meta;
 use crate::wire::wire_log;
 
+mod fork;
 mod params;
 mod path;
 
@@ -26,23 +29,33 @@ use self::{params::*, path::*};
 
 /// AFP commands
 const CMD_CLOSE_VOL: u8 = 2;
+const CMD_CLOSE_FORK: u8 = 4;
 const CMD_ENUMERATE: u8 = 9;
+const CMD_GET_FORK_PARMS: u8 = 14;
 const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
 const CMD_LOGIN: u8 = 18;
 const CMD_LOGOUT: u8 = 20;
 const CMD_OPEN_VOL: u8 = 24;
+const CMD_OPEN_FORK: u8 = 26;
+const CMD_READ: u8 = 27;
 const CMD_GET_FILE_DIR_PARMS: u8 = 34;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
+const ERR_ACCESS_DENIED: i32 = -5000;
 const ERR_BAD_UAM: i32 = -5002;
 const ERR_BAD_VERS: i32 = -5003;
 const ERR_BITMAP: i32 = -5004;
+const ERR_EOF: i32 = -5009;
 const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
+const ERR_OBJECT_LOCKED: i32 = -5032;
 const ERR_OBJECT_TYPE: i32 = -5025;
+const ERR_TOO_MANY_FILES_OPEN: i32 = -5026;
 const ERR_DIR_NOT_FOUND: i32 = -5029;
+const ERR_DISK_FULL: i32 = -5008;
+const ERR_VOL_LOCKED: i32 = -5031;
 
 /// The identifier of the single volume
 const VOLUME_ID: u16 = 1;
@@ -178,8 +191,49 @@ impl Default for AfpSettings {
     }
 }
 
+/// The AFP error for a failed host operation, so a full disk shows as
+/// one on the Mac rather than as a parameter error
+fn io_err(e: &std::io::Error) -> i32 {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        NotFound => ERR_OBJECT_NOT_FOUND,
+        PermissionDenied => ERR_ACCESS_DENIED,
+        ReadOnlyFilesystem => ERR_VOL_LOCKED,
+        StorageFull | QuotaExceeded => ERR_DISK_FULL,
+        _ => ERR_PARAM,
+    }
+}
+
 /// What a command answers: its reply data, or an AFP result code
 type Reply = Result<Vec<u8>, i32>;
+
+/// An open fork
+struct Fork {
+    file: File,
+    /// Length of the fork
+    len: u64,
+    /// Offset of the fork data inside the host file (nonzero for
+    /// AppleSingle containers and resource forks)
+    offset: u64,
+    /// The file's wire name and metadata, for FPGetForkParms
+    name: String,
+    meta: Meta,
+    /// The Directory ID of the file's parent directory
+    parent: u32,
+    /// Current marker position (after the last FPRead)
+    marker: u64,
+    /// The host path of the file (for the write backends)
+    path: PathBuf,
+    /// The file's ID in the volume's identity table
+    file_id: u32,
+    /// Whether the fork was opened for reading
+    read: bool,
+    /// The session that opened the fork (its close takes the fork)
+    session: u8,
+    /// Whether this is the resource fork (writes go through the
+    /// metadata backend; the data fork writes through the file)
+    rsrc: bool,
+}
 
 /// AFP protocol module: the server
 pub struct Afp {
@@ -189,6 +243,14 @@ pub struct Afp {
     volume_name: String,
     /// The highest AFP version to advertise and accept
     max_version: MaxVersion,
+    /// Open forks by reference number
+    forks: HashMap<u16, Fork>,
+    next_fork_ref: u16,
+    /// The response capacity of the request being served (the ATP
+    /// requester's offered buffers in bytes): FPRead caps its read at
+    /// it. MAX_RESPONSE until the ASP layer records the real value,
+    /// so a direct command() call answers like a full window.
+    req_capacity: usize,
     /// The volume's ID table: one ID per file and directory, keyed
     /// by the object's identity (see the ids module)
     ids: IdTable,
@@ -217,6 +279,9 @@ impl Afp {
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "Snow".to_string()),
             max_version,
+            forks: HashMap::new(),
+            next_fork_ref: 1,
+            req_capacity: crate::atp::MAX_RESPONSE,
             ids: IdTable::new(),
             versions: HashMap::new(),
             settings,
@@ -282,9 +347,10 @@ impl Afp {
         }
         let cmd = data[0];
         let reply = match cmd {
-            // FPLogin has no reserved byte after the function in either
-            // version
+            // FPLogin and FPOpenFork have no reserved byte after the
+            // function in either version
             CMD_LOGIN => self.cmd_login(session, data.get(1..).unwrap_or(&[])),
+            CMD_OPEN_FORK => self.cmd_open_fork(version, session, data.get(1..).unwrap_or(&[])),
             // FPEnumerate in 1.1 carries a FileFlag byte where 2.0 has
             // the reserved byte
             CMD_ENUMERATE if version == AfpVersion::V11 => {
@@ -315,6 +381,13 @@ impl Afp {
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(params),
                     CMD_CLOSE_VOL => Ok(Vec::new()),
                     CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
+                    // FPRead's EOF comes with the data read before it
+                    CMD_READ => match self.cmd_read(params) {
+                        Ok((data, eof)) => return (if eof { err(ERR_EOF) } else { ok() }, data),
+                        Err(code) => Err(code),
+                    },
+                    CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
+                    CMD_CLOSE_FORK => self.cmd_close_fork(params),
                     _ => {
                         wire_log!("AFP: dropped unsupported command {}", cmd);
                         Err(ERR_CALL_NOT_SUPPORTED)
@@ -369,10 +442,20 @@ impl Afp {
         Ok(reply)
     }
 
-    /// Close everything a session owns: its negotiated AFP version.
-    /// FPLogout, CloseSess and a guest restart all land here.
+    /// Close everything a session owns: its open forks (their handles
+    /// die with it) and its negotiated AFP version. FPLogout, CloseSess
+    /// and a guest restart all land here.
     pub(crate) fn close_session(&mut self, session: u8) {
+        self.forks.retain(|_, fork| fork.session != session);
         self.versions.remove(&session);
+    }
+
+    /// Record the requester's response capacity for the command being
+    /// served: FPRead caps its read at it, so a reply never exceeds
+    /// the buffers the requester offered (the ATP window is 8
+    /// packets, MAX_RESPONSE bytes)
+    pub(crate) fn set_request_capacity(&mut self, buffers: u8) {
+        self.req_capacity = usize::from(buffers) * crate::atp::MAX_RESPONSE_DATA;
     }
 }
 

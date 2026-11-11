@@ -166,6 +166,10 @@ impl Asp {
 
     /// Handle an ASP request, returning the response
     fn request(&mut self, req: &IncomingRequest, user: &[u8], data: &[u8]) -> Option<Respond> {
+        // The requester's offered response buffers bound what a
+        // command may answer (FPRead caps its read at it)
+        self.afp
+            .set_request_capacity(crate::atp::response_buffers(req.bitmap));
         let function = *user.first()?;
         match function {
             FN_OPEN_SESS => {
@@ -214,8 +218,8 @@ impl Asp {
                 if open_session(&mut self.sessions, session_id, req.key.0).is_some() {
                     self.sessions.remove(&session_id);
                     wire_log!("ASP: closed session {}", session_id);
-                    // The session's negotiated AFP version goes with
-                    // it
+                    // The session's forks and its negotiated AFP
+                    // version go with it
                     self.afp.close_session(session_id);
                     // The session's outstanding writes go with it
                     self.pending_writes.retain(|_, w| w.session != session_id);
@@ -400,8 +404,9 @@ impl Asp {
             .flatten()
     }
 
-    /// Close every session of a node that is known to have restarted.
-    /// Reports the node when there was anything to close.
+    /// Close every session of a node that is known to have restarted:
+    /// their forks go with them. Reports the node when there was anything
+    /// to close.
     pub(crate) fn close_node_sessions(&mut self, node: u8) -> Option<u8> {
         let old: Vec<u8> = self
             .sessions
