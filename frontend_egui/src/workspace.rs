@@ -313,6 +313,24 @@ pub struct Workspace {
     /// The Apple IIe joystick bindings; None to use those of the settings
     #[serde(deserialize_with = "deserialize_bindings_lenient")]
     pub iie_joystick_bindings: Option<JoyBindings>,
+
+    /// The folder shared by the built-in AppleTalk file server
+    #[cfg(feature = "afp_server")]
+    pub afp_shared_dir: Option<RelativePath>,
+
+    /// The volume name of the built-in AppleTalk file server
+    #[cfg(feature = "afp_server")]
+    #[serde(default = "default_afp_volume_name")]
+    pub afp_volume_name: String,
+
+    /// The highest AFP version the server advertises
+    #[cfg(feature = "afp_server")]
+    pub afp_max_version: snow_core::mac::serial_bridge::AfpMaxVersion,
+
+    /// The advanced settings of the built-in AppleTalk file server
+    #[cfg(feature = "afp_server")]
+    #[serde(default)]
+    pub afp_settings: snow_core::mac::serial_bridge::AfpSettings,
 }
 
 /// Custom deserializer for the joystick bindings: None (the settings'
@@ -329,6 +347,12 @@ where
         );
         None
     }))
+}
+
+/// The default volume name of the built-in AppleTalk file server
+#[cfg(feature = "afp_server")]
+fn default_afp_volume_name() -> String {
+    "Snow".to_string()
 }
 
 impl Default for Workspace {
@@ -368,6 +392,14 @@ impl Default for Workspace {
             ethernet_link_type: WorkspaceEthernetLinkType::default(),
             serial_bridges: [None, None],
             iie_joystick_bindings: None,
+            #[cfg(feature = "afp_server")]
+            afp_shared_dir: None,
+            #[cfg(feature = "afp_server")]
+            afp_volume_name: "Snow".to_string(),
+            #[cfg(feature = "afp_server")]
+            afp_max_version: Default::default(),
+            #[cfg(feature = "afp_server")]
+            afp_settings: Default::default(),
         }
     }
 }
@@ -550,6 +582,18 @@ impl Workspace {
         self.shared_dir.clone().map(|d| d.get_absolute())
     }
 
+    /// The folder shared by the built-in AppleTalk file server
+    #[cfg(feature = "afp_server")]
+    pub fn set_afp_shared_dir(&mut self, p: Option<&Path>) {
+        self.afp_shared_dir = p.map(RelativePath::from_absolute);
+    }
+
+    /// The folder shared by the built-in AppleTalk file server
+    #[cfg(feature = "afp_server")]
+    pub fn get_afp_shared_dir(&self) -> Option<PathBuf> {
+        self.afp_shared_dir.clone().map(|d| d.get_absolute())
+    }
+
     pub fn get_floppy_images(&self) -> Vec<PathBuf> {
         self.floppy_images
             .iter()
@@ -588,5 +632,25 @@ impl Workspace {
     /// Clears all persisted window locations
     pub fn reset_windows(&mut self) {
         self.windows.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Workspaces from before the file server, and with it on, as saved by
+    /// this version and by earlier ones, all load
+    #[test]
+    fn workspaces_with_and_without_the_file_server_load() {
+        for saved in [
+            r#"{}"#,
+            r#"{"serial_bridges":[null,{"AppleTalk":{}}]}"#,
+            r#"{"serial_bridges":[null,{"AppleTalk":{"root":"/x","volume_name":"Snow"}}],
+                "afp_volume_name":"Docs"}"#,
+        ] {
+            let workspace: Workspace = serde_json::from_str(saved).unwrap();
+            assert!(workspace.serial_bridges[0].is_none());
+        }
     }
 }
