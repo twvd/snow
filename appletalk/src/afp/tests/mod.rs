@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod desktop;
 mod fork;
 mod params;
 mod path;

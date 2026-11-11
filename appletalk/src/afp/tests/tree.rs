@@ -12,6 +12,9 @@ fn test_write_commands_are_locked_when_read_only() {
     data.extend_from_slice(b"a.txt");
     let (r, _) = result_of(server.command(1, &data));
     assert_eq!(r, -5031);
+    // Desktop database writes -> afpVolLocked
+    let (r, _) = result_of(server.command(1, &[53, 0]));
+    assert_eq!(r, -5031);
     // The file is untouched
     assert!(dir.join("a.txt").exists());
 }
