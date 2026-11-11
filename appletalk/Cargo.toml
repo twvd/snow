@@ -12,5 +12,8 @@ crossbeam-channel = "0.5"
 encoding_rs = "0.8"
 log = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
