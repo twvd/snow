@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[serde(bound = "")]
 pub struct Video<T: Renderer> {
     #[serde(skip)]
-    renderer: Option<T>,
+    pub(super) renderer: Option<T>,
 
     pub framebuffer: Vec<u8>,
     vblank_ticks: Ticks,
