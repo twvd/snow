@@ -9,7 +9,6 @@ use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
 use mdc12::Mdc12;
-use se30video::SE30Video;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use toby::Toby;
@@ -18,7 +17,6 @@ use toby::Toby;
 #[serde(bound = "")]
 pub enum NubusCard<TRenderer: Renderer> {
     MDC12(Mdc12<TRenderer>),
-    SE30Video(SE30Video<TRenderer>),
     Toby(Toby<TRenderer>),
 }
 
@@ -39,7 +37,6 @@ macro_rules! with_card {
     ($card:expr, $c:ident => $e:expr) => {
         match $card {
             NubusCard::MDC12($c) => $e,
-            NubusCard::SE30Video($c) => $e,
             NubusCard::Toby($c) => $e,
         }
     };

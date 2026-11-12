@@ -3,7 +3,6 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::NubusSlot;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -76,27 +75,27 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot<TRenderer> for SE30Video<TRenderer>
+impl<TRenderer> SE30Video<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
         self.fb_select = false;
     }
 
-    fn get_irq(&self) -> bool {
+    pub fn get_irq(&self) -> bool {
         self.vblank_irq
     }
 
-    fn blank(&mut self) -> Result<()> {
+    pub fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
         Ok(())
     }
 
-    fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut());
@@ -105,7 +104,8 @@ where
         Ok(())
     }
 
-    fn set_renderer(&mut self, renderer: TRenderer) {
+    /// Reinstalls the renderer, which is not serialized
+    pub fn set_renderer(&mut self, renderer: TRenderer) {
         self.renderer = Some(renderer);
     }
 }
