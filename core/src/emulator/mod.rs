@@ -2023,10 +2023,13 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetSetLink(idx, link) => {
-                        self.config.scsi_mut().targets[idx]
+                        let target = self.config.scsi_mut().targets[idx]
                             .as_mut()
-                            .context("Setting link on non-ethernet device")?
-                            .eth_set_link(link)?;
+                            .context("Setting link on non-ethernet device")?;
+                        if let Err(e) = target.eth_set_link(link) {
+                            self.user_error(&format!("SCSI #{}: {:#}", idx, e));
+                        }
+                        self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(idx, filename) => {

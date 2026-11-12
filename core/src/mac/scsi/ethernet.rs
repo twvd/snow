@@ -391,6 +391,7 @@ impl ScsiTargetEthernet {
 
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
     fn start_tap_bridge(&mut self, tap_name: &str) -> Result<()> {
+        use anyhow::bail;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
 
@@ -412,10 +413,7 @@ impl ScsiTargetEthernet {
 
         let dev = match tun::create(&config) {
             Ok(dev) => dev,
-            Err(e) => {
-                log::error!("Failed to open TAP device '{}': {}", tap_name, e);
-                return Ok(());
-            }
+            Err(e) => bail!("Failed to open TAP device '{}': {}", tap_name, e),
         };
 
         log::info!("TAP device '{}' opened successfully", tap_name);
@@ -554,6 +552,7 @@ impl ScsiTargetEthernet {
 
                 if tx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
                     log::info!("TAP bridge terminated (tap_stop)");
+                    return;
                 }
             }
         });
@@ -989,20 +988,24 @@ impl ScsiTarget for ScsiTargetEthernet {
             self.tap_stop
                 .store(true, std::sync::atomic::Ordering::Release);
         }
+        // Stays down if the new link fails to start, so that tx_packet() does not retry it on
+        // every frame
+        self.link = EthernetLinkType::Down;
 
-        match &link {
+        let started = match &link {
             EthernetLinkType::Down => {
                 log::info!("Ethernet link down");
+                Ok(())
             }
             #[cfg(feature = "ethernet_raw")]
             EthernetLinkType::Bridge(i) => {
                 log::info!("Ethernet link bridge to interface {}", i);
-                self.start_bridge(*i)?;
+                self.start_bridge(*i)
             }
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             EthernetLinkType::TapBridge(name) => {
                 log::info!("Ethernet link TAP bridge: {}", name);
-                self.start_tap_bridge(name)?;
+                self.start_tap_bridge(name)
             }
             #[cfg(feature = "ethernet_nat")]
             EthernetLinkType::NAT => {
@@ -1024,6 +1027,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                 std::thread::spawn(move || {
                     nat.run();
                 });
+                Ok(())
             }
             #[cfg(feature = "ethernet_nat_https_stripping")]
             EthernetLinkType::NATHttpsStripping => {
@@ -1044,7 +1048,15 @@ impl ScsiTarget for ScsiTargetEthernet {
                 std::thread::spawn(move || {
                     nat.run();
                 });
+                Ok(())
             }
+        };
+        if let Err(e) = started {
+            // A link that fails to start may have set its channels already, and frames sent to
+            // them would go nowhere
+            self.rx = None;
+            self.tx = None;
+            return Err(e);
         }
         self.link = link;
         Ok(())
