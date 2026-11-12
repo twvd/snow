@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
+use crate::mac::VideoOutput;
 use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -128,14 +129,14 @@ where
     pub fn get_irq(&self) -> bool {
         self.vblank_irq
     }
+}
 
-    pub fn blank(&mut self) -> Result<()> {
-        self.vram.fill(0xFF);
-        self.render()?;
-        Ok(())
-    }
-
-    pub fn render(&mut self) -> Result<()> {
+impl<TRenderer> SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    /// Prepares the image and sends it to the frontend
+    fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut());
@@ -143,10 +144,21 @@ where
         self.renderer.as_mut().unwrap().update()?;
         Ok(())
     }
+}
 
-    /// Reinstalls the renderer, which is not serialized
-    pub fn set_renderer(&mut self, renderer: TRenderer) {
+impl<TRenderer> VideoOutput<TRenderer> for SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn blank(&mut self) -> Result<()> {
+        self.vram.fill(0xFF);
+        self.render()?;
+        Ok(())
+    }
+
+    fn set_renderer(&mut self, renderer: TRenderer) -> Result<()> {
         self.renderer = Some(renderer);
+        self.render()
     }
 }
 
