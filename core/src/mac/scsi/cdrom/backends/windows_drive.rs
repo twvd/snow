@@ -1,6 +1,9 @@
 use std::{
     ffi::c_void,
+    os::windows::io::AsRawHandle,
     path::{Path, PathBuf},
+    sync::Arc,
+    thread::JoinHandle,
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -19,8 +22,9 @@ use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_NOT_READY,
     cdrom::{
-        CdromBackend, CdromError, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector,
-        SessionInfo, TrackInfo, backends::PhysicalCdromDrive,
+        CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, MediaCheck, MediaId, Msf, QSub,
+        RAW_SECTOR_LEN, RawSector, SessionInfo, TrackInfo, backends::PhysicalCdromDrive,
+        reader::CdromReader,
     },
 };
 
@@ -68,22 +72,120 @@ pub fn is_physical_cdrom_drive_path(path: &Path) -> bool {
     unsafe { GetDriveTypeW(&HSTRING::from(path.as_path())) == DRIVE_CDROM }
 }
 
-/// Disc information. Changes each time a new disc is inserted.
-struct DiscInfo {
-    capacity: usize,
-    sessions: Vec<SessionInfo>,
-    tracks: Vec<TrackInfo>,
+/// An open drive, shared between the backend and the reader thread. The
+/// handle closes when both are done with it.
+struct DriveHandle(HANDLE);
+
+// SAFETY: A HANDLE is an opaque kernel object reference that any thread can
+// use. The I/O on it is positional (read_at), not through a shared file
+// pointer, and Windows serializes the I/O on a synchronous handle.
+unsafe impl Send for DriveHandle {}
+unsafe impl Sync for DriveHandle {}
+
+impl Drop for DriveHandle {
+    fn drop(&mut self) {
+        if let Err(e) = unsafe { CloseHandle(self.0) } {
+            log::warn!("Failed to close the CD-ROM drive: {}", e);
+        }
+    }
+}
+
+impl CdromReader for DriveHandle {
+    fn read_at(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+        // log::debug!("Reading 0x{:X} bytes from offset 0x{:X}", length, offset);
+
+        // With an OVERLAPPED on a synchronous handle, ReadFile reads at the
+        // offset given there and returns when done.
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.Anonymous.Anonymous.Offset = offset as u32;
+        overlapped.Anonymous.Anonymous.OffsetHigh = ((offset as u64) >> 32) as u32;
+
+        let mut result = vec![0; length];
+        let mut bytes_read = 0u32;
+        unsafe {
+            ReadFile(
+                self.0,
+                Some(result.as_mut_slice()),
+                Some(&mut bytes_read),
+                Some(&mut overlapped),
+            )
+        }
+        .map_err(|e| {
+            if e.code() == ERROR_INVALID_FUNCTION.into() {
+                // ReadFile returns ERROR_INVALID_FUNCTION if you try to read an audio sector.
+                log::warn!("Read failed with ERROR_INVALID_FUNCTION");
+                CdromError::CheckCondition(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
+            } else if e.code() == ERROR_NOT_READY.into() {
+                // ReadFile returns ERROR_NOT_READY if you eject the disc.
+                log::warn!("Read failed with ERROR_NOT_READY");
+                CdromError::CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+            } else if e.code() == ERROR_FILE_INVALID.into() {
+                // ReadFile returns ERROR_FILE_INVALID if the CD-ROM drive was unplugged.
+                log::warn!("Read failed with ERROR_FILE_INVALID");
+                CdromError::BackendDead
+            } else {
+                CdromError::Other(e.into())
+            }
+        })?;
+
+        // A read past the end of the disc comes up short
+        result.truncate(bytes_read as usize);
+        Ok(result)
+    }
+
+    fn check_media(&self, known: MediaId) -> Result<MediaCheck, CdromError> {
+        let count = get_media_change_count(self.0).map_err(|e| {
+            if let Some(we) = e.downcast_ref::<windows_result::Error>()
+                && we.code() == ERROR_DEV_NOT_EXIST.into()
+            {
+                CdromError::BackendDead
+            } else {
+                CdromError::Other(e)
+            }
+        })?;
+
+        let id = media_id(count);
+        if id == known {
+            return Ok(MediaCheck::Unchanged);
+        }
+
+        let disc = if count.is_some() {
+            log::warn!("Media change detected, reloading...");
+            Some(read_disc_info(self.0)?)
+        } else {
+            log::warn!("Media change detected, unloading...");
+            None
+        };
+        Ok(MediaCheck::Changed { id, disc })
+    }
+
+    fn cancel(&self, thread: &JoinHandle<()>) {
+        cancel_thread_io(thread);
+    }
+}
+
+/// The disc in the drive, from its media change count: the count goes up
+/// with each disc inserted, and None means no disc.
+fn media_id(media_change_count: Option<u32>) -> MediaId {
+    MediaId(media_change_count.map(u64::from))
+}
+
+/// Cancels the synchronous I/O `thread` is blocked in, if any. It then fails
+/// with ERROR_OPERATION_ABORTED, once the driver lets go of it: a request
+/// still queued in the driver ends at once, but one the drive has started may
+/// run until the drive or the driver gives up on it.
+fn cancel_thread_io(thread: &JoinHandle<()>) {
+    // Fails with ERROR_NOT_FOUND when the thread isn't in any I/O
+    let _ = unsafe { CancelSynchronousIo(HANDLE(thread.as_raw_handle())) };
 }
 
 pub struct WindowsDriveCdromBackend {
     path: PathBuf,
-    handle: HANDLE,
-    curr_media_change_count: Option<u32>,
+    handle: Arc<DriveHandle>,
+    /// The disc `disc_info` describes
+    media_id: MediaId,
     disc_info: Option<DiscInfo>,
 }
-
-// SAFETY: The drive handle should be safe to send between threads.
-unsafe impl Send for WindowsDriveCdromBackend {}
 
 fn get_disk_length(handle: HANDLE) -> Result<i64> {
     let mut gli = GET_LENGTH_INFORMATION::default();
@@ -428,6 +530,7 @@ impl WindowsDriveCdromBackend {
                 None,
             )
         }?;
+        let drive = Arc::new(DriveHandle(handle));
 
         // Allow read commands to be sent directly to the driver without filtering.
         // Without this, Microsoft Virtual DVD-ROM will read all 0's on some sectors.
@@ -444,85 +547,64 @@ impl WindowsDriveCdromBackend {
             )
         };
 
-        let mut self_ = Self {
+        Ok(Self {
             path: path.into(),
-            handle,
-            curr_media_change_count: get_media_change_count(handle)?,
-            disc_info: None,
-        };
-
-        self_.reload_media()?;
-
-        Ok(self_)
+            handle: drive,
+            media_id: media_id(get_media_change_count(handle)?),
+            disc_info: Some(read_disc_info(handle)?),
+        })
     }
 }
 
-impl WindowsDriveCdromBackend {
-    fn reload_media(&mut self) -> Result<()> {
-        log::debug!("Loading new CD media...");
+/// Reads the description of the disc in the drive
+fn read_disc_info(handle: HANDLE) -> Result<DiscInfo> {
+    log::debug!("Loading new CD media...");
 
-        drop(self.disc_info.take());
+    let capacity: usize = get_disk_length(handle)?.try_into()?;
+    log::debug!("detected capacity: 0x{:X}", capacity);
 
-        let capacity: usize = get_disk_length(self.handle)?.try_into()?;
-        log::debug!("detected capacity: 0x{:X}", capacity);
+    let (sessions, tracks) = read_full_toc(handle).or_else(|e| {
+        // Microsoft Virtual DVD-ROM supports Formatted TOC but not Full TOC.
+        log::warn!(
+            "Failed to read Full TOC; falling back to Formatted TOC. Error: {}",
+            e
+        );
+        read_formatted_toc(handle)
+    })?;
 
-        let (sessions, tracks) = read_full_toc(self.handle).or_else(|e| {
-            // Microsoft Virtual DVD-ROM supports Formatted TOC but not Full TOC.
-            log::warn!(
-                "Failed to read Full TOC; falling back to Formatted TOC. Error: {}",
-                e
-            );
-            read_formatted_toc(self.handle)
-        })?;
+    log::debug!("sessions: {:#?}", sessions);
+    log::debug!("tracks: {:#?}", tracks);
 
-        log::debug!("sessions: {:#?}", sessions);
-        log::debug!("tracks: {:#?}", tracks);
+    // XXX: Workaround an issue in Windows:
+    // If ReadFile is performed on a drive handle before IOCTL_CDROM_RAW_READ,
+    // IOCTL_CDROM_RAW_READ will stop working with "The parameter is incorrect."
+    // This seems to fix it.
+    let _ = read_ioctl_cdrom_raw_read(handle, 0);
 
-        // XXX: Workaround an issue in Windows:
-        // If ReadFile is performed on a drive handle before IOCTL_CDROM_RAW_READ,
-        // IOCTL_CDROM_RAW_READ will stop working with "The parameter is incorrect."
-        // This seems to fix it.
-        let _ = read_ioctl_cdrom_raw_read(self.handle, 0);
-
-        self.disc_info = Some(DiscInfo {
-            capacity,
-            sessions,
-            tracks,
-        });
-
-        Ok(())
-    }
+    Ok(DiscInfo {
+        capacity,
+        sessions,
+        tracks,
+    })
 }
 
 impl CdromBackend for WindowsDriveCdromBackend {
     fn check_media(&mut self) -> Result<(), CdromError> {
-        let media_change_count = match get_media_change_count(self.handle) {
-            Ok(count) => count,
-            Err(e) => {
-                if let Some(we) = e.downcast_ref::<windows_result::Error>()
-                    && we.code() == ERROR_DEV_NOT_EXIST.into()
-                {
-                    return Err(CdromError::BackendDead);
-                }
+        let check = self.handle.check_media(self.media_id)?;
+        self.apply_media_check(check)
+    }
 
-                return Err(CdromError::Other(e));
-            }
-        };
+    fn media_id(&self) -> MediaId {
+        self.media_id
+    }
 
-        if media_change_count != self.curr_media_change_count {
-            drop(self.disc_info.take());
-
-            if media_change_count.is_some() {
-                log::warn!("Media change detected, reloading...");
-                self.reload_media()?;
-            } else {
-                log::warn!("Media change detected, unloading...");
-            }
-
-            self.curr_media_change_count = media_change_count;
+    fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+        if let MediaCheck::Changed { id, disc } = check {
+            self.media_id = id;
+            self.disc_info = disc;
         }
 
-        if media_change_count.is_some() {
+        if self.disc_info.is_some() {
             Ok(())
         } else {
             Err(CdromError::CheckCondition(
@@ -540,32 +622,11 @@ impl CdromBackend for WindowsDriveCdromBackend {
     }
 
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
-        // log::debug!("Reading 0x{:X} bytes from offset 0x{:X}", length, offset);
+        self.handle.read_at(offset, length)
+    }
 
-        // If move method is FILE_BEGIN, offset is treated as an unsigned value.
-        unsafe { SetFilePointerEx(self.handle, offset as i64, None, FILE_BEGIN) }
-            .map_err(|e| anyhow!(e))?;
-
-        let mut result = vec![0; length];
-        unsafe { ReadFile(self.handle, Some(result.as_mut_slice()), None, None) }.map_err(|e| {
-            if e.code() == ERROR_INVALID_FUNCTION.into() {
-                // ReadFile returns ERROR_INVALID_FUNCTION if you try to read an audio sector.
-                log::warn!("Read failed with ERROR_INVALID_FUNCTION");
-                CdromError::CheckCondition(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
-            } else if e.code() == ERROR_NOT_READY.into() {
-                // ReadFile returns ERROR_NOT_READY if you eject the disc.
-                log::warn!("Read failed with ERROR_NOT_READY");
-                CdromError::CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
-            } else if e.code() == ERROR_FILE_INVALID.into() {
-                // ReadFile returns ERROR_FILE_INVALID if the CD-ROM drive was unplugged.
-                log::warn!("Read failed with ERROR_FILE_INVALID");
-                CdromError::BackendDead
-            } else {
-                CdromError::Other(e.into())
-            }
-        })?;
-
-        Ok(result)
+    fn async_reader(&self) -> Option<Arc<dyn CdromReader>> {
+        Some(self.handle.clone())
     }
 
     fn image_path(&self) -> Option<&Path> {
@@ -593,7 +654,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
             .checked_sub(LBA_START_SECTOR)
             .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
 
-        let status = read_ioctl_cdrom_raw_read(self.handle, lba);
+        let status = read_ioctl_cdrom_raw_read(self.handle.0, lba);
         match status {
             Ok(data) => Ok(RawSector {
                 data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
@@ -620,5 +681,66 @@ impl CdromBackend for WindowsDriveCdromBackend {
                 Err(CdromError::Other(e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mac::scsi::cdrom::reader::DiscThread;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// A "disc" whose reads block on an empty pipe, in a synchronous
+    /// ReadFile, like a drive that never answers. It cancels as the drive does.
+    struct HungReader {
+        pipe: std::io::PipeReader,
+        entered: AtomicBool,
+        done: crossbeam_channel::Sender<std::io::Error>,
+    }
+
+    impl CdromReader for HungReader {
+        fn read_at(&self, _offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+            let mut buf = vec![0; length];
+            self.entered.store(true, Ordering::Release);
+            match (&self.pipe).read(&mut buf) {
+                Ok(_) => panic!("read from an empty pipe"),
+                Err(e) => {
+                    let _ = self.done.send(e);
+                    Err(CdromError::BackendDead)
+                }
+            }
+        }
+
+        fn cancel(&self, thread: &JoinHandle<()>) {
+            cancel_thread_io(thread);
+        }
+    }
+
+    #[test]
+    fn cancel_ends_a_blocked_read() {
+        let (pipe, _writer) = std::io::pipe().unwrap();
+        let (done, read_ended) = crossbeam_channel::bounded(1);
+        let reader = Arc::new(HungReader {
+            pipe,
+            entered: false.into(),
+            done,
+        });
+        let thread = DiscThread::spawn(reader.clone()).unwrap();
+
+        let reply = thread.read(0, 2048);
+        while !reader.entered.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Give the thread time to get from the flag into ReadFile
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(reply.poll().is_none());
+        drop(reply);
+
+        let error = read_ended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the read was not cancelled");
+        assert_eq!(error.raw_os_error(), Some(ERROR_OPERATION_ABORTED.0 as i32));
     }
 }
