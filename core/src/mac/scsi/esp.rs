@@ -213,7 +213,7 @@ impl Esp {
         } else if self.dma && self.tc > 0 {
             // The FIFO always has room, the target takes the bytes at once
             match self.phase() {
-                PHASE_COMMAND => self.selecting || self.dma_xfer,
+                PHASE_COMMAND => (self.selecting || self.dma_xfer) && !self.bus.is_pending(),
                 PHASE_DATA_OUT => self.dma_xfer && self.bus.dataout_len > 0,
                 _ => false,
             }
@@ -374,6 +374,7 @@ impl Esp {
 
     /// Leaves the bus, as on a SCSI bus reset
     fn disconnect(&mut self) {
+        self.bus.abort_pending();
         self.set_phase(0);
         self.dataout_buf.clear();
         self.selected = false;
@@ -598,6 +599,11 @@ impl Esp {
     }
 
     fn command_byte(&mut self, val: u8) {
+        if self.bus.is_pending() {
+            // The target is busy with the command and takes no more bytes
+            esp_check!("command byte while the target is busy: {}", self.dbg());
+            return;
+        }
         self.bus.cmdbuf.push(val);
         if self.cdb_complete() {
             self.run_cdb();
@@ -619,10 +625,23 @@ impl Esp {
 
         self.seq = SEQ_CMD_DONE;
         self.dma_xfer = false;
-        match self.bus.cmd_run(None) {
+        let result = self.bus.cmd_run(None);
+        self.target_answered(result);
+    }
+
+    /// The target has run the command (now, or in the background) and asks
+    /// for the next phase.
+    fn target_answered(&mut self, result: Result<CmdOutcome>) {
+        match result {
             Ok(CmdOutcome::Status) => self.set_phase(PHASE_STATUS),
             Ok(CmdOutcome::DataIn) => self.set_phase(PHASE_DATA_IN),
             Ok(CmdOutcome::DataOut(_)) => self.set_phase(PHASE_DATA_OUT),
+            // The target holds the bus until the command completes: no phase
+            // change and no interrupt yet (tick()).
+            // TODO: disconnect instead (MESSAGE IN, DISCONNECT) and reselect
+            // the initiator when done, so the bus is free for other targets
+            // meanwhile, as SCSI Manager 4.3 allows.
+            Ok(CmdOutcome::Busy) => return,
             Err(e) => {
                 error!("SCSI command error: {:#}", e);
                 self.target_gone();
@@ -651,16 +670,15 @@ impl Esp {
 
         self.dma_xfer = false;
         let data = std::mem::take(&mut self.dataout_buf);
-        match self.bus.cmd_run(Some(&data)) {
-            Ok(_) => self.set_phase(PHASE_STATUS),
-            Err(e) => {
-                error!("SCSI command error: {:#}", e);
-                self.target_gone();
-                return;
+        // After its data, the target goes on to Status
+        let result = self.bus.cmd_run(Some(&data)).map(|o| {
+            if o == CmdOutcome::Busy {
+                o
+            } else {
+                CmdOutcome::Status
             }
-        }
-        self.intr |= INTR_BS;
-        self.raise_irq();
+        });
+        self.target_answered(result);
     }
 
     /// The target has left the bus: the chip is back in the disconnected state,
@@ -895,6 +913,10 @@ impl Tickable<&dyn EmuContext> for Esp {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.bus.tick_targets(ticks, ctx)?;
 
+        if let Some(result) = self.bus.poll() {
+            self.target_answered(result);
+        }
+
         Ok(ticks)
     }
 }
@@ -983,6 +1005,7 @@ impl Esp {
 mod tests {
     use super::*;
     use crate::mac::scsi::disk_image::DiskImage;
+    use crate::mac::scsi::test_target::{SLOW_BLOCKSIZE, SlowState, SlowTarget, TestContext};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -1207,5 +1230,97 @@ mod tests {
         assert_eq!(phase(&mut esp), PHASE_STATUS);
         assert_eq!(esp.read(REG_STATUS).unwrap() & STAT_TC, 0);
         assert_eq!(esp.fifo_len(), 0);
+    }
+
+    /// A 53C96 with a target at ID 0 whose reads wait for the test
+    fn esp_with_slow_target() -> (Esp, Arc<Mutex<SlowState>>) {
+        let mut esp = Esp::new(true);
+        let (target, state) = SlowTarget::new();
+        esp.bus_mut().targets[0] = Some(target);
+        (esp, state)
+    }
+
+    /// Selects the target with a READ(6) of one block, which stays pending
+    fn start_slow_read(esp: &mut Esp, state: &Mutex<SlowState>) {
+        for b in [0x08, 0, 0, 0, 1, 0] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        command(esp, 0x41);
+        assert!(state.lock().unwrap().reading);
+        // The target holds the bus in the command phase, without a word
+        assert!(!esp.get_irq());
+        assert_eq!(phase(esp), PHASE_COMMAND);
+    }
+
+    #[test]
+    fn pending_read_interrupts_when_done() {
+        let (mut esp, state) = esp_with_slow_target();
+        start_slow_read(&mut esp, &state);
+
+        esp.tick(1, &TestContext).unwrap();
+        assert!(!esp.get_irq());
+        assert_eq!(phase(&mut esp), PHASE_COMMAND);
+
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+        esp.tick(1, &TestContext).unwrap();
+        assert!(esp.get_irq());
+        // The selection sequence completes as the target asks for data
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS | INTR_FC);
+        assert_eq!(phase(&mut esp), PHASE_DATA_IN);
+
+        // Transfer Information, without DMA
+        command(&mut esp, 0x10);
+        assert_eq!(esp.read(REG_FIFO).unwrap(), 0x55);
+    }
+
+    #[test]
+    fn pending_read_takes_no_command_bytes() {
+        let (mut esp, state) = esp_with_slow_target();
+        start_slow_read(&mut esp, &state);
+
+        // No DMA request in the command phase while the target is busy
+        set_count(&mut esp, 6);
+        esp.dma = true;
+        assert!(!esp.get_drq());
+        esp.dma = false;
+
+        // Another CDB through the FIFO doesn't start a second read
+        for b in [0x08, 0, 0, 0, 1, 0] {
+            esp.command_byte(b);
+        }
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+        esp.tick(1, &TestContext).unwrap();
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS | INTR_FC);
+        assert_eq!(esp.bus().cmdbuf, [0x08, 0, 0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn bus_reset_drops_pending_read() {
+        let (mut esp, state) = esp_with_slow_target();
+        start_slow_read(&mut esp, &state);
+
+        // Reset SCSI bus
+        command(&mut esp, 0x03);
+        assert_eq!(state.lock().unwrap().aborts, 1);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_RST);
+
+        // Nothing comes of the read afterwards
+        esp.tick(1, &TestContext).unwrap();
+        assert!(!esp.get_irq());
+
+        // The target takes the next command
+        start_slow_read(&mut esp, &state);
+    }
+
+    #[test]
+    fn chip_reset_drops_pending_read() {
+        let (mut esp, state) = esp_with_slow_target();
+        start_slow_read(&mut esp, &state);
+
+        // Reset chip
+        command(&mut esp, 0x02);
+        assert_eq!(state.lock().unwrap().aborts, 1);
+        esp.tick(1, &TestContext).unwrap();
+        assert!(!esp.get_irq());
     }
 }

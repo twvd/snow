@@ -11,6 +11,8 @@ pub mod ethernet;
 #[cfg(feature = "printer")]
 pub mod printer;
 pub mod target;
+#[cfg(test)]
+pub(crate) mod test_target;
 pub mod toolbox;
 
 pub const STATUS_GOOD: u8 = 0;
@@ -117,4 +119,20 @@ pub(crate) enum ScsiCmdResult {
     DataIn(Vec<u8>),
     /// Expects data written to target
     DataOut(usize),
+    /// The target is still working on the command, in the background. The
+    /// result comes from `ScsiTarget::poll_pending`; until then the target
+    /// holds the bus without requesting a transfer.
+    Pending,
+}
+
+/// Shows the length of data rather than the bytes themselves
+impl std::fmt::Debug for ScsiCmdResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Status(s) => write!(f, "Status({:02X})", s),
+            Self::DataIn(d) => write!(f, "DataIn {}B", d.len()),
+            Self::DataOut(n) => write!(f, "DataOut {}B", n),
+            Self::Pending => write!(f, "Pending"),
+        }
+    }
 }

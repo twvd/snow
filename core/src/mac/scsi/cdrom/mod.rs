@@ -1779,19 +1779,11 @@ mod tests {
         let set_cmd = [0xD8u8, 5, 0, 0, 0, 0, 0, 0, 0, 0];
         match cd.specific_cmd(&set_cmd, None).unwrap() {
             ScsiCmdResult::Status(STATUS_CHECK_CONDITION) => {}
-            other => panic!("expected CHECK CONDITION, got {:?}", other_status(&other)),
+            other => panic!("expected CHECK CONDITION, got {:?}", other),
         }
         assert!(!cd.pending_unit_attention);
 
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    fn other_status(r: &ScsiCmdResult) -> String {
-        match r {
-            ScsiCmdResult::Status(s) => format!("Status({})", s),
-            ScsiCmdResult::DataIn(d) => format!("DataIn({} bytes)", d.len()),
-            ScsiCmdResult::DataOut(n) => format!("DataOut({})", n),
-        }
     }
 
     /// Parses our LIST_CDS output exactly the way the reference BlueSCSI Toolbox
@@ -1864,9 +1856,9 @@ mod tests {
             if n > MAX_FILE_LISTING_FILES {
                 assert!(
                     matches!(count, ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
-                    "{} images should be rejected, got {}",
+                    "{} images should be rejected, got {:?}",
                     n,
-                    other_status(&count)
+                    count
                 );
                 assert_eq!(
                     cd.common.req_sense(),
@@ -1875,7 +1867,7 @@ mod tests {
             } else {
                 match count {
                     ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![n as u8]),
-                    other => panic!("expected a count, got {}", other_status(&other)),
+                    other => panic!("expected a count, got {:?}", other),
                 }
             }
 
@@ -1884,7 +1876,7 @@ mod tests {
                 .unwrap()
             {
                 ScsiCmdResult::DataIn(d) => d,
-                other => panic!("LIST_CDS returned {}", other_status(&other)),
+                other => panic!("LIST_CDS returned {:?}", other),
             };
             assert_eq!(listed.len(), MAX_FILE_LISTING_FILES.min(n) * 40);
 

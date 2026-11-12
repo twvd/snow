@@ -584,6 +584,16 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         }
     }
 
+    /// Polls a command that returned `ScsiCmdResult::Pending`. Returns None
+    /// while the command is still running, and must never block.
+    fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
+        None
+    }
+
+    /// Forgets a command that returned `ScsiCmdResult::Pending`, for instance
+    /// on a bus reset. Must never block.
+    fn abort_pending(&mut self) {}
+
     /// Whether tick() does anything for this target
     fn ticks(&self) -> bool {
         false
