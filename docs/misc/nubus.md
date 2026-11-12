@@ -75,3 +75,36 @@ fn read_sized(&mut self, addr: Address, size: u32) -> Option<u32> {
 When no card answers in super slot space, the Mac II family reads open bus, the Quadra 700 reads
 0, and the Quadra 800 gets a bus error. A standard slot space that nothing answers is a bus error,
 as the Slot Manager expects of an empty slot.
+
+## The cards of a machine
+
+`nubus::Nubus` holds the cards of slots `$9` to `$E`, for every machine with NuBus slots. It:
+
+- routes a cycle in either address space of a slot to the card there;
+- ticks the cards;
+- gives their interrupts, one bit per slot: bit n for slot `$9 + n`, as VIA 2 port A has them on
+  every machine.
+
+The cards are kept in an enum, `NubusCard`, not as trait objects: a card is generic over the type
+of its renderer, and serde can't save a trait object of a generic type. A NuBus access is then a
+`match` on the enum.
+
+| Mac model | Slots | Slot interrupts | Source |
+| --- | --- | --- | --- |
+| Mac II, IIx | `$9` to `$E` | VIA 2 PA0-PA5 | Guide to the Macintosh Family Hardware, 2nd ed., table 4-9 |
+| IIcx | `$9` to `$B` | VIA 2 PA0-PA2 | Same table |
+
+The slot interrupts combine into VIA 2 CA1.
+
+**The SE/30's video isn't a card.** It answers in the space of slot `$E`, `$FExx_xxxx`, but it is on
+the logic board, with no NuBus between it and the CPU. It is a field of the SE/30's bus of its own,
+and has plain `read()` and `write()` methods taking an offset in that space.
+
+## Adding a card
+
+A new card, in `core/src/mac/nubus/`:
+
+1. implements `NubusSlot`, `Debuggable`, `Display` and `Tickable`, and `VideoOutput` if it has
+   video;
+2. gets a variant in `NubusCard` and in the `with_card!` macro;
+3. gets a `NubusDeviceKind`, which the Mac II bus makes the card from.
