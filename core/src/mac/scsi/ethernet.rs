@@ -166,6 +166,12 @@ pub(crate) struct ScsiTargetEthernet {
     #[serde(skip)]
     tap_stop: Arc<AtomicBool>,
 
+    /// The receive and transmit threads of the TAP bridge. They keep the TAP device open until
+    /// they exit.
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    #[serde(skip)]
+    tap_threads: Vec<JoinHandle<()>>,
+
     /// Interface enabled
     enabled: bool,
 
@@ -183,6 +189,15 @@ pub(crate) struct ScsiTargetEthernet {
     /// Pcap packet sender channel
     #[serde(skip)]
     pcap_tx: Option<crossbeam_channel::Sender<(std::time::SystemTime, Vec<u8>)>>,
+}
+
+/// Closes the TAP device when the adapter goes away, as when Load ROM replaces the machine, so
+/// that the new machine can open it
+#[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+impl Drop for ScsiTargetEthernet {
+    fn drop(&mut self) {
+        self.stop_tap_bridge();
+    }
 }
 
 impl Default for ScsiTargetEthernet {
@@ -207,6 +222,8 @@ impl Default for ScsiTargetEthernet {
             enabled: false,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            tap_threads: Vec::new(),
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stats: None,
             multicast_groups: Default::default(),
@@ -433,7 +450,7 @@ impl ScsiTargetEthernet {
         let t_multicast_groups = Arc::clone(&self.multicast_groups);
 
         // TAP RX -> Emulator RX (Physical -> Virtual)
-        std::thread::spawn(move || {
+        let rx_thread = std::thread::spawn(move || {
             use nix::errno::Errno;
             use nix::poll;
             use std::os::fd::BorrowedFd;
@@ -444,6 +461,13 @@ impl ScsiTargetEthernet {
             let mut buffer = vec![0u8; 65536];
 
             loop {
+                // Checked first, as the frames that are dropped below go straight to the next
+                // round
+                if rx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    log::info!("TAP bridge terminated (tap_stop)");
+                    return;
+                }
+
                 let mut pfd = [poll::PollFd::new(fd, poll::PollFlags::POLLIN)];
                 match poll::poll(&mut pfd, 100_u16) {
                     Ok(1) => match reader.read(&mut buffer) {
@@ -516,16 +540,11 @@ impl ScsiTargetEthernet {
                         return;
                     }
                 }
-
-                if rx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    log::info!("TAP bridge terminated (tap_stop)");
-                    return;
-                }
             }
         });
 
         // Emulator TX -> TAP TX (Virtual -> Physical)
-        std::thread::spawn(move || {
+        let tx_thread = std::thread::spawn(move || {
             use crossbeam_channel::RecvTimeoutError;
 
             loop {
@@ -556,8 +575,21 @@ impl ScsiTargetEthernet {
                 }
             }
         });
+        self.tap_threads = vec![rx_thread, tx_thread];
 
         Ok(())
+    }
+
+    /// Stops the threads of the TAP bridge and waits for them to exit, which closes the TAP
+    /// device. Each thread checks the stop signal at least every 100 ms.
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    fn stop_tap_bridge(&mut self) {
+        self.tap_stop.store(true, Ordering::Release);
+        for thread in self.tap_threads.drain(..) {
+            if thread.join().is_err() {
+                log::error!("A thread of the TAP bridge panicked");
+            }
+        }
     }
 
     fn capture_packet(&self, packet: &[u8]) {
@@ -984,10 +1016,7 @@ impl ScsiTarget for ScsiTargetEthernet {
             self.nat_stats = None;
         }
         #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-        {
-            self.tap_stop
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
+        self.stop_tap_bridge();
         // Stays down if the new link fails to start, so that tx_packet() does not retry it on
         // every frame
         self.link = EthernetLinkType::Down;
