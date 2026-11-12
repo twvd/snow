@@ -417,6 +417,16 @@ pub(super) struct ScsiTargetCdrom {
     /// A command waiting on the reader thread
     #[serde(skip)]
     pending: Option<Pending>,
+
+    /// The audio sector asked of the reader thread, to play next
+    #[serde(skip)]
+    audio_fetch: Option<AudioFetch>,
+}
+
+/// An audio sector on its way from the reader thread
+struct AudioFetch {
+    sector: u32,
+    reply: Reply<RawSector>,
 }
 
 /// A command waiting on the reader thread
@@ -435,6 +445,12 @@ enum PendingWork {
     MediaCheck {
         reply: Reply<MediaCheck>,
         then: AfterCheck,
+    },
+    /// PLAY AUDIO, checking the sector it starts from
+    PlayAudio {
+        reply: Reply<RawSector>,
+        start_sector: u32,
+        end_sector: u32,
     },
 }
 
@@ -507,6 +523,7 @@ impl ScsiTargetCdrom {
             audio_sink: None,
             disc_thread: None,
             pending: None,
+            audio_fetch: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -779,6 +796,7 @@ impl ScsiTargetCdrom {
         self.backend = None;
         self.disc_thread = None;
         self.pending = None;
+        self.audio_fetch = None;
         self.audio_state = AudioState::Stopped;
         self.audio_pos = LBA_START_SECTOR;
     }
@@ -836,14 +854,42 @@ impl ScsiTargetCdrom {
         self.resolve_audio_pos();
 
         if self.audio_state != AudioState::Playing {
+            self.audio_fetch = None;
             return Ok(());
         }
 
-        let audio_sink = self.audio_sink.as_ref().unwrap();
-
-        let Some(backend) = &self.backend else {
-            return Ok(());
+        let samples = if let Some(thread) = &self.disc_thread {
+            // Through the reader thread: play the sector once it is there, and
+            // ask for it if it isn't on its way already
+            let fetch = self
+                .audio_fetch
+                .take()
+                .filter(|fetch| fetch.sector == self.audio_pos);
+            let Some(fetch) = fetch else {
+                self.audio_fetch = Some(AudioFetch {
+                    sector: self.audio_pos,
+                    reply: thread.read_cdda_sector(self.audio_pos),
+                });
+                return Ok(());
+            };
+            let Some(samples) = fetch.reply.poll() else {
+                self.audio_fetch = Some(fetch);
+                return Ok(());
+            };
+            // Ask for the next one now, so it comes while this one plays
+            self.audio_fetch = Some(AudioFetch {
+                sector: self.audio_pos + 1,
+                reply: thread.read_cdda_sector(self.audio_pos + 1),
+            });
+            samples
+        } else {
+            let Some(backend) = &self.backend else {
+                return Ok(());
+            };
+            backend.read_cdda_sector(self.audio_pos)
         };
+
+        let audio_sink = self.audio_sink.as_ref().unwrap();
 
         let make_out_sample = |port: &AudioPort, channel_samples: &[i16; 4]| -> f32 {
             let sample = match port.channel {
@@ -856,7 +902,6 @@ impl ScsiTargetCdrom {
             sample as f32 / 32768.0 * port.volume as f32 / 255.0
         };
 
-        let samples = backend.read_cdda_sector(self.audio_pos);
         match samples {
             Ok(samples) => {
                 // XXX: Do not require QSub CONTROL field to say audio here.
@@ -944,6 +989,7 @@ impl ScsiTargetCdrom {
     fn insert_backend(&mut self, backend: Box<dyn CdromBackend>) {
         // Any reader thread of the previous disc ends once it is done
         self.pending = None;
+        self.audio_fetch = None;
         self.disc_thread =
             backend
                 .async_reader()
@@ -1045,6 +1091,61 @@ impl ScsiTargetCdrom {
             }
             Err(CdromError::Other(e)) => Err(e),
         }
+    }
+
+    /// PLAY AUDIO, once the sector it starts from is read
+    fn play_audio_from(
+        &mut self,
+        initial_sector: Result<RawSector, CdromError>,
+        start_sector: u32,
+        end_sector: u32,
+    ) -> Result<ScsiCmdResult> {
+        let initial_sector = match initial_sector {
+            Ok(s) => s,
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::BackendDead) => {
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::Other(e)) => return Err(e),
+        };
+
+        if !initial_sector.qsub.is_audio() {
+            // [MMC4] 6.17.2.3:
+            // If the address is not within an audio track the command shall be terminated with
+            // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
+            // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
+            log::error!(
+                "Tried to play audio from non-audio track at sector {}",
+                start_sector
+            );
+            self.common
+                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        if initial_sector.qsub.adr() == 1 {
+            self.curr_mode1_qsub = initial_sector.qsub;
+        }
+
+        self.audio_pos = start_sector;
+        self.audio_stop = end_sector;
+
+        // [MMC4] 6.17.2.3:
+        // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
+        // This shall not be considered an error.
+        // (Apple Audio CD Player issues such a command to set the audio cursor
+        // without initiating playback.)
+        if start_sector != end_sector && self.audio_state != AudioState::Playing {
+            self.audio_state = AudioState::Playing;
+            self.audio_clock = 0;
+        }
+
+        Ok(ScsiCmdResult::Status(STATUS_GOOD))
     }
 
     /// Turns the result of a READ into the answer to the initiator
@@ -1387,6 +1488,17 @@ impl ScsiTarget for ScsiTargetCdrom {
                 self.pending = None;
                 Some(self.media_check_done(result, then))
             }
+            PendingWork::PlayAudio {
+                ref reply,
+                start_sector,
+                end_sector,
+            } => {
+                let result = poll_or_timeout(reply, pending.since, || {
+                    format!("read of audio sector {}", start_sector)
+                })?;
+                self.pending = None;
+                Some(self.play_audio_from(result, start_sector, end_sector))
+            }
         }
     }
 
@@ -1633,49 +1745,20 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                let initial_sector = match backend.read_cdda_sector(start_sector) {
-                    Ok(s) => s,
-                    Err(CdromError::CheckCondition(key, asc)) => {
-                        self.common.set_cc(key, asc);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::BackendDead) => {
-                        self.eject_media();
-                        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::Other(e)) => return Err(e),
-                };
-
-                if !initial_sector.qsub.is_audio() {
-                    // [MMC4] 6.17.2.3:
-                    // If the address is not within an audio track the command shall be terminated with
-                    // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
-                    // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
-                    log::error!("Tried to play audio from non-audio track at {}", start_msf);
-                    self.common
-                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                if let Some(thread) = &self.disc_thread {
+                    self.pending = Some(Pending {
+                        work: PendingWork::PlayAudio {
+                            reply: thread.read_cdda_sector(start_sector),
+                            start_sector,
+                            end_sector,
+                        },
+                        since: Instant::now(),
+                    });
+                    return Ok(ScsiCmdResult::Pending);
                 }
 
-                if initial_sector.qsub.adr() == 1 {
-                    self.curr_mode1_qsub = initial_sector.qsub;
-                }
-
-                self.audio_pos = start_sector;
-                self.audio_stop = end_sector;
-
-                // [MMC4] 6.17.2.3:
-                // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
-                // This shall not be considered an error.
-                // (Apple Audio CD Player issues such a command to set the audio cursor
-                // without initiating playback.)
-                if start_sector != end_sector && self.audio_state != AudioState::Playing {
-                    self.audio_state = AudioState::Playing;
-                    self.audio_clock = 0;
-                }
-
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                let initial_sector = backend.read_cdda_sector(start_sector);
+                self.play_audio_from(initial_sector, start_sector, end_sector)
             }
             // PAUSE/RESUME
             0x4B => {
@@ -1889,9 +1972,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
-        // A drive doesn't play while it reads: the audio waits for the read
-        // TODO: read audio sectors through the reader thread as well
-        if self.audio_state == AudioState::Playing && self.pending.is_none() {
+        if self.audio_state == AudioState::Playing {
             match self.try_pump_audio(ctx) {
                 Some(result) => result,
                 None => {
@@ -2163,6 +2244,8 @@ mod tests {
         reads: std::sync::Mutex<Vec<usize>>,
         /// The disc in the drive
         disc: std::sync::Mutex<MediaId>,
+        /// Audio sectors read, in order
+        cdda_reads: std::sync::Mutex<Vec<u32>>,
     }
 
     impl GatedReader {
@@ -2182,6 +2265,15 @@ mod tests {
             self.wait_for_gate();
             self.reads.lock().unwrap().push(offset);
             Ok(vec![(offset / 2048) as u8; length])
+        }
+
+        fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+            self.wait_for_gate();
+            self.cdda_reads.lock().unwrap().push(sector);
+            Ok(RawSector {
+                data: [0; RAW_SECTOR_LEN],
+                qsub: QSub::new_mode1(AUDIO_TRACK, 1, 1, sector, LBA_START_SECTOR),
+            })
         }
 
         fn check_media(&self, known: MediaId) -> Result<MediaCheck, CdromError> {
@@ -2204,7 +2296,7 @@ mod tests {
             sessions: vec![SessionInfo {
                 number: 1,
                 disc_type: 0,
-                start: LBA_START_SECTOR,
+                start: 0,
                 leadout: LBA_START_SECTOR + 16,
             }],
             tracks: vec![TrackInfo {
@@ -2259,7 +2351,7 @@ mod tests {
             Some(&self.disc_info.as_ref()?.tracks)
         }
         fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
-            Err(anyhow!("no audio").into())
+            panic!("audio read on the emulator thread");
         }
         fn async_reader(&self) -> Option<Arc<dyn CdromReader>> {
             Some(self.reader.clone())
@@ -2273,6 +2365,7 @@ mod tests {
             open: false.into(),
             reads: Default::default(),
             disc: first_disc.into(),
+            cdda_reads: Default::default(),
         });
         let mut cd = ScsiTargetCdrom::new(None);
         cd.insert_backend(Box::new(GatedBackend {
@@ -2450,6 +2543,60 @@ mod tests {
         assert_eq!(
             cd.common.req_sense(),
             (CC_KEY_NOT_READY, ASC_LOGICAL_UNIT_NOT_READY)
+        );
+    }
+
+    /// PLAY AUDIO MSF from 00:02:00 to 00:02:10
+    const PLAY_AUDIO: [u8; 10] = [0x47, 0, 0, 0, 2, 0, 0, 2, 10, 0];
+
+    #[test]
+    fn play_audio_checks_first_sector_in_background() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(
+            cd.cmd(&PLAY_AUDIO, None).unwrap(),
+            ScsiCmdResult::Pending
+        ));
+        assert!(cd.audio_state == AudioState::Stopped);
+
+        reader.open();
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_GOOD)
+        ));
+        assert!(cd.audio_state == AudioState::Playing);
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+        assert_eq!(*reader.cdda_reads.lock().unwrap(), [LBA_START_SECTOR]);
+    }
+
+    #[test]
+    fn audio_plays_through_reader_thread() {
+        use crate::mac::scsi::test_target::TestContext;
+
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        cd.audio_sink = Some(crate::renderer::null_audio_sink());
+        cd.audio_state = AudioState::Playing;
+        cd.audio_pos = LBA_START_SECTOR;
+        cd.audio_stop = LBA_START_SECTOR + 10;
+
+        // The drive doesn't answer: ticking goes on without waiting for it,
+        // and the audio waits
+        for _ in 0..100 {
+            cd.tick(1, &TestContext).unwrap();
+        }
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+
+        reader.open();
+        let start = Instant::now();
+        while cd.audio_pos < LBA_START_SECTOR + 3 {
+            assert!(start.elapsed() < Duration::from_secs(5), "audio stuck");
+            cd.tick(1, &TestContext).unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Sector by sector, each read once
+        let reads = reader.cdda_reads.lock().unwrap().clone();
+        assert_eq!(
+            reads[..3],
+            [LBA_START_SECTOR, LBA_START_SECTOR + 1, LBA_START_SECTOR + 2]
         );
     }
 

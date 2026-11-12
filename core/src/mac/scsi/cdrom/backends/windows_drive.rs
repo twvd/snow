@@ -133,6 +133,41 @@ impl CdromReader for DriveHandle {
         Ok(result)
     }
 
+    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        // log::debug!("Reading raw sector {}", sector);
+        let lba = sector
+            .checked_sub(LBA_START_SECTOR)
+            .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
+
+        let status = read_ioctl_cdrom_raw_read(self.0, lba);
+        match status {
+            Ok(data) => Ok(RawSector {
+                data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
+                qsub: QSub(decode_subcode(
+                    data[RAW_SECTOR_LEN..].try_into().unwrap(),
+                    1,
+                )),
+            }),
+            Err(e) => {
+                if let Some(e) = e.downcast_ref::<windows_result::Error>() {
+                    if e.code() == ERROR_NOT_READY.into() || e.code() == ERROR_MEDIA_CHANGED.into()
+                    {
+                        return Err(CdromError::CheckCondition(
+                            CC_KEY_NOT_READY,
+                            ASC_MEDIUM_NOT_PRESENT,
+                        ));
+                    } else if e.code() == ERROR_DEV_NOT_EXIST.into()
+                        || e.code() == ERROR_NO_SUCH_DEVICE.into()
+                    {
+                        return Err(CdromError::BackendDead);
+                    }
+                }
+
+                Err(CdromError::Other(e))
+            }
+        }
+    }
+
     fn check_media(&self, known: MediaId) -> Result<MediaCheck, CdromError> {
         let count = get_media_change_count(self.0).map_err(|e| {
             if let Some(we) = e.downcast_ref::<windows_result::Error>()
@@ -649,38 +684,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
             ));
         };
 
-        // log::debug!("Reading raw sector {}", sector);
-        let lba = sector
-            .checked_sub(LBA_START_SECTOR)
-            .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
-
-        let status = read_ioctl_cdrom_raw_read(self.handle.0, lba);
-        match status {
-            Ok(data) => Ok(RawSector {
-                data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
-                qsub: QSub(decode_subcode(
-                    data[RAW_SECTOR_LEN..].try_into().unwrap(),
-                    1,
-                )),
-            }),
-            Err(e) => {
-                if let Some(e) = e.downcast_ref::<windows_result::Error>() {
-                    if e.code() == ERROR_NOT_READY.into() || e.code() == ERROR_MEDIA_CHANGED.into()
-                    {
-                        return Err(CdromError::CheckCondition(
-                            CC_KEY_NOT_READY,
-                            ASC_MEDIUM_NOT_PRESENT,
-                        ));
-                    } else if e.code() == ERROR_DEV_NOT_EXIST.into()
-                        || e.code() == ERROR_NO_SUCH_DEVICE.into()
-                    {
-                        return Err(CdromError::BackendDead);
-                    }
-                }
-
-                Err(CdromError::Other(e))
-            }
-        }
+        self.handle.read_cdda_sector(sector)
     }
 }
 
@@ -711,6 +715,10 @@ mod tests {
                     Err(CdromError::BackendDead)
                 }
             }
+        }
+
+        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
+            unreachable!()
         }
 
         fn cancel(&self, thread: &JoinHandle<()>) {

@@ -10,12 +10,15 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
-use crate::mac::scsi::cdrom::{CdromError, MediaCheck, MediaId};
+use crate::mac::scsi::cdrom::{CdromError, MediaCheck, MediaId, RawSector};
 
 /// Access to a disc that can be shared with the reader thread
 pub trait CdromReader: Send + Sync {
     /// Reads user data, see `CdromBackend::read_bytes`
     fn read_at(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError>;
+
+    /// Reads a raw CD Digital Audio sector, see `CdromBackend::read_cdda_sector`
+    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
 
     /// Finds out whether the disc in the drive is still the one `known`
     /// identifies, and describes the new one if not. Only reports: the
@@ -76,6 +79,10 @@ enum Job {
         offset: usize,
         length: usize,
         reply: Sender<Result<Vec<u8>, CdromError>>,
+    },
+    ReadCdda {
+        sector: u32,
+        reply: Sender<Result<RawSector, CdromError>>,
     },
     CheckMedia {
         known: MediaId,
@@ -164,6 +171,11 @@ impl DiscThread {
                     request.finish();
                     let _ = reply.send(result);
                 }
+                Job::ReadCdda { sector, reply } => {
+                    let result = reader.read_cdda_sector(sector);
+                    request.finish();
+                    let _ = reply.send(result);
+                }
                 Job::CheckMedia { known, reply } => {
                     let result = reader.check_media(known);
                     request.finish();
@@ -192,6 +204,11 @@ impl DiscThread {
             length,
             reply,
         })
+    }
+
+    /// Queues a read of a raw CD Digital Audio sector
+    pub(super) fn read_cdda_sector(&self, sector: u32) -> Reply<RawSector> {
+        self.queue(|reply| Job::ReadCdda { sector, reply })
     }
 
     /// Queues a check of the disc in the drive, against the one `known`
@@ -231,6 +248,10 @@ mod tests {
                 }
                 thread::sleep(Duration::from_millis(1));
             }
+        }
+
+        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
+            unreachable!()
         }
 
         fn cancel(&self, thread: &JoinHandle<()>) {
