@@ -12,6 +12,7 @@ use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
+use crate::mac::VideoOutput;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
@@ -242,18 +243,20 @@ where
                 model
             );
             let idx = (cfg.slot - 0x9) as usize;
-            // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
+            // Only video cards take a renderer
+            let mut renderer = || {
+                renderers
+                    .pop()
+                    .expect("not enough renderers for the video cards")
+            };
             nubus_devices[idx] = match cfg.kind {
                 NubusDeviceKind::Mdc12 => {
-                    Some(NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)))
+                    Some(NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor)))
                 }
-                NubusDeviceKind::Toby => Some(NubusCard::Toby(Toby::new(cfg.rom, renderer))),
+                NubusDeviceKind::Toby => Some(NubusCard::Toby(Toby::new(cfg.rom, renderer()))),
                 NubusDeviceKind::SE30Video => {
-                    se30_video = Some(SE30Video::new(cfg.rom, renderer));
+                    se30_video = Some(SE30Video::new(cfg.rom, renderer()));
                     None
                 }
             };
@@ -323,18 +326,17 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        if let Some(video) = self.se30_video.as_mut() {
-            video.set_renderer(renderer);
-            video.render().unwrap();
-        } else {
-            assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-            if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-                let slot = card.slot();
-                slot.set_renderer(renderer);
-                slot.render().unwrap();
-            }
-        }
+        // TODO multiple video cards
+        let video = match self.se30_video.as_mut() {
+            Some(video) => video as &mut dyn VideoOutput<TRenderer>,
+            None => self
+                .nubus_devices
+                .iter_mut()
+                .flatten()
+                .find_map(|card| card.video())
+                .expect("no video card"),
+        };
+        video.set_renderer(renderer).unwrap();
 
         self.asc.after_deserialize();
     }
@@ -780,7 +782,9 @@ where
             video.blank()?;
         }
         for d in self.nubus_devices.iter_mut().flatten() {
-            d.slot().blank()?;
+            if let Some(video) = d.video() {
+                video.blank()?;
+            }
         }
         Ok(())
     }

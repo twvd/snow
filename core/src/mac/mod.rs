@@ -33,6 +33,15 @@ pub mod swim;
 pub mod via;
 pub mod via_common;
 
+/// What the machine sees of a video, built-in or on a card: it owns its renderer
+pub trait VideoOutput<TRenderer> {
+    /// Shows a blank screen, when the machine resets or stops
+    fn blank(&mut self) -> anyhow::Result<()>;
+    /// Gives back the renderer after a state is loaded, which a state doesn't hold, and shows the
+    /// last frame again if it can
+    fn set_renderer(&mut self, renderer: TRenderer) -> anyhow::Result<()>;
+}
+
 /// Warm start signature: the ROM skips its memory test when it finds it
 pub const WARM_START_SIGNATURE: (Address, u32) = (0x000CFC, 0x574C5343);
 
