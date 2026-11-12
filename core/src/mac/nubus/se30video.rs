@@ -172,7 +172,7 @@ where
         vec![
             dbgprop_bool!("VBlank enable", self.vblank_enable),
             dbgprop_bool!("VBlank IRQ", self.vblank_irq),
-            dbgprop_bool!("Framebuffer select", self.vblank_enable),
+            dbgprop_bool!("Framebuffer select", self.fb_select),
         ]
     }
 }
