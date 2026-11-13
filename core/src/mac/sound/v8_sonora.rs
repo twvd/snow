@@ -15,14 +15,53 @@
 //! left and the second fully right. The Sound Manager writes mono sounds to
 //! both FIFOs, so they play in full.
 //!
-//! Sound input is not implemented, except that PrimeTime records silence: FIFO
-//! A is read by the CPU and fills at the record rate, as on the EASC.
+//! PrimeTime and the IOSB have the same sound, version $BB: the registers of
+//! the EASC and the two channels of the Sonora. In its FIFO status register:
+//!
+//! - Bits 2 and 3 are the level of the fuller of the FIFOs that play, as on
+//!   the Sonora (ASCTester on a LC 475).
+//! - When not recording, bit 1 is set and bit 0 clear (ASCTester).
+//! - When recording, FIFO A fills at the record rate and bits 0 and 1 are its
+//!   level: bit 0 is set when it is more than half full, the opposite of the
+//!   EASC, and bit 1 when it is full. The Quadra 800 ROM expects these bits
+//!   when it tests recording, and NetBSD's ascaudio(4) driver reads bit 0 the
+//!   same way.
+//!
+//! Not measured, and modelled as on the EASC, where each FIFO has its own
+//! status:
+//!
+//! - While recording, FIFO A is left out of bits 2 and 3 and of the
+//!   interrupt of FIFO B, so FIFO B goes on playing. A/UX 3 depends on it:
+//!   it plays all its sounds on FIFO B, and can leave the chip recording.
+//! - Bit 1 is also set when recording with FIFO A empty.
+//!
+//! Where the CPU reads the recorded samples:
+//!
+//! - On this chip, from FIFO A at 0x000, as on the EASC. The sound input
+//!   driver of System 7.5.5 reads them there.
+//! - On the $BB chip that System 7.5.5 reports as 'whit', the same driver
+//!   reads them at 0x1000 instead. That chip's volume register keeps all 8
+//!   bits. On the LC 475 and the Quadra 610 it keeps only bits 7 to 5
+//!   (ASCTester), so 0x1000 isn't modelled.
+//! - Whether 0x1000 is a FIFO of its own or another port to FIFO A isn't
+//!   known.
+//!
+//! Each output side mixes both channels, each by its scale for that side
+//! ($F06 and $F07 for FIFO A, $F26 and $F27 for FIFO B), as on the EASC.
+//! This isn't measured, but:
+//!
+//! - The ROM of the LC 475 and the Quadra 800 sets them at boot: $7F for FIFO
+//!   A on the left and FIFO B on the right, and 0 for the other side.
+//! - NetBSD's ascaudio(4) driver sets its volume with them.
+//! - A/UX 3 changes them to play FIFO B on the right side only, or on both.
+//!
+//! Sound input is not implemented: PrimeTime records silence.
 //!
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
 
-use super::audiopath::AudioPath;
-use super::channel::{Channel, channel_reg};
+use super::audiopath::{AudioPath, Panning, sample16, volume_gain};
+use super::channel::{Channel, channel_reg, panning};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::renderer::AudioSink;
@@ -68,9 +107,11 @@ bitfield! {
     /// FIFO status register
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub struct FifoStatus(pub Byte): Debug, FromStorage, IntoStorage, DerefStorage {
-        /// FIFO half full or less (V8)
+        /// FIFO half full or less (V8), FIFO A more than half full while
+        /// recording (PrimeTime)
         pub half: bool @ 0,
-        /// FIFO empty or full (V8), not recording (Sonora)
+        /// FIFO empty or full (V8), not recording (Sonora), FIFO A empty or
+        /// full while recording (PrimeTime)
         pub fullempty: bool @ 1,
         /// FIFOs half full or less (Sonora)
         pub half_b: bool @ 2,
@@ -135,8 +176,16 @@ pub struct V8Sound {
     /// One channel in the V8, left and right in the Sonora
     channels: Vec<Channel>,
 
-    /// Volume register. The volume is not applied.
+    /// Volume register, with the volume in bits 5-7. No attenuator follows
+    /// the sound chip on the Quadra 800 (its schematic), so it applies the
+    /// volume itself there. The LC III's ROM leaves it at 7 and sets the
+    /// volume in the DFAC instead.
     volume: u8,
+
+    /// Volume set in the DFAC, which follows the sound chip on the LC, LC II
+    /// and LC III. Full until the system sets it: the LC II's ROM plays its
+    /// chime before.
+    dfac_volume: u8,
 
     /// Play and record register, for the sound input
     play_record: u8,
@@ -147,31 +196,39 @@ pub struct V8Sound {
 
 impl V8Sound {
     pub fn new(kind: V8Variant) -> Self {
-        Self {
+        let mut sound = Self {
             kind,
             out: AudioPath::default(),
             channels: (0..kind.channels())
                 .map(|_| Channel::new(kind.fifo_size().0, kind.fifo_size().1))
                 .collect(),
             volume: 0,
+            dfac_volume: 7,
             play_record: 0,
             record_clock: 0,
-        }
+        };
+        sound.set_volume(0);
+        sound
     }
 
     pub fn reset(&mut self) {
         for channel in &mut self.channels {
             *channel = Channel::new(self.kind.fifo_size().0, self.kind.fifo_size().1);
         }
-        self.volume = 0;
+        self.set_volume(0);
+        self.set_dfac(None);
         self.play_record = 0;
         self.record_clock = 0;
         self.out.reset();
     }
 
     fn fifo_status(&self) -> FifoStatus {
-        // The status follows the fuller FIFO
-        let ch = &self.channels;
+        // The status follows the fuller FIFO that plays
+        let ch = if self.recording() {
+            &self.channels[1..]
+        } else {
+            &self.channels[..]
+        };
         let half = ch.iter().all(Channel::half);
         let fullempty = ch.iter().any(Channel::full) || ch.iter().all(Channel::empty);
         match self.kind {
@@ -181,8 +238,20 @@ impl V8Sound {
             // reads $0E empty, $0A full, $02 above half and $06 half full or
             // less, whether FIFO A, FIFO B or both are filled. A LC 475
             // reads the same.
-            V8Variant::Sonora | V8Variant::PrimeTime => FifoStatus(0)
+            V8Variant::Sonora => FifoStatus(0)
                 .with_fullempty(self.play_record & 1 == 0)
+                .with_half_b(half)
+                .with_fullempty_b(fullempty),
+            V8Variant::PrimeTime if self.recording() => {
+                let a = &self.channels[0];
+                FifoStatus(0)
+                    .with_half(!a.half())
+                    .with_fullempty(a.full() || a.empty())
+                    .with_half_b(half)
+                    .with_fullempty_b(fullempty)
+            }
+            V8Variant::PrimeTime => FifoStatus(0)
+                .with_fullempty(true)
                 .with_half_b(half)
                 .with_fullempty_b(fullempty),
         }
@@ -200,14 +269,40 @@ impl V8Sound {
                     || (status.half_b() && !self.channels[1].irq_disable)
             }
             // A LC 475 has no interrupt at full, only at half empty, and $F29
-            // masks it
-            // While recording, FIFO A is the other way around, as on the EASC
+            // masks it. While recording, FIFO A has an interrupt when more
+            // than half full, which $F09 masks, as on the EASC.
             V8Variant::PrimeTime => {
                 let [a, b] = [&self.channels[0], &self.channels[1]];
-                let a_irq = self.recording() && !a.half() && !a.irq_disable;
-                a_irq || (status.half_b() && !b.irq_disable)
+                (status.half() && !a.irq_disable) || (status.half_b() && !b.irq_disable)
             }
         }
+    }
+
+    /// Sets the volume register. PrimeTime keeps only bits 5-7 (ASCTester on
+    /// a LC 475).
+    fn set_volume(&mut self, val: u8) {
+        self.volume = if self.kind == V8Variant::PrimeTime {
+            val & 0xE0
+        } else {
+            val
+        };
+        self.update_gain();
+    }
+
+    /// Sets the DFAC configuration that the system writes through Egret. The
+    /// low 3 bits are the volume, bit-reversed: System 7.5.5 on a LC III
+    /// writes $50, $54, $52, $56, $51, $55, $53 and $57 for volumes 0 to 7.
+    pub fn set_dfac(&mut self, config: Option<u8>) {
+        let volume = config.map_or(7, |c| ((c & 1) << 2) | (c & 2) | ((c >> 2) & 1));
+        if volume != self.dfac_volume {
+            self.dfac_volume = volume;
+            self.update_gain();
+        }
+    }
+
+    fn update_gain(&mut self) {
+        self.out
+            .set_gain(volume_gain(self.volume >> 5) * volume_gain(self.dfac_volume));
     }
 
     /// PrimeTime is recording: FIFO A goes to the CPU
@@ -244,11 +339,14 @@ impl V8Sound {
             *sample = channel.fifo.pop();
         }
         if queue_sample {
-            if self.kind == V8Variant::PrimeTime {
-                self.out.push_mixed(samples[0], samples[1], input)?;
+            let [a, b] = samples.map(sample16);
+            if let [ca, cb] = &self.channels[..]
+                && self.kind == V8Variant::PrimeTime
+            {
+                self.out.push([a, b], panning(ca, cb), input)?;
             } else {
                 // The first channel goes to both sides
-                self.out.push_mixed(samples[0], samples[0], input)?;
+                self.out.push([a, 0], Panning::MONO, input)?;
             }
         }
         Ok(())
@@ -309,9 +407,7 @@ impl BusMember<Address> for V8Sound {
                     }
                 }
             }
-            // ASCTester on a LC 475: only bits 7-5 are stored
-            REG_VOLUME if self.kind == V8Variant::PrimeTime => self.volume = val & 0xE0,
-            REG_VOLUME => self.volume = val,
+            REG_VOLUME => self.set_volume(val),
             REG_PLAY_RECORD => self.play_record = val,
             0xF00..=0xF3F if self.kind.channel_regs() => {
                 let (channel, reg) = channel_reg(addr);
@@ -353,6 +449,7 @@ impl Debuggable for V8Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::sound::audiopath::mix;
 
     const REG_FIFO_A_IRQ: Address = 0xF09;
     const REG_FIFO_B_IRQ: Address = 0xF29;
@@ -479,13 +576,16 @@ mod tests {
 
         // Record at 22 kHz: FIFO A fills and has an interrupt above half
         sound.write(REG_PLAY_RECORD, 3);
-        assert_eq!(sound.read(REG_FIFO_STATUS).unwrap() & 2, 0);
-        sound.write(0xF29, 1);
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0E));
+        sound.write(REG_FIFO_B_IRQ, 1);
         assert!(!sound.irq());
         for _ in 0..600 {
             sound.tick(false, 0.0).unwrap();
         }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0D));
         assert!(sound.irq());
+        sound.write(REG_FIFO_A_IRQ, 1);
+        assert!(!sound.irq());
         assert_eq!(sound.read(0x000), Some(0x80));
 
         // And doesn't go past full
@@ -493,6 +593,68 @@ mod tests {
             sound.tick(false, 0.0).unwrap();
         }
         assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0F));
+    }
+
+    #[test]
+    fn primetime_plays_while_recording() {
+        // As A/UX does: FIFO B plays with the chip recording and FIFO A full
+        let mut sound = V8Sound::new(V8Variant::PrimeTime);
+        sound.write(REG_FIFO_A_IRQ, 1);
+        sound.write(REG_PLAY_RECORD, 1);
+        for _ in 0..3000 {
+            sound.tick(false, 0.0).unwrap();
+        }
+        assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
+
+        // FIFO B empty, then full, then at half
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0F));
+        assert!(sound.irq());
+        for _ in 0..PRIMETIME_FIFO_SIZE {
+            sound.write(0x400, 0x80);
+        }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0B));
+        assert!(!sound.irq());
+        for _ in 0..PRIMETIME_FIFO_HALF {
+            sound.tick(false, 0.0).unwrap();
+        }
+        assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x07));
+        assert!(sound.irq());
+    }
+
+    #[test]
+    fn primetime_scales() {
+        let mut sound = V8Sound::new(V8Variant::PrimeTime);
+        let output = |sound: &V8Sound, samples: [u8; 2]| {
+            let p = panning(&sound.channels[0], &sound.channels[1]);
+            let samples = samples.map(sample16);
+            (mix(samples, p.left), mix(samples, p.right))
+        };
+        assert_eq!(output(&sound, [0xC0, 0x40]), (0, 0));
+
+        // As the ROM sets them at boot: A on the left, B on the right
+        sound.write(0xF06, 0x7F);
+        sound.write(0xF27, 0x7F);
+        assert_eq!(output(&sound, [0xC0, 0x40]), (0x3F80, -0x3F80));
+
+        // As A/UX sets them at times: B on both sides
+        sound.write(0xF06, 0x70);
+        sound.write(0xF26, 0x70);
+        sound.write(0xF27, 0x70);
+        assert_eq!(output(&sound, [0x80, 0x40]), (-0x3800, -0x3800));
+    }
+
+    #[test]
+    fn dfac_volume() {
+        let mut sound = V8Sound::new(V8Variant::Sonora);
+        assert_eq!(sound.dfac_volume, 7);
+        for (volume, config) in [0x50, 0x54, 0x52, 0x56, 0x51, 0x55, 0x53, 0x57]
+            .into_iter()
+            .enumerate()
+        {
+            sound.set_dfac(Some(config));
+            assert_eq!(usize::from(sound.dfac_volume), volume);
+        }
     }
 
     #[test]

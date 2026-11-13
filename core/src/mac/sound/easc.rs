@@ -22,9 +22,9 @@
 //! record rate, as there is no sound input. Its interrupt is then asserted
 //! while it is more than half full. Not tested on a machine yet.
 
-use super::audiopath::AudioPath;
+use super::audiopath::{AudioPath, volume_gain};
 use super::cdxa::CdxaDecoder;
-use super::channel::{Channel, channel_reg};
+use super::channel::{Channel, channel_reg, panning};
 use super::rate_converter::RateConverter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -44,7 +44,8 @@ const REG_MODE: Address = 0x801;
 const REG_CONTROL: Address = 0x802;
 const REG_FIFO_MODE: Address = 0x803;
 const REG_FIFO_STATUS: Address = 0x804;
-/// Volume, in bits 5-7
+/// Volume, in bits 5-7, 0 at power-up. The chip doesn't apply it: it goes
+/// to the volume control of the amplifier, Sporty on the Quadra 700.
 const REG_VOLUME: Address = 0x806;
 const REG_CLOCK: Address = 0x807;
 /// Play or record, and the record rate. Bit 1 (22 kHz) is set at power-up.
@@ -72,10 +73,6 @@ const FIFO_HALF: usize = FIFO_SIZE / 2;
 /// $812F, 22254 Hz.
 const CHANNEL_REG_SRC_H: usize = 0x04;
 const CHANNEL_REG_SRC_L: usize = 0x05;
-/// Scales of a channel for the left and right outputs, taken as fractions
-/// of $80
-const CHANNEL_REG_SCALE_L: usize = 0x06;
-const CHANNEL_REG_SCALE_R: usize = 0x07;
 /// FIFO control: bit 7 enables the sample rate conversion, bits 0-1 select
 /// a CD-XA mode: 0 off, 1 8-bit, 2 4-bit, 3 2-bit samples. Writing it with
 /// bit 7 clear resets the conversion, with bits 0-1 clear the decoder.
@@ -123,8 +120,10 @@ pub struct Easc {
 
 impl Default for Easc {
     fn default() -> Self {
+        let mut out = AudioPath::default();
+        out.set_gain(volume_gain(0));
         Self {
-            out: AudioPath::default(),
+            out,
             channels: [
                 Channel::new(FIFO_SIZE, FIFO_HALF),
                 Channel::new(FIFO_SIZE, FIFO_HALF),
@@ -159,6 +158,7 @@ impl Easc {
         self.record_clock = 0;
         self.fifo_mode = false;
         self.regs = Self::power_up_regs();
+        self.out.set_gain(volume_gain(0));
         self.out.reset();
     }
 
@@ -226,28 +226,19 @@ impl Easc {
         self.last[ch]
     }
 
-    /// Mixes the samples of the channels for one output side
-    fn mix(&self, a: i16, b: i16, scale_reg: usize) -> i16 {
-        let [ca, cb] = &self.channels;
-        let a = i32::from(a) * i32::from(ca.read_reg(scale_reg));
-        let b = i32::from(b) * i32::from(cb.read_reg(scale_reg));
-        ((a + b) >> 7).clamp(-0x8000, 0x7FFF) as i16
-    }
-
     /// Plays a sample, at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
-        let (a, b) = if !self.fifo_mode {
-            (self.last[0], self.last[1])
+        let samples = if !self.fifo_mode {
+            self.last
         } else if self.recording() {
             self.record();
-            (self.last[0], self.sample(1))
+            [self.last[0], self.sample(1)]
         } else {
-            (self.sample(0), self.sample(1))
+            [self.sample(0), self.sample(1)]
         };
         if queue_sample {
-            let l = self.mix(a, b, CHANNEL_REG_SCALE_L);
-            let r = self.mix(a, b, CHANNEL_REG_SCALE_R);
-            self.out.push16(l, r)?;
+            let [ca, cb] = &self.channels;
+            self.out.push(samples, panning(ca, cb), 0.0)?;
         }
         Ok(())
     }
@@ -332,7 +323,10 @@ impl BusMember<Address> for Easc {
             }
             // Fixed, or following the FIFOs
             REG_VERSION | REG_CONTROL | REG_FIFO_STATUS | REG_CLOCK => (),
-            REG_VOLUME => self.regs[(addr - 0x800) as usize] = val & 0xE0,
+            REG_VOLUME => {
+                self.regs[(addr - 0x800) as usize] = val & 0xE0;
+                self.out.set_gain(volume_gain(val >> 5));
+            }
             0x805 | REG_PLAY_RECORD | 0x80F => self.regs[(addr - 0x800) as usize] = val,
             0xF00..=0xF3F => {
                 let (channel, reg) = channel_reg(addr);
@@ -369,6 +363,7 @@ impl Debuggable for Easc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::sound::audiopath::mix;
 
     const REG_FIFO_A_IRQ: Address = 0xF09;
     const REG_FIFO_B_IRQ: Address = 0xF29;
@@ -534,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn mix() {
+    fn scales() {
         let mut easc = Easc::default();
 
         // As the ROM sets them, A on the left and B on the right
@@ -542,14 +537,16 @@ mod tests {
         easc.write(0xF07, 0x00);
         easc.write(0xF26, 0x00);
         easc.write(0xF27, 0x7F);
-        assert_eq!(easc.mix(0x4000, -0x4000, CHANNEL_REG_SCALE_L), 0x3F80);
-        assert_eq!(easc.mix(0x4000, -0x4000, CHANNEL_REG_SCALE_R), -0x3F80);
+        let p = panning(&easc.channels[0], &easc.channels[1]);
+        assert_eq!(mix([0x4000, -0x4000], p.left), 0x3F80);
+        assert_eq!(mix([0x4000, -0x4000], p.right), -0x3F80);
 
         // Both on both sides, clipped
         easc.write(0xF06, 0x80);
         easc.write(0xF26, 0x80);
-        assert_eq!(easc.mix(0x4000, 0x1000, CHANNEL_REG_SCALE_L), 0x5000);
-        assert_eq!(easc.mix(0x7000, 0x7000, CHANNEL_REG_SCALE_L), 0x7FFF);
-        assert_eq!(easc.mix(-0x8000, -0x7000, CHANNEL_REG_SCALE_L), -0x8000);
+        let p = panning(&easc.channels[0], &easc.channels[1]);
+        assert_eq!(mix([0x4000, 0x1000], p.left), 0x5000);
+        assert_eq!(mix([0x7000, 0x7000], p.left), 0x7FFF);
+        assert_eq!(mix([-0x8000, -0x7000], p.left), -0x8000);
     }
 }

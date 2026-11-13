@@ -622,6 +622,7 @@ impl EmulatorState {
 
     /// Polls and empties the emulator event channel. Returns `true` if events were received.
     pub fn poll(&mut self) -> bool {
+        self.stop_dead_audio();
         let Some(ref eventrecv) = self.eventrecv else {
             return false;
         };
@@ -689,6 +690,27 @@ impl EmulatorState {
         }
 
         true
+    }
+
+    #[cfg(feature = "audio_sdl2")]
+    /// Stops the audio streams that had an error
+    fn stop_dead_audio(&mut self) {
+        // Not applicable for SDL2
+    }
+
+    /// Stops the audio streams that had an error
+    #[cfg(not(feature = "audio_sdl2"))]
+    fn stop_dead_audio(&mut self) {
+        let Some(provider) = &self.audio_provider else {
+            return;
+        };
+        if provider.lock().unwrap().stop_dead_streams() {
+            self.messages.push_back((
+                UserMessageType::Error,
+                "Audio output failed and is stopped. Change the default audio device to restart it."
+                    .to_string(),
+            ));
+        }
     }
 
     #[cfg(feature = "audio_sdl2")]

@@ -15,6 +15,7 @@ mod app;
 mod audio_cpal;
 #[cfg(feature = "audio_sdl2")]
 mod audio_sdl2;
+mod capped_log;
 mod consts;
 mod dialogs;
 mod emulator;
@@ -121,14 +122,14 @@ fn main() -> eframe::Result {
             .filter_module("winit", LevelFilter::Off)
             .build(),
     );
-    let logger_egui = Box::new(
+    let logger_egui = Box::new(capped_log::CappedLog::new(Box::new(
         egui_logger::builder()
             .max_level(LevelFilter::Debug)
             .add_blacklist("tracing::span")
             .add_blacklist("winit::event_loop")
             .add_blacklist("winit::window")
             .build(),
-    );
+    )));
     multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
 
     log::info!(

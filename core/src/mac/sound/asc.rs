@@ -1,4 +1,4 @@
-use super::audiopath::AudioPath;
+use super::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use super::fifo::{FIFO_SIZE, Fifo};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -20,7 +20,8 @@ pub struct Asc {
     mode: AscMode,
     clk: AscClockRate,
     ctrl: Control,
-    /// Volume, stored only
+    /// Volume register. Bits 5-7 go to the Sony sound chip, which
+    /// attenuates the output. Bits 2-4 are not applied: the ROM leaves them 0.
     volume: u8,
     channels: [AscChannel; 4],
     #[serde(with = "BigArray")]
@@ -99,8 +100,10 @@ enum AscClockRate {
 
 impl Default for Asc {
     fn default() -> Self {
+        let mut out = AudioPath::default();
+        out.set_gain(volume_gain(0));
         Self {
-            out: AudioPath::default(),
+            out,
             channels: Default::default(),
             wavetables: [0; 0x800],
             mode: AscMode::Off,
@@ -123,6 +126,7 @@ impl Asc {
         self.mode = AscMode::Off;
         self.clk = AscClockRate::Clk704;
         self.volume = 0;
+        self.out.set_gain(volume_gain(0));
         self.fifo_l.clear();
         self.fifo_r.clear();
         self.wavetables.fill(0);
@@ -193,8 +197,12 @@ impl Asc {
             AscMode::Wavetable => self.sample_wavetable(),
         };
         if queue_sample {
-            let (l, r) = if self.swap_lr { (r, l) } else { (l, r) };
-            self.out.push(l, r)?;
+            let panning = if self.swap_lr {
+                Panning::SWAPPED
+            } else {
+                Panning::STEREO
+            };
+            self.out.push([sample16(l), sample16(r)], panning, 0.0)?;
         }
 
         Ok(())
@@ -296,7 +304,11 @@ impl BusMember<Address> for Asc {
                 Some(())
             }
             // Volume
-            0x806 => Some(self.volume = val),
+            0x806 => {
+                self.volume = val;
+                self.out.set_gain(volume_gain(val >> 5));
+                Some(())
+            }
             // Clock rate
             0x807 => {
                 // TODO: Handle clock rate changes

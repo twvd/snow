@@ -2,6 +2,7 @@
 //! V8, a block of registers. Shared by the V8 and Sonora (v8_sonora.rs) and
 //! the EASC (easc.rs).
 
+use super::audiopath::Panning;
 use super::fifo::Fifo;
 use crate::bus::Address;
 use crate::types::Byte;
@@ -11,6 +12,11 @@ use serde::{Deserialize, Serialize};
 /// Registers of the channels, a block for each
 const CHANNEL_REGS: Address = 0xF00;
 const CHANNEL_REGS_SIZE: Address = 0x20;
+
+/// Scales of a channel for the left and right outputs, taken as fractions
+/// of $80
+pub const CHANNEL_REG_SCALE_L: usize = 0x06;
+pub const CHANNEL_REG_SCALE_R: usize = 0x07;
 
 /// Register of a channel which disables its interrupt
 const CHANNEL_REG_IRQ: usize = 0x09;
@@ -65,6 +71,14 @@ impl Channel {
             CHANNEL_REG_IRQ => self.irq_disable = val & 1 != 0,
             _ => self.regs[reg] = val,
         }
+    }
+}
+
+/// Panning of two channels by the scales in their registers
+pub fn panning(a: &Channel, b: &Channel) -> Panning {
+    Panning {
+        left: [a.regs[CHANNEL_REG_SCALE_L], b.regs[CHANNEL_REG_SCALE_L]],
+        right: [a.regs[CHANNEL_REG_SCALE_R], b.regs[CHANNEL_REG_SCALE_R]],
     }
 }
 

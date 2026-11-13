@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
@@ -17,6 +16,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::sound::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
@@ -79,7 +79,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) video: Video<TRenderer>,
 
     #[serde(skip)]
-    pub(crate) audio: AudioState,
+    pub(crate) audio: AudioPath,
 
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -115,6 +115,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     /// Last pushed audio sample
     last_audiosample: u8,
+
+    /// Sound volume, from VIA port A bits 0-2
+    sound_volume: u8,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -185,7 +188,11 @@ where
             ram: vec![0; ram_size],
             via: Via::new(model),
             video: Video::new(renderer),
-            audio: AudioState::default(),
+            audio: {
+                let mut audio = AudioPath::default();
+                audio.set_gain(volume_gain(0));
+                audio
+            },
             scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(
                 &fdds,
@@ -211,6 +218,7 @@ where
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(BUS_FREQUENCY),
             last_audiosample: 0,
+            sound_volume: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
@@ -256,6 +264,11 @@ where
         self.audio.set_sink(sink);
 
         self.scsi.bus_mut().set_audio_provider(provider)
+    }
+
+    /// Pushes a sample of the sound buffer, the same on both sides
+    fn push_audio(&mut self, sample: u8) -> Result<()> {
+        self.audio.push([sample16(sample), 0], Panning::MONO, 0.0)
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
@@ -884,7 +897,15 @@ where
             if self.video.get_clr_hblank() {
                 // Update floppy drive PWM and send next audio sample
                 let scanline = self.video.get_scanline();
-                let soundon = self.via.pa().sound() > 0 && !self.via.pb().sndenb();
+                // VIA port A bits 0-2 set the volume of the Sony sound chip, or
+                // of the resistor network of the Plus (Guide to the Macintosh
+                // Family Hardware, chapter 13)
+                let sound_volume = self.via.pa().sound();
+                if sound_volume != self.sound_volume {
+                    self.sound_volume = sound_volume;
+                    self.audio.set_gain(volume_gain(sound_volume));
+                }
+                let soundon = !self.via.pb().sndenb();
                 let soundbuf = self.soundbuf();
                 let pwm = soundbuf[scanline * 2 + 1];
                 let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
@@ -906,10 +927,10 @@ where
 
                 // Emulator will block here to sync to audio frequency
                 match self.speed {
-                    EmulatorSpeed::Accurate => self.audio.push(audiosample)?,
+                    EmulatorSpeed::Accurate => self.push_audio(audiosample)?,
                     EmulatorSpeed::Dynamic => {
                         if !self.audio.is_silent() || audiosample != self.last_audiosample {
-                            self.audio.push(audiosample)?;
+                            self.push_audio(audiosample)?;
                         }
                     }
                     EmulatorSpeed::Uncapped => (),
