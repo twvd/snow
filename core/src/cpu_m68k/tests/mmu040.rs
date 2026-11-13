@@ -287,3 +287,240 @@ fn pmmu_opcodes_are_line_f() {
     assert_eq!(cpu.regs.pc, 0x2000);
     assert_eq!(read_long(&cpu, 0x8000 - 6), 0x1000);
 }
+
+/// The 8 KB page `k` pages of an ATC set away from LOGICAL: they all go in
+/// the same set (MC68040UM 3.3), LOGICAL being k = 0
+fn same_set(k: Address) -> Address {
+    LOGICAL + k * 0x2_0000
+}
+
+/// Maps a page of root entry 8, as LOGICAL is, to `paddr`: page tables
+/// follow PAGE_TABLE, one per pointer entry from 33 on
+fn map(cpu: &mut TestCpu, laddr: Address, paddr: Address) {
+    assert_eq!(laddr >> 25, 8);
+    let ptr = (laddr >> 18) & 0x7F;
+    let table = PAGE_TABLE + (ptr - 33) * 0x100;
+    write_long(cpu, PTR_TABLE + ptr * 4, table | TABLE_VALID);
+    write_long(cpu, table + ((laddr >> 13) & 0x1F) * 4, paddr | RESIDENT);
+}
+
+/// Whether the data ATC holds the supervisor page at `laddr`
+fn in_data_atc(cpu: &TestCpu, laddr: Address) -> bool {
+    use crate::cpu_m68k::pmmu::atc040::{ATC040_DATA, Atc040};
+    cpu.atc040[ATC040_DATA]
+        .peek(Atc040::tag(laddr, 0x1FFF, true), 13)
+        .is_some()
+}
+
+/// Translates pages of the set of LOGICAL until LOGICAL is replaced
+fn replace_logical(cpu: &mut TestCpu) {
+    for k in 1..=12 {
+        map(cpu, same_set(k), 0x0040_0000 + k * 0x2000);
+        cpu.pmmu_translate(FC_SUPER_DATA, same_set(k), false)
+            .unwrap();
+        if !in_data_atc(cpu, LOGICAL) {
+            return;
+        }
+    }
+    panic!("LOGICAL never replaced");
+}
+
+/// Runs one instruction with the code and the stack transparently
+/// translated
+fn run(cpu: &mut TestCpu, opcode: u16) {
+    const CODE: Address = 0x1000;
+    // The first 16 MB, supervisor and user
+    cpu.regs.write(Register::ITT0, 0x0000_C000_u32);
+    cpu.regs.write(Register::DTT0, 0x0000_C000_u32);
+    cpu.bus.mem.insert(CODE, (opcode >> 8) as u8);
+    cpu.bus.mem.insert(CODE + 1, opcode as u8);
+    cpu.regs.isp = 0x8000;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.set_pc(CODE).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, CODE + 2);
+}
+
+#[test]
+fn atc_set_holds_four_pages() {
+    let mut cpu = testcpu(0);
+    for k in 0..5 {
+        map(&mut cpu, same_set(k), 0x0040_0000 + k * 0x2000);
+        cpu.pmmu_translate(FC_SUPER_DATA, same_set(k), false)
+            .unwrap();
+    }
+    let held = (0..5).filter(|&k| in_data_atc(&cpu, same_set(k))).count();
+    assert_eq!(held, 4);
+}
+
+#[test]
+fn modified_bit_after_replacement() {
+    // Mac OS 8.1 VM clears M in a page descriptor without flushing the ATC.
+    // Writes don't set M again while the ATC holds the page as modified,
+    // but do once the entry was replaced.
+    let mut cpu = testcpu(0);
+    cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap();
+    assert_ne!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+
+    write_long(&mut cpu, PAGE_TABLE + 4, 0x0020_0000 | RESIDENT);
+    cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap();
+    assert_eq!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+
+    replace_logical(&mut cpu);
+    cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap();
+    assert_ne!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+}
+
+#[test]
+fn write_to_unmodified_entry_searches_again() {
+    let mut cpu = testcpu(0);
+    cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+    write_long(&mut cpu, PAGE_TABLE + 4, 0x0030_0000 | RESIDENT);
+
+    // Reads keep using the entry, a write searches the tables again
+    let tr = cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+    assert_eq!(tr.paddr, 0x0020_0000);
+    let tr = cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap();
+    assert_eq!(tr.paddr, 0x0030_0000);
+    assert_ne!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+}
+
+#[test]
+fn invalid_page_faults_until_flushed() {
+    let mut cpu = testcpu(0);
+    let laddr = LOGICAL + 0x2000;
+    assert!(cpu.pmmu_translate(FC_SUPER_DATA, laddr, false).is_err());
+
+    // The ATC holds the failed search
+    write_long(&mut cpu, PAGE_TABLE + 8, 0x0030_0000 | RESIDENT);
+    assert!(cpu.pmmu_translate(FC_SUPER_DATA, laddr, false).is_err());
+
+    // PFLUSH (A0), supervisor
+    cpu.regs.write_a(0, laddr);
+    cpu.regs.dfc = 5;
+    run(&mut cpu, 0xF508);
+    assert_eq!(
+        cpu.pmmu_translate(FC_SUPER_DATA, laddr, false)
+            .unwrap()
+            .paddr,
+        0x0030_0000
+    );
+}
+
+#[test]
+fn pflush_variants() {
+    const GLOBAL: Long = 1 << 10;
+    let next = LOGICAL + 0x2000;
+    let fill = |cpu: &mut TestCpu| {
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+        cpu.pmmu_translate(FC_SUPER_DATA, next, false).unwrap();
+    };
+    let mut cpu = testcpu(GLOBAL);
+    write_long(&mut cpu, PAGE_TABLE + 8, 0x0030_0000 | RESIDENT);
+    cpu.regs.write_a(0, LOGICAL);
+
+    // PFLUSH (A0) with a user DFC keeps the supervisor entries
+    fill(&mut cpu);
+    cpu.regs.dfc = 1;
+    run(&mut cpu, 0xF508);
+    assert!(in_data_atc(&cpu, LOGICAL) && in_data_atc(&cpu, next));
+
+    // PFLUSHN (A0) keeps a global entry, PFLUSH (A0) does not
+    cpu.regs.dfc = 5;
+    run(&mut cpu, 0xF500);
+    assert!(in_data_atc(&cpu, LOGICAL));
+    run(&mut cpu, 0xF508);
+    assert!(!in_data_atc(&cpu, LOGICAL) && in_data_atc(&cpu, next));
+
+    // PFLUSHAN keeps the global entries, PFLUSHA none
+    fill(&mut cpu);
+    run(&mut cpu, 0xF510);
+    assert!(in_data_atc(&cpu, LOGICAL) && !in_data_atc(&cpu, next));
+    run(&mut cpu, 0xF518);
+    assert!(!in_data_atc(&cpu, LOGICAL));
+}
+
+#[test]
+fn ptest_reloads_the_entry() {
+    let mut cpu = testcpu(0);
+    cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+    write_long(&mut cpu, PAGE_TABLE + 4, 0x0030_0000 | RESIDENT);
+
+    // PTESTR (A0) loads the new translation, PTESTW also sets M
+    cpu.regs.write_a(0, LOGICAL);
+    cpu.regs.dfc = 5;
+    run(&mut cpu, 0xF568);
+    assert_eq!(cpu.regs.mmu040.mmusr & !0xFFF, 0x0030_0000);
+    assert_eq!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+    assert_eq!(
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false)
+            .unwrap()
+            .paddr,
+        0x0030_0000
+    );
+    run(&mut cpu, 0xF548);
+    assert_ne!(read_long(&cpu, PAGE_TABLE + 4) & (1 << 4), 0);
+    assert_ne!(cpu.regs.mmu040.mmusr & (1 << 4), 0);
+}
+
+#[test]
+fn replaced_page_leaves_the_last_translations() {
+    // Accesses reuse the last translation made in a page: not once the ATC
+    // replaced the page. The second half of LOGICAL has last translations
+    // of its own, which the other pages of the set don't overwrite.
+    let mut cpu = testcpu(0);
+    cpu.regs.sr.set_supervisor(true);
+    let laddr = LOGICAL + 0x1000;
+    write_long(&mut cpu, 0x0020_1000, 0x1122_3344);
+    write_long(&mut cpu, 0x0030_1000, 0x5566_7788);
+    assert_eq!(cpu.read_ticks::<Long>(laddr).unwrap(), 0x1122_3344);
+
+    write_long(&mut cpu, PAGE_TABLE + 4, 0x0030_0000 | RESIDENT);
+    assert_eq!(cpu.read_ticks::<Long>(laddr).unwrap(), 0x1122_3344);
+    replace_logical(&mut cpu);
+    assert_eq!(cpu.read_ticks::<Long>(laddr).unwrap(), 0x5566_7788);
+}
+
+#[test]
+fn reloaded_entry_leaves_the_last_translations() {
+    // A write to a page not marked modified searches the tables again and
+    // reloads the entry: reads then use the new translation too
+    let mut cpu = testcpu(0);
+    cpu.regs.sr.set_supervisor(true);
+    write_long(&mut cpu, 0x0020_0000, 0x1122_3344);
+    write_long(&mut cpu, 0x0030_0000, 0x5566_7788);
+    assert_eq!(cpu.read_ticks::<Long>(LOGICAL).unwrap(), 0x1122_3344);
+
+    write_long(&mut cpu, PAGE_TABLE + 4, 0x0030_0000 | RESIDENT);
+    cpu.write_ticks::<Long>(LOGICAL + 4, 0).unwrap();
+    assert_eq!(cpu.read_ticks::<Long>(LOGICAL).unwrap(), 0x5566_7788);
+}
+
+#[test]
+fn vm_pflush_workaround() {
+    // A user-mode PFLUSHA takes a privilege violation, or flushes with the
+    // workaround
+    for workaround in [false, true] {
+        let mut cpu = testcpu(0);
+        cpu.set_vm_pflush_workaround(workaround);
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap();
+        cpu.regs.write(Register::ITT0, 0x0000_C000_u32);
+        cpu.regs.write(Register::DTT0, 0x0000_C000_u32);
+        cpu.bus.mem.insert(0x1000, 0xF5);
+        cpu.bus.mem.insert(0x1001, 0x18);
+        write_long(&mut cpu, 0x20, 0x2000);
+        cpu.regs.isp = 0x8000;
+        cpu.regs.sr.set_supervisor(false);
+        cpu.set_pc(0x1000).unwrap();
+        cpu.prefetch_refill().unwrap();
+        cpu.step().unwrap();
+        if workaround {
+            assert_eq!(cpu.regs.pc, 0x1002);
+            assert!(!in_data_atc(&cpu, LOGICAL));
+        } else {
+            assert_eq!(cpu.regs.pc, 0x2000);
+            assert!(in_data_atc(&cpu, LOGICAL));
+        }
+    }
+}

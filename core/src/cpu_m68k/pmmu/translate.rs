@@ -3,9 +3,9 @@
 
 use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::M68040;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
+use crate::cpu_m68k::{M68030, M68040};
 use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow};
@@ -199,20 +199,15 @@ where
     TBus: Bus<Address, u8> + IrqSource,
     TCaches: CpuCaches,
 {
-    /// Enlarges ATC size if needed by configuration
+    /// Enlarges ATC size if needed by configuration. The 68030 and 68040
+    /// have their own ATCs, of a fixed size.
     pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {
-        let cache_size = if CPU_TYPE == M68040 {
-            if !self.mmu040_enabled() {
-                return;
-            }
-            (Address::MAX >> self.mmu040_page_shift()) as usize + 1
-        } else {
-            if !self.regs.pmmu.tc.enable() {
-                return;
-            }
+        if CPU_TYPE >= M68030 || !self.regs.pmmu.tc.enable() {
+            return;
+        }
+        let cache_size =
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize
-                + 1
-        };
+                + 1;
         if self.pmmu_atc.iter().map(|atc| atc.len()).min().unwrap() < cache_size {
             log::debug!("Expanding cache size: {}", cache_size);
             self.pmmu_atc
@@ -226,6 +221,23 @@ where
     pub(in crate::cpu_m68k) fn pmmu_translation_changed(&mut self) {
         self.mmu_generation = self.mmu_generation.wrapping_add(1);
         self.last_translation = last_translations_none();
+    }
+
+    /// Forgets the last translations of all kinds made in a page, for
+    /// supervisor or user accesses, when the ATC no longer holds the page
+    pub(in crate::cpu_m68k) fn last_translation_forget(&mut self, page: Address, supervisor: bool) {
+        let page_mask = self.pmmu_page_mask();
+        // An index is per 4 KB: a larger page has several
+        for part in (0..=page_mask).step_by(1 << 12) {
+            let index = last_translation_index(page | part);
+            for slot in &mut self.last_translation {
+                let e = &mut slot[index];
+                let fc = e.tag & 0b111;
+                if e.tag & !page_mask == page && (fc & 0b100 != 0) == supervisor {
+                    *e = LastTranslation::NONE;
+                }
+            }
+        }
     }
 
     /// One of the last translations of kind `slot` for an access at `laddr`
@@ -278,6 +290,14 @@ where
     /// Flushes complete ATC
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
         self.pmmu_translation_changed();
+        if CPU_TYPE == M68040 {
+            self.atc040.iter_mut().for_each(|atc| atc.flush_all(false));
+            return;
+        }
+        if CPU_TYPE == M68030 {
+            self.atc030.flush_all();
+            return;
+        }
         // Incrementing generation invalidates all entries with a lower generation,
         // making ATC flushes very cheap rather than zeroizing the entire cache.
         self.pmmu_atc_generation = self.pmmu_atc_generation.wrapping_add(1);

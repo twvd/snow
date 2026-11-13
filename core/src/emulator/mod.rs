@@ -351,6 +351,7 @@ dispatch! {
         fn cpu_enable_history(&mut self, v: bool) -> () { enable_history(v) }
         fn cpu_enable_systrap_history(&mut self, v: bool) -> () { enable_systrap_history(v) }
         fn cpu_set_cache_flush_workaround(&mut self, v: bool) -> () { set_cache_flush_workaround(v) }
+        fn cpu_set_vm_pflush_workaround(&mut self, v: bool) -> () { set_vm_pflush_workaround(v) }
         fn cpu_set_pc(&mut self, pc: Address) -> Result<()> { set_pc(pc) }
         fn cpu_get_clr_breakpoint_hit(&mut self) -> bool { get_clr_breakpoint_hit() }
         fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> { read_history() }
@@ -1904,6 +1905,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SetCacheFlushWorkaround(on) => {
                         self.config.cpu_set_cache_flush_workaround(on);
+                    }
+                    EmulatorCommand::SetVmPflushWorkaround(on) => {
+                        self.config.cpu_set_vm_pflush_workaround(on);
                     }
                     EmulatorCommand::ProgKey => self.config.progkey(),
                     EmulatorCommand::WriteRegister(reg, val) => {

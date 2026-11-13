@@ -31,8 +31,8 @@ use crate::bus::access::Bus68020;
 use crate::bus::testbus::{Access, Testbus};
 use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM, FC_USER_DATA};
 use crate::cpu_m68k::cpu::CpuError;
+use crate::cpu_m68k::pmmu::atc030::{Atc030, Atc030Entry};
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg, TrTranslationReg};
-use crate::cpu_m68k::pmmu::translate::PMMU_ATC_URP;
 use crate::cpu_m68k::{CpuM68030, FPU_M68881, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
@@ -96,6 +96,12 @@ fn table_reads(cpu: &TestCpu) -> usize {
         / 4
 }
 
+/// The ATC entry for supervisor data at `logical`
+fn atc_entry(cpu: &TestCpu, logical: Address) -> Option<Atc030Entry> {
+    cpu.atc030
+        .peek(Atc030::tag(logical, 0xFFF, FC_SUPERVISOR_DATA))
+}
+
 fn data(cpu: &mut TestCpu, logical: Address) -> Address {
     cpu.pmmu_translate(FC_SUPERVISOR_DATA, logical, false)
         .expect("translation must succeed")
@@ -112,12 +118,9 @@ fn run(cpu: &mut TestCpu, words: &[Word]) {
     cpu.step().expect("step");
 }
 
-/// A repeat access to a page is answered without a table search. Snow's
-/// ATC is direct-mapped and its slot for a page is shared across function
-/// codes: translation does not depend on FC unless SRE or FCL are set, and
-/// the hardware may drop ATC entries at any time, so serving FC 5, 6 and 1
-/// from the same entry is legal (the hardware's fully associative ATC would
-/// hold separate entries; Snow only differs in table-search counts).
+/// A repeat access to a page is answered without a table search. ATC
+/// entries are tagged with the function code (MC68030UM 9.4): an access with
+/// another function code searches the tables again.
 #[test]
 fn repeat_access_to_a_page_needs_no_table_search() {
     let mut cpu = cpu_mmu_030();
@@ -131,15 +134,13 @@ fn repeat_access_to_a_page_needs_no_table_search() {
     assert_eq!(data(&mut cpu, 0x4000), 0x4000);
     assert_eq!(table_reads(&cpu), 2, "next page: another search");
 
-    // Supervisor program space reuses the shared slot.
     cpu.pmmu_translate(FC_SUPERVISOR_PROGRAM, 0x3010, false)
         .expect("translate");
-    assert_eq!(table_reads(&cpu), 2, "program space: shared-slot hit");
+    assert_eq!(table_reads(&cpu), 3, "program space: its own entry");
 
-    // And so does the user data space.
     cpu.pmmu_translate(FC_USER_DATA, 0x3010, false)
         .expect("translate");
-    assert_eq!(table_reads(&cpu), 2, "user data space: shared-slot hit");
+    assert_eq!(table_reads(&cpu), 4, "user data space: its own entry");
 }
 
 /// A two-level tree whose level-A descriptor terminates early maps a whole
@@ -333,7 +334,7 @@ fn reset_disables_translation_without_flushing_the_atc() {
     let mut cpu = cpu_mmu_030();
     data(&mut cpu, 0x3000);
     assert!(
-        cpu.pmmu_atc_lookup(PMMU_ATC_URP, 3).is_some(),
+        atc_entry(&cpu, 0x3000).is_some(),
         "entry cached before reset"
     );
 
@@ -345,24 +346,24 @@ fn reset_disables_translation_without_flushing_the_atc() {
         "RESET clears the TTx E bits"
     );
     assert!(
-        cpu.pmmu_atc_lookup(PMMU_ATC_URP, 3).is_some(),
+        atc_entry(&cpu, 0x3000).is_some(),
         "RESET does not flush the ATC (M68030UM 9.7.5)"
     );
 }
 
 #[test]
 fn atc_hit_write_sets_leaf_descriptor_m_bit() {
-    // First write through a resident page sets the leaf descriptor's M bit
-    // via the descriptor address recorded in the ATC entry.
+    // First write through a page the ATC holds unmodified searches the
+    // tables again and sets the leaf descriptor's M bit (MC68030UM 9.4).
     let mut cpu = cpu_mmu_030();
     assert_eq!(data(&mut cpu, 0x5004), 0x5004);
     cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x5004, true)
         .expect("write");
 
-    let desc = cpu.pmmu_atc_lookup(PMMU_ATC_URP, 5).expect("entry");
-    assert!(desc.modified, "ATC entry promoted to modified");
+    let entry = atc_entry(&cpu, 0x5004).expect("entry");
+    assert!(entry.modified, "ATC entry promoted to modified");
 
-    let leaf = desc.leaf_desc_addr;
+    let leaf = TABLE + 5 * 4;
     let val = (cpu.bus.mem.get(&leaf).copied().unwrap_or(0) as Long) << 24
         | (cpu.bus.mem.get(&(leaf + 1)).copied().unwrap_or(0) as Long) << 16
         | (cpu.bus.mem.get(&(leaf + 2)).copied().unwrap_or(0) as Long) << 8
@@ -373,6 +374,119 @@ fn atc_hit_write_sets_leaf_descriptor_m_bit() {
         (5 << 12) | 1 | (1 << 3) | (1 << 4),
         "M bit set in the leaf descriptor"
     );
+}
+
+/// Translates other pages until the ATC replaced the entry for `logical`
+fn replace(cpu: &mut TestCpu, logical: Address) {
+    for page in 64..128 {
+        map(&mut cpu.bus, page, page);
+        data(cpu, page << 12);
+        if atc_entry(cpu, logical).is_none() {
+            return;
+        }
+    }
+    panic!("never replaced");
+}
+
+#[test]
+fn atc_holds_22_entries() {
+    let mut cpu = cpu_mmu_030();
+    for page in 0..23 {
+        data(&mut cpu, page << 12);
+    }
+    let held = (0..23)
+        .filter(|&page| atc_entry(&cpu, page << 12).is_some())
+        .count();
+    assert_eq!(held, 22, "MC68030UM 9.4: 22 entries");
+}
+
+#[test]
+fn modified_bit_after_replacement() {
+    // Software clears M in a page descriptor without flushing the ATC.
+    // Writes don't set M again while the ATC holds the page as modified,
+    // but do once the entry was replaced.
+    let mut cpu = cpu_mmu_030();
+    let leaf = TABLE + 5 * 4;
+    let m_bit = |cpu: &TestCpu| cpu.bus.mem.get(&(leaf + 3)).copied().unwrap_or(0) & (1 << 4);
+    cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x5000, true)
+        .expect("write");
+    assert_ne!(m_bit(&cpu), 0);
+
+    map(&mut cpu.bus, 5, 5);
+    cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x5000, true)
+        .expect("write");
+    assert_eq!(m_bit(&cpu), 0, "the entry still says modified");
+
+    replace(&mut cpu, 0x5000);
+    cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x5000, true)
+        .expect("write");
+    assert_ne!(m_bit(&cpu), 0);
+}
+
+#[test]
+fn failed_search_faults_until_flushed() {
+    // MC68030UM 9.4: the entry of a failed search has B set, and accesses
+    // through it take a bus error until it is flushed
+    let mut cpu = cpu_mmu_030();
+    assert!(
+        cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x40000, false)
+            .is_err()
+    );
+    assert!(atc_entry(&cpu, 0x40000).is_some_and(|e| e.bus_error));
+
+    map(&mut cpu.bus, 0x40, 0x40);
+    assert!(
+        cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x40000, false)
+            .is_err()
+    );
+
+    run(&mut cpu, &[0xF000, 0x2400]); // PFLUSHA
+    assert_eq!(data(&mut cpu, 0x40000), 0x40000);
+}
+
+#[test]
+fn replaced_page_leaves_the_last_translations() {
+    // Accesses reuse the last translation made in a page: not once the ATC
+    // replaced the page
+    let mut cpu = cpu_mmu_030();
+    write_long(&mut cpu.bus, 0x5000, 0x1122_3344);
+    write_long(&mut cpu.bus, 0x6000, 0x5566_7788);
+    assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x1122_3344);
+
+    map(&mut cpu.bus, 5, 6);
+    assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x1122_3344);
+    replace(&mut cpu, 0x5000);
+    assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x5566_7788);
+}
+
+#[test]
+fn reloaded_entry_leaves_the_last_translations() {
+    // A write to a page not marked modified searches the tables again and
+    // reloads the entry: reads then use the new translation too
+    let mut cpu = cpu_mmu_030();
+    write_long(&mut cpu.bus, 0x5000, 0x1122_3344);
+    write_long(&mut cpu.bus, 0x6000, 0x5566_7788);
+    assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x1122_3344);
+
+    map(&mut cpu.bus, 5, 6);
+    cpu.write_ticks::<Long>(0x5004, 0).unwrap();
+    assert_eq!(cpu.read_ticks::<Long>(0x5000).unwrap(), 0x5566_7788);
+}
+
+#[test]
+fn user_mode_pflusha_stacks_its_first_word() {
+    // The privilege violation stacks the address of the instruction's first
+    // word, not of its extension word (MC68030UM 8.1.6)
+    let mut cpu = cpu_mmu_030();
+    write_long(&mut cpu.bus, 0x20, 0x2000);
+    cpu.regs.isp = 0x8000;
+    cpu.regs.sr.set_supervisor(false);
+    run(&mut cpu, &[0xF000, 0x2400]); // PFLUSHA
+    assert_eq!(cpu.regs.pc, 0x2000);
+    let pc = (2..6).fold(0, |pc, i| {
+        (pc << 8) | Address::from(cpu.bus.mem[&(0x8000 - 8 + i)])
+    });
+    assert_eq!(pc, CODE);
 }
 
 /// MC68851 PFLUSH forms (MC68851 UM A-6..A-7), which also run on Snow's

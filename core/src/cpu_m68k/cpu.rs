@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::pmmu::atc040::Atc040;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::{
@@ -546,6 +547,20 @@ where
     #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
     pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
 
+    /// 68040 data and instruction ATCs, indexed by ATC040_DATA and
+    /// ATC040_INSTRUCTION
+    #[serde(default)]
+    pub(in crate::cpu_m68k) atc040: [crate::cpu_m68k::pmmu::atc040::Atc040; 2],
+
+    /// 68030 ATC
+    #[serde(default)]
+    pub(in crate::cpu_m68k) atc030: crate::cpu_m68k::pmmu::atc030::Atc030,
+
+    /// A user-mode PFLUSH flushes the ATCs instead of taking a privilege
+    /// violation (68040), see op_pflush040()
+    #[serde(default)]
+    pub(in crate::cpu_m68k) vm_pflush_workaround: bool,
+
     /// Last translations, for data reads, instruction fetches and data
     /// writes
     #[serde(
@@ -664,6 +679,9 @@ where
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
+            atc040: Default::default(),
+            atc030: Default::default(),
+            vm_pflush_workaround: false,
             last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
@@ -768,6 +786,12 @@ where
     /// Makes CPUSH of the data cache also invalidate the instruction cache
     pub fn set_cache_flush_workaround(&mut self, on: bool) {
         self.caches.set_flush_workaround(on);
+    }
+
+    /// Makes a user-mode PFLUSH flush the ATCs instead of taking a privilege
+    /// violation (68040)
+    pub fn set_vm_pflush_workaround(&mut self, on: bool) {
+        self.vm_pflush_workaround = on;
     }
 
     /// Gets the instruction history, if enabled
@@ -1312,7 +1336,7 @@ where
     }
 
     /// Raises a privilege violation exception
-    fn raise_privilege_violation(&mut self) -> Result<()> {
+    pub(in crate::cpu_m68k) fn raise_privilege_violation(&mut self) -> Result<()> {
         // "If the instruction is not executed because the instruction is illegal or privileged,
         // the trace exception does not occur."
         self.step_inhibit_trace = true;
@@ -4564,14 +4588,37 @@ where
 
     /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
     fn op_pflush040(&mut self, instr: &Instruction) -> Result<()> {
-        if !self.regs.sr.supervisor() {
+        // Mac OS 8.1 virtual memory runs the system in user mode. When it
+        // releases a page it clears M in its descriptor and flushes with
+        // PFLUSHA, which its privilege violation handler takes for a cache
+        // instruction with no cache selected and skips. Writes then go
+        // through ATC entries that say modified, and VM pages the page out
+        // as unmodified. Found by tracing the page release of 8.1's VM. The
+        // workaround runs the flush instead.
+        if !self.regs.sr.supervisor() && !self.vm_pflush_workaround {
             return self.raise_privilege_violation();
         }
 
-        // Just conservatively flush the entire ATC
-        // TODO targetted flushing (I dont think it matters on the Mac)
-        self.pmmu_cache_invalidate();
-        // Opmode 10 is PFLUSHAN
+        // Opmode: 00 PFLUSHN (An), 01 PFLUSH (An), 10 PFLUSHAN, 11 PFLUSHA
+        // (M68000PRM 6-36). The N variants keep the global entries.
+        let opmode = (instr.data >> 3) & 0b11;
+        let nonglobal = opmode & 0b01 == 0;
+        if opmode & 0b10 != 0 {
+            self.atc040
+                .iter_mut()
+                .for_each(|atc| atc.flush_all(nonglobal));
+        } else {
+            // The entries for the address in both ATCs, supervisor or user
+            // as DFC says
+            let laddr = self.regs.read_a::<Address>(instr.get_op2());
+            let supervisor = self.regs.dfc & 0b100 != 0;
+            let page_shift = self.mmu040_page_shift();
+            let tag = Atc040::tag(laddr, (1 << page_shift) - 1, supervisor);
+            for atc in &mut self.atc040 {
+                atc.flush_tag(tag, page_shift, nonglobal);
+            }
+        }
+        self.pmmu_translation_changed();
         account_040_time!(
             self,
             if instr.data & 0b11000 == 0b10000 {
@@ -4592,8 +4639,10 @@ where
         // The address space to search comes from DFC, the address from An.
         let fc = (self.regs.dfc & 0b111) as u8;
         let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        // R/W: 0 is PTESTW (M68000PRM 6-71)
+        let writing = instr.data & (1 << 5) == 0;
         account_040_time!(self, timing040::PTEST);
-        self.mmu040_ptest(fc, vaddr)
+        self.mmu040_ptest(fc, vaddr, writing)
     }
 
     /// MOVEC
