@@ -20,7 +20,7 @@ use crate::{
             cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
             new_physical_cdrom_drive_backend,
         },
-        cdrom::reader::{CdromReader, DiscThread, Reply},
+        cdrom::reader::{CdromReader, DiscThread, Job, JobOutput},
         target::ScsiTargetCommon,
     },
     renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink},
@@ -414,44 +414,80 @@ pub(super) struct ScsiTargetCdrom {
     #[serde(skip)]
     disc_thread: Option<DiscThread>,
 
-    /// A command waiting on the reader thread
+    /// A command for the reader thread
     #[serde(skip)]
     pending: Option<Pending>,
 
-    /// The audio sector asked of the reader thread, to play next
+    /// The audio sector the reader thread is on
     #[serde(skip)]
-    audio_fetch: Option<AudioFetch>,
+    audio_fetch: Option<u32>,
+
+    /// An audio sector from the reader thread, to play next
+    #[serde(skip)]
+    audio_ready: Option<(u32, Result<RawSector, CdromError>)>,
 }
 
-/// An audio sector on its way from the reader thread
-struct AudioFetch {
-    sector: u32,
-    reply: Reply<RawSector>,
-}
-
-/// A command waiting on the reader thread
+/// A command for the reader thread
 struct Pending {
     work: PendingWork,
+    /// The reader thread has the job
+    sent: bool,
+    /// What the reader thread answered
+    result: Option<Result<JobOutput, CdromError>>,
     since: Instant,
 }
 
+impl Pending {
+    fn new(work: PendingWork) -> Self {
+        Self {
+            work,
+            sent: false,
+            result: None,
+            since: Instant::now(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 enum PendingWork {
     Read {
-        reply: Reply<Vec<u8>>,
         offset: usize,
         length: usize,
         block_count: usize,
     },
     MediaCheck {
-        reply: Reply<MediaCheck>,
+        known: MediaId,
         then: AfterCheck,
     },
     /// PLAY AUDIO, checking the sector it starts from
     PlayAudio {
-        reply: Reply<RawSector>,
         start_sector: u32,
         end_sector: u32,
     },
+}
+
+impl PendingWork {
+    fn job(&self) -> Job {
+        match *self {
+            Self::Read { offset, length, .. } => Job::Read { offset, length },
+            Self::MediaCheck { known, .. } => Job::CheckMedia { known },
+            Self::PlayAudio { start_sector, .. } => Job::ReadCdda {
+                sector: start_sector,
+            },
+        }
+    }
+
+    fn describe(&self) -> String {
+        match *self {
+            Self::Read { offset, length, .. } => {
+                format!("read at 0x{:X}, length 0x{:X},", offset, length)
+            }
+            Self::MediaCheck { .. } => "media check".to_string(),
+            Self::PlayAudio { start_sector, .. } => {
+                format!("read of audio sector {}", start_sector)
+            }
+        }
+    }
 }
 
 /// What a command does once the check of the disc it starts with passes
@@ -467,23 +503,28 @@ enum AfterCheck {
     },
 }
 
-/// The answer of the reader thread, or a timeout once it took too long
-fn poll_or_timeout<T>(
-    reply: &Reply<T>,
-    since: Instant,
-    what: impl FnOnce() -> String,
-) -> Option<Result<T, CdromError>> {
-    if let Some(result) = reply.poll() {
-        return Some(result);
+/// The answer of the reader thread to a read
+fn read_output(result: Result<JobOutput, CdromError>) -> Result<Vec<u8>, CdromError> {
+    match result? {
+        JobOutput::Read(data) => Ok(data),
+        _ => Err(anyhow!("the reader thread answered something else than a read").into()),
     }
-    if since.elapsed() < DRIVE_TIMEOUT {
-        return None;
+}
+
+/// The answer of the reader thread to an audio sector read
+fn read_cdda_output(result: Result<JobOutput, CdromError>) -> Result<RawSector, CdromError> {
+    match result? {
+        JobOutput::ReadCdda(sector) => Ok(*sector),
+        _ => Err(anyhow!("the reader thread answered something else than a sector").into()),
     }
-    log::warn!("CD-ROM {} timed out after {:?}", what(), DRIVE_TIMEOUT);
-    Some(Err(CdromError::CheckCondition(
-        CC_KEY_NOT_READY,
-        ASC_LOGICAL_UNIT_NOT_READY,
-    )))
+}
+
+/// The answer of the reader thread to a media check
+fn media_check_output(result: Result<JobOutput, CdromError>) -> Result<MediaCheck, CdromError> {
+    match result? {
+        JobOutput::CheckMedia(check) => Ok(check),
+        _ => Err(anyhow!("the reader thread answered something else than a check").into()),
+    }
 }
 
 impl ScsiTargetCdrom {
@@ -524,6 +565,7 @@ impl ScsiTargetCdrom {
             disc_thread: None,
             pending: None,
             audio_fetch: None,
+            audio_ready: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -797,6 +839,7 @@ impl ScsiTargetCdrom {
         self.disc_thread = None;
         self.pending = None;
         self.audio_fetch = None;
+        self.audio_ready = None;
         self.audio_state = AudioState::Stopped;
         self.audio_pos = LBA_START_SECTOR;
     }
@@ -854,33 +897,26 @@ impl ScsiTargetCdrom {
         self.resolve_audio_pos();
 
         if self.audio_state != AudioState::Playing {
-            self.audio_fetch = None;
+            self.drop_audio_fetch();
             return Ok(());
         }
 
-        let samples = if let Some(thread) = &self.disc_thread {
-            // Through the reader thread: play the sector once it is there, and
-            // ask for it if it isn't on its way already
-            let fetch = self
-                .audio_fetch
-                .take()
-                .filter(|fetch| fetch.sector == self.audio_pos);
-            let Some(fetch) = fetch else {
-                self.audio_fetch = Some(AudioFetch {
-                    sector: self.audio_pos,
-                    reply: thread.read_cdda_sector(self.audio_pos),
-                });
-                return Ok(());
-            };
-            let Some(samples) = fetch.reply.poll() else {
-                self.audio_fetch = Some(fetch);
+        let samples = if self.disc_thread.is_some() {
+            // Through the reader thread: play the sector once it is there
+            self.service_disc();
+            let wanted = self.audio_pos;
+            if self.audio_ready.as_ref().is_some_and(|(s, _)| *s != wanted)
+                || self.audio_fetch.is_some_and(|s| s != wanted)
+            {
+                // For another position
+                self.drop_audio_fetch();
+            }
+            let Some((_, samples)) = self.audio_ready.take() else {
+                self.fetch_audio(wanted);
                 return Ok(());
             };
             // Ask for the next one now, so it comes while this one plays
-            self.audio_fetch = Some(AudioFetch {
-                sector: self.audio_pos + 1,
-                reply: thread.read_cdda_sector(self.audio_pos + 1),
-            });
+            self.fetch_audio(wanted + 1);
             samples
         } else {
             let Some(backend) = &self.backend else {
@@ -985,11 +1021,67 @@ fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> 
 }
 
 impl ScsiTargetCdrom {
+    /// Collects what the reader thread answered, for the command or the
+    /// audio, and gives it a command waiting for it
+    fn service_disc(&mut self) {
+        let Some(thread) = &mut self.disc_thread else {
+            return;
+        };
+        if let Some(result) = thread.poll() {
+            match &mut self.pending {
+                Some(pending) if pending.sent => pending.result = Some(result),
+                _ => {
+                    if let Some(sector) = self.audio_fetch.take() {
+                        self.audio_ready = Some((sector, read_cdda_output(result)));
+                    }
+                }
+            }
+        }
+        // A command goes before audio
+        if let Some(pending) = &mut self.pending
+            && !pending.sent
+            && thread.send(pending.work.job()).is_ok()
+        {
+            pending.sent = true;
+        }
+    }
+
+    /// Hands a command over to the reader thread
+    fn start_pending(&mut self, work: PendingWork) -> ScsiCmdResult {
+        self.pending = Some(Pending::new(work));
+        self.service_disc();
+        ScsiCmdResult::Pending
+    }
+
+    /// Asks the reader thread for an audio sector, unless it is on something
+    /// or a command waits for it
+    fn fetch_audio(&mut self, sector: u32) {
+        if self.audio_fetch.is_some() || self.pending.is_some() {
+            return;
+        }
+        if let Some(thread) = &mut self.disc_thread
+            && thread.send(Job::ReadCdda { sector }).is_ok()
+        {
+            self.audio_fetch = Some(sector);
+        }
+    }
+
+    /// Forgets the audio sector asked for, cancelling the job if running
+    fn drop_audio_fetch(&mut self) {
+        self.audio_ready = None;
+        if self.audio_fetch.take().is_some()
+            && let Some(thread) = &mut self.disc_thread
+        {
+            thread.cancel();
+        }
+    }
+
     /// Inserts a disc, with a reader thread of its own if the backend is async
     fn insert_backend(&mut self, backend: Box<dyn CdromBackend>) {
         // Any reader thread of the previous disc ends once it is done
         self.pending = None;
         self.audio_fetch = None;
+        self.audio_ready = None;
         self.disc_thread =
             backend
                 .async_reader()
@@ -1036,13 +1128,9 @@ impl ScsiTargetCdrom {
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
-        if let Some(thread) = &self.disc_thread {
-            let reply = thread.check_media(backend.media_id());
-            self.pending = Some(Pending {
-                work: PendingWork::MediaCheck { reply, then },
-                since: Instant::now(),
-            });
-            return Ok(ScsiCmdResult::Pending);
+        if self.disc_thread.is_some() {
+            let known = backend.media_id();
+            return Ok(self.start_pending(PendingWork::MediaCheck { known, then }));
         }
 
         let status = backend.check_media();
@@ -1451,17 +1539,12 @@ impl ScsiTarget for ScsiTargetCdrom {
             std::cmp::min((block_offset + block_count) * blocksize, backend.byte_len());
         let length = image_end_offset - offset;
 
-        if let Some(thread) = &self.disc_thread {
-            self.pending = Some(Pending {
-                work: PendingWork::Read {
-                    reply: thread.read(offset, length),
-                    offset,
-                    length,
-                    block_count,
-                },
-                since: Instant::now(),
-            });
-            return Ok(ScsiCmdResult::Pending);
+        if self.disc_thread.is_some() {
+            return Ok(self.start_pending(PendingWork::Read {
+                offset,
+                length,
+                block_count,
+            }));
         }
 
         let result = backend.read_bytes(offset, length);
@@ -1469,42 +1552,53 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
-        let pending = self.pending.as_ref()?;
-        match pending.work {
+        self.pending.as_ref()?;
+        self.service_disc();
+        let pending = self.pending.as_mut()?;
+        let result = match pending.result.take() {
+            Some(result) => result,
+            None if pending.since.elapsed() >= DRIVE_TIMEOUT => {
+                log::warn!(
+                    "CD-ROM {} timed out after {:?}",
+                    pending.work.describe(),
+                    DRIVE_TIMEOUT
+                );
+                if pending.sent
+                    && let Some(thread) = &mut self.disc_thread
+                {
+                    thread.cancel();
+                }
+                Err(CdromError::CheckCondition(
+                    CC_KEY_NOT_READY,
+                    ASC_LOGICAL_UNIT_NOT_READY,
+                ))
+            }
+            None => return None,
+        };
+        let work = self.pending.take()?.work;
+        Some(match work {
             PendingWork::Read {
-                ref reply,
                 offset,
                 length,
                 block_count,
-            } => {
-                let result = poll_or_timeout(reply, pending.since, || {
-                    format!("read at 0x{:X}, length 0x{:X},", offset, length)
-                })?;
-                self.pending = None;
-                Some(self.read_done(result, offset, length, block_count))
-            }
-            PendingWork::MediaCheck { ref reply, then } => {
-                let result = poll_or_timeout(reply, pending.since, || "media check".to_string())?;
-                self.pending = None;
-                Some(self.media_check_done(result, then))
+            } => self.read_done(read_output(result), offset, length, block_count),
+            PendingWork::MediaCheck { then, .. } => {
+                self.media_check_done(media_check_output(result), then)
             }
             PendingWork::PlayAudio {
-                ref reply,
                 start_sector,
                 end_sector,
-            } => {
-                let result = poll_or_timeout(reply, pending.since, || {
-                    format!("read of audio sector {}", start_sector)
-                })?;
-                self.pending = None;
-                Some(self.play_audio_from(result, start_sector, end_sector))
-            }
-        }
+            } => self.play_audio_from(read_cdda_output(result), start_sector, end_sector),
+        })
     }
 
     fn abort_pending(&mut self) {
-        // The reader thread cancels the access, or skips it
-        self.pending = None;
+        if let Some(pending) = self.pending.take()
+            && pending.sent
+            && let Some(thread) = &mut self.disc_thread
+        {
+            thread.cancel();
+        }
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
@@ -1745,16 +1839,11 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                if let Some(thread) = &self.disc_thread {
-                    self.pending = Some(Pending {
-                        work: PendingWork::PlayAudio {
-                            reply: thread.read_cdda_sector(start_sector),
-                            start_sector,
-                            end_sector,
-                        },
-                        since: Instant::now(),
-                    });
-                    return Ok(ScsiCmdResult::Pending);
+                if self.disc_thread.is_some() {
+                    return Ok(self.start_pending(PendingWork::PlayAudio {
+                        start_sector,
+                        end_sector,
+                    }));
                 }
 
                 let initial_sector = backend.read_cdda_sector(start_sector);
@@ -2415,24 +2504,20 @@ mod tests {
     }
 
     #[test]
-    fn abandoned_read_is_skipped() {
+    fn aborted_read_is_dropped() {
         let (mut cd, reader) = cdrom_with_gated_disc();
-        // The thread may be held up on the first read
         assert!(matches!(read10(&mut cd, 1), ScsiCmdResult::Pending));
         cd.abort_pending();
-        // This one waits in the queue and is abandoned there
-        assert!(matches!(read10(&mut cd, 2), ScsiCmdResult::Pending));
-        cd.abort_pending();
+        // The drive is still on the aborted read: this one waits for it
         assert!(matches!(read10(&mut cd, 3), ScsiCmdResult::Pending));
+        assert!(!cd.pending.as_ref().unwrap().sent);
 
-        reader
-            .open
-            .store(true, std::sync::atomic::Ordering::Release);
+        reader.open();
         match wait_pending(&mut cd) {
             ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![3; 2048]),
             other => panic!("expected block 3, got {:?}", other),
         }
-        assert!(!reader.reads.lock().unwrap().contains(&(2 * 2048)));
+        assert_eq!(*reader.reads.lock().unwrap(), [2048, 3 * 2048]);
     }
 
     #[test]

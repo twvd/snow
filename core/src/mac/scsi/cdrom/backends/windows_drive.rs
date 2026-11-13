@@ -691,7 +691,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::scsi::cdrom::reader::DiscThread;
+    use crate::mac::scsi::cdrom::reader::{DiscThread, Job};
     use std::io::Read;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -735,16 +735,23 @@ mod tests {
             entered: false.into(),
             done,
         });
-        let thread = DiscThread::spawn(reader.clone()).unwrap();
+        let mut thread = DiscThread::spawn(reader.clone()).unwrap();
 
-        let reply = thread.read(0, 2048);
+        assert!(
+            thread
+                .send(Job::Read {
+                    offset: 0,
+                    length: 2048
+                })
+                .is_ok()
+        );
         while !reader.entered.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(1));
         }
         // Give the thread time to get from the flag into ReadFile
         std::thread::sleep(Duration::from_millis(100));
-        assert!(reply.poll().is_none());
-        drop(reply);
+        assert!(thread.poll().is_none());
+        thread.cancel();
 
         let error = read_ended
             .recv_timeout(Duration::from_secs(5))
