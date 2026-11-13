@@ -413,6 +413,7 @@ mod tests {
             }
             ScsiCmdResult::Status(s) => Err(s),
             ScsiCmdResult::DataOut(_) => panic!("COUNT_FILES asked for data out"),
+            ScsiCmdResult::Pending => panic!("COUNT_FILES went pending"),
         }
     }
 

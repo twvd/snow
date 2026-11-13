@@ -1,11 +1,14 @@
 //! SCSI CD-ROM drive (block device)
 
 pub mod backends;
+pub mod reader;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::{
     debuggable::Debuggable,
@@ -17,6 +20,7 @@ use crate::{
             cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
             new_physical_cdrom_drive_backend,
         },
+        cdrom::reader::{CdromReader, DiscThread, Job, JobOutput},
         target::ScsiTargetCommon,
     },
     renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink},
@@ -25,9 +29,9 @@ use crate::{
 };
 
 use super::{
-    ASC_INVALID_FIELD_IN_CDB, ASC_MEDIUM_NOT_PRESENT, ASC_NOT_READY_TO_READY_CHANGE,
-    ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, CC_KEY_UNIT_ATTENTION,
-    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+    ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_UNIT_NOT_READY, ASC_MEDIUM_NOT_PRESENT,
+    ASC_NOT_READY_TO_READY_CHANGE, ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR,
+    CC_KEY_UNIT_ATTENTION, STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
     disk_image::{DiskImage, FileDiskImage},
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
     toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
@@ -56,6 +60,11 @@ const DATA_TRACK: u8 = 0x4;
 const LBA_START_MSF: Msf = Msf::new(0, 2, 0);
 /// Absolute sector number of Logical Block Address 0
 const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
+
+/// How long an access to a slow drive may take before the target gives up on
+/// it and reports the drive not ready. The access is cancelled, but the
+/// driver may hold the reader thread up on it a while longer.
+const DRIVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Number of audio frames per second. A frame is comprised of two samples (left and right).
 ///
@@ -263,6 +272,27 @@ pub struct RawSector {
     qsub: QSub,
 }
 
+/// Identifies the disc in a drive, to tell when it changes. What it holds is
+/// up to the backend; None when the drive is empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MediaId(pub Option<u64>);
+
+/// Description of a disc, as read from a drive
+pub struct DiscInfo {
+    /// Capacity in bytes, see `CdromBackend::byte_len`
+    capacity: usize,
+    sessions: Vec<SessionInfo>,
+    tracks: Vec<TrackInfo>,
+}
+
+/// What a check of the disc in a drive found
+pub enum MediaCheck {
+    /// The disc is the one known, or the drive is still empty
+    Unchanged,
+    /// Another disc, or none
+    Changed { id: MediaId, disc: Option<DiscInfo> },
+}
+
 pub trait CdromBackend: Send {
     /// Check whether a disc is still in the drive and reload TOC's if necessary. Returns
     /// Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if an error
@@ -294,6 +324,29 @@ pub trait CdromBackend: Send {
 
     /// Read a raw CD Digital Audio sector. Other types of sectors are read via `read_bytes`.
     fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
+
+    /// For a disc that can be slow to read, such as in a physical drive: the
+    /// reader that a reader thread uses so the emulator doesn't wait. None
+    /// when the backend is fast enough to read from directly.
+    fn async_reader(&self) -> Option<Arc<dyn CdromReader>> {
+        None
+    }
+
+    /// Whether the disc is read through a reader thread
+    fn is_async(&self) -> bool {
+        self.async_reader().is_some()
+    }
+
+    /// The disc the backend knows of, for `CdromReader::check_media`
+    fn media_id(&self) -> MediaId {
+        MediaId::default()
+    }
+
+    /// Takes in what `CdromReader::check_media` found, on the reader thread.
+    /// Returns the same as `check_media`.
+    fn apply_media_check(&mut self, _check: MediaCheck) -> Result<(), CdromError> {
+        Ok(())
+    }
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +409,122 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio sink for CD audio
     #[serde(skip)]
     audio_sink: Option<Box<dyn AudioSink>>,
+
+    /// The thread that reads the disc when the backend is async
+    #[serde(skip)]
+    disc_thread: Option<DiscThread>,
+
+    /// A command for the reader thread
+    #[serde(skip)]
+    pending: Option<Pending>,
+
+    /// The audio sector the reader thread is on
+    #[serde(skip)]
+    audio_fetch: Option<u32>,
+
+    /// An audio sector from the reader thread, to play next
+    #[serde(skip)]
+    audio_ready: Option<(u32, Result<RawSector, CdromError>)>,
+}
+
+/// A command for the reader thread
+struct Pending {
+    work: PendingWork,
+    /// The reader thread has the job
+    sent: bool,
+    /// What the reader thread answered
+    result: Option<Result<JobOutput, CdromError>>,
+    since: Instant,
+}
+
+impl Pending {
+    fn new(work: PendingWork) -> Self {
+        Self {
+            work,
+            sent: false,
+            result: None,
+            since: Instant::now(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PendingWork {
+    Read {
+        offset: usize,
+        length: usize,
+        block_count: usize,
+    },
+    MediaCheck {
+        known: MediaId,
+        then: AfterCheck,
+    },
+    /// PLAY AUDIO, checking the sector it starts from
+    PlayAudio {
+        start_sector: u32,
+        end_sector: u32,
+    },
+}
+
+impl PendingWork {
+    fn job(&self) -> Job {
+        match *self {
+            Self::Read { offset, length, .. } => Job::Read { offset, length },
+            Self::MediaCheck { known, .. } => Job::CheckMedia { known },
+            Self::PlayAudio { start_sector, .. } => Job::ReadCdda {
+                sector: start_sector,
+            },
+        }
+    }
+
+    fn describe(&self) -> String {
+        match *self {
+            Self::Read { offset, length, .. } => {
+                format!("read at 0x{:X}, length 0x{:X},", offset, length)
+            }
+            Self::MediaCheck { .. } => "media check".to_string(),
+            Self::PlayAudio { start_sector, .. } => {
+                format!("read of audio sector {}", start_sector)
+            }
+        }
+    }
+}
+
+/// What a command does once the check of the disc it starts with passes
+#[derive(Clone, Copy)]
+enum AfterCheck {
+    /// TEST UNIT READY: nothing more
+    Nothing,
+    ReadToc {
+        msf: bool,
+        format: u8,
+        track_or_session: u8,
+        alloc_len: usize,
+    },
+}
+
+/// The answer of the reader thread to a read
+fn read_output(result: Result<JobOutput, CdromError>) -> Result<Vec<u8>, CdromError> {
+    match result? {
+        JobOutput::Read(data) => Ok(data),
+        _ => Err(anyhow!("the reader thread answered something else than a read").into()),
+    }
+}
+
+/// The answer of the reader thread to an audio sector read
+fn read_cdda_output(result: Result<JobOutput, CdromError>) -> Result<RawSector, CdromError> {
+    match result? {
+        JobOutput::ReadCdda(sector) => Ok(*sector),
+        _ => Err(anyhow!("the reader thread answered something else than a sector").into()),
+    }
+}
+
+/// The answer of the reader thread to a media check
+fn media_check_output(result: Result<JobOutput, CdromError>) -> Result<MediaCheck, CdromError> {
+    match result? {
+        JobOutput::CheckMedia(check) => Ok(check),
+        _ => Err(anyhow!("the reader thread answered something else than a check").into()),
+    }
 }
 
 impl ScsiTargetCdrom {
@@ -393,6 +562,10 @@ impl ScsiTargetCdrom {
             ],
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
+            disc_thread: None,
+            pending: None,
+            audio_fetch: None,
+            audio_ready: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -418,18 +591,14 @@ impl ScsiTargetCdrom {
         }
     }
 
-    fn read_toc(
+    /// READ TOC, once the check of the disc has passed
+    fn read_toc_checked(
         &mut self,
         msf: bool,
         format: u8,
         track_or_session: u8, // Interpretation depends on format
         alloc_len: usize,
     ) -> Result<ScsiCmdResult> {
-        let check_result = self.unit_ready();
-        if !matches!(check_result, Ok(ScsiCmdResult::Status(STATUS_GOOD))) {
-            return check_result;
-        }
-
         let backend = self.backend.as_ref().unwrap();
 
         let Some(tracks) = backend.tracks() else {
@@ -667,6 +836,10 @@ impl ScsiTargetCdrom {
     fn eject_media(&mut self) {
         self.event_eject.set();
         self.backend = None;
+        self.disc_thread = None;
+        self.pending = None;
+        self.audio_fetch = None;
+        self.audio_ready = None;
         self.audio_state = AudioState::Stopped;
         self.audio_pos = LBA_START_SECTOR;
     }
@@ -724,14 +897,35 @@ impl ScsiTargetCdrom {
         self.resolve_audio_pos();
 
         if self.audio_state != AudioState::Playing {
+            self.drop_audio_fetch();
             return Ok(());
         }
 
-        let audio_sink = self.audio_sink.as_ref().unwrap();
-
-        let Some(backend) = &self.backend else {
-            return Ok(());
+        let samples = if self.disc_thread.is_some() {
+            // Through the reader thread: play the sector once it is there
+            self.service_disc();
+            let wanted = self.audio_pos;
+            if self.audio_ready.as_ref().is_some_and(|(s, _)| *s != wanted)
+                || self.audio_fetch.is_some_and(|s| s != wanted)
+            {
+                // For another position
+                self.drop_audio_fetch();
+            }
+            let Some((_, samples)) = self.audio_ready.take() else {
+                self.fetch_audio(wanted);
+                return Ok(());
+            };
+            // Ask for the next one now, so it comes while this one plays
+            self.fetch_audio(wanted + 1);
+            samples
+        } else {
+            let Some(backend) = &self.backend else {
+                return Ok(());
+            };
+            backend.read_cdda_sector(self.audio_pos)
         };
+
+        let audio_sink = self.audio_sink.as_ref().unwrap();
 
         let make_out_sample = |port: &AudioPort, channel_samples: &[i16; 4]| -> f32 {
             let sample = match port.channel {
@@ -744,7 +938,6 @@ impl ScsiTargetCdrom {
             sample as f32 / 32768.0 * port.volume as f32 / 255.0
         };
 
-        let samples = backend.read_cdda_sector(self.audio_pos);
         match samples {
             Ok(samples) => {
                 // XXX: Do not require QSub CONTROL field to say audio here.
@@ -828,18 +1021,258 @@ fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> 
 }
 
 impl ScsiTargetCdrom {
-    fn load_cue(&mut self, path: &Path) -> Result<()> {
-        self.backend = Some(Box::new(CuesheetCdromBackend::new(path)?));
+    /// Collects what the reader thread answered, for the command or the
+    /// audio, and gives it a command waiting for it
+    fn service_disc(&mut self) {
+        let Some(thread) = &mut self.disc_thread else {
+            return;
+        };
+        if let Some(result) = thread.poll() {
+            match &mut self.pending {
+                Some(pending) if pending.sent => pending.result = Some(result),
+                _ => {
+                    if let Some(sector) = self.audio_fetch.take() {
+                        self.audio_ready = Some((sector, read_cdda_output(result)));
+                    }
+                }
+            }
+        }
+        // A command goes before audio
+        if let Some(pending) = &mut self.pending
+            && !pending.sent
+            && thread.send(pending.work.job()).is_ok()
+        {
+            pending.sent = true;
+        }
+    }
+
+    /// Hands a command over to the reader thread
+    fn start_pending(&mut self, work: PendingWork) -> ScsiCmdResult {
+        self.pending = Some(Pending::new(work));
+        self.service_disc();
+        ScsiCmdResult::Pending
+    }
+
+    /// Asks the reader thread for an audio sector, unless it is on something
+    /// or a command waits for it
+    fn fetch_audio(&mut self, sector: u32) {
+        if self.audio_fetch.is_some() || self.pending.is_some() {
+            return;
+        }
+        if let Some(thread) = &mut self.disc_thread
+            && thread.send(Job::ReadCdda { sector }).is_ok()
+        {
+            self.audio_fetch = Some(sector);
+        }
+    }
+
+    /// Forgets the audio sector asked for, cancelling the job if running
+    fn drop_audio_fetch(&mut self) {
+        self.audio_ready = None;
+        if self.audio_fetch.take().is_some()
+            && let Some(thread) = &mut self.disc_thread
+        {
+            thread.cancel();
+        }
+    }
+
+    /// Inserts a disc, with a reader thread of its own if the backend is async
+    fn insert_backend(&mut self, backend: Box<dyn CdromBackend>) {
+        // Any reader thread of the previous disc ends once it is done
+        self.pending = None;
+        self.audio_fetch = None;
+        self.audio_ready = None;
+        self.disc_thread =
+            backend
+                .async_reader()
+                .and_then(|reader| match DiscThread::spawn(reader) {
+                    Ok(thread) => Some(thread),
+                    Err(e) => {
+                        log::error!(
+                            "Cannot start the CD-ROM reader thread, reading directly: {}",
+                            e
+                        );
+                        None
+                    }
+                });
+        self.backend = Some(backend);
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
+    }
+
+    fn load_cue(&mut self, path: &Path) -> Result<()> {
+        self.insert_backend(Box::new(CuesheetCdromBackend::new(path)?));
         Ok(())
     }
 
     fn load_physical_drive(&mut self, path: &Path) -> Result<()> {
-        self.backend = Some(new_physical_cdrom_drive_backend(path)?);
-        self.common.set_cc(0, 0);
-        self.event_eject.get_clear();
+        self.insert_backend(new_physical_cdrom_drive_backend(path)?);
         Ok(())
+    }
+
+    /// Checks the disc in the drive, then goes on with the command if it
+    /// passes, as TEST UNIT READY and READ TOC do
+    fn check_media_then(&mut self, then: AfterCheck) -> Result<ScsiCmdResult> {
+        // Report a pending medium-change (from a Toolbox CD swap) exactly once so
+        // the guest re-reads the TOC and remounts the newly-selected disc.
+        if self.pending_unit_attention {
+            self.pending_unit_attention = false;
+            self.common
+                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        let Some(backend) = &mut self.backend else {
+            // No CD inserted
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        };
+
+        if self.disc_thread.is_some() {
+            let known = backend.media_id();
+            return Ok(self.start_pending(PendingWork::MediaCheck { known, then }));
+        }
+
+        let status = backend.check_media();
+        self.media_checked(status, then)
+    }
+
+    /// Takes in what the check of the disc found on the reader thread
+    fn media_check_done(
+        &mut self,
+        result: Result<MediaCheck, CdromError>,
+        then: AfterCheck,
+    ) -> Result<ScsiCmdResult> {
+        let backend = self
+            .backend
+            .as_mut()
+            .expect("media check done without a disc");
+        let status = result.and_then(|check| backend.apply_media_check(check));
+        self.media_checked(status, then)
+    }
+
+    /// Answers the initiator after the check of the disc
+    fn media_checked(
+        &mut self,
+        status: Result<(), CdromError>,
+        then: AfterCheck,
+    ) -> Result<ScsiCmdResult> {
+        match status {
+            Ok(()) => match then {
+                AfterCheck::Nothing => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
+                AfterCheck::ReadToc {
+                    msf,
+                    format,
+                    track_or_session,
+                    alloc_len,
+                } => self.read_toc_checked(msf, format, track_or_session, alloc_len),
+            },
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::Other(e)) => Err(e),
+        }
+    }
+
+    /// PLAY AUDIO, once the sector it starts from is read
+    fn play_audio_from(
+        &mut self,
+        initial_sector: Result<RawSector, CdromError>,
+        start_sector: u32,
+        end_sector: u32,
+    ) -> Result<ScsiCmdResult> {
+        let initial_sector = match initial_sector {
+            Ok(s) => s,
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::BackendDead) => {
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::Other(e)) => return Err(e),
+        };
+
+        if !initial_sector.qsub.is_audio() {
+            // [MMC4] 6.17.2.3:
+            // If the address is not within an audio track the command shall be terminated with
+            // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
+            // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
+            log::error!(
+                "Tried to play audio from non-audio track at sector {}",
+                start_sector
+            );
+            self.common
+                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        if initial_sector.qsub.adr() == 1 {
+            self.curr_mode1_qsub = initial_sector.qsub;
+        }
+
+        self.audio_pos = start_sector;
+        self.audio_stop = end_sector;
+
+        // [MMC4] 6.17.2.3:
+        // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
+        // This shall not be considered an error.
+        // (Apple Audio CD Player issues such a command to set the audio cursor
+        // without initiating playback.)
+        if start_sector != end_sector && self.audio_state != AudioState::Playing {
+            self.audio_state = AudioState::Playing;
+            self.audio_clock = 0;
+        }
+
+        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+    }
+
+    /// Turns the result of a READ into the answer to the initiator
+    fn read_done(
+        &mut self,
+        result: Result<Vec<u8>, CdromError>,
+        offset: usize,
+        length: usize,
+        block_count: usize,
+    ) -> Result<ScsiCmdResult> {
+        match result {
+            Ok(mut result) => {
+                // CD-ROM images may not be exactly aligned on block size
+                // Pad the end to a full block size
+                result.resize(block_count * self.blocksize, 0);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            Err(CdromError::CheckCondition(cc, asc)) => {
+                self.common.set_cc(cc, asc);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::Other(e)) => {
+                log::error!(
+                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
+                    offset,
+                    length,
+                    e
+                );
+                self.common
+                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
+                Err(e)
+            }
+        }
     }
 
     /// Sets the Toolbox-managed image folder for a folder-backed CD-ROM drive.
@@ -923,9 +1356,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
-        self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
-        self.common.set_cc(0, 0);
-        self.event_eject.get_clear();
+        self.insert_backend(Box::new(IsoCdromBackend::new(image)?));
         Ok(())
     }
 
@@ -942,35 +1373,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
-        // Report a pending medium-change (from a Toolbox CD swap) exactly once so
-        // the guest re-reads the TOC and remounts the newly-selected disc.
-        if self.pending_unit_attention {
-            self.pending_unit_attention = false;
-            self.common
-                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
-            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-        }
-
-        let Some(backend) = &mut self.backend else {
-            // No CD inserted
-            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-        };
-
-        match backend.check_media() {
-            Ok(()) => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
-            Err(CdromError::CheckCondition(key, asc)) => {
-                self.common.set_cc(key, asc);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::BackendDead) => {
-                log::error!("The CD-ROM drive became unusable");
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::Other(e)) => Err(e),
-        }
+        self.check_media_then(AfterCheck::Nothing)
     }
 
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
@@ -1131,38 +1534,70 @@ impl ScsiTarget for ScsiTargetCdrom {
         // ScsiTarget::cmd
         let blocksize = self.blocksize;
         let backend = self.backend.as_ref().expect("read() but no media inserted");
-        let start_offset = block_offset * blocksize;
+        let offset = block_offset * blocksize;
         let image_end_offset =
             std::cmp::min((block_offset + block_count) * blocksize, backend.byte_len());
+        let length = image_end_offset - offset;
 
-        match backend.read_bytes(start_offset, image_end_offset - start_offset) {
-            Ok(mut result) => {
-                // CD-ROM images may not be exactly aligned on block size
-                // Pad the end to a full block size
-                result.resize(block_count * blocksize, 0);
-                Ok(ScsiCmdResult::DataIn(result))
-            }
-            Err(CdromError::CheckCondition(cc, asc)) => {
-                self.common.set_cc(cc, asc);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::BackendDead) => {
-                log::error!("The CD-ROM drive became unusable");
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::Other(e)) => {
-                log::error!(
-                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
-                    start_offset,
-                    image_end_offset - start_offset,
-                    e
+        if self.disc_thread.is_some() {
+            return Ok(self.start_pending(PendingWork::Read {
+                offset,
+                length,
+                block_count,
+            }));
+        }
+
+        let result = backend.read_bytes(offset, length);
+        self.read_done(result, offset, length, block_count)
+    }
+
+    fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
+        self.pending.as_ref()?;
+        self.service_disc();
+        let pending = self.pending.as_mut()?;
+        let result = match pending.result.take() {
+            Some(result) => result,
+            None if pending.since.elapsed() >= DRIVE_TIMEOUT => {
+                log::warn!(
+                    "CD-ROM {} timed out after {:?}",
+                    pending.work.describe(),
+                    DRIVE_TIMEOUT
                 );
-                self.common
-                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
-                Err(e)
+                if pending.sent
+                    && let Some(thread) = &mut self.disc_thread
+                {
+                    thread.cancel();
+                }
+                Err(CdromError::CheckCondition(
+                    CC_KEY_NOT_READY,
+                    ASC_LOGICAL_UNIT_NOT_READY,
+                ))
             }
+            None => return None,
+        };
+        let work = self.pending.take()?.work;
+        Some(match work {
+            PendingWork::Read {
+                offset,
+                length,
+                block_count,
+            } => self.read_done(read_output(result), offset, length, block_count),
+            PendingWork::MediaCheck { then, .. } => {
+                self.media_check_done(media_check_output(result), then)
+            }
+            PendingWork::PlayAudio {
+                start_sector,
+                end_sector,
+            } => self.play_audio_from(read_cdda_output(result), start_sector, end_sector),
+        })
+    }
+
+    fn abort_pending(&mut self) {
+        if let Some(pending) = self.pending.take()
+            && pending.sent
+            && let Some(thread) = &mut self.disc_thread
+        {
+            thread.cancel();
         }
     }
 
@@ -1339,7 +1774,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                     log::warn!("Unimplemented READ TOC control 0x{:X}", control);
                 }
 
-                self.read_toc(msf != 0, format, track, alloc_len)
+                self.check_media_then(AfterCheck::ReadToc {
+                    msf: msf != 0,
+                    format,
+                    track_or_session: track,
+                    alloc_len,
+                })
             }
             // PLAY AUDIO MSF
             0x47 => {
@@ -1399,49 +1839,15 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                let initial_sector = match backend.read_cdda_sector(start_sector) {
-                    Ok(s) => s,
-                    Err(CdromError::CheckCondition(key, asc)) => {
-                        self.common.set_cc(key, asc);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::BackendDead) => {
-                        self.eject_media();
-                        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::Other(e)) => return Err(e),
-                };
-
-                if !initial_sector.qsub.is_audio() {
-                    // [MMC4] 6.17.2.3:
-                    // If the address is not within an audio track the command shall be terminated with
-                    // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
-                    // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
-                    log::error!("Tried to play audio from non-audio track at {}", start_msf);
-                    self.common
-                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                if self.disc_thread.is_some() {
+                    return Ok(self.start_pending(PendingWork::PlayAudio {
+                        start_sector,
+                        end_sector,
+                    }));
                 }
 
-                if initial_sector.qsub.adr() == 1 {
-                    self.curr_mode1_qsub = initial_sector.qsub;
-                }
-
-                self.audio_pos = start_sector;
-                self.audio_stop = end_sector;
-
-                // [MMC4] 6.17.2.3:
-                // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
-                // This shall not be considered an error.
-                // (Apple Audio CD Player issues such a command to set the audio cursor
-                // without initiating playback.)
-                if start_sector != end_sector && self.audio_state != AudioState::Playing {
-                    self.audio_state = AudioState::Playing;
-                    self.audio_clock = 0;
-                }
-
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                let initial_sector = backend.read_cdda_sector(start_sector);
+                self.play_audio_from(initial_sector, start_sector, end_sector)
             }
             // PAUSE/RESUME
             0x4B => {
@@ -1779,19 +2185,11 @@ mod tests {
         let set_cmd = [0xD8u8, 5, 0, 0, 0, 0, 0, 0, 0, 0];
         match cd.specific_cmd(&set_cmd, None).unwrap() {
             ScsiCmdResult::Status(STATUS_CHECK_CONDITION) => {}
-            other => panic!("expected CHECK CONDITION, got {:?}", other_status(&other)),
+            other => panic!("expected CHECK CONDITION, got {:?}", other),
         }
         assert!(!cd.pending_unit_attention);
 
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    fn other_status(r: &ScsiCmdResult) -> String {
-        match r {
-            ScsiCmdResult::Status(s) => format!("Status({})", s),
-            ScsiCmdResult::DataIn(d) => format!("DataIn({} bytes)", d.len()),
-            ScsiCmdResult::DataOut(n) => format!("DataOut({})", n),
-        }
     }
 
     /// Parses our LIST_CDS output exactly the way the reference BlueSCSI Toolbox
@@ -1864,9 +2262,9 @@ mod tests {
             if n > MAX_FILE_LISTING_FILES {
                 assert!(
                     matches!(count, ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
-                    "{} images should be rejected, got {}",
+                    "{} images should be rejected, got {:?}",
                     n,
-                    other_status(&count)
+                    count
                 );
                 assert_eq!(
                     cd.common.req_sense(),
@@ -1875,7 +2273,7 @@ mod tests {
             } else {
                 match count {
                     ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![n as u8]),
-                    other => panic!("expected a count, got {}", other_status(&other)),
+                    other => panic!("expected a count, got {:?}", other),
                 }
             }
 
@@ -1884,7 +2282,7 @@ mod tests {
                 .unwrap()
             {
                 ScsiCmdResult::DataIn(d) => d,
-                other => panic!("LIST_CDS returned {}", other_status(&other)),
+                other => panic!("LIST_CDS returned {:?}", other),
             };
             assert_eq!(listed.len(), MAX_FILE_LISTING_FILES.min(n) * 40);
 
@@ -1925,5 +2323,383 @@ mod tests {
         assert_eq!(mode_select(&mut cd, &data), STATUS_CHECK_CONDITION);
         let sense = (CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
         assert_eq!(cd.common().req_sense(), sense);
+    }
+
+    /// A disc read on a reader thread, whose reads wait until the test opens
+    /// the gate
+    struct GatedReader {
+        open: std::sync::atomic::AtomicBool,
+        /// Offsets read, in order
+        reads: std::sync::Mutex<Vec<usize>>,
+        /// The disc in the drive
+        disc: std::sync::Mutex<MediaId>,
+        /// Audio sectors read, in order
+        cdda_reads: std::sync::Mutex<Vec<u32>>,
+    }
+
+    impl GatedReader {
+        fn wait_for_gate(&self) {
+            while !self.open.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn open(&self) {
+            self.open.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    impl CdromReader for GatedReader {
+        fn read_at(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+            self.wait_for_gate();
+            self.reads.lock().unwrap().push(offset);
+            Ok(vec![(offset / 2048) as u8; length])
+        }
+
+        fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+            self.wait_for_gate();
+            self.cdda_reads.lock().unwrap().push(sector);
+            Ok(RawSector {
+                data: [0; RAW_SECTOR_LEN],
+                qsub: QSub::new_mode1(AUDIO_TRACK, 1, 1, sector, LBA_START_SECTOR),
+            })
+        }
+
+        fn check_media(&self, known: MediaId) -> Result<MediaCheck, CdromError> {
+            self.wait_for_gate();
+            let id = *self.disc.lock().unwrap();
+            if id == known {
+                return Ok(MediaCheck::Unchanged);
+            }
+            Ok(MediaCheck::Changed {
+                id,
+                disc: id.0.map(|_| test_disc()),
+            })
+        }
+    }
+
+    /// A disc with one data track of 16 blocks
+    fn test_disc() -> DiscInfo {
+        DiscInfo {
+            capacity: 16 * 2048,
+            sessions: vec![SessionInfo {
+                number: 1,
+                disc_type: 0,
+                start: 0,
+                leadout: LBA_START_SECTOR + 16,
+            }],
+            tracks: vec![TrackInfo {
+                tno: 1,
+                session: 1,
+                control: DATA_TRACK,
+                sector: LBA_START_SECTOR,
+            }],
+        }
+    }
+
+    struct GatedBackend {
+        reader: Arc<GatedReader>,
+        media_id: MediaId,
+        disc_info: Option<DiscInfo>,
+    }
+
+    impl CdromBackend for GatedBackend {
+        fn check_media(&mut self) -> Result<(), CdromError> {
+            panic!("media check on the emulator thread");
+        }
+        fn media_id(&self) -> MediaId {
+            self.media_id
+        }
+        fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+            if let MediaCheck::Changed { id, disc } = check {
+                self.media_id = id;
+                self.disc_info = disc;
+            }
+            if self.disc_info.is_some() {
+                Ok(())
+            } else {
+                Err(CdromError::CheckCondition(
+                    CC_KEY_NOT_READY,
+                    ASC_MEDIUM_NOT_PRESENT,
+                ))
+            }
+        }
+        fn byte_len(&self) -> usize {
+            self.disc_info.as_ref().map_or(0, |d| d.capacity)
+        }
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Result<Vec<u8>, CdromError> {
+            panic!("read on the emulator thread");
+        }
+        fn image_path(&self) -> Option<&Path> {
+            None
+        }
+        fn sessions(&self) -> Option<&[SessionInfo]> {
+            Some(&self.disc_info.as_ref()?.sessions)
+        }
+        fn tracks(&self) -> Option<&[TrackInfo]> {
+            Some(&self.disc_info.as_ref()?.tracks)
+        }
+        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
+            panic!("audio read on the emulator thread");
+        }
+        fn async_reader(&self) -> Option<Arc<dyn CdromReader>> {
+            Some(self.reader.clone())
+        }
+    }
+
+    /// A drive with a gated disc in it
+    fn cdrom_with_gated_disc() -> (ScsiTargetCdrom, Arc<GatedReader>) {
+        let first_disc = MediaId(Some(1));
+        let reader = Arc::new(GatedReader {
+            open: false.into(),
+            reads: Default::default(),
+            disc: first_disc.into(),
+            cdda_reads: Default::default(),
+        });
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.insert_backend(Box::new(GatedBackend {
+            reader: reader.clone(),
+            media_id: first_disc,
+            disc_info: Some(test_disc()),
+        }));
+        (cd, reader)
+    }
+
+    /// TEST UNIT READY
+    fn test_unit_ready(cd: &mut ScsiTargetCdrom) -> ScsiCmdResult {
+        cd.cmd(&[0x00, 0, 0, 0, 0, 0], None).unwrap()
+    }
+
+    /// READ(10) of one block
+    fn read10(cd: &mut ScsiTargetCdrom, lba: u8) -> ScsiCmdResult {
+        cd.cmd(&[0x28, 0, 0, 0, 0, lba, 0, 0, 1, 0], None).unwrap()
+    }
+
+    /// Polls the pending command until it completes
+    fn wait_pending(cd: &mut ScsiTargetCdrom) -> ScsiCmdResult {
+        let start = Instant::now();
+        loop {
+            if let Some(result) = cd.poll_pending() {
+                return result.unwrap();
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "read never done");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn async_read_completes_in_background() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd, 3), ScsiCmdResult::Pending));
+        assert!(cd.poll_pending().is_none());
+
+        reader
+            .open
+            .store(true, std::sync::atomic::Ordering::Release);
+        match wait_pending(&mut cd) {
+            ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![3; 2048]),
+            other => panic!("expected the block, got {:?}", other),
+        }
+        assert!(cd.poll_pending().is_none());
+    }
+
+    #[test]
+    fn aborted_read_is_dropped() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd, 1), ScsiCmdResult::Pending));
+        cd.abort_pending();
+        // The drive is still on the aborted read: this one waits for it
+        assert!(matches!(read10(&mut cd, 3), ScsiCmdResult::Pending));
+        assert!(!cd.pending.as_ref().unwrap().sent);
+
+        reader.open();
+        match wait_pending(&mut cd) {
+            ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![3; 2048]),
+            other => panic!("expected block 3, got {:?}", other),
+        }
+        assert_eq!(*reader.reads.lock().unwrap(), [2048, 3 * 2048]);
+    }
+
+    #[test]
+    fn stuck_read_times_out() {
+        let (mut cd, _reader) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd, 1), ScsiCmdResult::Pending));
+        cd.pending.as_mut().unwrap().since = Instant::now() - DRIVE_TIMEOUT;
+
+        match cd.poll_pending().unwrap().unwrap() {
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION) => {}
+            other => panic!("expected CHECK CONDITION, got {:?}", other),
+        }
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_LOGICAL_UNIT_NOT_READY)
+        );
+    }
+
+    #[test]
+    fn unit_ready_checks_media_in_background() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(cd.poll_pending().is_none());
+
+        reader.open();
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_GOOD)
+        ));
+    }
+
+    #[test]
+    fn unit_ready_sees_media_change() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        reader.open();
+
+        // The disc is taken out
+        *reader.disc.lock().unwrap() = MediaId(None);
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+        );
+
+        // Another one goes in
+        *reader.disc.lock().unwrap() = MediaId(Some(2));
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_GOOD)
+        ));
+    }
+
+    #[test]
+    fn abandoned_media_check_keeps_the_change() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        *reader.disc.lock().unwrap() = MediaId(None);
+
+        // The check that would find the disc gone is abandoned
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        cd.abort_pending();
+        reader.open();
+
+        // The next one still finds it gone
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+        );
+    }
+
+    #[test]
+    fn read_toc_goes_on_after_media_check() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        // READ TOC, format 0, from track 1, 100 bytes
+        let read_toc = [0x43, 0, 0, 0, 0, 0, 1, 0, 100, 0];
+        assert!(matches!(
+            cd.cmd(&read_toc, None).unwrap(),
+            ScsiCmdResult::Pending
+        ));
+
+        reader.open();
+        match wait_pending(&mut cd) {
+            // The track 1 and lead-out descriptors after the header
+            ScsiCmdResult::DataIn(d) => assert_eq!(d.len(), 4 + 2 * 8),
+            other => panic!("expected the TOC, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stuck_media_check_times_out() {
+        let (mut cd, _reader) = cdrom_with_gated_disc();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        cd.pending.as_mut().unwrap().since = Instant::now() - DRIVE_TIMEOUT;
+
+        assert!(matches!(
+            cd.poll_pending().unwrap().unwrap(),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_LOGICAL_UNIT_NOT_READY)
+        );
+    }
+
+    /// PLAY AUDIO MSF from 00:02:00 to 00:02:10
+    const PLAY_AUDIO: [u8; 10] = [0x47, 0, 0, 0, 2, 0, 0, 2, 10, 0];
+
+    #[test]
+    fn play_audio_checks_first_sector_in_background() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(
+            cd.cmd(&PLAY_AUDIO, None).unwrap(),
+            ScsiCmdResult::Pending
+        ));
+        assert!(cd.audio_state == AudioState::Stopped);
+
+        reader.open();
+        assert!(matches!(
+            wait_pending(&mut cd),
+            ScsiCmdResult::Status(STATUS_GOOD)
+        ));
+        assert!(cd.audio_state == AudioState::Playing);
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+        assert_eq!(*reader.cdda_reads.lock().unwrap(), [LBA_START_SECTOR]);
+    }
+
+    #[test]
+    fn audio_plays_through_reader_thread() {
+        use crate::mac::scsi::test_target::TestContext;
+
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        cd.audio_sink = Some(crate::renderer::null_audio_sink());
+        cd.audio_state = AudioState::Playing;
+        cd.audio_pos = LBA_START_SECTOR;
+        cd.audio_stop = LBA_START_SECTOR + 10;
+
+        // The drive doesn't answer: ticking goes on without waiting for it,
+        // and the audio waits
+        for _ in 0..100 {
+            cd.tick(1, &TestContext).unwrap();
+        }
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+
+        reader.open();
+        let start = Instant::now();
+        while cd.audio_pos < LBA_START_SECTOR + 3 {
+            assert!(start.elapsed() < Duration::from_secs(5), "audio stuck");
+            cd.tick(1, &TestContext).unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Sector by sector, each read once
+        let reads = reader.cdda_reads.lock().unwrap().clone();
+        assert_eq!(
+            reads[..3],
+            [LBA_START_SECTOR, LBA_START_SECTOR + 1, LBA_START_SECTOR + 2]
+        );
+    }
+
+    #[test]
+    fn eject_ends_the_reader_thread() {
+        let (mut cd, reader) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd, 1), ScsiCmdResult::Pending));
+        cd.eject_media();
+        assert!(cd.poll_pending().is_none());
+
+        // Once the drive is done with the read, the thread lets go of it
+        reader
+            .open
+            .store(true, std::sync::atomic::Ordering::Release);
+        let start = Instant::now();
+        while Arc::strong_count(&reader) > 1 {
+            assert!(start.elapsed() < Duration::from_secs(5), "thread still up");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }

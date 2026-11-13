@@ -34,6 +34,8 @@ pub(crate) enum CmdOutcome {
     DataIn,
     /// The target expects this many bytes from the initiator
     DataOut(usize),
+    /// The target is working on the command in the background: poll() it
+    Busy,
 }
 
 /// The SCSI bus and the targets attached to it
@@ -56,6 +58,14 @@ pub struct ScsiBus {
 
     /// Status of the last executed command
     pub(crate) status: u8,
+
+    /// The selected target is running a command in the background
+    // TODO: support multiple pending commands simultaneously. For now a busy
+    // target holds the bus, so only the selected target can be pending. With
+    // disconnect/reselect, this becomes a pending flag per target, and poll()
+    // checks every target and reselects the initiator for one that finished.
+    #[serde(default)]
+    pending: bool,
 
     /// Attached targets
     #[serde(with = "BigArray")]
@@ -88,6 +98,7 @@ impl ScsiBus {
             dataout_len: 0,
             responsebuf: VecDeque::default(),
             status: 0,
+            pending: false,
             targets: Default::default(),
             ticking: None,
             toolbox: BlueSCSI::default(),
@@ -315,22 +326,58 @@ impl ScsiBus {
             }
         };
 
-        if self.scsi_trace_cdb {
-            match &result {
-                Ok(ScsiCmdResult::Status(s)) => {
-                    debug!("SCSI CDB {:02X} -> Status({:02X})", cmd_op, s);
-                }
-                Ok(ScsiCmdResult::DataIn(d)) => {
-                    debug!("SCSI CDB {:02X} -> DataIn {}B", cmd_op, d.len());
-                }
-                Ok(ScsiCmdResult::DataOut(n)) => {
-                    debug!("SCSI CDB {:02X} -> DataOut {}B", cmd_op, n);
-                }
-                Err(e) => debug!("SCSI CDB {:02X} -> Err: {:#}", cmd_op, e),
-            }
-        }
+        self.trace_result(cmd_op, &result);
+        self.finish(result?)
+    }
 
-        match result? {
+    /// Whether the selected target is running a command in the background
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Checks on a command running in the background. Returns None while it
+    /// is still running, or what should happen on the bus next.
+    pub(crate) fn poll(&mut self) -> Option<Result<CmdOutcome>> {
+        if !self.pending {
+            return None;
+        }
+        let result = match self.targets[self.sel_id].as_mut() {
+            Some(target) => target.poll_pending()?,
+            None => Err(anyhow::anyhow!(
+                "SCSI target ID {} detached during a command",
+                self.sel_id
+            )),
+        };
+        self.pending = false;
+        let cmd_op = self.cmdbuf.first().copied().unwrap_or(0);
+        self.trace_result(cmd_op, &result);
+        Some(result.and_then(|r| self.finish(r)))
+    }
+
+    /// Drops a command running in the background, as on a bus reset
+    pub(crate) fn abort_pending(&mut self) {
+        if !std::mem::take(&mut self.pending) {
+            return;
+        }
+        if let Some(target) = self.targets[self.sel_id].as_mut() {
+            target.abort_pending();
+        }
+    }
+
+    fn trace_result(&self, cmd_op: u8, result: &Result<ScsiCmdResult>) {
+        if !self.scsi_trace_cdb {
+            return;
+        }
+        match result {
+            Ok(r) => debug!("SCSI CDB {:02X} -> {:?}", cmd_op, r),
+            Err(e) => debug!("SCSI CDB {:02X} -> Err: {:#}", cmd_op, e),
+        }
+    }
+
+    /// Takes in what the target answered and reports what should happen on
+    /// the bus next.
+    fn finish(&mut self, result: ScsiCmdResult) -> Result<CmdOutcome> {
+        match result {
             ScsiCmdResult::Status(s) => {
                 self.status = s;
                 Ok(CmdOutcome::Status)
@@ -351,6 +398,10 @@ impl ScsiBus {
                 } else {
                     Ok(CmdOutcome::DataOut(len))
                 }
+            }
+            ScsiCmdResult::Pending => {
+                self.pending = true;
+                Ok(CmdOutcome::Busy)
             }
         }
     }
