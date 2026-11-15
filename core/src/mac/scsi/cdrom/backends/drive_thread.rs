@@ -1,9 +1,9 @@
 //! A thread that does all the I/O of a physical CD-ROM drive
 //!
 //! A physical drive can take seconds to answer while its disc spins up, so its
-//! I/O happens on a thread of its own. A CD-ROM backend for a physical drive
-//! owns a `DriveThread` and sends it requests, which the thread serves one at a
-//! time, in order.
+//! I/O happens on a thread of its own, opening the drive included. A CD-ROM
+//! backend for a physical drive owns a `DriveThread` and sends it requests,
+//! which the thread serves one at a time, in order.
 //!
 //! This module is platform-independent. A platform provides the drive itself
 //! by implementing `PhysicalCdromDrive`, and gets its `CdromBackend` from
@@ -114,6 +114,9 @@ fn run(drive: &mut impl PhysicalCdromDrive, requests: &Receiver<Request>) {
 ///
 /// Dropping this abandons the request: the thread still does the I/O, and its
 /// reply is thrown away.
+// TODO: we might want to cancel abandoned requests: skip one the thread
+// hasn't started yet, and possibly cancel the I/O of the one in progress, so
+// that a slow drive doesn't hold up the requests after it.
 pub struct Reply<T>(Receiver<Result<T, CdromError>>);
 
 impl<T> Reply<T> {
@@ -143,10 +146,9 @@ impl<T> Reply<T> {
 
 /// The thread of a physical CD-ROM drive, as seen from the emulator
 ///
-/// Each method sends a request to the thread and waits for its reply, unless
-/// it returns a `Reply` to poll. Dropping
-/// this lets the thread end once its current I/O is over, without waiting for
-/// it.
+/// Each `start_*` method sends a request to the thread and returns its
+/// `Reply` without waiting. Dropping this lets the thread end once it has
+/// served the requests already sent, without waiting for it.
 pub struct DriveThread {
     /// Requests to the drive thread
     requests: Sender<Request>,

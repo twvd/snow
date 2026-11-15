@@ -61,6 +61,9 @@ pub struct ScsiBus {
 
     /// The selected target is running a command in the background. A busy
     /// target holds the bus, so only the selected target can be pending.
+    // TODO: investigate whether several SCSI devices can have commands in
+    // flight at once (a target disconnecting from the bus during a long
+    // command, then reselecting the initiator), and how to support it.
     pending: bool,
 
     /// Attached targets
