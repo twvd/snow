@@ -6,38 +6,64 @@
 //! time, in order.
 //!
 //! This module is platform-independent. A platform provides the drive itself
-//! by implementing `PhysicalCdromDrive`.
+//! by implementing `PhysicalCdromDrive`, and gets its `CdromBackend` from
+//! `PhysicalDriveCdromBackend`.
 
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
-use crate::mac::scsi::cdrom::{CdromError, DiscInfo, MediaCheck, RawSector};
+use crate::mac::scsi::cdrom::{
+    CdromBackend, CdromError, DiscInfo, MediaCheck, RawSector, SessionInfo, Started, TrackInfo,
+};
 use crate::mac::scsi::{ASC_LOGICAL_UNIT_BECOMING_READY, CC_KEY_NOT_READY};
 
-/// The blocking operations of a physical CD-ROM drive. Only called on the
-/// drive thread.
+/// The blocking operations of a physical CD-ROM drive, which a platform
+/// implements
+///
+/// Every method is only called on the drive thread, and may block for as long
+/// as the drive takes. Sector numbers are absolute: LBA 0 is sector 150
+/// (00:02:00).
+///
+/// Errors follow what the target reports to the guest:
+/// - no disc in the drive: `CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)`;
+/// - the device is gone, for instance unplugged: `BackendDead`, which ejects
+///   the drive;
+/// - anything unexpected: `Other`.
 pub trait PhysicalCdromDrive: Send {
     /// What the drive needs to be opened, such as its path
     type Config: Send + 'static;
 
-    /// Opens the drive and loads the disc information
+    /// Opens the drive and loads the information of the disc in it. An error
+    /// is reported to the user as the load failing.
     fn open(config: Self::Config) -> Result<Self>
     where
         Self: Sized;
 
-    /// Checks whether a disc is still in the drive, and reloads the disc
-    /// information if it changed. See `CdromBackend::check_media`.
+    /// Checks whether a disc is still in the drive. If the disc changed since
+    /// the last check (a drive usually counts media changes), reloads the disc
+    /// information, which is None for an empty drive. Returns `Ok(())` when a
+    /// disc is in. See `CdromBackend::check_media`.
     fn check_media(&mut self) -> Result<(), CdromError>;
 
-    /// The information of the disc in the drive, None if there is no disc
+    /// The information of the disc in the drive, None if there is no disc.
+    /// Sessions and tracks use absolute sector numbers. `capacity` is the user
+    /// data in bytes, 2048 per sector up to the lead-out, as
+    /// `CdromBackend::byte_len`.
     fn disc_info(&self) -> Option<&DiscInfo>;
 
-    /// Reads user data. See `CdromBackend::read_bytes`.
+    /// Reads `length` bytes of user data at `offset`, counting 2048 bytes per
+    /// sector from LBA 0. Reading an audio sector fails with
+    /// `CheckCondition(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)`.
+    /// See `CdromBackend::read_bytes`.
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError>;
 
-    /// Reads a raw CD Digital Audio sector. See `CdromBackend::read_cdda_sector`.
+    /// Reads the raw CD Digital Audio sector at the absolute `sector`: 2352
+    /// bytes of 16-bit little-endian stereo samples, and the sector's Q
+    /// subchannel. A drive that can't read subchannel data can build one from
+    /// the TOC with `QSub::new_mode1`. See `CdromBackend::read_cdda_sector`.
     fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
 }
 
@@ -278,10 +304,68 @@ impl DriveThread {
     }
 }
 
+/// A CD-ROM backend for a physical drive, whose I/O happens on a `DriveThread`
+pub struct PhysicalDriveCdromBackend {
+    path: PathBuf,
+    thread: DriveThread,
+}
+
+impl PhysicalDriveCdromBackend {
+    /// Starts the drive thread for a drive of type `D`, opened with `config`.
+    /// `path` is the drive's path, as reported by `image_path`.
+    pub fn new<D: PhysicalCdromDrive + 'static>(path: &Path, config: D::Config) -> Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            thread: DriveThread::spawn::<D>(config)?,
+        })
+    }
+}
+
+impl CdromBackend for PhysicalDriveCdromBackend {
+    fn check_media(&mut self) -> Started<MediaCheck> {
+        Started::Pending(self.thread.start_check_media())
+    }
+
+    fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+        self.thread.apply_media_check(check)
+    }
+
+    fn take_load_error(&mut self) -> Option<anyhow::Error> {
+        self.thread.take_load_error()
+    }
+
+    fn byte_len(&self) -> usize {
+        self.thread
+            .disc_info()
+            .map(|info| info.capacity)
+            .unwrap_or(0)
+    }
+
+    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+        Started::Pending(self.thread.start_read_bytes(offset, length))
+    }
+
+    fn image_path(&self) -> Option<&Path> {
+        Some(&self.path)
+    }
+
+    fn sessions(&self) -> Option<&[SessionInfo]> {
+        Some(&self.thread.disc_info()?.sessions)
+    }
+
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(&self.thread.disc_info()?.tracks)
+    }
+
+    fn read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
+        Started::Pending(self.thread.start_read_cdda_sector(sector))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::scsi::cdrom::{LBA_START_SECTOR, QSub, RAW_SECTOR_LEN, SessionInfo, TrackInfo};
+    use crate::mac::scsi::cdrom::{LBA_START_SECTOR, QSub, RAW_SECTOR_LEN};
     use crate::mac::scsi::{ASC_MEDIUM_NOT_PRESENT, CC_KEY_NOT_READY};
     use std::sync::{Arc, Mutex};
 
@@ -661,5 +745,45 @@ mod tests {
             panic!("CDDA read failed");
         };
         assert!(sector.data.iter().all(|b| *b == 9));
+    }
+
+    #[test]
+    fn physical_drive_backend_goes_through_the_thread() {
+        let mut backend =
+            PhysicalDriveCdromBackend::new::<FakeDrive>(Path::new("fake"), drive_with_disc())
+                .unwrap();
+        assert_eq!(backend.image_path(), Some(Path::new("fake")));
+
+        // Check the media until the drive is open
+        let mut result = None;
+        for _ in 0..1000 {
+            let Started::Pending(reply) = backend.check_media() else {
+                panic!("the media check should go to the drive thread");
+            };
+            let Ok(check) = reply.wait() else {
+                panic!("the drive thread is gone");
+            };
+            match backend.apply_media_check(check) {
+                Err(CdromError::CheckCondition(_, ASC_LOGICAL_UNIT_BECOMING_READY)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                other => {
+                    result = Some(other);
+                    break;
+                }
+            }
+        }
+        assert!(matches!(result, Some(Ok(()))));
+        assert_eq!(backend.byte_len(), 4096);
+        assert_eq!(backend.tracks().unwrap().len(), 1);
+        assert_eq!(backend.sessions().unwrap().len(), 1);
+
+        let Started::Pending(reply) = backend.read_bytes(0x100, 4) else {
+            panic!("the read should go to the drive thread");
+        };
+        let Ok(data) = reply.wait() else {
+            panic!("read failed");
+        };
+        assert_eq!(data, [0, 1, 2, 3]);
     }
 }

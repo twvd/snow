@@ -19,11 +19,11 @@ use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_NOT_READY,
     cdrom::{
-        CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, MediaCheck, Msf, QSub,
-        RAW_SECTOR_LEN, RawSector, SessionInfo, Started, TrackInfo,
+        CdromError, DiscInfo, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector, SessionInfo,
+        TrackInfo,
         backends::{
-            PhysicalCdromDrive as PhysicalCdromDriveInfo,
-            drive_thread::{DriveThread, PhysicalCdromDrive},
+            PhysicalCdromDriveInfo,
+            drive_thread::{PhysicalCdromDrive, PhysicalDriveCdromBackend},
         },
     },
 };
@@ -72,61 +72,10 @@ pub fn is_physical_cdrom_drive_path(path: &Path) -> bool {
     unsafe { GetDriveTypeW(&HSTRING::from(path.as_path())) == DRIVE_CDROM }
 }
 
-/// A CD-ROM backend for a physical drive on Windows. The drive's I/O happens
-/// on a thread of its own.
-pub struct WindowsDriveCdromBackend {
-    path: PathBuf,
-    thread: DriveThread,
-}
-
-impl WindowsDriveCdromBackend {
-    pub fn new(path: &Path) -> Result<Self> {
-        Ok(Self {
-            path: path.to_path_buf(),
-            thread: DriveThread::spawn::<WindowsPhysicalCdromDrive>(path.to_path_buf())?,
-        })
-    }
-}
-
-impl CdromBackend for WindowsDriveCdromBackend {
-    fn check_media(&mut self) -> Started<MediaCheck> {
-        Started::Pending(self.thread.start_check_media())
-    }
-
-    fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
-        self.thread.apply_media_check(check)
-    }
-
-    fn take_load_error(&mut self) -> Option<anyhow::Error> {
-        self.thread.take_load_error()
-    }
-
-    fn byte_len(&self) -> usize {
-        self.thread
-            .disc_info()
-            .map(|info| info.capacity)
-            .unwrap_or(0)
-    }
-
-    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
-        Started::Pending(self.thread.start_read_bytes(offset, length))
-    }
-
-    fn image_path(&self) -> Option<&Path> {
-        Some(&self.path)
-    }
-
-    fn sessions(&self) -> Option<&[SessionInfo]> {
-        Some(&self.thread.disc_info()?.sessions)
-    }
-
-    fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&self.thread.disc_info()?.tracks)
-    }
-
-    fn read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
-        Started::Pending(self.thread.start_read_cdda_sector(sector))
-    }
+/// A CD-ROM backend for the physical drive at `path`, whose I/O happens on a
+/// thread of its own
+pub fn new_backend(path: &Path) -> Result<PhysicalDriveCdromBackend> {
+    PhysicalDriveCdromBackend::new::<WindowsPhysicalCdromDrive>(path, path.to_path_buf())
 }
 
 /// The I/O of a physical CD-ROM drive on Windows. Only used on the drive
