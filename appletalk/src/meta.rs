@@ -220,17 +220,25 @@ fn read_apple_double(container: &Path, file_path: &Path) -> Option<Meta> {
     Some(meta)
 }
 
-/// The entry table of a container whose 26-byte header was just read
+/// The entry table of a container whose 26-byte header was just read.
+///
+/// An entry that runs past the end of the container keeps only the bytes
+/// the container holds: a truncated `._` file must not announce a fork
+/// longer than what can be read from it.
 fn read_entry_table(f: &mut fs::File, head: &[u8; 26]) -> Option<Vec<(u32, u32, u32)>> {
+    let container_len = f.metadata().ok()?.len();
     let num_entries = usize::from(u16::from_be_bytes([head[24], head[25]]));
     let mut entries = Vec::with_capacity(num_entries);
     for _ in 0..num_entries {
         let mut entry = [0u8; 12];
         f.read_exact(&mut entry).ok()?;
+        let offset = u32::from_be_bytes(entry[4..8].try_into().ok()?);
+        let len = u32::from_be_bytes(entry[8..12].try_into().ok()?);
+        let present = container_len.saturating_sub(u64::from(offset));
         entries.push((
             u32::from_be_bytes(entry[..4].try_into().ok()?),
-            u32::from_be_bytes(entry[4..8].try_into().ok()?),
-            u32::from_be_bytes(entry[8..12].try_into().ok()?),
+            offset,
+            u64::from(len).min(present) as u32,
         ));
     }
     Some(entries)

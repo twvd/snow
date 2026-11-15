@@ -203,9 +203,16 @@ impl Afp {
         let mut data = vec![0; count];
         let mut total = 0;
         let mut newline_hit = false;
+        // The host file can end before the fork length recorded at open:
+        // the file was truncated since. The read then ends there with
+        // afpEOFErr, as at the end of the fork.
+        let mut host_ended = false;
         while total < count {
             match fork.file.read(&mut data[total..]) {
-                Ok(0) => break,
+                Ok(0) => {
+                    host_ended = true;
+                    break;
+                }
                 Ok(n) => {
                     if mask != 0
                         && let Some(pos) = data[total..total + n]
@@ -232,7 +239,7 @@ impl Afp {
         if newline_hit {
             // The line break ended the read: a complete text line
             Ok((data, false))
-        } else if requested > total as u64 && fork.len <= offset + total as u64 {
+        } else if host_ended || (requested > total as u64 && fork.len <= offset + total as u64) {
             // The fork ended before the request did: the bytes read so
             // far go back with afpEOFErr (ch13's FPRead rule). A read cut
             // short by the reply's capacity is not that: the client asks
