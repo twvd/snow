@@ -1074,7 +1074,7 @@ impl ScsiTargetCdrom {
         }
     }
 
-    /// Finishes PLAY AUDIO MSF with the first sector to play
+    /// Finishes PLAY AUDIO MSF once its first sector has been scanned
     fn play_audio_from(
         &mut self,
         initial_sector: Result<RawSector, CdromError>,

@@ -122,8 +122,9 @@ pub(crate) enum ScsiCmdResult {
     /// Expects data written to target
     DataOut(usize),
     /// The target is still working on the command, in the background. The
-    /// result comes from `ScsiTarget::poll_pending`; until then the target
-    /// holds the bus without requesting a transfer.
+    /// result comes from `ScsiTarget::poll_pending` (or `wait_pending` when
+    /// saving a state); until then the target holds the bus without
+    /// requesting a transfer.
     Pending,
 }
 
