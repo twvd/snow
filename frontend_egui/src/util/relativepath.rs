@@ -53,6 +53,12 @@ impl RelativePath {
         Ok(())
     }
 
+    /// Whether the path is empty: neither resolved nor read from a file
+    #[cfg_attr(not(feature = "afp_server"), allow(dead_code))]
+    pub fn is_empty(&self) -> bool {
+        self.abs.is_none() && self.rel.as_os_str().is_empty()
+    }
+
     pub fn get_absolute(&self) -> PathBuf {
         self.abs.clone().expect("after_deserialize not called")
     }
