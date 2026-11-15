@@ -393,16 +393,41 @@ impl ScsiController {
     /// Runs the command in the buffer and moves the bus to the phase the
     /// target asked for.
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
-        match self.bus.cmd_run(outdata)? {
+        let outcome = self.bus.cmd_run(outdata)?;
+        self.enter_outcome(outcome);
+        Ok(())
+    }
+
+    /// Moves the bus to the phase the target asked for
+    fn enter_outcome(&mut self, outcome: CmdOutcome) {
+        match outcome {
             CmdOutcome::Status => self.set_phase(ScsiBusPhase::Status),
             CmdOutcome::DataIn => self.set_phase(ScsiBusPhase::DataIn),
             CmdOutcome::DataOut(_) => self.set_phase(ScsiBusPhase::DataOut),
             // The target holds the bus in the current phase without
-            // requesting anything until the command completes
+            // requesting anything until the command completes (tick())
             CmdOutcome::Busy => self.deassert_req(),
         }
+    }
 
-        Ok(())
+    /// Takes in the result of a command that ran in the background
+    fn pending_done(&mut self, result: Result<CmdOutcome>) {
+        match result {
+            Ok(outcome) => self.enter_outcome(outcome),
+            Err(e) => error!("SCSI command error: {:#}", e),
+        }
+    }
+
+    /// Waits for the command the target is running in the background, if any,
+    /// and moves the bus on as `tick()` would when the command finishes.
+    ///
+    /// This blocks until the target is done, which may take seconds with a
+    /// physical drive. It is only for saving a state, which can't hold a
+    /// command in flight.
+    pub fn settle(&mut self) {
+        while let Some(result) = self.bus.wait() {
+            self.pending_done(result);
+        }
     }
 
     /// The bus and its targets
@@ -480,6 +505,11 @@ impl ScsiController {
     }
 
     fn deassert_ack(&mut self) {
+        if self.bus.is_pending() {
+            // The target is busy with the command and requested nothing, so
+            // there is no handshake to complete
+            return;
+        }
         match self.busphase {
             ScsiBusPhase::DataOut => {
                 if self.bus.dataout_len > 0 {
@@ -616,6 +646,13 @@ impl BusMember<Address> for ScsiController {
 
                 self.reg_icr.0 = val;
 
+                // A bus reset takes the target off a command running in the
+                // background
+                if set.assert_rst() && self.bus.is_pending() {
+                    self.bus.abort_pending();
+                    self.set_phase(ScsiBusPhase::Free);
+                }
+
                 if set.assert_ack() {
                     self.assert_ack();
                 } else if clr.assert_ack() {
@@ -682,6 +719,10 @@ impl Tickable<&dyn EmuContext> for ScsiController {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.bus.tick_targets(ticks, ctx)?;
 
+        if let Some(result) = self.bus.poll() {
+            self.pending_done(result);
+        }
+
         Ok(ticks)
     }
 }
@@ -730,5 +771,130 @@ impl Debuggable for ScsiController {
             dbgprop_udec!("Response buffer len", self.bus.responsebuf.len()),
             dbgprop_udec!("Data out len", self.bus.dataout_len),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mac::scsi::test_target::{SLOW_BLOCKSIZE, SlowState, SlowTarget, TestContext};
+    use std::sync::{Arc, Mutex};
+
+    const REG_ODR: Address = 0x00;
+    const REG_ICR: Address = 0x10;
+    const REG_MR: Address = 0x20;
+    const REG_CSR: Address = 0x40;
+
+    const ICR_ACK: u8 = 1 << 4;
+    const ICR_SEL: u8 = 1 << 2;
+    const ICR_RST: u8 = 1 << 7;
+    const MR_ARBITRATE: u8 = 1 << 0;
+    const CSR_REQ: u8 = 1 << 5;
+
+    /// A 5380 with a target at ID 0 whose reads wait for the test
+    fn ncr_with_slow_target() -> (ScsiController, Arc<Mutex<SlowState>>) {
+        let mut ncr = ScsiController::new();
+        let (target, state) = SlowTarget::new();
+        ncr.bus_mut().targets[0] = Some(target);
+        (ncr, state)
+    }
+
+    /// REQ as the initiator sees it, after the delay of the model
+    fn req(ncr: &mut ScsiController) -> bool {
+        ncr.read(REG_CSR).unwrap();
+        ncr.read(REG_CSR).unwrap() & CSR_REQ != 0
+    }
+
+    /// Sends a byte with the ACK handshake
+    fn handshake_out(ncr: &mut ScsiController, val: u8) {
+        assert!(req(ncr), "no REQ for byte {:02X}", val);
+        ncr.write(REG_ODR, val).unwrap();
+        ncr.write(REG_ICR, ICR_ACK).unwrap();
+        ncr.write(REG_ICR, 0).unwrap();
+    }
+
+    /// Arbitrates as ID 7, selects ID 0 and sends a READ(6) of one block,
+    /// which stays pending
+    fn start_slow_read(ncr: &mut ScsiController, state: &Mutex<SlowState>) {
+        ncr.write(REG_ODR, 0x80).unwrap();
+        ncr.write(REG_MR, MR_ARBITRATE).unwrap();
+        ncr.write(REG_ICR, ICR_SEL).unwrap();
+        ncr.write(REG_MR, 0).unwrap();
+        ncr.write(REG_ODR, 0x01).unwrap();
+        ncr.write(REG_ICR, 0).unwrap();
+        assert_eq!(ncr.busphase, ScsiBusPhase::Command);
+
+        for b in [0x08, 0, 0, 0, 1, 0] {
+            handshake_out(ncr, b);
+        }
+        assert!(state.lock().unwrap().reading);
+        // The target holds the bus without requesting anything
+        assert_eq!(ncr.busphase, ScsiBusPhase::Command);
+        assert!(!req(ncr));
+    }
+
+    #[test]
+    fn pending_read_requests_data_when_done() {
+        let (mut ncr, state) = ncr_with_slow_target();
+        start_slow_read(&mut ncr, &state);
+
+        ncr.tick(1, &TestContext).unwrap();
+        assert!(!req(&mut ncr));
+
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+        ncr.tick(1, &TestContext).unwrap();
+        assert_eq!(ncr.busphase, ScsiBusPhase::DataIn);
+        assert!(req(&mut ncr));
+        assert_eq!(ncr.read(REG_ODR).unwrap(), 0x55);
+    }
+
+    #[test]
+    fn pending_read_ignores_handshakes() {
+        let (mut ncr, state) = ncr_with_slow_target();
+        start_slow_read(&mut ncr, &state);
+
+        // A byte too many, as with pseudo-DMA writes past the CDB
+        ncr.write(REG_ODR, 0x08).unwrap();
+        ncr.write(REG_ICR, ICR_ACK).unwrap();
+        ncr.write(REG_ICR, 0).unwrap();
+        assert!(!req(&mut ncr));
+        assert_eq!(ncr.bus().cmdbuf, [0x08, 0, 0, 0, 1, 0]);
+
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+        ncr.tick(1, &TestContext).unwrap();
+        assert_eq!(ncr.busphase, ScsiBusPhase::DataIn);
+    }
+
+    #[test]
+    fn bus_reset_drops_pending_read() {
+        let (mut ncr, state) = ncr_with_slow_target();
+        start_slow_read(&mut ncr, &state);
+
+        ncr.write(REG_ICR, ICR_RST).unwrap();
+        ncr.write(REG_ICR, 0).unwrap();
+        assert_eq!(state.lock().unwrap().aborts, 1);
+        assert_eq!(ncr.busphase, ScsiBusPhase::Free);
+
+        // Nothing comes of the read afterwards, and the next command runs
+        ncr.tick(1, &TestContext).unwrap();
+        assert_eq!(ncr.busphase, ScsiBusPhase::Free);
+        start_slow_read(&mut ncr, &state);
+    }
+
+    #[test]
+    fn settle_completes_pending_read_without_ticking() {
+        let (mut ncr, state) = ncr_with_slow_target();
+        start_slow_read(&mut ncr, &state);
+
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+        ncr.settle();
+        assert!(!ncr.bus().is_pending());
+        assert_eq!(ncr.busphase, ScsiBusPhase::DataIn);
+        assert!(req(&mut ncr));
+        assert_eq!(ncr.read(REG_ODR).unwrap(), 0x55);
+
+        // Nothing left to settle
+        ncr.settle();
+        assert_eq!(ncr.busphase, ScsiBusPhase::DataIn);
     }
 }
