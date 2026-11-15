@@ -183,7 +183,7 @@ impl Afp {
             let lossy = name.to_string_lossy();
             if lossy.nfc().collect::<String>().to_lowercase() == wanted
                 || mangled.as_ref().is_some_and(|m| {
-                    let (mac, original) = crate::name::to_mac(&lossy);
+                    let (mac, original) = crate::name::to_mac(&name);
                     original.is_some() && mac.to_lowercase() == *m
                 })
             {
@@ -249,11 +249,7 @@ impl Afp {
 
     /// The wire name of a resolved host path, mangled when it has to be
     pub(super) fn mac_name_of(&self, target: &Path) -> String {
-        let host_name = target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        crate::name::to_mac(&host_name).0
+        crate::name::to_mac(target.file_name().unwrap_or_default()).0
     }
 }
 
