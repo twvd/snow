@@ -551,3 +551,23 @@ fn host_errors_map_to_afp_errors() {
     );
     assert_eq!(io_err(&Error::from(ErrorKind::InvalidData)), ERR_PARAM);
 }
+
+#[test]
+fn the_volume_name_keeps_what_a_volume_name_can_hold() {
+    let (_, dir) = test_server("volume-name");
+    let name = format!("a:b{}", "x".repeat(40));
+    let s = Afp::new_with(
+        dir.clone(),
+        Some(name),
+        MaxVersion::default(),
+        AfpSettings::default(),
+    );
+    assert_eq!(s.volume_name(), format!("ab{}", "x".repeat(25)));
+    let s = Afp::new_with(
+        dir,
+        Some(":@".to_string()),
+        MaxVersion::default(),
+        AfpSettings::default(),
+    );
+    assert_eq!(s.volume_name(), "Snow");
+}

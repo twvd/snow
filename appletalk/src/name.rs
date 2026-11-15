@@ -43,15 +43,30 @@ const HOST_SEP: char = '\u{2236}';
 const HOST_BACKSLASH: char = '\u{2216}';
 
 /// Whether a character can be in a volume name: anything that travels in
-/// MacRoman, except the Mac path separator and the characters NBP keeps
-/// for itself.
+/// MacRoman, except the Mac path separator, the AFP path separator (null)
+/// and the characters NBP keeps for itself.
 ///
-/// The volume name is also the server's NBP object name, and
-/// Inside AppleTalk, 2nd ed., chapter 7, "Registering a name": special
-/// characters (the wildcards = and ≈, and the @ separator) are not
-/// allowed in the object field.
+/// The AFP engineering notes (System Description, "Volumes"): "all 8-bit
+/// characters not including null ($00) or colon ($3A)". The volume name is
+/// also the server's NBP object name, and Inside AppleTalk, 2nd ed.,
+/// chapter 7, "Registering a name": special characters (the wildcards = and
+/// ≈, and the @ separator) are not allowed in the object field.
 pub fn volume_name_char_ok(c: char) -> bool {
-    !matches!(c, ':' | '=' | '\u{2248}' | '@') && is_representable(c)
+    !matches!(c, '\0' | ':' | '=' | '\u{2248}' | '@') && is_representable(c)
+}
+
+/// The longest volume name (Inside AppleTalk, 2nd ed., ch13, "Volumes":
+/// "string of up to 27 characters")
+pub const VOLUME_NAME_MAX: usize = 27;
+
+/// A volume name as the server can use it: the characters a volume name
+/// can hold, at most VOLUME_NAME_MAX of them (each one is one MacRoman
+/// byte)
+pub fn volume_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| volume_name_char_ok(*c))
+        .take(VOLUME_NAME_MAX)
+        .collect()
 }
 
 /// The maximum length of a Macintosh file name
@@ -337,6 +352,13 @@ mod tests {
             assert!(!volume_name_char_ok(c));
         }
         assert!(!volume_name_char_ok('\u{65e5}'));
+    }
+
+    #[test]
+    fn test_volume_name() {
+        assert_eq!(volume_name("Snow"), "Snow");
+        assert_eq!(volume_name("a:b@c\0d\u{65e5}e"), "abcde");
+        assert_eq!(volume_name(&"x".repeat(40)), "x".repeat(VOLUME_NAME_MAX));
     }
 
     #[test]
