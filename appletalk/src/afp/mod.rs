@@ -387,8 +387,9 @@ impl Drop for Afp {
 
 impl Afp {
     /// Create a server sharing the given host directory as a volume, with
-    /// the given volume name (a missing or empty one is "Snow") and
-    /// maximum AFP version
+    /// the given volume name and maximum AFP version. The characters a
+    /// volume name cannot hold are dropped and the name is cut at 27
+    /// characters; a missing or empty one is "Snow".
     pub fn new_with(
         root: PathBuf,
         volume_name: Option<String>,
@@ -399,6 +400,7 @@ impl Afp {
         Self {
             root,
             volume_name: volume_name
+                .map(|n| crate::name::volume_name(&n))
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "Snow".to_string()),
             max_version,
