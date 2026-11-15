@@ -4013,6 +4013,13 @@ impl eframe::App for SnowGui {
                         ui.selectable_value(&mut s.hidden_files, Show, Show.to_string());
                     });
                     ui.checkbox(&mut s.follow_symlinks, "Follow symlinks inside the share");
+                    ui.checkbox(
+                        &mut s.mangle_case_clashes,
+                        "Mangle names that differ only in case or accent encoding",
+                    );
+                    if s.mangle_case_clashes {
+                        ui.colored_label(egui::Color32::YELLOW, "Slower in large folders.");
+                    }
                     ui.separator();
                     ui.label("Metadata containers to probe:");
                     ui.checkbox(
