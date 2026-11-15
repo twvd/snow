@@ -19,8 +19,8 @@ use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_NOT_READY,
     cdrom::{
-        CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector,
-        ReadStart, SessionInfo, TrackInfo,
+        CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, MediaCheck, Msf, QSub,
+        RAW_SECTOR_LEN, RawSector, SessionInfo, Started, TrackInfo,
         backends::{
             PhysicalCdromDrive as PhysicalCdromDriveInfo,
             drive_thread::{DriveThread, PhysicalCdromDrive},
@@ -93,6 +93,14 @@ impl CdromBackend for WindowsDriveCdromBackend {
         self.thread.check_media()
     }
 
+    fn start_check_media(&mut self) -> Started<MediaCheck> {
+        Started::Pending(self.thread.start_check_media())
+    }
+
+    fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+        self.thread.apply_media_check(check)
+    }
+
     fn byte_len(&self) -> usize {
         self.thread
             .disc_info()
@@ -104,8 +112,8 @@ impl CdromBackend for WindowsDriveCdromBackend {
         self.thread.read_bytes(offset, length)
     }
 
-    fn start_read(&self, offset: usize, length: usize) -> ReadStart {
-        ReadStart::Pending(self.thread.start_read_bytes(offset, length))
+    fn start_read(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+        Started::Pending(self.thread.start_read_bytes(offset, length))
     }
 
     fn image_path(&self) -> Option<&Path> {
