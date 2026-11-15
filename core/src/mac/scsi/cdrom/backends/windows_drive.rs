@@ -20,7 +20,7 @@ use crate::mac::scsi::{
     CC_KEY_NOT_READY,
     cdrom::{
         CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector,
-        SessionInfo, TrackInfo,
+        ReadStart, SessionInfo, TrackInfo,
         backends::{
             PhysicalCdromDrive as PhysicalCdromDriveInfo,
             drive_thread::{DriveThread, PhysicalCdromDrive},
@@ -102,6 +102,10 @@ impl CdromBackend for WindowsDriveCdromBackend {
 
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
         self.thread.read_bytes(offset, length)
+    }
+
+    fn start_read(&self, offset: usize, length: usize) -> ReadStart {
+        ReadStart::Pending(self.thread.start_read_bytes(offset, length))
     }
 
     fn image_path(&self) -> Option<&Path> {

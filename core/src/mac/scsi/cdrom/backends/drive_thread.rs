@@ -11,7 +11,7 @@
 use std::thread;
 
 use anyhow::{Result, anyhow};
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::mac::scsi::cdrom::{CdromError, DiscInfo, RawSector};
 
@@ -81,9 +81,41 @@ fn run(drive: &mut impl PhysicalCdromDrive, requests: &Receiver<Request>) {
     }
 }
 
+/// The reply to a request the drive thread is working on
+///
+/// Dropping this abandons the request: the thread still does the I/O, and its
+/// reply is thrown away.
+pub struct Reply<T>(Receiver<Result<T, CdromError>>);
+
+impl<T> Reply<T> {
+    /// The reply if it has come, None if the thread is still working on the
+    /// request. Never blocks.
+    pub fn poll(&self) -> Option<Result<T, CdromError>> {
+        match self.0.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            // The thread is gone
+            Err(TryRecvError::Disconnected) => Some(Err(CdromError::BackendDead)),
+        }
+    }
+
+    /// Waits for the reply
+    pub fn wait(self) -> Result<T, CdromError> {
+        self.0.recv().map_err(|_| CdromError::BackendDead)?
+    }
+
+    /// A reply the test sends itself
+    #[cfg(test)]
+    pub(crate) fn channel() -> (Sender<Result<T, CdromError>>, Self) {
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        (sender, Self(receiver))
+    }
+}
+
 /// The thread of a physical CD-ROM drive, as seen from the emulator
 ///
-/// Each method sends a request to the thread and waits for its reply. Dropping
+/// Each method sends a request to the thread and waits for its reply, unless
+/// it returns a `Reply` to poll. Dropping
 /// this lets the thread end once its current I/O is over, without waiting for
 /// it.
 pub struct DriveThread {
@@ -149,13 +181,21 @@ impl DriveThread {
 
     /// See `PhysicalCdromDrive::read_bytes`
     pub fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+        self.start_read_bytes(offset, length).wait()
+    }
+
+    /// Starts reading user data, without waiting for it. See
+    /// `PhysicalCdromDrive::read_bytes`.
+    pub fn start_read_bytes(&self, offset: usize, length: usize) -> Reply<Vec<u8>> {
         let (reply, reply_receiver) = crossbeam_channel::bounded(1);
-        self.send(Request::ReadBytes {
+        // If the thread is gone, the reply's sender is dropped with the
+        // request, and the reply reports a dead drive
+        let _ = self.send(Request::ReadBytes {
             offset,
             length,
             reply,
-        })?;
-        reply_receiver.recv().map_err(|_| CdromError::BackendDead)?
+        });
+        Reply(reply_receiver)
     }
 
     /// See `PhysicalCdromDrive::read_cdda_sector`
@@ -184,6 +224,8 @@ mod tests {
         dropped: bool,
         /// Panic on the next access, as if the thread died
         panic: bool,
+        /// Reads wait for a message on this before they go ahead
+        read_gate: Option<Receiver<()>>,
     }
 
     struct FakeDrive {
@@ -257,6 +299,10 @@ mod tests {
         }
 
         fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+            let gate = self.state.lock().unwrap().read_gate.clone();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
             self.check_panic();
             self.state
                 .lock()
@@ -371,5 +417,68 @@ mod tests {
         let (thread, state) = drive_thread();
         drop(thread);
         wait_for_drop(&state);
+    }
+
+    /// Polls a reply until it comes
+    fn poll_until_done<T>(reply: &Reply<T>) -> Result<T, CdromError> {
+        for _ in 0..1000 {
+            if let Some(result) = reply.poll() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the reply did not come");
+    }
+
+    #[test]
+    fn started_read_completes_in_the_background() {
+        let (thread, state) = drive_thread();
+        let (gate, gate_receiver) = crossbeam_channel::unbounded();
+        state.lock().unwrap().read_gate = Some(gate_receiver);
+
+        let reply = thread.start_read_bytes(0x100, 4);
+        // The drive is stuck in the read
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(reply.poll().is_none());
+
+        gate.send(()).unwrap();
+        let Ok(data) = poll_until_done(&reply) else {
+            panic!("read failed");
+        };
+        assert_eq!(data, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn abandoned_read_leaves_the_next_one_alone() {
+        let (thread, state) = drive_thread();
+        let (gate, gate_receiver) = crossbeam_channel::unbounded();
+        state.lock().unwrap().read_gate = Some(gate_receiver);
+
+        drop(thread.start_read_bytes(0, 4));
+        let reply = thread.start_read_bytes(0x100, 4);
+        gate.send(()).unwrap();
+        gate.send(()).unwrap();
+        let Ok(data) = poll_until_done(&reply) else {
+            panic!("read failed");
+        };
+        assert_eq!(data, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn started_read_on_a_dead_thread_is_a_dead_drive() {
+        let (thread, state) = drive_thread();
+        state.lock().unwrap().panic = true;
+        let reply = thread.start_read_bytes(0, 1);
+        assert!(matches!(
+            poll_until_done(&reply),
+            Err(CdromError::BackendDead)
+        ));
+
+        // The thread is gone (or about to be): a new read fails too
+        let reply = thread.start_read_bytes(0, 1);
+        assert!(matches!(
+            poll_until_done(&reply),
+            Err(CdromError::BackendDead)
+        ));
     }
 }

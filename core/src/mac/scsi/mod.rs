@@ -122,10 +122,6 @@ pub(crate) enum ScsiCmdResult {
     /// The target is still working on the command, in the background. The
     /// result comes from `ScsiTarget::poll_pending`; until then the target
     /// holds the bus without requesting a transfer.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no target runs commands in the background yet")
-    )]
     Pending,
 }
 
