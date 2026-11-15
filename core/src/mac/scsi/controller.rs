@@ -397,6 +397,9 @@ impl ScsiController {
             CmdOutcome::Status => self.set_phase(ScsiBusPhase::Status),
             CmdOutcome::DataIn => self.set_phase(ScsiBusPhase::DataIn),
             CmdOutcome::DataOut(_) => self.set_phase(ScsiBusPhase::DataOut),
+            // The target holds the bus in the current phase without
+            // requesting anything until the command completes
+            CmdOutcome::Busy => self.deassert_req(),
         }
 
         Ok(())

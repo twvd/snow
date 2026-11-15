@@ -1800,6 +1800,7 @@ mod tests {
             ScsiCmdResult::Status(s) => format!("Status({})", s),
             ScsiCmdResult::DataIn(d) => format!("DataIn({} bytes)", d.len()),
             ScsiCmdResult::DataOut(n) => format!("DataOut({})", n),
+            ScsiCmdResult::Pending => "Pending".to_string(),
         }
     }
 
