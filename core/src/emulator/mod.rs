@@ -340,6 +340,7 @@ dispatch! {
 
     mutable_calls {
         fn scsi_mut(&mut self) -> &mut ScsiBus { bus.scsi.bus_mut() }
+        fn scsi_settle(&mut self) -> () { bus.scsi.settle() }
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
         fn set_overclock(&mut self, bus_frequency: Option<u64>) -> () { bus.set_overclock(bus_frequency) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
@@ -2022,6 +2023,8 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
+                        // A state can't hold a SCSI command in flight
+                        self.config.scsi_settle();
                         if let Err(e) = self.save_state(&path, screenshot) {
                             self.user_error(&format!("Failed to save state: {:?}", e));
                         }
