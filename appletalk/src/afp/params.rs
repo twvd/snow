@@ -320,6 +320,9 @@ impl Afp {
     /// name for a stable enumeration order.
     fn list_offspring(&self, dir: &Path, filter: Offspring) -> Result<Vec<(PathBuf, String)>, i32> {
         let entries = std::fs::read_dir(dir).map_err(|_| ERR_DIR_NOT_FOUND)?;
+        let names: HashMap<_, _> = folder_names(dir, self.settings.mangle_case_clashes)
+            .into_iter()
+            .collect();
         let mut offspring: Vec<(PathBuf, String)> = entries
             .flatten()
             .filter(listable)
@@ -334,7 +337,7 @@ impl Afp {
                     // The server's metadata store is never enumerated
                     return None;
                 }
-                let mac_name = crate::name::to_mac(p.file_name()?).0;
+                let mac_name = names.get(p.file_name()?)?.clone();
                 Some((p, mac_name))
             })
             .collect();

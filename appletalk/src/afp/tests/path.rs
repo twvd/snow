@@ -778,3 +778,74 @@ fn names_that_are_not_utf8_stay_distinct() {
     contents.sort();
     assert_eq!(contents, [b"one".to_vec(), b"two".to_vec()]);
 }
+
+/// Host names that are equal on the Mac, by case or by Unicode
+/// normalization, get different Mac names, and each name reaches its own
+/// file
+#[cfg(unix)]
+#[test]
+fn names_equal_on_the_mac_stay_distinct() {
+    let (mut s, dir) = test_server("mac-equal");
+    let files = [
+        ("README", "1"),
+        ("readme", "2"),
+        ("\u{e9}t\u{e9}", "3"),
+        ("e\u{301}te\u{301}", "4"),
+    ];
+    for (name, data) in files {
+        std::fs::write(dir.join(name), data).unwrap();
+    }
+    if std::fs::read_dir(&dir).unwrap().count() < files.len() {
+        // A host file system that folds case or normalization itself
+        return;
+    }
+    let names = enumerate_in_pages(&mut s, 10);
+    assert_eq!(names.len(), 4);
+    let folded: std::collections::HashSet<_> = names.iter().map(|n| n.to_lowercase()).collect();
+    assert_eq!(folded.len(), 4, "{names:?}");
+    // The names that need no change keep it
+    assert!(names.contains(&"README".to_string()), "{names:?}");
+    assert!(names.contains(&"\u{e9}t\u{e9}".to_string()), "{names:?}");
+    let mut contents = Vec::new();
+    for name in &names {
+        let (r, f) = open(&mut s, name, false, 1);
+        assert_eq!(r, 0, "{name}");
+        contents.push(read(&mut s, f, 0, 10).1);
+        // GetFileDirParms answers with the name it was asked about
+        let (r, reply) = gfdp(&mut s, name, 0x0040, 0);
+        assert_eq!(r, 0, "{name}");
+        let at = usize::from(u16::from_be_bytes([reply[0], reply[1]]));
+        let len = usize::from(reply[at]);
+        let (wire, _, _) = encoding_rs::MACINTOSH.decode(&reply[at + 1..at + 1 + len]);
+        assert_eq!(wire, *name);
+    }
+    contents.sort();
+    assert_eq!(
+        contents,
+        [b"1".to_vec(), b"2".to_vec(), b"3".to_vec(), b"4".to_vec()]
+    );
+}
+
+/// Without the mangling, names equal on the Mac are listed as they are
+#[cfg(unix)]
+#[test]
+fn case_clashes_keep_their_names_without_the_mangling() {
+    let (_, dir) = test_server("mac-equal-kept");
+    std::fs::write(dir.join("README"), "1").unwrap();
+    std::fs::write(dir.join("readme"), "2").unwrap();
+    if std::fs::read_dir(&dir).unwrap().count() < 2 {
+        // A host file system that folds case itself
+        return;
+    }
+    let settings = AfpSettings {
+        mangle_case_clashes: false,
+        ..AfpSettings::default()
+    };
+    let mut s = Afp::new_with(dir, None, MaxVersion::default(), settings);
+    let mut names = enumerate_in_pages(&mut s, 10);
+    names.sort();
+    assert_eq!(names, ["README", "readme"]);
+    let (r, f) = open(&mut s, "readme", false, 1);
+    assert_eq!(r, 0);
+    assert_eq!(read(&mut s, f, 0, 10).1, b"2");
+}
