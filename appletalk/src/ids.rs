@@ -13,23 +13,31 @@ use std::path::{Path, PathBuf};
 /// The reserved Directory ID of the volume root
 pub(crate) const ROOT_DIR_ID: u32 = 2;
 
+/// The first ID handed out. AFP reserves only 0 (invalid), 1 (the root's
+/// parent) and 2 (the root), but HFS also keeps IDs 3 to 15 for its own
+/// files: the extents and catalog B-trees, the bad block file and others
+/// (Technical Note TN1150, "Catalog File", kHFSFirstUserCatalogNodeID =
+/// 16). An AppleShare server on HFS never hands those out, so neither does
+/// this one; it starts at 17 like netatalk.
+const FIRST_ID: u32 = 17;
+
 /// The ID allocator: a plain counter over the u32 space. IDs are
 /// never reused (like CNIDs), so a counter suffices — nothing is ever
-/// freed, and the reserved IDs (0 invalid, 1 parent-of-root, 2 root)
-/// are simply never handed out. A future scan-rebuild persistence
-/// would start the counter above the largest scanned ID.
+/// freed, and the IDs below FIRST_ID are simply never handed out. A
+/// future scan-rebuild persistence would start the counter above the
+/// largest scanned ID.
 struct IdAllocator {
     next: u32,
 }
 
 impl IdAllocator {
     fn new() -> Self {
-        Self { next: 3 }
+        Self { next: FIRST_ID }
     }
 
     fn allocate(&mut self) -> u32 {
         let id = self.next;
-        self.next = self.next.wrapping_add(1).max(3);
+        self.next = self.next.wrapping_add(1).max(FIRST_ID);
         id
     }
 }
@@ -200,7 +208,7 @@ impl IdTable {
     /// Whether an ID was handed out and not removed by FPDeleteID, even
     /// if its file has gone since
     pub(crate) fn is_defined(&self, id: u32) -> bool {
-        (3..self.allocator.next).contains(&id) && !self.deleted.contains(&id)
+        (FIRST_ID..self.allocator.next).contains(&id) && !self.deleted.contains(&id)
     }
 }
 
@@ -216,13 +224,11 @@ mod tests {
             let id = alloc.allocate();
             assert!(seen.insert(id), "duplicate id {id}");
         }
-        // The reserved IDs never come out
-        assert!(!seen.contains(&0));
-        assert!(!seen.contains(&1));
-        assert!(!seen.contains(&2));
+        // The AFP and HFS reserved IDs never come out
+        assert!(seen.iter().all(|&id| id >= 17));
         // And the minted IDs are dense, as a counter produces
         assert_eq!(seen.len(), 300);
-        assert!(seen.contains(&3));
+        assert!(seen.contains(&17));
     }
 
     #[test]
