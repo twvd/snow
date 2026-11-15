@@ -13,7 +13,7 @@ use std::thread;
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
-use crate::mac::scsi::cdrom::{CdromError, DiscInfo, RawSector};
+use crate::mac::scsi::cdrom::{CdromError, DiscInfo, MediaCheck, RawSector};
 
 /// The blocking operations of a physical CD-ROM drive. Only called on the
 /// drive thread.
@@ -42,9 +42,8 @@ pub trait PhysicalCdromDrive: Send {
 
 /// A request to the drive thread, with the channel to send its reply on
 enum Request {
-    /// Replies with the result and the disc information after the check
     CheckMedia {
-        reply: Sender<(Result<(), CdromError>, Option<DiscInfo>)>,
+        reply: Sender<Result<MediaCheck, CdromError>>,
     },
     ReadBytes {
         offset: usize,
@@ -65,7 +64,10 @@ fn run(drive: &mut impl PhysicalCdromDrive, requests: &Receiver<Request>) {
         match request {
             Request::CheckMedia { reply } => {
                 let result = drive.check_media();
-                let _ = reply.send((result, drive.disc_info().cloned()));
+                let _ = reply.send(Ok(MediaCheck {
+                    result,
+                    disc_info: drive.disc_info().cloned(),
+                }));
             }
             Request::ReadBytes {
                 offset,
@@ -167,11 +169,25 @@ impl DriveThread {
 
     /// See `PhysicalCdromDrive::check_media`. Updates the disc information.
     pub fn check_media(&mut self) -> Result<(), CdromError> {
+        let check = self.start_check_media().wait()?;
+        self.apply_media_check(check)
+    }
+
+    /// Starts a media check, without waiting for it. Its outcome goes to
+    /// `apply_media_check`.
+    pub fn start_check_media(&self) -> Reply<MediaCheck> {
         let (reply, reply_receiver) = crossbeam_channel::bounded(1);
-        self.send(Request::CheckMedia { reply })?;
-        let (result, disc_info) = reply_receiver.recv().map_err(|_| CdromError::BackendDead)?;
-        self.disc_info = disc_info;
-        result
+        // If the thread is gone, the reply's sender is dropped with the
+        // request, and the reply reports a dead drive
+        let _ = self.send(Request::CheckMedia { reply });
+        Reply(reply_receiver)
+    }
+
+    /// Takes in the outcome of a media check: updates the disc information,
+    /// and returns the result of the check
+    pub fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+        self.disc_info = check.disc_info;
+        check.result
     }
 
     /// The disc information, as of the last media check
@@ -480,5 +496,31 @@ mod tests {
             poll_until_done(&reply),
             Err(CdromError::BackendDead)
         ));
+    }
+
+    #[test]
+    fn started_media_check_updates_the_disc_info() {
+        let (mut thread, state) = drive_thread();
+
+        state.lock().unwrap().disc = None;
+        let reply = thread.start_check_media();
+        let Ok(check) = poll_until_done(&reply) else {
+            panic!("media check failed");
+        };
+        assert!(matches!(
+            thread.apply_media_check(check),
+            Err(CdromError::CheckCondition(
+                CC_KEY_NOT_READY,
+                ASC_MEDIUM_NOT_PRESENT
+            ))
+        ));
+        assert!(thread.disc_info().is_none());
+
+        state.lock().unwrap().disc = Some(vec![0; 2048]);
+        let Ok(check) = thread.start_check_media().wait() else {
+            panic!("media check failed");
+        };
+        assert!(thread.apply_media_check(check).is_ok());
+        assert_eq!(thread.disc_info().unwrap().capacity, 2048);
     }
 }

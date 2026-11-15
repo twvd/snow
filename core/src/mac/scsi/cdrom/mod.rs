@@ -272,12 +272,26 @@ pub struct RawSector {
     qsub: QSub,
 }
 
-/// How a backend starts a read of user data
-pub enum ReadStart {
-    /// The read is done
-    Done(Result<Vec<u8>, CdromError>),
-    /// The read goes on in the background
-    Pending(Reply<Vec<u8>>),
+/// How a backend starts an operation, such as a read
+pub enum Started<T> {
+    /// The operation is done
+    Done(Result<T, CdromError>),
+    /// The operation goes on in the background
+    Pending(Reply<T>),
+}
+
+/// The outcome of a media check, for `CdromBackend::apply_media_check`
+///
+/// The check has its own `result`, apart from the `Result` a `Reply` adds for
+/// a dead drive thread: a check that fails still reports disc information. A
+/// check that finds no disc fails with NOT READY, and its `disc_info` of None
+/// tells the backend the disc is gone.
+pub struct MediaCheck {
+    /// The result of the check, see `CdromBackend::check_media`
+    result: Result<(), CdromError>,
+    /// The disc information after the check, as a physical drive reports it.
+    /// None for image backends, which ignore it.
+    disc_info: Option<DiscInfo>,
 }
 
 pub trait CdromBackend: Send {
@@ -285,6 +299,21 @@ pub trait CdromBackend: Send {
     /// Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if an error
     /// occurred.
     fn check_media(&mut self) -> Result<(), CdromError>;
+
+    /// Starts a media check, which a backend may finish in the background. The
+    /// outcome goes to `apply_media_check`. See `check_media`.
+    fn start_check_media(&mut self) -> Started<MediaCheck> {
+        Started::Done(Ok(MediaCheck {
+            result: self.check_media(),
+            disc_info: None,
+        }))
+    }
+
+    /// Takes in the outcome of a media check from `start_check_media`, and
+    /// returns its result
+    fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+        check.result
+    }
 
     /// Get the byte capacity of the CD, where each sector starting at #150 contains 2048
     /// bytes of user data.
@@ -306,8 +335,8 @@ pub trait CdromBackend: Send {
 
     /// Starts reading user data, which a backend may finish in the background.
     /// See `read_bytes`.
-    fn start_read(&self, offset: usize, length: usize) -> ReadStart {
-        ReadStart::Done(self.read_bytes(offset, length))
+    fn start_read(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+        Started::Done(self.read_bytes(offset, length))
     }
 
     fn image_path(&self) -> Option<&Path>;
@@ -389,9 +418,18 @@ pub(super) struct ScsiTargetCdrom {
 enum PendingCmd {
     /// READ(6) or READ(10)
     Read(Reply<Vec<u8>>, ReadRange),
+    /// A media check, and what comes after it
+    MediaCheck(Reply<MediaCheck>, AfterCheck),
     /// The disc was inserted or ejected while a command was going on. The
     /// command was dropped, and ends with a medium change at the next poll.
     MediaChanged,
+}
+
+/// What a command does after its media check
+#[derive(Clone, Copy)]
+enum AfterCheck {
+    /// TEST UNIT READY: report the check
+    UnitReady,
 }
 
 /// What a READ reads from the backend
@@ -472,7 +510,7 @@ impl ScsiTargetCdrom {
         track_or_session: u8, // Interpretation depends on format
         alloc_len: usize,
     ) -> Result<ScsiCmdResult> {
-        let check_result = self.unit_ready();
+        let check_result = self.check_media_now();
         if !matches!(check_result, Ok(ScsiCmdResult::Status(STATUS_GOOD))) {
             return check_result;
         }
@@ -887,6 +925,73 @@ impl ScsiTargetCdrom {
         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
     }
 
+    /// The answers to TEST UNIT READY that don't need the backend: a pending
+    /// unit attention, or no disc. None if the backend has to check the media.
+    fn unit_ready_without_backend(&mut self) -> Option<ScsiCmdResult> {
+        // Report a pending medium-change (from a Toolbox CD swap) exactly once so
+        // the guest re-reads the TOC and remounts the newly-selected disc.
+        if self.pending_unit_attention {
+            self.pending_unit_attention = false;
+            self.common
+                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
+            return Some(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        if self.backend.is_none() {
+            // No CD inserted
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+            return Some(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        None
+    }
+
+    /// TEST UNIT READY, waiting for the media check
+    fn check_media_now(&mut self) -> Result<ScsiCmdResult> {
+        if let Some(result) = self.unit_ready_without_backend() {
+            return Ok(result);
+        }
+        let result = self.backend.as_mut().unwrap().check_media();
+        self.media_checked(result)
+    }
+
+    /// Reports the result of a media check, as TEST UNIT READY does
+    fn media_checked(&mut self, result: Result<(), CdromError>) -> Result<ScsiCmdResult> {
+        match result {
+            Ok(()) => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::Other(e)) => Err(e),
+        }
+    }
+
+    /// Finishes a command after its media check, giving the backend the
+    /// outcome of the check
+    fn media_check_done(
+        &mut self,
+        check: Result<MediaCheck, CdromError>,
+        then: AfterCheck,
+    ) -> Result<ScsiCmdResult> {
+        let result = match (check, self.backend.as_mut()) {
+            (Ok(check), Some(backend)) => backend.apply_media_check(check),
+            // A media change turns the command into MediaChanged instead
+            (Ok(_), None) => return self.media_changed_during_command(),
+            // The drive is gone
+            (Err(e), _) => Err(e),
+        };
+        match then {
+            AfterCheck::UnitReady => self.media_checked(result),
+        }
+    }
+
     /// Finishes a READ with what the backend read
     fn read_done(
         &mut self,
@@ -1050,34 +1155,16 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
-        // Report a pending medium-change (from a Toolbox CD swap) exactly once so
-        // the guest re-reads the TOC and remounts the newly-selected disc.
-        if self.pending_unit_attention {
-            self.pending_unit_attention = false;
-            self.common
-                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
-            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        if let Some(result) = self.unit_ready_without_backend() {
+            return Ok(result);
         }
-
-        let Some(backend) = &mut self.backend else {
-            // No CD inserted
-            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-        };
-
-        match backend.check_media() {
-            Ok(()) => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
-            Err(CdromError::CheckCondition(key, asc)) => {
-                self.common.set_cc(key, asc);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+        let backend = self.backend.as_mut().unwrap();
+        match backend.start_check_media() {
+            Started::Done(check) => self.media_check_done(check, AfterCheck::UnitReady),
+            Started::Pending(reply) => {
+                self.pending = Some(PendingCmd::MediaCheck(reply, AfterCheck::UnitReady));
+                Ok(ScsiCmdResult::Pending)
             }
-            Err(CdromError::BackendDead) => {
-                log::error!("The CD-ROM drive became unusable");
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::Other(e)) => Err(e),
         }
     }
 
@@ -1249,8 +1336,8 @@ impl ScsiTarget for ScsiTargetCdrom {
         };
 
         match backend.start_read(read.offset, read.length) {
-            ReadStart::Done(result) => self.read_done(result, &read),
-            ReadStart::Pending(reply) => {
+            Started::Done(result) => self.read_done(result, &read),
+            Started::Pending(reply) => {
                 self.pending = Some(PendingCmd::Read(reply, read));
                 Ok(ScsiCmdResult::Pending)
             }
@@ -1258,19 +1345,32 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
-        let result = match self.pending.as_ref()? {
-            PendingCmd::Read(reply, _) => Some(reply.poll()?),
-            PendingCmd::MediaChanged => None,
-        };
-        Some(match (self.pending.take()?, result) {
-            (PendingCmd::Read(_, read), Some(result)) => self.read_done(result, &read),
-            _ => self.media_changed_during_command(),
-        })
+        match self.pending.as_ref()? {
+            PendingCmd::Read(reply, _) => {
+                let result = reply.poll()?;
+                let Some(PendingCmd::Read(_, read)) = self.pending.take() else {
+                    unreachable!()
+                };
+                Some(self.read_done(result, &read))
+            }
+            PendingCmd::MediaCheck(reply, _) => {
+                let check = reply.poll()?;
+                let Some(PendingCmd::MediaCheck(_, then)) = self.pending.take() else {
+                    unreachable!()
+                };
+                Some(self.media_check_done(check, then))
+            }
+            PendingCmd::MediaChanged => {
+                self.pending = None;
+                Some(self.media_changed_during_command())
+            }
+        }
     }
 
     fn wait_pending(&mut self) -> Result<ScsiCmdResult> {
         match self.pending.take() {
             Some(PendingCmd::Read(reply, read)) => self.read_done(reply.wait(), &read),
+            Some(PendingCmd::MediaCheck(reply, then)) => self.media_check_done(reply.wait(), then),
             Some(PendingCmd::MediaChanged) => self.media_changed_during_command(),
             None => bail!("No command pending"),
         }
@@ -2044,15 +2144,41 @@ mod tests {
         assert_eq!(cd.common().req_sense(), sense);
     }
 
-    /// A disc of 4 KB whose reads finish when the test says so
+    /// A media check that finishes when the test says so
+    #[derive(Default)]
+    struct CheckGate {
+        /// The sender of the check the backend started
+        sender: Option<crossbeam_channel::Sender<Result<MediaCheck, CdromError>>>,
+        /// The capacity in the disc information `apply_media_check` got, once
+        /// it is called
+        applied: Option<Option<usize>>,
+    }
+
+    type CheckState = Arc<Mutex<CheckGate>>;
+
+    /// A disc of 4 KB whose reads and media checks finish when the test says
+    /// so
     struct GatedBackend {
         /// Where the backend puts the sender of the read it started
-        read: Arc<Mutex<Option<crossbeam_channel::Sender<Result<Vec<u8>, CdromError>>>>>,
+        read: ReadSender,
+        check: CheckState,
     }
 
     impl CdromBackend for GatedBackend {
         fn check_media(&mut self) -> Result<(), CdromError> {
             Ok(())
+        }
+
+        fn start_check_media(&mut self) -> Started<MediaCheck> {
+            let (sender, reply) = Reply::channel();
+            self.check.lock().unwrap().sender = Some(sender);
+            Started::Pending(reply)
+        }
+
+        fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
+            self.check.lock().unwrap().applied =
+                Some(check.disc_info.as_ref().map(|info| info.capacity));
+            check.result
         }
 
         fn byte_len(&self) -> usize {
@@ -2063,10 +2189,10 @@ mod tests {
             panic!("reads start in the background")
         }
 
-        fn start_read(&self, _offset: usize, _length: usize) -> ReadStart {
+        fn start_read(&self, _offset: usize, _length: usize) -> Started<Vec<u8>> {
             let (sender, reply) = Reply::channel();
             *self.read.lock().unwrap() = Some(sender);
-            ReadStart::Pending(reply)
+            Started::Pending(reply)
         }
 
         fn image_path(&self) -> Option<&Path> {
@@ -2091,12 +2217,43 @@ mod tests {
 
     type ReadSender = Arc<Mutex<Option<crossbeam_channel::Sender<Result<Vec<u8>, CdromError>>>>>;
 
+    /// A CD-ROM drive with a disc whose reads and media checks finish when the
+    /// test says so
+    fn gated_cdrom() -> (ScsiTargetCdrom, ReadSender, CheckState) {
+        let read = ReadSender::default();
+        let check = CheckState::default();
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(GatedBackend {
+            read: read.clone(),
+            check: check.clone(),
+        }));
+        (cd, read, check)
+    }
+
     /// A CD-ROM drive with a disc whose reads finish when the test says so
     fn cdrom_with_gated_disc() -> (ScsiTargetCdrom, ReadSender) {
-        let read = ReadSender::default();
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(GatedBackend { read: read.clone() }));
+        let (cd, read, _) = gated_cdrom();
         (cd, read)
+    }
+
+    fn test_unit_ready(cd: &mut ScsiTargetCdrom) -> ScsiCmdResult {
+        cd.cmd(&[0x00, 0, 0, 0, 0, 0], None).unwrap()
+    }
+
+    /// Finishes the media check the backend started. Returns false if the
+    /// target dropped it.
+    fn finish_check(
+        check: &CheckState,
+        result: Result<(), CdromError>,
+        disc_info: Option<DiscInfo>,
+    ) -> bool {
+        let sender = check
+            .lock()
+            .unwrap()
+            .sender
+            .take()
+            .expect("no media check started");
+        sender.send(Ok(MediaCheck { result, disc_info })).is_ok()
     }
 
     /// READ(10) of the second block
@@ -2241,6 +2398,84 @@ mod tests {
         assert_eq!(
             cd.common.req_sense(),
             (CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE)
+        );
+    }
+
+    #[test]
+    fn unit_ready_checks_media_in_the_background() {
+        let (mut cd, _, check) = gated_cdrom();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(cd.poll_pending().is_none());
+
+        assert!(finish_check(&check, Ok(()), None));
+        assert!(matches!(
+            cd.poll_pending(),
+            Some(Ok(ScsiCmdResult::Status(STATUS_GOOD)))
+        ));
+        assert!(cd.poll_pending().is_none());
+    }
+
+    #[test]
+    fn unit_ready_reports_the_media_check() {
+        let (mut cd, _, check) = gated_cdrom();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        let not_ready = CdromError::CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+        assert!(finish_check(&check, Err(not_ready), None));
+        assert!(matches!(
+            cd.poll_pending(),
+            Some(Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)))
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+        );
+    }
+
+    #[test]
+    fn media_check_gives_the_backend_the_disc_info() {
+        let (mut cd, _, check) = gated_cdrom();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        let disc_info = DiscInfo {
+            capacity: 2048,
+            sessions: vec![],
+            tracks: vec![],
+        };
+        assert!(finish_check(&check, Ok(()), Some(disc_info)));
+        assert!(cd.poll_pending().is_some());
+        assert_eq!(check.lock().unwrap().applied, Some(Some(2048)));
+    }
+
+    #[test]
+    fn aborted_media_check_is_dropped() {
+        let (mut cd, _, check) = gated_cdrom();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        cd.abort_pending();
+        assert!(!finish_check(&check, Ok(()), None));
+        assert!(cd.poll_pending().is_none());
+        assert_eq!(check.lock().unwrap().applied, None);
+    }
+
+    #[test]
+    fn wait_takes_the_media_check() {
+        let (mut cd, _, check) = gated_cdrom();
+        assert!(matches!(test_unit_ready(&mut cd), ScsiCmdResult::Pending));
+        assert!(finish_check(&check, Ok(()), None));
+        assert!(matches!(
+            cd.wait_pending(),
+            Ok(ScsiCmdResult::Status(STATUS_GOOD))
+        ));
+    }
+
+    #[test]
+    fn unit_ready_without_a_disc_answers_at_once() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        assert!(matches!(
+            test_unit_ready(&mut cd),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
         );
     }
 }
