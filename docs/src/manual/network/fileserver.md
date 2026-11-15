@@ -51,7 +51,8 @@ Mac names are at most 31 characters, in the MacRoman character set. A host file 
 that does not fit shows as a shortened name holding a `#` and a hash, such as
 `report#66cc8389.txt`. Names are case-insensitive on the Mac: if a folder holds both
 `foo` and `Foo`, or two names that differ only in how their accents are encoded, the guest
-sees one of them under its name and the others with a `#` and a hash added.
+sees one of them under its name and the others with a `#` and a hash added (**Advanced…**
+can turn this off).
 
 Files and folders whose names begin with a dot are hidden; **Advanced…** can show them.
 
@@ -63,6 +64,7 @@ Files and folders whose names begin with a dot are hidden; **Advanced…** can s
 | Desktop scan depth, entry cap | Limits for the background scan that finds applications and their icons. |
 | Hidden files | Whether dot-prefixed entries are hidden, shown as invisible, or shown. |
 | Follow symlinks inside the share | Whether the scan follows them. Symbolic links leading out of the shared folder never open. |
+| Mangle names that differ only in case or accent encoding | On by default. Names that are equal on the Mac get distinct names, as described under File names. This reads the whole folder each time the guest asks about a file, which is slower in folders of thousands of entries. Off, every file keeps its own name, and opening one by name may find the other. |
 | Wire debug logging | Logs every frame and command, to diagnose protocol problems. |
 
 ## Limitations
