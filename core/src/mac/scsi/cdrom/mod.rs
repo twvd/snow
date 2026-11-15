@@ -346,6 +346,12 @@ pub trait CdromBackend: Send {
 
     /// Read a raw CD Digital Audio sector. Other types of sectors are read via `read_bytes`.
     fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
+
+    /// Starts reading a raw CD Digital Audio sector, which a backend may
+    /// finish in the background. See `read_cdda_sector`.
+    fn start_read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
+        Started::Done(self.read_cdda_sector(sector))
+    }
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -427,9 +433,21 @@ enum PendingCmd {
     /// when the disc has changed. Once the backend has taken it in, the
     /// response is built from it without touching the drive again.
     ReadToc(Reply<MediaCheck>, TocRequest),
+    /// PLAY AUDIO MSF, waiting for the first sector to be scanned
+    PlayAudio(Reply<RawSector>, PlayRequest),
     /// The disc was inserted or ejected while a command was going on. The
     /// command was dropped, and ends with a medium change at the next poll.
     MediaChanged,
+}
+
+/// Where PLAY AUDIO MSF plays
+#[derive(Clone, Copy)]
+struct PlayRequest {
+    /// The starting address in the command
+    start_msf: Msf,
+    /// Absolute sectors to play from and to
+    start_sector: u32,
+    end_sector: u32,
 }
 
 /// The arguments of READ TOC
@@ -1019,6 +1037,63 @@ impl ScsiTargetCdrom {
         }
     }
 
+    /// Finishes PLAY AUDIO MSF with the first sector to play
+    fn play_audio_from(
+        &mut self,
+        initial_sector: Result<RawSector, CdromError>,
+        request: &PlayRequest,
+    ) -> Result<ScsiCmdResult> {
+        let PlayRequest {
+            start_msf,
+            start_sector,
+            end_sector,
+        } = *request;
+
+        let initial_sector = match initial_sector {
+            Ok(s) => s,
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::BackendDead) => {
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+            Err(CdromError::Other(e)) => return Err(e),
+        };
+
+        if !initial_sector.qsub.is_audio() {
+            // [MMC4] 6.17.2.3:
+            // If the address is not within an audio track the command shall be terminated with
+            // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
+            // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
+            log::error!("Tried to play audio from non-audio track at {}", start_msf);
+            self.common
+                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        if initial_sector.qsub.adr() == 1 {
+            self.curr_mode1_qsub = initial_sector.qsub;
+        }
+
+        self.audio_pos = start_sector;
+        self.audio_stop = end_sector;
+
+        // [MMC4] 6.17.2.3:
+        // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
+        // This shall not be considered an error.
+        // (Apple Audio CD Player issues such a command to set the audio cursor
+        // without initiating playback.)
+        if start_sector != end_sector && self.audio_state != AudioState::Playing {
+            self.audio_state = AudioState::Playing;
+            self.audio_clock = 0;
+        }
+
+        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+    }
+
     /// Finishes a READ with what the backend read
     fn read_done(
         &mut self,
@@ -1395,6 +1470,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                 self.pending = None;
                 Some(self.toc_after_check(check, &request))
             }
+            PendingCmd::PlayAudio(reply, request) => {
+                let initial_sector = reply.poll()?;
+                let request = *request;
+                self.pending = None;
+                Some(self.play_audio_from(initial_sector, &request))
+            }
             PendingCmd::MediaChanged => {
                 self.pending = None;
                 Some(self.media_changed_during_command())
@@ -1411,6 +1492,9 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             Some(PendingCmd::ReadToc(reply, request)) => {
                 self.toc_after_check(reply.wait(), &request)
+            }
+            Some(PendingCmd::PlayAudio(reply, request)) => {
+                self.play_audio_from(reply.wait(), &request)
             }
             Some(PendingCmd::MediaChanged) => self.media_changed_during_command(),
             None => bail!("No command pending"),
@@ -1660,49 +1744,18 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                let initial_sector = match backend.read_cdda_sector(start_sector) {
-                    Ok(s) => s,
-                    Err(CdromError::CheckCondition(key, asc)) => {
-                        self.common.set_cc(key, asc);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::BackendDead) => {
-                        self.eject_media();
-                        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                    }
-                    Err(CdromError::Other(e)) => return Err(e),
+                let request = PlayRequest {
+                    start_msf,
+                    start_sector,
+                    end_sector,
                 };
-
-                if !initial_sector.qsub.is_audio() {
-                    // [MMC4] 6.17.2.3:
-                    // If the address is not within an audio track the command shall be terminated with
-                    // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
-                    // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
-                    log::error!("Tried to play audio from non-audio track at {}", start_msf);
-                    self.common
-                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                match backend.start_read_cdda_sector(start_sector) {
+                    Started::Done(initial_sector) => self.play_audio_from(initial_sector, &request),
+                    Started::Pending(reply) => {
+                        self.pending = Some(PendingCmd::PlayAudio(reply, request));
+                        Ok(ScsiCmdResult::Pending)
+                    }
                 }
-
-                if initial_sector.qsub.adr() == 1 {
-                    self.curr_mode1_qsub = initial_sector.qsub;
-                }
-
-                self.audio_pos = start_sector;
-                self.audio_stop = end_sector;
-
-                // [MMC4] 6.17.2.3:
-                // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
-                // This shall not be considered an error.
-                // (Apple Audio CD Player issues such a command to set the audio cursor
-                // without initiating playback.)
-                if start_sector != end_sector && self.audio_state != AudioState::Playing {
-                    self.audio_state = AudioState::Playing;
-                    self.audio_clock = 0;
-                }
-
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // PAUSE/RESUME
             0x4B => {
@@ -2210,6 +2263,8 @@ mod tests {
         check: CheckState,
         /// A data disc with one track
         disc_info: DiscInfo,
+        /// Where the backend puts the sender of the CDDA read it started
+        cdda: CddaSender,
     }
 
     impl CdromBackend for GatedBackend {
@@ -2261,19 +2316,36 @@ mod tests {
                 ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
             ))
         }
+
+        fn start_read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
+            let (sender, reply) = Reply::channel();
+            *self.cdda.lock().unwrap() = Some(sender);
+            Started::Pending(reply)
+        }
     }
+
+    type CddaSender = Arc<Mutex<Option<crossbeam_channel::Sender<Result<RawSector, CdromError>>>>>;
 
     type ReadSender = Arc<Mutex<Option<crossbeam_channel::Sender<Result<Vec<u8>, CdromError>>>>>;
 
     /// A CD-ROM drive with a disc whose reads and media checks finish when the
     /// test says so
     fn gated_cdrom() -> (ScsiTargetCdrom, ReadSender, CheckState) {
+        let (cd, read, check, _) = gated_cdrom_with_cdda();
+        (cd, read, check)
+    }
+
+    /// A CD-ROM drive with a disc whose reads, media checks and CDDA reads
+    /// finish when the test says so
+    fn gated_cdrom_with_cdda() -> (ScsiTargetCdrom, ReadSender, CheckState, CddaSender) {
         let read = ReadSender::default();
         let check = CheckState::default();
+        let cdda = CddaSender::default();
         let mut cd = ScsiTargetCdrom::new(None);
         cd.backend = Some(Box::new(GatedBackend {
             read: read.clone(),
             check: check.clone(),
+            cdda: cdda.clone(),
             disc_info: DiscInfo {
                 capacity: 4096,
                 sessions: vec![SessionInfo {
@@ -2290,7 +2362,7 @@ mod tests {
                 }],
             },
         }));
-        (cd, read, check)
+        (cd, read, check, cdda)
     }
 
     /// A CD-ROM drive with a disc whose reads finish when the test says so
@@ -2604,5 +2676,54 @@ mod tests {
 
         drop(cd);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PLAY AUDIO MSF from 00:02:00 (the first sector) to 00:02:01
+    fn play_audio_cmd(cd: &mut ScsiTargetCdrom) -> ScsiCmdResult {
+        cd.cmd(&[0x47, 0, 0, 0, 2, 0, 0, 2, 1, 0], None).unwrap()
+    }
+
+    /// Finishes the CDDA read the backend started with a sector of the given
+    /// track type
+    fn finish_cdda(cdda: &CddaSender, control: u8) {
+        let sender = cdda.lock().unwrap().take().expect("no CDDA read started");
+        let sector = RawSector {
+            data: [0; RAW_SECTOR_LEN],
+            qsub: QSub::new_mode1(control, 1, 1, LBA_START_SECTOR, LBA_START_SECTOR),
+        };
+        sender.send(Ok(sector)).unwrap();
+    }
+
+    #[test]
+    fn play_audio_reads_the_first_sector_in_the_background() {
+        let (mut cd, _, _, cdda) = gated_cdrom_with_cdda();
+        assert!(matches!(play_audio_cmd(&mut cd), ScsiCmdResult::Pending));
+        assert!(cd.poll_pending().is_none());
+        assert!(cd.audio_state == AudioState::Stopped);
+
+        finish_cdda(&cdda, AUDIO_TRACK);
+        assert!(matches!(
+            cd.poll_pending(),
+            Some(Ok(ScsiCmdResult::Status(STATUS_GOOD)))
+        ));
+        assert!(cd.audio_state == AudioState::Playing);
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+        assert_eq!(cd.audio_stop, LBA_START_SECTOR + 1);
+    }
+
+    #[test]
+    fn play_audio_from_a_data_track_fails() {
+        let (mut cd, _, _, cdda) = gated_cdrom_with_cdda();
+        assert!(matches!(play_audio_cmd(&mut cd), ScsiCmdResult::Pending));
+        finish_cdda(&cdda, DATA_TRACK);
+        assert!(matches!(
+            cd.wait_pending(),
+            Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
+        );
+        assert!(cd.audio_state == AudioState::Stopped);
     }
 }
