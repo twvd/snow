@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::mac::scsi::{
     cdrom::{
-        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RawSector, SessionInfo, TrackInfo,
+        CdromBackend, DATA_TRACK, LBA_START_SECTOR, MediaCheck, RawSector, SessionInfo, Started,
+        TrackInfo,
     },
     disk_image::DiskImage,
 };
@@ -36,16 +37,19 @@ impl IsoCdromBackend {
 }
 
 impl CdromBackend for IsoCdromBackend {
-    fn check_media(&mut self) -> Result<(), CdromError> {
-        Ok(())
+    fn check_media(&mut self) -> Started<MediaCheck> {
+        Started::Done(Ok(MediaCheck {
+            result: Ok(()),
+            disc_info: None,
+        }))
     }
 
     fn byte_len(&self) -> usize {
         self.image.byte_len()
     }
 
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
-        Ok(self.image.read_bytes(offset, length))
+    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+        Started::Done(Ok(self.image.read_bytes(offset, length)))
     }
 
     fn image_path(&self) -> Option<&Path> {
@@ -60,7 +64,10 @@ impl CdromBackend for IsoCdromBackend {
         Some(std::slice::from_ref(&self.track))
     }
 
-    fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
-        Err(anyhow!("Reading CDDA sectors is not implemented for ISO files").into())
+    fn read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
+        Started::Done(Err(anyhow!(
+            "Reading CDDA sectors is not implemented for ISO files"
+        )
+        .into()))
     }
 }
