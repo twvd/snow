@@ -216,9 +216,17 @@ impl DriveThread {
 
     /// See `PhysicalCdromDrive::read_cdda_sector`
     pub fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        self.start_read_cdda_sector(sector).wait()
+    }
+
+    /// Starts reading a raw CD Digital Audio sector, without waiting for it.
+    /// See `PhysicalCdromDrive::read_cdda_sector`.
+    pub fn start_read_cdda_sector(&self, sector: u32) -> Reply<RawSector> {
         let (reply, reply_receiver) = crossbeam_channel::bounded(1);
-        self.send(Request::ReadCdda { sector, reply })?;
-        reply_receiver.recv().map_err(|_| CdromError::BackendDead)?
+        // If the thread is gone, the reply's sender is dropped with the
+        // request, and the reply reports a dead drive
+        let _ = self.send(Request::ReadCdda { sector, reply });
+        Reply(reply_receiver)
     }
 }
 
@@ -522,5 +530,15 @@ mod tests {
         };
         assert!(thread.apply_media_check(check).is_ok());
         assert_eq!(thread.disc_info().unwrap().capacity, 2048);
+    }
+
+    #[test]
+    fn started_cdda_read_completes_in_the_background() {
+        let (thread, _) = drive_thread();
+        let reply = thread.start_read_cdda_sector(9);
+        let Ok(sector) = poll_until_done(&reply) else {
+            panic!("CDDA read failed");
+        };
+        assert!(sector.data.iter().all(|b| *b == 9));
     }
 }

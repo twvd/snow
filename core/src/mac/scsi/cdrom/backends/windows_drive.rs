@@ -131,6 +131,10 @@ impl CdromBackend for WindowsDriveCdromBackend {
     fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
         self.thread.read_cdda_sector(sector)
     }
+
+    fn start_read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
+        Started::Pending(self.thread.start_read_cdda_sector(sector))
+    }
 }
 
 /// The I/O of a physical CD-ROM drive on Windows. Only used on the drive
