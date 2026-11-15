@@ -50,7 +50,8 @@ AppleSingle files can be read, but are read-only.
 Mac names are at most 31 characters, in the MacRoman character set. A host file name
 that does not fit shows as a shortened name holding a `#` and a hash, such as
 `report#66cc8389.txt`. Names are case-insensitive on the Mac: if a folder holds both
-`foo` and `Foo`, the guest sees both, but opening either by name may find the other.
+`foo` and `Foo`, or two names that differ only in how their accents are encoded, the guest
+sees one of them under its name and the others with a `#` and a hash added.
 
 Files and folders whose names begin with a dot are hidden; **Advanced…** can show them.
 

@@ -62,9 +62,9 @@ pub(super) fn enumerate(server: &mut Afp, file_bm: u16) -> (i32, Vec<u8>) {
     result_of(server.command(1, &data))
 }
 
-/// The long names FPEnumerate returns for the volume root, asked for
-/// `count` at a time the way a client pages: each call starts after
-/// the entries received so far, until ObjectNotFound
+/// The long names FPEnumerate returns for the volume root, decoded from
+/// MacRoman, asked for `count` at a time the way a client pages: each call
+/// starts after the entries received so far, until ObjectNotFound
 #[cfg(unix)]
 pub(super) fn enumerate_in_pages(server: &mut Afp, count: u16) -> Vec<String> {
     let mut names = Vec::new();
@@ -87,7 +87,8 @@ pub(super) fn enumerate_in_pages(server: &mut Afp, count: u16) -> Vec<String> {
             // [length][flag][name offset][...][name]
             let name = 2 + usize::from(u16::from_be_bytes([record[2], record[3]]));
             let len = usize::from(record[name]);
-            names.push(String::from_utf8_lossy(&record[name + 1..name + 1 + len]).into_owned());
+            let (wire, _, _) = encoding_rs::MACINTOSH.decode(&record[name + 1..name + 1 + len]);
+            names.push(wire.into_owned());
             record = &record[usize::from(record[0])..];
         }
     }

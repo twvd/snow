@@ -15,6 +15,10 @@
 //!   keeping the extension, e.g. `你好.txt` becomes `#a1b2c3d4.txt`.
 //!   Nothing has to remember the mapping: a mangled name resolves by
 //!   mangling the names in its directory until one matches;
+//! * host names of one folder that convert to the same Mac name, compared
+//!   without case (`README` and `readme`), keep it for one of them and
+//!   are mangled for the others (the AFP server's `folder_names`, when
+//!   its `mangle_case_clashes` setting is on);
 //! * names starting with a dot (dotfiles, `.AppleDouble`, `._`
 //!   sidecars) are hidden: they are omitted from enumeration and
 //!   cannot be addressed on the wire.
@@ -100,12 +104,24 @@ pub fn to_mac(host_name: impl AsRef<OsStr>) -> (String, Option<String>) {
         let (decoded, _, _) = MACINTOSH.decode(&encoded);
         return (decoded.into_owned(), None);
     }
+    (mangle(host_name, &composed), Some(original.into_owned()))
+}
 
-    // Mangle: drop the unrepresentable characters from the stem, keep
-    // the extension, and append the hash of the original name
+/// The mangled Mac name of a host name, also for a name that converts as
+/// it is: a folder whose entries convert to equal Mac names mangles the
+/// others this way
+pub fn mangled(host_name: &OsStr) -> String {
+    let composed: String = from_host(&host_name.to_string_lossy()).nfc().collect();
+    mangle(host_name, &composed)
+}
+
+/// Mangle a host name, given in its composed form with the `:` → `/`
+/// bijection applied: drop the unrepresentable characters from the stem,
+/// keep the extension, and append the hash of the host name
+fn mangle(host_name: &OsStr, composed: &str) -> String {
     let (stem, ext) = match composed.rfind('.') {
         Some(dot) if dot > 0 => (&composed[..dot], &composed[dot..]),
-        _ => (composed.as_str(), ""),
+        _ => (composed, ""),
     };
     let stem: String = stem.chars().filter(|c| is_representable(*c)).collect();
     // The hash covers the bytes the host stores: names that differ only
@@ -123,7 +139,7 @@ pub fn to_mac(host_name: impl AsRef<OsStr>) -> (String, Option<String>) {
     let ext = if ext == "." { String::new() } else { ext };
     let max_stem = MAC_NAME_MAX - suffix.len() - ext.chars().count();
     let stem: String = stem.chars().take(max_stem).collect();
-    (format!("{stem}{suffix}{ext}"), Some(original.into_owned()))
+    format!("{stem}{suffix}{ext}")
 }
 
 /// The host name for a Mac wire name (already MacRoman-decoded to

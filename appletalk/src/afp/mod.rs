@@ -248,6 +248,13 @@ pub struct AfpSettings {
     /// and the volume advertises the read-only attribute)
     #[serde(default = "default_true")]
     pub read_only: bool,
+    /// Whether the host names of a folder that convert to the same Mac
+    /// name, compared without case, are told apart by mangling all but one
+    /// of them (see folder_names). Off, each keeps its own name, as with
+    /// netatalk, and the server never reads a whole folder to name an
+    /// object.
+    #[serde(default = "default_true")]
+    pub mangle_case_clashes: bool,
 }
 
 fn default_true() -> bool {
@@ -264,6 +271,7 @@ impl Default for AfpSettings {
             probe_apple_double: true,
             wire_debug: false,
             read_only: true,
+            mangle_case_clashes: true,
         }
     }
 }

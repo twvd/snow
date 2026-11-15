@@ -1,5 +1,7 @@
 //! Path names: the AFP pathname grammar, the share jail, and the IDs and names of what they reach
 
+use std::ffi::OsString;
+
 use super::*;
 
 impl Afp {
@@ -163,34 +165,21 @@ impl Afp {
         self.ids.id_of(abs).unwrap_or(0)
     }
 
-    /// The entry of `dir` whose name matches `host` case-insensitively
-    /// (Unicode lower-case folding, as the Mac file system folds), or
-    /// whose mangled name is `host`; None when no entry matches. Called
-    /// only when the exact name misses, so the read_dir cost is paid on
-    /// misses alone.
+    /// The entry of `dir` whose Mac name matches `host` without case, as
+    /// the Mac file system compares names; None when no entry matches.
+    /// Called only when the exact name misses, so the read_dir cost is
+    /// paid on misses alone.
     pub(super) fn dir_entry(&self, dir: &Path, host: &str) -> Option<PathBuf> {
-        // NFC first: the server serves composed names, and a host may
-        // store decomposed ones (macOS does); a byte-exact file system
-        // then needs the normalization before the case fold
-        let wanted: String = host.nfc().collect::<String>().to_lowercase();
-        // Every mangled name holds the hash's `#`, so other misses skip
-        // the mangling
-        let mangled = wanted
-            .contains('#')
-            .then(|| crate::name::from_host(&wanted));
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let name = entry.file_name();
-            let lossy = name.to_string_lossy();
-            if lossy.nfc().collect::<String>().to_lowercase() == wanted
-                || mangled.as_ref().is_some_and(|m| {
-                    let (mac, original) = crate::name::to_mac(&name);
-                    original.is_some() && mac.to_lowercase() == *m
-                })
-            {
-                return Some(dir.join(name));
-            }
-        }
-        None
+        // NFC first: the Mac names are composed, and a host may store
+        // decomposed ones (macOS does)
+        let wanted: String = crate::name::from_host(host)
+            .nfc()
+            .collect::<String>()
+            .to_lowercase();
+        folder_names(dir, self.settings.mangle_case_clashes)
+            .into_iter()
+            .find(|(_, mac)| mac.to_lowercase() == wanted)
+            .map(|(name, _)| dir.join(name))
     }
 
     /// The first case-folded entry of `dir` matching `host` that is
@@ -249,8 +238,62 @@ impl Afp {
 
     /// The wire name of a resolved host path, mangled when it has to be
     pub(super) fn mac_name_of(&self, target: &Path) -> String {
-        crate::name::to_mac(target.file_name().unwrap_or_default()).0
+        let (Some(dir), Some(host_name)) = (target.parent(), target.file_name()) else {
+            return String::new();
+        };
+        if !self.settings.mangle_case_clashes {
+            return crate::name::to_mac(host_name).0;
+        }
+        folder_names(dir, true)
+            .into_iter()
+            .find(|(name, _)| name == host_name)
+            .map_or_else(|| crate::name::to_mac(host_name).0, |(_, mac)| mac)
     }
+}
+
+/// The Mac names of the entries of a folder, by host name.
+///
+/// Inside AppleTalk (2nd ed., ch13, "Catalog node names"): no two
+/// offspring of a directory have the same long name, and names compare
+/// without case. A host can hold "README" and "readme", or a composed and
+/// a decomposed "é", which convert to the same Mac name: the first of them
+/// keeps it, and the others are mangled. An entry whose host name is its
+/// Mac name comes first, as a request for that name reaches it by its host
+/// name, before any folder listing (walk_path). Without `mangle_case_clashes`
+/// every entry keeps its own Mac name.
+pub(super) fn folder_names(dir: &Path, mangle_case_clashes: bool) -> Vec<(OsString, String)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    // (not the host name, host name, Mac name): sorted, the entries named
+    // as on the Mac come first, then the others in host name order
+    let mut names: Vec<(bool, OsString, String)> = entries
+        .flatten()
+        .map(|e| {
+            let host_name = e.file_name();
+            let mac = crate::name::to_mac(&host_name).0;
+            (
+                host_name != crate::name::to_host(&mac).as_str(),
+                host_name,
+                mac,
+            )
+        })
+        .collect();
+    names.sort();
+    let mut taken = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .map(|(_, host_name, mac)| {
+            let mac = if taken.insert(mac.to_lowercase()) || !mangle_case_clashes {
+                mac
+            } else {
+                let mangled = crate::name::mangled(&host_name);
+                taken.insert(mangled.to_lowercase());
+                mangled
+            };
+            (host_name, mac)
+        })
+        .collect()
 }
 
 /// Whether two paths are the same object (device and inode where the
