@@ -491,6 +491,37 @@ fn a_read_past_the_end_answers_eof_with_the_data() {
 }
 
 #[test]
+fn a_fork_ends_where_its_container_ends() {
+    let (mut s, dir) = test_server("truncated-sidecar");
+    std::fs::write(dir.join("app"), b"data").unwrap();
+    // The entry announces 100 bytes of resource fork, the file holds 9
+    let mut sidecar = apple_double(&[(2, b"RESOURCE!")]);
+    sidecar[34..38].copy_from_slice(&100u32.to_be_bytes());
+    std::fs::write(dir.join("._app"), sidecar).unwrap();
+    let (r, reply) = gfdp(&mut s, "app", 0x0400, 0);
+    assert_eq!(r, 0);
+    assert_eq!(reply[0..4], 9u32.to_be_bytes());
+    let (_, f) = open(&mut s, "app", true, 1);
+    let (r, data) = read(&mut s, f, 0, 100);
+    assert_eq!((r, data.as_slice()), (ERR_EOF, &b"RESOURCE!"[..]));
+}
+
+#[test]
+fn a_read_of_a_file_truncated_while_open_answers_eof() {
+    let (mut s, dir) = test_server("truncated-open");
+    std::fs::write(dir.join("f"), vec![7u8; 1500]).unwrap();
+    let (_, f) = open(&mut s, "f", false, 1);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("f"))
+        .unwrap()
+        .set_len(100)
+        .unwrap();
+    let (r, data) = read(&mut s, f, 0, 1000);
+    assert_eq!((r, data.len()), (ERR_EOF, 100));
+}
+
+#[test]
 fn a_read_cut_by_the_reply_capacity_is_not_eof() {
     let (mut s, dir) = test_server_writable("capacity");
     std::fs::write(dir.join("f"), vec![7u8; 10_000]).unwrap();
