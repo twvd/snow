@@ -623,6 +623,9 @@ impl Esp {
             Ok(CmdOutcome::Status) => self.set_phase(PHASE_STATUS),
             Ok(CmdOutcome::DataIn) => self.set_phase(PHASE_DATA_IN),
             Ok(CmdOutcome::DataOut(_)) => self.set_phase(PHASE_DATA_OUT),
+            // The target holds the bus until the command completes: no phase
+            // change and no interrupt yet
+            Ok(CmdOutcome::Busy) => return,
             Err(e) => {
                 error!("SCSI command error: {:#}", e);
                 self.target_gone();

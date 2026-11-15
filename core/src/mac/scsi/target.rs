@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
@@ -583,6 +583,22 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             _ => self.specific_cmd(cmd, outdata),
         }
     }
+
+    /// Polls a command that returned `ScsiCmdResult::Pending`: None while it
+    /// is still running, else its result. Must never block.
+    fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
+        None
+    }
+
+    /// Waits for a command that returned `ScsiCmdResult::Pending` to finish,
+    /// and returns its result. Blocks: only for saving a state.
+    fn wait_pending(&mut self) -> Result<ScsiCmdResult> {
+        bail!("No command pending")
+    }
+
+    /// Forgets a command that returned `ScsiCmdResult::Pending`, as on a bus
+    /// reset. Must never block.
+    fn abort_pending(&mut self) {}
 
     /// Whether tick() does anything for this target
     fn ticks(&self) -> bool {

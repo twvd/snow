@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
@@ -34,6 +34,8 @@ pub(crate) enum CmdOutcome {
     DataIn,
     /// The target expects this many bytes from the initiator
     DataOut(usize),
+    /// The target is working on the command in the background: poll() it
+    Busy,
 }
 
 /// The SCSI bus and the targets attached to it
@@ -56,6 +58,10 @@ pub struct ScsiBus {
 
     /// Status of the last executed command
     pub(crate) status: u8,
+
+    /// The selected target is running a command in the background. A busy
+    /// target holds the bus, so only the selected target can be pending.
+    pending: bool,
 
     /// Attached targets
     #[serde(with = "BigArray")]
@@ -88,6 +94,7 @@ impl ScsiBus {
             dataout_len: 0,
             responsebuf: VecDeque::default(),
             status: 0,
+            pending: false,
             targets: Default::default(),
             ticking: None,
             toolbox: BlueSCSI::default(),
@@ -315,22 +322,81 @@ impl ScsiBus {
             }
         };
 
-        if self.scsi_trace_cdb {
-            match &result {
-                Ok(ScsiCmdResult::Status(s)) => {
-                    debug!("SCSI CDB {:02X} -> Status({:02X})", cmd_op, s);
-                }
-                Ok(ScsiCmdResult::DataIn(d)) => {
-                    debug!("SCSI CDB {:02X} -> DataIn {}B", cmd_op, d.len());
-                }
-                Ok(ScsiCmdResult::DataOut(n)) => {
-                    debug!("SCSI CDB {:02X} -> DataOut {}B", cmd_op, n);
-                }
-                Err(e) => debug!("SCSI CDB {:02X} -> Err: {:#}", cmd_op, e),
-            }
-        }
+        self.trace_result(cmd_op, &result);
+        self.finish(result?)
+    }
 
-        match result? {
+    /// Whether the selected target is running a command in the background
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Checks on a command running in the background. Returns None while it
+    /// is still running (or if none is), or what should happen on the bus
+    /// next. Never blocks.
+    pub(crate) fn poll(&mut self) -> Option<Result<CmdOutcome>> {
+        if !self.pending {
+            return None;
+        }
+        let result = match self.targets[self.sel_id].as_mut() {
+            Some(target) => target.poll_pending()?,
+            None => Err(anyhow!(
+                "SCSI target ID {} detached during a command",
+                self.sel_id
+            )),
+        };
+        Some(self.pending_done(result))
+    }
+
+    /// Waits for a command running in the background to finish. Returns None
+    /// if none is running, or what should happen on the bus next. Blocks: only
+    /// for saving a state.
+    pub(crate) fn wait(&mut self) -> Option<Result<CmdOutcome>> {
+        if !self.pending {
+            return None;
+        }
+        let result = match self.targets[self.sel_id].as_mut() {
+            Some(target) => target.wait_pending(),
+            None => Err(anyhow!(
+                "SCSI target ID {} detached during a command",
+                self.sel_id
+            )),
+        };
+        Some(self.pending_done(result))
+    }
+
+    /// Drops a command running in the background, as on a bus reset
+    pub(crate) fn abort_pending(&mut self) {
+        if !std::mem::take(&mut self.pending) {
+            return;
+        }
+        if let Some(target) = self.targets[self.sel_id].as_mut() {
+            target.abort_pending();
+        }
+    }
+
+    /// Takes in the result of a command that was running in the background
+    fn pending_done(&mut self, result: Result<ScsiCmdResult>) -> Result<CmdOutcome> {
+        self.pending = false;
+        let cmd_op = self.cmdbuf.first().copied().unwrap_or(0);
+        self.trace_result(cmd_op, &result);
+        self.finish(result?)
+    }
+
+    fn trace_result(&self, cmd_op: u8, result: &Result<ScsiCmdResult>) {
+        if !self.scsi_trace_cdb {
+            return;
+        }
+        match result {
+            Ok(r) => debug!("SCSI CDB {:02X} -> {:?}", cmd_op, r),
+            Err(e) => debug!("SCSI CDB {:02X} -> Err: {:#}", cmd_op, e),
+        }
+    }
+
+    /// Takes in what the target answered and reports what should happen on
+    /// the bus next
+    fn finish(&mut self, result: ScsiCmdResult) -> Result<CmdOutcome> {
+        match result {
             ScsiCmdResult::Status(s) => {
                 self.status = s;
                 Ok(CmdOutcome::Status)
@@ -352,6 +418,10 @@ impl ScsiBus {
                     Ok(CmdOutcome::DataOut(len))
                 }
             }
+            ScsiCmdResult::Pending => {
+                self.pending = true;
+                Ok(CmdOutcome::Busy)
+            }
         }
     }
 }
@@ -359,5 +429,90 @@ impl ScsiBus {
 impl Default for ScsiBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mac::scsi::test_target::{SLOW_BLOCKSIZE, SlowState, SlowTarget};
+    use std::sync::{Arc, Mutex};
+
+    /// A bus with a target at ID 0 whose reads wait for the test, selected
+    /// with a READ(6) of one block in the command buffer
+    fn bus_with_slow_read() -> (ScsiBus, Arc<Mutex<SlowState>>) {
+        let mut bus = ScsiBus::new();
+        let (target, state) = SlowTarget::new();
+        bus.targets[0] = Some(target);
+        bus.sel_id = 0;
+        bus.cmdbuf = vec![0x08, 0, 0, 0, 1, 0];
+        (bus, state)
+    }
+
+    fn release(state: &Mutex<SlowState>) {
+        state.lock().unwrap().release = Some(vec![0x55; SLOW_BLOCKSIZE]);
+    }
+
+    #[test]
+    fn pending_command_completes_through_poll() {
+        let (mut bus, state) = bus_with_slow_read();
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::Busy);
+        assert!(bus.is_pending());
+        assert!(bus.poll().is_none());
+
+        release(&state);
+        assert_eq!(bus.poll().unwrap().unwrap(), CmdOutcome::DataIn);
+        assert!(!bus.is_pending());
+        assert_eq!(bus.responsebuf.len(), SLOW_BLOCKSIZE);
+        assert!(bus.poll().is_none());
+    }
+
+    #[test]
+    fn pending_command_completes_through_wait() {
+        let (mut bus, state) = bus_with_slow_read();
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::Busy);
+
+        release(&state);
+        assert_eq!(bus.wait().unwrap().unwrap(), CmdOutcome::DataIn);
+        assert!(!bus.is_pending());
+        assert_eq!(bus.responsebuf.len(), SLOW_BLOCKSIZE);
+        assert!(bus.wait().is_none());
+    }
+
+    #[test]
+    fn aborted_command_is_dropped() {
+        let (mut bus, state) = bus_with_slow_read();
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::Busy);
+
+        bus.abort_pending();
+        assert_eq!(state.lock().unwrap().aborts, 1);
+        assert!(!bus.is_pending());
+        assert!(bus.poll().is_none());
+
+        // Nothing to abort any more
+        bus.abort_pending();
+        assert_eq!(state.lock().unwrap().aborts, 1);
+    }
+
+    #[test]
+    fn detached_target_ends_the_pending_command() {
+        let (mut bus, _state) = bus_with_slow_read();
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::Busy);
+
+        bus.targets[0] = None;
+        assert!(bus.poll().unwrap().is_err());
+        assert!(!bus.is_pending());
+    }
+
+    #[test]
+    fn command_that_does_not_pend_completes_at_once() {
+        let mut bus = ScsiBus::new();
+        bus.attach_cdrom_at(0, None);
+        bus.sel_id = 0;
+        // INQUIRY of 36 bytes
+        bus.cmdbuf = vec![0x12, 0, 0, 0, 36, 0];
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
+        assert!(!bus.is_pending());
+        assert!(bus.poll().is_none());
     }
 }
