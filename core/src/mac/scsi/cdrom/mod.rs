@@ -14,8 +14,8 @@ use crate::{
         ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND,
         ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
         cdrom::backends::{
-            cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
-            new_physical_cdrom_drive_backend,
+            cuesheet::CuesheetCdromBackend, drive_thread::Reply, is_physical_cdrom_drive_path,
+            iso::IsoCdromBackend, new_physical_cdrom_drive_backend,
         },
         target::ScsiTargetCommon,
     },
@@ -272,6 +272,14 @@ pub struct RawSector {
     qsub: QSub,
 }
 
+/// How a backend starts a read of user data
+pub enum ReadStart {
+    /// The read is done
+    Done(Result<Vec<u8>, CdromError>),
+    /// The read goes on in the background
+    Pending(Reply<Vec<u8>>),
+}
+
 pub trait CdromBackend: Send {
     /// Check whether a disc is still in the drive and reload TOC's if necessary. Returns
     /// Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if an error
@@ -295,6 +303,12 @@ pub trait CdromBackend: Send {
     /// sector containing 2048 bytes of user data. If the wrong type of sector is accessed,
     /// it fails with an ILLEGAL MODE FOR THIS TRACK error.
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError>;
+
+    /// Starts reading user data, which a backend may finish in the background.
+    /// See `read_bytes`.
+    fn start_read(&self, offset: usize, length: usize) -> ReadStart {
+        ReadStart::Done(self.read_bytes(offset, length))
+    }
 
     fn image_path(&self) -> Option<&Path>;
 
@@ -365,6 +379,20 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio sink for CD audio
     #[serde(skip)]
     audio_sink: Option<Box<dyn AudioSink>>,
+
+    /// A READ going on in the background
+    #[serde(skip)]
+    pending_read: Option<(Reply<Vec<u8>>, ReadRange)>,
+}
+
+/// What a READ reads from the backend
+struct ReadRange {
+    /// Byte offset
+    offset: usize,
+    /// Byte length, up to the end of the disc
+    length: usize,
+    /// The length of the data the READ returns, in whole blocks
+    padded_length: usize,
 }
 
 impl ScsiTargetCdrom {
@@ -402,6 +430,7 @@ impl ScsiTargetCdrom {
             ],
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
+            pending_read: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -826,6 +855,45 @@ impl ScsiTargetCdrom {
     }
 }
 
+impl ScsiTargetCdrom {
+    /// Finishes a READ with what the backend read
+    fn read_done(
+        &mut self,
+        result: Result<Vec<u8>, CdromError>,
+        read: &ReadRange,
+    ) -> Result<ScsiCmdResult> {
+        match result {
+            Ok(mut result) => {
+                // CD-ROM images may not be exactly aligned on block size
+                // Pad the end to a full block size
+                result.resize(read.padded_length, 0);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            Err(CdromError::CheckCondition(cc, asc)) => {
+                self.common.set_cc(cc, asc);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::Other(e)) => {
+                log::error!(
+                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
+                    read.offset,
+                    read.length,
+                    e
+                );
+                self.common
+                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
+                Err(e)
+            }
+        }
+    }
+}
+
 fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> {
     tracks
         .iter()
@@ -1143,36 +1211,37 @@ impl ScsiTarget for ScsiTargetCdrom {
         let start_offset = block_offset * blocksize;
         let image_end_offset =
             std::cmp::min((block_offset + block_count) * blocksize, backend.byte_len());
+        let read = ReadRange {
+            offset: start_offset,
+            length: image_end_offset - start_offset,
+            padded_length: block_count * blocksize,
+        };
 
-        match backend.read_bytes(start_offset, image_end_offset - start_offset) {
-            Ok(mut result) => {
-                // CD-ROM images may not be exactly aligned on block size
-                // Pad the end to a full block size
-                result.resize(block_count * blocksize, 0);
-                Ok(ScsiCmdResult::DataIn(result))
-            }
-            Err(CdromError::CheckCondition(cc, asc)) => {
-                self.common.set_cc(cc, asc);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::BackendDead) => {
-                log::error!("The CD-ROM drive became unusable");
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::Other(e)) => {
-                log::error!(
-                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
-                    start_offset,
-                    image_end_offset - start_offset,
-                    e
-                );
-                self.common
-                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
-                Err(e)
+        match backend.start_read(read.offset, read.length) {
+            ReadStart::Done(result) => self.read_done(result, &read),
+            ReadStart::Pending(reply) => {
+                self.pending_read = Some((reply, read));
+                Ok(ScsiCmdResult::Pending)
             }
         }
+    }
+
+    fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
+        let result = self.pending_read.as_ref()?.0.poll()?;
+        let (_, read) = self.pending_read.take()?;
+        Some(self.read_done(result, &read))
+    }
+
+    fn wait_pending(&mut self) -> Result<ScsiCmdResult> {
+        let Some((reply, read)) = self.pending_read.take() else {
+            bail!("No command pending");
+        };
+        self.read_done(reply.wait(), &read)
+    }
+
+    fn abort_pending(&mut self) {
+        // The drive finishes the read, and its data is thrown away
+        self.pending_read = None;
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
@@ -1697,6 +1766,7 @@ mod tests {
     use super::*;
     use crate::mac::scsi::ASC_PARAMETER_LIST_LENGTH_ERROR;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     /// Creates a fresh, uniquely-named temporary directory for a test.
     fn temp_dir(tag: &str) -> PathBuf {
@@ -1935,5 +2005,156 @@ mod tests {
         assert_eq!(mode_select(&mut cd, &data), STATUS_CHECK_CONDITION);
         let sense = (CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
         assert_eq!(cd.common().req_sense(), sense);
+    }
+
+    /// A disc of 4 KB whose reads finish when the test says so
+    struct GatedBackend {
+        /// Where the backend puts the sender of the read it started
+        read: Arc<Mutex<Option<crossbeam_channel::Sender<Result<Vec<u8>, CdromError>>>>>,
+    }
+
+    impl CdromBackend for GatedBackend {
+        fn check_media(&mut self) -> Result<(), CdromError> {
+            Ok(())
+        }
+
+        fn byte_len(&self) -> usize {
+            4096
+        }
+
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Result<Vec<u8>, CdromError> {
+            panic!("reads start in the background")
+        }
+
+        fn start_read(&self, _offset: usize, _length: usize) -> ReadStart {
+            let (sender, reply) = Reply::channel();
+            *self.read.lock().unwrap() = Some(sender);
+            ReadStart::Pending(reply)
+        }
+
+        fn image_path(&self) -> Option<&Path> {
+            None
+        }
+
+        fn sessions(&self) -> Option<&[SessionInfo]> {
+            None
+        }
+
+        fn tracks(&self) -> Option<&[TrackInfo]> {
+            None
+        }
+
+        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
+            Err(CdromError::CheckCondition(
+                CC_KEY_ILLEGAL_REQUEST,
+                ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
+            ))
+        }
+    }
+
+    type ReadSender = Arc<Mutex<Option<crossbeam_channel::Sender<Result<Vec<u8>, CdromError>>>>>;
+
+    /// A CD-ROM drive with a disc whose reads finish when the test says so
+    fn cdrom_with_gated_disc() -> (ScsiTargetCdrom, ReadSender) {
+        let read = ReadSender::default();
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(GatedBackend { read: read.clone() }));
+        (cd, read)
+    }
+
+    /// READ(10) of the second block
+    fn read10(cd: &mut ScsiTargetCdrom) -> ScsiCmdResult {
+        cd.cmd(&[0x28, 0, 0, 0, 0, 1, 0, 0, 1, 0], None).unwrap()
+    }
+
+    /// Finishes the read the backend started
+    fn finish_read(read: &ReadSender, result: Result<Vec<u8>, CdromError>) {
+        let sender = read.lock().unwrap().take().expect("no read started");
+        // The target may have dropped the reply already
+        let _ = sender.send(result);
+    }
+
+    #[test]
+    fn read_finishes_in_the_background() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        assert!(cd.poll_pending().is_none());
+
+        // A short read is padded to a whole block
+        finish_read(&read, Ok(vec![0x55; 2000]));
+        match cd.poll_pending() {
+            Some(Ok(ScsiCmdResult::DataIn(d))) => {
+                assert_eq!(d.len(), 2048);
+                assert_eq!(d[0], 0x55);
+                assert_eq!(d[2047], 0);
+            }
+            other => panic!(
+                "expected data, got {:?}",
+                other.map(|r| r.map(|r| other_status(&r)))
+            ),
+        }
+        assert!(cd.poll_pending().is_none());
+    }
+
+    #[test]
+    fn aborted_read_is_dropped() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        cd.abort_pending();
+        finish_read(&read, Ok(vec![0x55; 2048]));
+        assert!(cd.poll_pending().is_none());
+
+        // The next READ goes on as usual
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        finish_read(&read, Ok(vec![0xAA; 2048]));
+        match cd.poll_pending() {
+            Some(Ok(ScsiCmdResult::DataIn(d))) => assert_eq!(d[0], 0xAA),
+            _ => panic!("expected data"),
+        }
+    }
+
+    #[test]
+    fn wait_takes_the_read() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        finish_read(&read, Ok(vec![0x55; 2048]));
+        match cd.wait_pending() {
+            Ok(ScsiCmdResult::DataIn(d)) => assert_eq!(d.len(), 2048),
+            _ => panic!("expected data"),
+        }
+        assert!(cd.wait_pending().is_err());
+    }
+
+    #[test]
+    fn dead_drive_during_a_read_ejects() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        finish_read(&read, Err(CdromError::BackendDead));
+        assert!(matches!(
+            cd.poll_pending(),
+            Some(Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)))
+        ));
+        assert!(cd.backend.is_none());
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+        );
+    }
+
+    #[test]
+    fn image_read_finishes_at_once() {
+        let dir = temp_dir("image_read");
+        write_file(&dir, "disc.iso", 4096);
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.load_media(&dir.join("disc.iso")).unwrap();
+
+        match read10(&mut cd) {
+            ScsiCmdResult::DataIn(d) => assert_eq!(d.len(), 2048),
+            other => panic!("expected data, got {}", other_status(&other)),
+        }
+        assert!(cd.poll_pending().is_none());
+
+        drop(cd);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
