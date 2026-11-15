@@ -218,12 +218,6 @@ impl DriveThread {
             .map_err(|_| CdromError::BackendDead)
     }
 
-    /// See `PhysicalCdromDrive::check_media`. Updates the disc information.
-    pub fn check_media(&mut self) -> Result<(), CdromError> {
-        let check = self.start_check_media().wait()?;
-        self.apply_media_check(check)
-    }
-
     /// Starts a media check, without waiting for it. Its outcome goes to
     /// `apply_media_check`. While the drive is still opening, the check
     /// reports at once that the drive is becoming ready.
@@ -259,11 +253,6 @@ impl DriveThread {
         self.disc_info.as_ref()
     }
 
-    /// See `PhysicalCdromDrive::read_bytes`
-    pub fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
-        self.start_read_bytes(offset, length).wait()
-    }
-
     /// Starts reading user data, without waiting for it. See
     /// `PhysicalCdromDrive::read_bytes`.
     pub fn start_read_bytes(&self, offset: usize, length: usize) -> Reply<Vec<u8>> {
@@ -276,11 +265,6 @@ impl DriveThread {
             reply,
         });
         Reply(reply_receiver)
-    }
-
-    /// See `PhysicalCdromDrive::read_cdda_sector`
-    pub fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
-        self.start_read_cdda_sector(sector).wait()
     }
 
     /// Starts reading a raw CD Digital Audio sector, without waiting for it.
@@ -451,6 +435,12 @@ mod tests {
         panic!("the drive did not open");
     }
 
+    /// A media check, waited for and applied
+    fn check_media(thread: &mut DriveThread) -> Result<(), CdromError> {
+        let check = thread.start_check_media().wait()?;
+        thread.apply_media_check(check)
+    }
+
     /// Waits for the drive thread to drop its drive
     fn wait_for_drop(state: &Mutex<FakeState>) {
         for _ in 0..1000 {
@@ -482,10 +472,13 @@ mod tests {
 
         // The drive is dead
         assert!(matches!(
-            thread.read_bytes(0, 1),
+            thread.start_read_bytes(0, 1).wait(),
             Err(CdromError::BackendDead)
         ));
-        assert!(matches!(thread.check_media(), Err(CdromError::BackendDead)));
+        assert!(matches!(
+            check_media(&mut thread),
+            Err(CdromError::BackendDead)
+        ));
     }
 
     #[test]
@@ -514,18 +507,18 @@ mod tests {
         gate.send(()).unwrap();
         assert!(wait_for_open(&mut thread).is_none());
         assert_eq!(thread.disc_info().unwrap().capacity, 4096);
-        assert!(thread.check_media().is_ok());
+        assert!(check_media(&mut thread).is_ok());
     }
 
     #[test]
     fn reads_go_through_the_thread() {
         let (thread, _) = drive_thread();
-        let Ok(data) = thread.read_bytes(0x100, 4) else {
+        let Ok(data) = thread.start_read_bytes(0x100, 4).wait() else {
             panic!("read failed");
         };
         assert_eq!(data, [0, 1, 2, 3]);
 
-        let Ok(sector) = thread.read_cdda_sector(7) else {
+        let Ok(sector) = thread.start_read_cdda_sector(7).wait() else {
             panic!("CDDA read failed");
         };
         assert!(sector.data.iter().all(|b| *b == 7));
@@ -537,7 +530,7 @@ mod tests {
 
         state.lock().unwrap().disc = None;
         assert!(matches!(
-            thread.check_media(),
+            check_media(&mut thread),
             Err(CdromError::CheckCondition(
                 CC_KEY_NOT_READY,
                 ASC_MEDIUM_NOT_PRESENT
@@ -546,7 +539,7 @@ mod tests {
         assert!(thread.disc_info().is_none());
 
         state.lock().unwrap().disc = Some(vec![0; 2048]);
-        assert!(thread.check_media().is_ok());
+        assert!(check_media(&mut thread).is_ok());
         assert_eq!(thread.disc_info().unwrap().capacity, 2048);
     }
 
@@ -555,10 +548,13 @@ mod tests {
         let (mut thread, state) = drive_thread();
         state.lock().unwrap().panic = true;
         assert!(matches!(
-            thread.read_bytes(0, 1),
+            thread.start_read_bytes(0, 1).wait(),
             Err(CdromError::BackendDead)
         ));
-        assert!(matches!(thread.check_media(), Err(CdromError::BackendDead)));
+        assert!(matches!(
+            check_media(&mut thread),
+            Err(CdromError::BackendDead)
+        ));
     }
 
     #[test]

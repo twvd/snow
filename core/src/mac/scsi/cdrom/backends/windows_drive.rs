@@ -89,11 +89,7 @@ impl WindowsDriveCdromBackend {
 }
 
 impl CdromBackend for WindowsDriveCdromBackend {
-    fn check_media(&mut self) -> Result<(), CdromError> {
-        self.thread.check_media()
-    }
-
-    fn start_check_media(&mut self) -> Started<MediaCheck> {
+    fn check_media(&mut self) -> Started<MediaCheck> {
         Started::Pending(self.thread.start_check_media())
     }
 
@@ -112,11 +108,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
             .unwrap_or(0)
     }
 
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
-        self.thread.read_bytes(offset, length)
-    }
-
-    fn start_read(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
         Started::Pending(self.thread.start_read_bytes(offset, length))
     }
 
@@ -132,11 +124,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
         Some(&self.thread.disc_info()?.tracks)
     }
 
-    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
-        self.thread.read_cdda_sector(sector)
-    }
-
-    fn start_read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
+    fn read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
         Started::Pending(self.thread.start_read_cdda_sector(sector))
     }
 }

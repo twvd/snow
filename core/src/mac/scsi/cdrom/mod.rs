@@ -295,22 +295,19 @@ pub struct MediaCheck {
 }
 
 pub trait CdromBackend: Send {
-    /// Check whether a disc is still in the drive and reload TOC's if necessary. Returns
-    /// Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if an error
-    /// occurred.
-    fn check_media(&mut self) -> Result<(), CdromError>;
+    /// Check whether a disc is still in the drive and reload TOC's if necessary. Its
+    /// result is Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if
+    /// an error occurred.
+    ///
+    /// The check may finish at once (`Started::Done`) or in the background
+    /// (`Started::Pending`). Either way, its outcome goes to `apply_media_check`.
+    fn check_media(&mut self) -> Started<MediaCheck>;
 
-    /// Starts a media check, which a backend may finish in the background. The
-    /// outcome goes to `apply_media_check`. See `check_media`.
-    fn start_check_media(&mut self) -> Started<MediaCheck> {
-        Started::Done(Ok(MediaCheck {
-            result: self.check_media(),
-            disc_info: None,
-        }))
-    }
-
-    /// Takes in the outcome of a media check from `start_check_media`, and
-    /// returns its result
+    /// Takes in the outcome of a media check, and returns its result. Called
+    /// once after each `check_media`, when its outcome is ready. A backend whose
+    /// `check_media` returns `Started::Pending` should save the new disc
+    /// information so it can be queried by `sessions` and `tracks`; others can
+    /// keep this default.
     fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
         check.result
     }
@@ -337,13 +334,10 @@ pub trait CdromBackend: Send {
     /// Each sector accessed by this method is expected to be a Mode 1 or Mode 2 Form 1
     /// sector containing 2048 bytes of user data. If the wrong type of sector is accessed,
     /// it fails with an ILLEGAL MODE FOR THIS TRACK error.
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError>;
-
-    /// Starts reading user data, which a backend may finish in the background.
-    /// See `read_bytes`.
-    fn start_read(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
-        Started::Done(self.read_bytes(offset, length))
-    }
+    ///
+    /// The read may finish at once (`Started::Done`) or in the background
+    /// (`Started::Pending`).
+    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>>;
 
     fn image_path(&self) -> Option<&Path>;
 
@@ -351,13 +345,10 @@ pub trait CdromBackend: Send {
     fn tracks(&self) -> Option<&[TrackInfo]>;
 
     /// Read a raw CD Digital Audio sector. Other types of sectors are read via `read_bytes`.
-    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
-
-    /// Starts reading a raw CD Digital Audio sector, which a backend may
-    /// finish in the background. See `read_cdda_sector`.
-    fn start_read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
-        Started::Done(self.read_cdda_sector(sector))
-    }
+    ///
+    /// The read may finish at once (`Started::Done`) or in the background
+    /// (`Started::Pending`).
+    fn read_cdda_sector(&self, sector: u32) -> Started<RawSector>;
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -557,7 +548,7 @@ impl ScsiTargetCdrom {
             return Ok(result);
         }
         let backend = self.backend.as_mut().unwrap();
-        match backend.start_check_media() {
+        match backend.check_media() {
             Started::Done(check) => self.toc_after_check(check, &request),
             Started::Pending(reply) => {
                 self.pending = Some(PendingCmd::ReadToc(reply, request));
@@ -915,7 +906,7 @@ impl ScsiTargetCdrom {
             },
             // Nothing in flight, or a read for another sector after a seek,
             // which is dropped here
-            _ => match backend.start_read_cdda_sector(self.audio_pos) {
+            _ => match backend.read_cdda_sector(self.audio_pos) {
                 Started::Done(samples) => samples,
                 Started::Pending(reply) => {
                     self.audio_read = Some((self.audio_pos, reply));
@@ -1319,7 +1310,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             return Ok(result);
         }
         let backend = self.backend.as_mut().unwrap();
-        match backend.start_check_media() {
+        match backend.check_media() {
             Started::Done(check) => {
                 let result = self.apply_media_check(check);
                 self.media_checked(result)
@@ -1498,7 +1489,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             padded_length: block_count * blocksize,
         };
 
-        match backend.start_read(read.offset, read.length) {
+        match backend.read_bytes(read.offset, read.length) {
             Started::Done(result) => self.read_done(result, &read),
             Started::Pending(reply) => {
                 self.pending = Some(PendingCmd::Read(reply, read));
@@ -1807,7 +1798,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     start_sector,
                     end_sector,
                 };
-                match backend.start_read_cdda_sector(start_sector) {
+                match backend.read_cdda_sector(start_sector) {
                     Started::Done(initial_sector) => self.play_audio_from(initial_sector, &request),
                     Started::Pending(reply) => {
                         self.pending = Some(PendingCmd::PlayAudio(reply, request));
@@ -2326,11 +2317,7 @@ mod tests {
     }
 
     impl CdromBackend for GatedBackend {
-        fn check_media(&mut self) -> Result<(), CdromError> {
-            Ok(())
-        }
-
-        fn start_check_media(&mut self) -> Started<MediaCheck> {
+        fn check_media(&mut self) -> Started<MediaCheck> {
             let (sender, reply) = Reply::channel();
             self.check.lock().unwrap().sender = Some(sender);
             Started::Pending(reply)
@@ -2346,11 +2333,7 @@ mod tests {
             4096
         }
 
-        fn read_bytes(&self, _offset: usize, _length: usize) -> Result<Vec<u8>, CdromError> {
-            panic!("reads start in the background")
-        }
-
-        fn start_read(&self, _offset: usize, _length: usize) -> Started<Vec<u8>> {
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Started<Vec<u8>> {
             let (sender, reply) = Reply::channel();
             *self.read.lock().unwrap() = Some(sender);
             Started::Pending(reply)
@@ -2368,14 +2351,7 @@ mod tests {
             Some(&self.disc_info.tracks)
         }
 
-        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
-            Err(CdromError::CheckCondition(
-                CC_KEY_ILLEGAL_REQUEST,
-                ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
-            ))
-        }
-
-        fn start_read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
+        fn read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
             let (sender, reply) = Reply::channel();
             *self.cdda.lock().unwrap() = Some(sender);
             Started::Pending(reply)
@@ -2867,8 +2843,8 @@ mod tests {
     struct FailedLoadBackend(Option<anyhow::Error>);
 
     impl CdromBackend for FailedLoadBackend {
-        fn check_media(&mut self) -> Result<(), CdromError> {
-            Err(CdromError::BackendDead)
+        fn check_media(&mut self) -> Started<MediaCheck> {
+            Started::Done(Err(CdromError::BackendDead))
         }
 
         fn take_load_error(&mut self) -> Option<anyhow::Error> {
@@ -2879,8 +2855,8 @@ mod tests {
             0
         }
 
-        fn read_bytes(&self, _offset: usize, _length: usize) -> Result<Vec<u8>, CdromError> {
-            Err(CdromError::BackendDead)
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Started<Vec<u8>> {
+            Started::Done(Err(CdromError::BackendDead))
         }
 
         fn image_path(&self) -> Option<&Path> {
@@ -2895,8 +2871,8 @@ mod tests {
             None
         }
 
-        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
-            Err(CdromError::BackendDead)
+        fn read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
+            Started::Done(Err(CdromError::BackendDead))
         }
     }
 

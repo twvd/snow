@@ -21,8 +21,8 @@ use crate::mac::scsi::{
     CC_KEY_MEDIUM_ERROR,
     cdrom::{
         AUDIO_FRAMES_PER_SEC, AUDIO_FRAMES_PER_SECTOR, AUDIO_TRACK, CdromBackend, CdromError,
-        DATA_TRACK, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector, SessionInfo, TrackInfo,
-        get_track_at_sector,
+        DATA_TRACK, LBA_START_SECTOR, MediaCheck, Msf, QSub, RAW_SECTOR_LEN, RawSector,
+        SessionInfo, Started, TrackInfo, get_track_at_sector,
     },
 };
 
@@ -877,26 +877,9 @@ impl CuesheetCdromBackend {
     }
 }
 
-impl CdromBackend for CuesheetCdromBackend {
-    fn check_media(&mut self) -> Result<(), CdromError> {
-        Ok(())
-    }
-
-    fn byte_len(&self) -> usize {
-        // To find the capacity, treat each sector (except the session pre-gap) as a
-        // block containing 2048 bytes.
-        // However, only sectors in a Data track in Mode 1 or Mode 2 Form 1 are readable
-        // via `read_bytes`.
-        let final_leadout = self
-            .sector_map
-            .last()
-            .map(|e| e.sector + e.sector_count)
-            .unwrap_or(LBA_START_SECTOR);
-        let final_lba = final_leadout.saturating_sub(LBA_START_SECTOR);
-        usize::try_from(final_lba).unwrap() * 2048
-    }
-
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+impl CuesheetCdromBackend {
+    /// Reads user data, see `CdromBackend::read_bytes`
+    fn read_user_data(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
         let mut result = Vec::<u8>::with_capacity(length);
 
         let mut sector: u32 =
@@ -979,6 +962,33 @@ impl CdromBackend for CuesheetCdromBackend {
         result.truncate(length);
         Ok(result)
     }
+}
+
+impl CdromBackend for CuesheetCdromBackend {
+    fn check_media(&mut self) -> Started<MediaCheck> {
+        Started::Done(Ok(MediaCheck {
+            result: Ok(()),
+            disc_info: None,
+        }))
+    }
+
+    fn byte_len(&self) -> usize {
+        // To find the capacity, treat each sector (except the session pre-gap) as a
+        // block containing 2048 bytes.
+        // However, only sectors in a Data track in Mode 1 or Mode 2 Form 1 are readable
+        // via `read_bytes`.
+        let final_leadout = self
+            .sector_map
+            .last()
+            .map(|e| e.sector + e.sector_count)
+            .unwrap_or(LBA_START_SECTOR);
+        let final_lba = final_leadout.saturating_sub(LBA_START_SECTOR);
+        usize::try_from(final_lba).unwrap() * 2048
+    }
+
+    fn read_bytes(&self, offset: usize, length: usize) -> Started<Vec<u8>> {
+        Started::Done(self.read_user_data(offset, length))
+    }
 
     fn image_path(&self) -> Option<&Path> {
         Some(&self.cue_path)
@@ -992,7 +1002,7 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.tracks)
     }
 
-    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
-        self.read_raw_sector(sector)
+    fn read_cdda_sector(&self, sector: u32) -> Started<RawSector> {
+        Started::Done(self.read_raw_sector(sector))
     }
 }
