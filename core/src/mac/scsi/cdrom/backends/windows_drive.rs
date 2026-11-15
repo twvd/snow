@@ -101,6 +101,10 @@ impl CdromBackend for WindowsDriveCdromBackend {
         self.thread.apply_media_check(check)
     }
 
+    fn take_load_error(&mut self) -> Option<anyhow::Error> {
+        self.thread.take_load_error()
+    }
+
     fn byte_len(&self) -> usize {
         self.thread
             .disc_info()

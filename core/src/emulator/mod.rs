@@ -875,6 +875,14 @@ impl Emulator {
                         .send(EmulatorEvent::ScsiMediaEjected(id))
                         .unwrap();
                 }
+                Some(ScsiTargetEvent::LoadFailed(msg)) => {
+                    self.event_sender
+                        .send(EmulatorEvent::UserMessage(
+                            UserMessageType::Error,
+                            format!("SCSI ID #{}: {}", id, msg),
+                        ))
+                        .unwrap();
+                }
                 #[cfg(feature = "printer")]
                 Some(ScsiTargetEvent::PageSaved(f)) => {
                     self.event_sender

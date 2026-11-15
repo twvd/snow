@@ -315,6 +315,12 @@ pub trait CdromBackend: Send {
         check.result
     }
 
+    /// The error loading the media failed with, for a backend that loads it
+    /// in the background. Reported once, and the backend is unusable after it.
+    fn take_load_error(&mut self) -> Option<anyhow::Error> {
+        None
+    }
+
     /// Get the byte capacity of the CD, where each sector starting at #150 contains 2048
     /// bytes of user data.
     ///
@@ -422,6 +428,12 @@ pub(super) struct ScsiTargetCdrom {
     /// The audio sector being read for playback, and its reply
     #[serde(skip)]
     audio_read: Option<(u32, Reply<RawSector>)>,
+
+    /// The error loading the media failed with in the background, taken from
+    /// the backend (see `CdromBackend::take_load_error`) and kept here until
+    /// `take_event` reports it, since ejecting drops the backend
+    #[serde(skip)]
+    load_error: Option<String>,
 }
 
 /// A command going on in the background
@@ -512,6 +524,7 @@ impl ScsiTargetCdrom {
             audio_sink: None,
             pending: None,
             audio_read: None,
+            load_error: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -986,6 +999,13 @@ impl ScsiTargetCdrom {
     /// Inserts or ejects a disc. A command going on in the background is
     /// dropped, as it was for the previous disc.
     fn set_backend(&mut self, backend: Option<Box<dyn CdromBackend>>) {
+        // Keep an error loading the previous disc, to report it
+        if let Some(old) = self.backend.as_mut()
+            && let Some(e) = old.take_load_error()
+        {
+            log::error!("Loading the CD-ROM failed: {:#}", e);
+            self.load_error = Some(format!("{:#}", e));
+        }
         self.backend = backend;
         // An audio sector being read is from the previous disc
         self.audio_read = None;
@@ -1271,6 +1291,18 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
+        // A backend that failed to load in the background is unusable: eject
+        // it, which keeps its error
+        if let Some(backend) = self.backend.as_mut()
+            && let Some(e) = backend.take_load_error()
+        {
+            log::error!("Loading the CD-ROM failed: {:#}", e);
+            self.load_error = Some(format!("{:#}", e));
+            self.eject_media();
+        }
+        if let Some(msg) = self.load_error.take() {
+            return Some(ScsiTargetEvent::LoadFailed(msg));
+        }
         if self.event_eject.get_clear() {
             Some(ScsiTargetEvent::MediaEjected)
         } else {
@@ -2829,5 +2861,82 @@ mod tests {
         assert!(cd.audio_read.is_none());
         let sender = cdda.lock().unwrap().take().unwrap();
         assert!(sender.send(Err(CdromError::BackendDead)).is_err());
+    }
+
+    /// A backend whose loading in the background failed
+    struct FailedLoadBackend(Option<anyhow::Error>);
+
+    impl CdromBackend for FailedLoadBackend {
+        fn check_media(&mut self) -> Result<(), CdromError> {
+            Err(CdromError::BackendDead)
+        }
+
+        fn take_load_error(&mut self) -> Option<anyhow::Error> {
+            self.0.take()
+        }
+
+        fn byte_len(&self) -> usize {
+            0
+        }
+
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Result<Vec<u8>, CdromError> {
+            Err(CdromError::BackendDead)
+        }
+
+        fn image_path(&self) -> Option<&Path> {
+            None
+        }
+
+        fn sessions(&self) -> Option<&[SessionInfo]> {
+            None
+        }
+
+        fn tracks(&self) -> Option<&[TrackInfo]> {
+            None
+        }
+
+        fn read_cdda_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
+            Err(CdromError::BackendDead)
+        }
+    }
+
+    fn cdrom_with_failed_load() -> ScsiTargetCdrom {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(FailedLoadBackend(Some(anyhow!("no drive")))));
+        cd
+    }
+
+    #[test]
+    fn failed_load_is_reported_then_ejected() {
+        let mut cd = cdrom_with_failed_load();
+        match cd.take_event() {
+            Some(ScsiTargetEvent::LoadFailed(msg)) => assert_eq!(msg, "no drive"),
+            _ => panic!("expected LoadFailed"),
+        }
+        assert!(cd.backend.is_none());
+        assert!(matches!(
+            cd.take_event(),
+            Some(ScsiTargetEvent::MediaEjected)
+        ));
+        assert!(cd.take_event().is_none());
+    }
+
+    #[test]
+    fn failed_load_found_by_a_command_is_still_reported() {
+        let mut cd = cdrom_with_failed_load();
+        // The guest finds the drive dead first, which ejects it
+        assert!(matches!(
+            test_unit_ready(&mut cd),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert!(cd.backend.is_none());
+        match cd.take_event() {
+            Some(ScsiTargetEvent::LoadFailed(msg)) => assert_eq!(msg, "no drive"),
+            _ => panic!("expected LoadFailed"),
+        }
+        assert!(matches!(
+            cd.take_event(),
+            Some(ScsiTargetEvent::MediaEjected)
+        ));
     }
 }

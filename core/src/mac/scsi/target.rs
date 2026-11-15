@@ -34,6 +34,9 @@ pub enum ScsiTargetType {
 /// Some events that may occur to feed to the UI through EmulatorEvent
 pub enum ScsiTargetEvent {
     MediaEjected,
+    /// Loading the media failed after the load command returned, with this
+    /// error
+    LoadFailed(String),
     #[cfg(feature = "printer")]
     PageSaved(String),
 }
