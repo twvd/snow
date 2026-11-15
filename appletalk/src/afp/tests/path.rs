@@ -752,3 +752,29 @@ fn large_folder_bench() {
     let delete = start.elapsed();
     eprintln!("10,000 entries: Enumerate in pages of 50 {enumerate:?}, delete each {delete:?}");
 }
+
+/// Host names that are not UTF-8 and differ only in their invalid bytes get
+/// different Mac names, and each name reaches its own file
+#[cfg(unix)]
+#[test]
+fn names_that_are_not_utf8_stay_distinct() {
+    use std::os::unix::ffi::OsStrExt;
+    let (mut s, dir) = test_server("not-utf8");
+    for (name, data) in [(b"caf\xe9", b"one"), (b"caf\xe8", b"two")] {
+        if std::fs::write(dir.join(std::ffi::OsStr::from_bytes(name)), data).is_err() {
+            // A host file system that only takes UTF-8 names
+            return;
+        }
+    }
+    let names = enumerate_in_pages(&mut s, 10);
+    assert_eq!(names.len(), 2);
+    assert_ne!(names[0], names[1]);
+    let mut contents = Vec::new();
+    for name in &names {
+        let (r, f) = open(&mut s, name, false, 1);
+        assert_eq!(r, 0, "{name}");
+        contents.push(read(&mut s, f, 0, 10).1);
+    }
+    contents.sort();
+    assert_eq!(contents, [b"one".to_vec(), b"two".to_vec()]);
+}

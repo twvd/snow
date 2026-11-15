@@ -11,13 +11,15 @@
 //! * host names with characters MacRoman cannot represent (or names
 //!   longer than 31 Mac characters) are mangled: the offending
 //!   characters are dropped from the stem and `#XXXXXXXX` (the
-//!   hexadecimal FNV-1a hash of the original UTF-8 name) is appended,
+//!   hexadecimal FNV-1a hash of the bytes of the host name) is appended,
 //!   keeping the extension, e.g. `你好.txt` becomes `#a1b2c3d4.txt`.
 //!   Nothing has to remember the mapping: a mangled name resolves by
 //!   mangling the names in its directory until one matches;
 //! * names starting with a dot (dotfiles, `.AppleDouble`, `._`
 //!   sidecars) are hidden: they are omitted from enumeration and
 //!   cannot be addressed on the wire.
+
+use std::ffi::OsStr;
 
 use encoding_rs::MACINTOSH;
 use unicode_normalization::UnicodeNormalization;
@@ -78,14 +80,17 @@ pub fn is_meta_name(host_name: &str) -> bool {
 
 /// The Mac name of a host name, and the original name when it was
 /// mangled
-pub fn to_mac(host_name: &str) -> (String, Option<String>) {
+pub fn to_mac(host_name: impl AsRef<OsStr>) -> (String, Option<String>) {
+    let host_name = host_name.as_ref();
     // The unmodified input is the mangling original (the name the host
-    // actually stores; the bijection below must not shadow it)
-    let original = host_name;
+    // actually stores; the bijection below must not shadow it). A name
+    // that is not UTF-8 has U+FFFD in place of its invalid bytes, which
+    // MacRoman cannot encode, so it is always mangled.
+    let original = host_name.to_string_lossy();
     // The `:` → `/` bijection, then NFC: macOS stores decomposed
     // names (combining accents have no MacRoman encoding, but their
     // composed forms do)
-    let composed: String = from_host(original).nfc().collect();
+    let composed: String = from_host(&original).nfc().collect();
     let (encoded, _, unrepresentable) = MACINTOSH.encode(&composed);
 
     let overlong = encoded.len() > MAC_NAME_MAX;
@@ -103,7 +108,9 @@ pub fn to_mac(host_name: &str) -> (String, Option<String>) {
         _ => (composed.as_str(), ""),
     };
     let stem: String = stem.chars().filter(|c| is_representable(*c)).collect();
-    let hash = fnv1a(original.as_bytes());
+    // The hash covers the bytes the host stores: names that differ only
+    // in bytes that are not UTF-8 still get different hashes
+    let hash = fnv1a(host_name.as_encoded_bytes());
     let suffix = format!("#{hash:08x}");
     // Each representable character is one MacRoman byte. The extension is
     // filtered too, and it gives way when it would not leave the hash room;
@@ -116,7 +123,7 @@ pub fn to_mac(host_name: &str) -> (String, Option<String>) {
     let ext = if ext == "." { String::new() } else { ext };
     let max_stem = MAC_NAME_MAX - suffix.len() - ext.chars().count();
     let stem: String = stem.chars().take(max_stem).collect();
-    (format!("{stem}{suffix}{ext}"), Some(original.to_string()))
+    (format!("{stem}{suffix}{ext}"), Some(original.into_owned()))
 }
 
 /// The host name for a Mac wire name (already MacRoman-decoded to

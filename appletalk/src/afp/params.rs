@@ -334,7 +334,8 @@ impl Afp {
                     // The server's metadata store is never enumerated
                     return None;
                 }
-                Some((p, crate::name::to_mac(&host_name).0))
+                let mac_name = crate::name::to_mac(p.file_name()?).0;
+                Some((p, mac_name))
             })
             .collect();
         let is_dir_entry = |p: &PathBuf| std::fs::metadata(p).is_ok_and(|m| m.is_dir());
