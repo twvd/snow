@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::mac::scsi::cdrom::CdromBackend;
 
 pub mod cuesheet;
+pub mod drive_thread;
 pub mod iso;
 #[cfg(windows)]
 pub mod windows_drive;

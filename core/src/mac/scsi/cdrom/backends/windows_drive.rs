@@ -19,8 +19,12 @@ use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_NOT_READY,
     cdrom::{
-        CdromBackend, CdromError, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector,
-        SessionInfo, TrackInfo, backends::PhysicalCdromDrive,
+        CdromBackend, CdromError, DiscInfo, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector,
+        SessionInfo, TrackInfo,
+        backends::{
+            PhysicalCdromDrive as PhysicalCdromDriveInfo,
+            drive_thread::{DriveThread, PhysicalCdromDrive},
+        },
     },
 };
 
@@ -44,13 +48,13 @@ fn enum_logical_cdrom_drives() -> Result<Vec<String>> {
     Ok(logical_drives)
 }
 
-pub fn query_physical_cdrom_drives() -> Vec<PhysicalCdromDrive> {
+pub fn query_physical_cdrom_drives() -> Vec<PhysicalCdromDriveInfo> {
     if let Ok(drives) = enum_logical_cdrom_drives() {
         // TODO: Windows makes it weirdly difficult to get the device name behind
         // a drive letter, but it might be worth it for the friendly name.
         drives
             .iter()
-            .map(|drive| PhysicalCdromDrive {
+            .map(|drive| PhysicalCdromDriveInfo {
                 friendly_name: drive.to_string(),
                 path: format!(r"\\.\{}:", drive.chars().nth(0).unwrap()).into(),
             })
@@ -68,22 +72,65 @@ pub fn is_physical_cdrom_drive_path(path: &Path) -> bool {
     unsafe { GetDriveTypeW(&HSTRING::from(path.as_path())) == DRIVE_CDROM }
 }
 
-/// Disc information. Changes each time a new disc is inserted.
-struct DiscInfo {
-    capacity: usize,
-    sessions: Vec<SessionInfo>,
-    tracks: Vec<TrackInfo>,
-}
-
+/// A CD-ROM backend for a physical drive on Windows. The drive's I/O happens
+/// on a thread of its own.
 pub struct WindowsDriveCdromBackend {
     path: PathBuf,
+    thread: DriveThread,
+}
+
+impl WindowsDriveCdromBackend {
+    pub fn new(path: &Path) -> Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            thread: DriveThread::spawn::<WindowsPhysicalCdromDrive>(path.to_path_buf())?,
+        })
+    }
+}
+
+impl CdromBackend for WindowsDriveCdromBackend {
+    fn check_media(&mut self) -> Result<(), CdromError> {
+        self.thread.check_media()
+    }
+
+    fn byte_len(&self) -> usize {
+        self.thread
+            .disc_info()
+            .map(|info| info.capacity)
+            .unwrap_or(0)
+    }
+
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
+        self.thread.read_bytes(offset, length)
+    }
+
+    fn image_path(&self) -> Option<&Path> {
+        Some(&self.path)
+    }
+
+    fn sessions(&self) -> Option<&[SessionInfo]> {
+        Some(&self.thread.disc_info()?.sessions)
+    }
+
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(&self.thread.disc_info()?.tracks)
+    }
+
+    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        self.thread.read_cdda_sector(sector)
+    }
+}
+
+/// The I/O of a physical CD-ROM drive on Windows. Only used on the drive
+/// thread (see `drive_thread`).
+struct WindowsPhysicalCdromDrive {
     handle: HANDLE,
     curr_media_change_count: Option<u32>,
     disc_info: Option<DiscInfo>,
 }
 
 // SAFETY: The drive handle should be safe to send between threads.
-unsafe impl Send for WindowsDriveCdromBackend {}
+unsafe impl Send for WindowsPhysicalCdromDrive {}
 
 fn get_disk_length(handle: HANDLE) -> Result<i64> {
     let mut gli = GET_LENGTH_INFORMATION::default();
@@ -415,8 +462,8 @@ fn get_media_change_count(drive: HANDLE) -> Result<Option<u32>> {
     Ok(Some(media_change_count))
 }
 
-impl WindowsDriveCdromBackend {
-    pub fn new(path: &Path) -> Result<Self> {
+impl WindowsPhysicalCdromDrive {
+    fn new(path: &Path) -> Result<Self> {
         let handle = unsafe {
             CreateFileW(
                 &HSTRING::from(path),
@@ -445,7 +492,6 @@ impl WindowsDriveCdromBackend {
         };
 
         let mut self_ = Self {
-            path: path.into(),
             handle,
             curr_media_change_count: get_media_change_count(handle)?,
             disc_info: None,
@@ -457,7 +503,7 @@ impl WindowsDriveCdromBackend {
     }
 }
 
-impl WindowsDriveCdromBackend {
+impl WindowsPhysicalCdromDrive {
     fn reload_media(&mut self) -> Result<()> {
         log::debug!("Loading new CD media...");
 
@@ -494,7 +540,13 @@ impl WindowsDriveCdromBackend {
     }
 }
 
-impl CdromBackend for WindowsDriveCdromBackend {
+impl PhysicalCdromDrive for WindowsPhysicalCdromDrive {
+    type Config = PathBuf;
+
+    fn open(path: PathBuf) -> Result<Self> {
+        Self::new(&path)
+    }
+
     fn check_media(&mut self) -> Result<(), CdromError> {
         let media_change_count = match get_media_change_count(self.handle) {
             Ok(count) => count,
@@ -532,11 +584,8 @@ impl CdromBackend for WindowsDriveCdromBackend {
         }
     }
 
-    fn byte_len(&self) -> usize {
-        self.disc_info
-            .as_ref()
-            .map(|info| info.capacity)
-            .unwrap_or(0)
+    fn disc_info(&self) -> Option<&DiscInfo> {
+        self.disc_info.as_ref()
     }
 
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
@@ -566,18 +615,6 @@ impl CdromBackend for WindowsDriveCdromBackend {
         })?;
 
         Ok(result)
-    }
-
-    fn image_path(&self) -> Option<&Path> {
-        Some(&self.path)
-    }
-
-    fn sessions(&self) -> Option<&[SessionInfo]> {
-        Some(&self.disc_info.as_ref()?.sessions)
-    }
-
-    fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&self.disc_info.as_ref()?.tracks)
     }
 
     fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {

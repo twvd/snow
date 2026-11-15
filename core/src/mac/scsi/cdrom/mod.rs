@@ -132,7 +132,7 @@ pub struct TrackInfo {
     sector: u32, // Forget about MSF/LBA; use absolute sector numbers wherever possible.
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionInfo {
     /// Session number. Always starts at 1.
     number: u8,
@@ -142,6 +142,15 @@ pub struct SessionInfo {
     start: u32,
     /// Absolute sector number of lead-out
     leadout: u32,
+}
+
+/// Disc information. Changes each time a new disc is inserted.
+#[derive(Clone, Debug)]
+pub struct DiscInfo {
+    /// Byte capacity, see `CdromBackend::byte_len`
+    capacity: usize,
+    sessions: Vec<SessionInfo>,
+    tracks: Vec<TrackInfo>,
 }
 
 pub enum CdromError {
