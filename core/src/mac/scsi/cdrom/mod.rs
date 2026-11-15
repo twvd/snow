@@ -418,6 +418,10 @@ pub(super) struct ScsiTargetCdrom {
     /// A command going on in the background
     #[serde(skip)]
     pending: Option<PendingCmd>,
+
+    /// The audio sector being read for playback, and its reply
+    #[serde(skip)]
+    audio_read: Option<(u32, Reply<RawSector>)>,
 }
 
 /// A command going on in the background
@@ -507,6 +511,7 @@ impl ScsiTargetCdrom {
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
             pending: None,
+            audio_read: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -885,7 +890,26 @@ impl ScsiTargetCdrom {
             sample as f32 / 32768.0 * port.volume as f32 / 255.0
         };
 
-        let samples = backend.read_cdda_sector(self.audio_pos);
+        let samples = match self.audio_read.take() {
+            // The sector we're waiting for
+            Some((sector, reply)) if sector == self.audio_pos => match reply.poll() {
+                Some(samples) => samples,
+                None => {
+                    // Still reading: try again on the next tick
+                    self.audio_read = Some((sector, reply));
+                    return Ok(());
+                }
+            },
+            // Nothing in flight, or a read for another sector after a seek,
+            // which is dropped here
+            _ => match backend.start_read_cdda_sector(self.audio_pos) {
+                Started::Done(samples) => samples,
+                Started::Pending(reply) => {
+                    self.audio_read = Some((self.audio_pos, reply));
+                    return Ok(());
+                }
+            },
+        };
         match samples {
             Ok(samples) => {
                 // XXX: Do not require QSub CONTROL field to say audio here.
@@ -963,6 +987,8 @@ impl ScsiTargetCdrom {
     /// dropped, as it was for the previous disc.
     fn set_backend(&mut self, backend: Option<Box<dyn CdromBackend>>) {
         self.backend = backend;
+        // An audio sector being read is from the previous disc
+        self.audio_read = None;
         if self.pending.is_some() {
             // The bus still waits for the command to end
             self.pending = Some(PendingCmd::MediaChanged);
@@ -2725,5 +2751,83 @@ mod tests {
             (CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
         );
         assert!(cd.audio_state == AudioState::Stopped);
+    }
+
+    /// An audio sink that counts the buffers it gets, and is never full
+    #[derive(Default)]
+    struct CountingSink(Arc<Mutex<usize>>);
+
+    impl AudioSink for CountingSink {
+        fn send(&self, _buffer: crate::renderer::AudioBuffer) -> Result<()> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        fn is_full(&self) -> bool {
+            false
+        }
+
+        fn is_empty(&self) -> bool {
+            true
+        }
+    }
+
+    /// A gated CD-ROM drive playing audio from the first sector, with an
+    /// audio sink counting the buffers it gets
+    fn gated_cdrom_playing() -> (ScsiTargetCdrom, CddaSender, Arc<Mutex<usize>>) {
+        let (mut cd, _, _, cdda) = gated_cdrom_with_cdda();
+        let sent = Arc::new(Mutex::new(0));
+        cd.audio_sink = Some(Box::new(CountingSink(sent.clone())));
+        cd.audio_state = AudioState::Playing;
+        cd.audio_pos = LBA_START_SECTOR;
+        cd.audio_stop = LBA_START_SECTOR + 2;
+        (cd, cdda, sent)
+    }
+
+    #[test]
+    fn audio_sectors_are_read_in_the_background() {
+        let (mut cd, cdda, sent) = gated_cdrom_playing();
+
+        cd.pump_audio().unwrap();
+        assert_eq!(*sent.lock().unwrap(), 0);
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR);
+
+        // Still reading
+        cd.pump_audio().unwrap();
+        assert_eq!(*sent.lock().unwrap(), 0);
+
+        finish_cdda(&cdda, AUDIO_TRACK);
+        cd.pump_audio().unwrap();
+        assert_eq!(*sent.lock().unwrap(), 1);
+        assert_eq!(cd.audio_pos, LBA_START_SECTOR + 1);
+
+        // The next sector is read in turn
+        cd.pump_audio().unwrap();
+        assert!(cdda.lock().unwrap().is_some());
+        assert_eq!(cd.audio_read.as_ref().unwrap().0, LBA_START_SECTOR + 1);
+    }
+
+    #[test]
+    fn seek_drops_the_audio_sector_being_read() {
+        let (mut cd, cdda, sent) = gated_cdrom_playing();
+        cd.pump_audio().unwrap();
+        let old = cdda.lock().unwrap().take().unwrap();
+
+        cd.audio_pos = LBA_START_SECTOR + 1;
+        cd.pump_audio().unwrap();
+        // The old read was dropped, and one for the new position started
+        assert!(old.send(Err(CdromError::BackendDead)).is_err());
+        assert_eq!(cd.audio_read.as_ref().unwrap().0, LBA_START_SECTOR + 1);
+        assert_eq!(*sent.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn eject_drops_the_audio_sector_being_read() {
+        let (mut cd, cdda, _) = gated_cdrom_playing();
+        cd.pump_audio().unwrap();
+        cd.eject_media();
+        assert!(cd.audio_read.is_none());
+        let sender = cdda.lock().unwrap().take().unwrap();
+        assert!(sender.send(Err(CdromError::BackendDead)).is_err());
     }
 }
