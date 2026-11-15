@@ -10,7 +10,8 @@ pub mod iso;
 #[cfg(windows)]
 pub mod windows_drive;
 
-pub struct PhysicalCdromDrive {
+/// A physical CD-ROM drive found on the host, see `query_physical_cdrom_drives`
+pub struct PhysicalCdromDriveInfo {
     pub friendly_name: String,
     pub path: PathBuf,
 }
@@ -20,7 +21,7 @@ pub struct PhysicalCdromDrive {
 /// Returns an empty Vec if physical CD-ROM drives are supported
 /// but none are available. Returns None if physical CD-ROM drives
 /// are not supported on this platform.
-pub fn query_physical_cdrom_drives() -> Option<Vec<PhysicalCdromDrive>> {
+pub fn query_physical_cdrom_drives() -> Option<Vec<PhysicalCdromDriveInfo>> {
     #[allow(unused_mut, unused_assignments)]
     let mut result = None;
 
@@ -52,9 +53,7 @@ pub fn new_physical_cdrom_drive_backend(path: &Path) -> Result<Box<dyn CdromBack
 
     #[cfg(windows)]
     {
-        result = Some(Box::new(windows_drive::WindowsDriveCdromBackend::new(
-            path,
-        )?));
+        result = Some(Box::new(windows_drive::new_backend(path)?));
     }
 
     if result.is_none() {
