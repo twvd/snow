@@ -14,6 +14,7 @@ use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::mac::scsi::cdrom::{CdromError, DiscInfo, MediaCheck, RawSector};
+use crate::mac::scsi::{ASC_LOGICAL_UNIT_BECOMING_READY, CC_KEY_NOT_READY};
 
 /// The blocking operations of a physical CD-ROM drive. Only called on the
 /// drive thread.
@@ -126,11 +127,26 @@ pub struct DriveThread {
 
     /// The disc information, as of the last media check
     disc_info: Option<DiscInfo>,
+
+    /// How opening the drive went
+    open: OpenState,
+}
+
+/// How opening the drive went
+enum OpenState {
+    /// The thread is opening the drive
+    Opening(Reply<Option<DiscInfo>>),
+    /// Opening the drive (loading it) failed with this error, which hasn't
+    /// been taken yet
+    Failed(anyhow::Error),
+    /// The drive is open, or opening failed and the error was taken
+    Done,
 }
 
 impl DriveThread {
-    /// Starts the drive thread, which opens a drive of type `D`, and waits for
-    /// the drive to be open.
+    /// Starts the drive thread, which opens a drive of type `D` in the
+    /// background. Until the drive is open, media checks report that the
+    /// drive is becoming ready.
     pub fn spawn<D: PhysicalCdromDrive + 'static>(config: D::Config) -> Result<Self> {
         let (requests, request_queue) = crossbeam_channel::unbounded();
         let (opened_sender, opened) = crossbeam_channel::bounded(1);
@@ -141,7 +157,7 @@ impl DriveThread {
                 let mut drive = match D::open(config) {
                     Ok(drive) => drive,
                     Err(e) => {
-                        let _ = opened_sender.send(Err(e));
+                        let _ = opened_sender.send(Err(CdromError::Other(e)));
                         return;
                     }
                 };
@@ -149,14 +165,49 @@ impl DriveThread {
                 run(&mut drive, &request_queue);
             })?;
 
-        let disc_info = opened
-            .recv()
-            .map_err(|_| anyhow!("The CD-ROM drive thread ended while opening the drive"))??;
-
         Ok(Self {
             requests,
-            disc_info,
+            disc_info: None,
+            open: OpenState::Opening(Reply(opened)),
         })
+    }
+
+    /// Whether the thread is still opening the drive, as of the last check
+    pub fn is_opening(&self) -> bool {
+        matches!(self.open, OpenState::Opening(_))
+    }
+
+    /// Checks whether the thread has opened the drive. Never blocks.
+    fn poll_open(&mut self) {
+        let OpenState::Opening(reply) = &self.open else {
+            return;
+        };
+        let Some(result) = reply.poll() else {
+            return;
+        };
+        self.open = match result {
+            Ok(disc_info) => {
+                self.disc_info = disc_info;
+                OpenState::Done
+            }
+            Err(CdromError::Other(e)) => OpenState::Failed(e),
+            Err(_) => OpenState::Failed(anyhow!(
+                "The CD-ROM drive thread ended while opening the drive"
+            )),
+        };
+    }
+
+    /// The error loading the drive (opening it) failed with, once. After it,
+    /// the drive is dead. Never blocks.
+    pub fn take_load_error(&mut self) -> Option<anyhow::Error> {
+        self.poll_open();
+        match std::mem::replace(&mut self.open, OpenState::Done) {
+            OpenState::Failed(e) => Some(e),
+            other => {
+                self.open = other;
+                None
+            }
+        }
     }
 
     /// Sends a request. The thread being gone means that the drive is
@@ -174,9 +225,22 @@ impl DriveThread {
     }
 
     /// Starts a media check, without waiting for it. Its outcome goes to
-    /// `apply_media_check`.
-    pub fn start_check_media(&self) -> Reply<MediaCheck> {
+    /// `apply_media_check`. While the drive is still opening, the check
+    /// reports at once that the drive is becoming ready.
+    pub fn start_check_media(&mut self) -> Reply<MediaCheck> {
         let (reply, reply_receiver) = crossbeam_channel::bounded(1);
+        self.poll_open();
+        if self.is_opening() {
+            // A drive answers this way while it spins up
+            let _ = reply.send(Ok(MediaCheck {
+                result: Err(CdromError::CheckCondition(
+                    CC_KEY_NOT_READY,
+                    ASC_LOGICAL_UNIT_BECOMING_READY,
+                )),
+                disc_info: None,
+            }));
+            return Reply(reply_receiver);
+        }
         // If the thread is gone, the reply's sender is dropped with the
         // request, and the reply reports a dead drive
         let _ = self.send(Request::CheckMedia { reply });
@@ -250,6 +314,8 @@ mod tests {
         panic: bool,
         /// Reads wait for a message on this before they go ahead
         read_gate: Option<Receiver<()>>,
+        /// Opening waits for a message on this before it goes ahead
+        open_gate: Option<Receiver<()>>,
     }
 
     struct FakeDrive {
@@ -295,6 +361,10 @@ mod tests {
         type Config = Arc<Mutex<FakeState>>;
 
         fn open(state: Self::Config) -> Result<Self> {
+            let gate = state.lock().unwrap().open_gate.clone();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
             let guard = state.lock().unwrap();
             if guard.fail_open {
                 return Err(anyhow!("no drive"));
@@ -357,11 +427,28 @@ mod tests {
         }))
     }
 
-    /// A drive thread for a fake drive holding a disc of 4 KB
+    /// A drive thread for a fake drive holding a disc of 4 KB, once the drive
+    /// is open
     fn drive_thread() -> (DriveThread, Arc<Mutex<FakeState>>) {
         let state = drive_with_disc();
-        let thread = DriveThread::spawn::<FakeDrive>(state.clone()).unwrap();
+        let mut thread = DriveThread::spawn::<FakeDrive>(state.clone()).unwrap();
+        if let Some(e) = wait_for_open(&mut thread) {
+            panic!("opening failed: {:#}", e);
+        }
         (thread, state)
+    }
+
+    /// Waits for the drive thread to open the drive. Returns the error if
+    /// opening failed.
+    fn wait_for_open(thread: &mut DriveThread) -> Option<anyhow::Error> {
+        for _ in 0..1000 {
+            let error = thread.take_load_error();
+            if error.is_some() || !thread.is_opening() {
+                return error;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the drive did not open");
     }
 
     /// Waits for the drive thread to drop its drive
@@ -385,11 +472,49 @@ mod tests {
     }
 
     #[test]
-    fn open_error_is_returned() {
+    fn load_error_is_reported_once() {
         let state = drive_with_disc();
         state.lock().unwrap().fail_open = true;
-        let result = DriveThread::spawn::<FakeDrive>(state);
-        assert_eq!(result.err().unwrap().to_string(), "no drive");
+        let mut thread = DriveThread::spawn::<FakeDrive>(state).unwrap();
+        let error = wait_for_open(&mut thread).expect("opening should fail");
+        assert_eq!(error.to_string(), "no drive");
+        assert!(thread.take_load_error().is_none());
+
+        // The drive is dead
+        assert!(matches!(
+            thread.read_bytes(0, 1),
+            Err(CdromError::BackendDead)
+        ));
+        assert!(matches!(thread.check_media(), Err(CdromError::BackendDead)));
+    }
+
+    #[test]
+    fn media_check_while_opening_reports_becoming_ready() {
+        let state = drive_with_disc();
+        let (gate, gate_receiver) = crossbeam_channel::unbounded();
+        state.lock().unwrap().open_gate = Some(gate_receiver);
+
+        // spawn returns while the drive is opening
+        let mut thread = DriveThread::spawn::<FakeDrive>(state).unwrap();
+        assert!(thread.is_opening());
+        assert!(thread.disc_info().is_none());
+
+        // Answered at once
+        let Some(Ok(check)) = thread.start_check_media().poll() else {
+            panic!("the media check should be answered at once");
+        };
+        assert!(matches!(
+            thread.apply_media_check(check),
+            Err(CdromError::CheckCondition(
+                CC_KEY_NOT_READY,
+                ASC_LOGICAL_UNIT_BECOMING_READY
+            ))
+        ));
+
+        gate.send(()).unwrap();
+        assert!(wait_for_open(&mut thread).is_none());
+        assert_eq!(thread.disc_info().unwrap().capacity, 4096);
+        assert!(thread.check_media().is_ok());
     }
 
     #[test]
