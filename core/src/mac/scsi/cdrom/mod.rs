@@ -380,9 +380,18 @@ pub(super) struct ScsiTargetCdrom {
     #[serde(skip)]
     audio_sink: Option<Box<dyn AudioSink>>,
 
-    /// A READ going on in the background
+    /// A command going on in the background
     #[serde(skip)]
-    pending_read: Option<(Reply<Vec<u8>>, ReadRange)>,
+    pending: Option<PendingCmd>,
+}
+
+/// A command going on in the background
+enum PendingCmd {
+    /// READ(6) or READ(10)
+    Read(Reply<Vec<u8>>, ReadRange),
+    /// The disc was inserted or ejected while a command was going on. The
+    /// command was dropped, and ends with a medium change at the next poll.
+    MediaChanged,
 }
 
 /// What a READ reads from the backend
@@ -430,7 +439,7 @@ impl ScsiTargetCdrom {
             ],
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
-            pending_read: None,
+            pending: None,
         };
         if let Some(audio_provider) = audio_provider
             && let Err(e) = self_.set_audio_provider(audio_provider)
@@ -704,7 +713,7 @@ impl ScsiTargetCdrom {
 
     fn eject_media(&mut self) {
         self.event_eject.set();
-        self.backend = None;
+        self.set_backend(None);
         self.audio_state = AudioState::Stopped;
         self.audio_pos = LBA_START_SECTOR;
     }
@@ -856,6 +865,28 @@ impl ScsiTargetCdrom {
 }
 
 impl ScsiTargetCdrom {
+    /// Inserts or ejects a disc. A command going on in the background is
+    /// dropped, as it was for the previous disc.
+    fn set_backend(&mut self, backend: Option<Box<dyn CdromBackend>>) {
+        self.backend = backend;
+        if self.pending.is_some() {
+            // The bus still waits for the command to end
+            self.pending = Some(PendingCmd::MediaChanged);
+        }
+    }
+
+    /// Ends a command that was dropped when the disc was inserted or ejected,
+    /// as a drive reports a medium change
+    fn media_changed_during_command(&mut self) -> Result<ScsiCmdResult> {
+        if self.backend.is_some() {
+            self.common
+                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
+        } else {
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+        }
+        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+    }
+
     /// Finishes a READ with what the backend read
     fn read_done(
         &mut self,
@@ -906,14 +937,14 @@ fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> 
 
 impl ScsiTargetCdrom {
     fn load_cue(&mut self, path: &Path) -> Result<()> {
-        self.backend = Some(Box::new(CuesheetCdromBackend::new(path)?));
+        self.set_backend(Some(Box::new(CuesheetCdromBackend::new(path)?)));
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
     }
 
     fn load_physical_drive(&mut self, path: &Path) -> Result<()> {
-        self.backend = Some(new_physical_cdrom_drive_backend(path)?);
+        self.set_backend(Some(new_physical_cdrom_drive_backend(path)?));
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
@@ -1000,7 +1031,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
-        self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
+        self.set_backend(Some(Box::new(IsoCdromBackend::new(image)?)));
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
@@ -1220,28 +1251,34 @@ impl ScsiTarget for ScsiTargetCdrom {
         match backend.start_read(read.offset, read.length) {
             ReadStart::Done(result) => self.read_done(result, &read),
             ReadStart::Pending(reply) => {
-                self.pending_read = Some((reply, read));
+                self.pending = Some(PendingCmd::Read(reply, read));
                 Ok(ScsiCmdResult::Pending)
             }
         }
     }
 
     fn poll_pending(&mut self) -> Option<Result<ScsiCmdResult>> {
-        let result = self.pending_read.as_ref()?.0.poll()?;
-        let (_, read) = self.pending_read.take()?;
-        Some(self.read_done(result, &read))
+        let result = match self.pending.as_ref()? {
+            PendingCmd::Read(reply, _) => Some(reply.poll()?),
+            PendingCmd::MediaChanged => None,
+        };
+        Some(match (self.pending.take()?, result) {
+            (PendingCmd::Read(_, read), Some(result)) => self.read_done(result, &read),
+            _ => self.media_changed_during_command(),
+        })
     }
 
     fn wait_pending(&mut self) -> Result<ScsiCmdResult> {
-        let Some((reply, read)) = self.pending_read.take() else {
-            bail!("No command pending");
-        };
-        self.read_done(reply.wait(), &read)
+        match self.pending.take() {
+            Some(PendingCmd::Read(reply, read)) => self.read_done(reply.wait(), &read),
+            Some(PendingCmd::MediaChanged) => self.media_changed_during_command(),
+            None => bail!("No command pending"),
+        }
     }
 
     fn abort_pending(&mut self) {
-        // The drive finishes the read, and its data is thrown away
-        self.pending_read = None;
+        // The drive finishes the command, and its result is thrown away
+        self.pending = None;
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
@@ -2156,5 +2193,54 @@ mod tests {
 
         drop(cd);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn eject_during_a_read_ends_it() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        cd.eject_media();
+        // The read was dropped with the disc
+        assert!(
+            read.lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .send(Ok(vec![0x55; 2048]))
+                .is_err()
+        );
+        assert!(matches!(
+            cd.poll_pending(),
+            Some(Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)))
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+        );
+        assert!(cd.poll_pending().is_none());
+    }
+
+    #[test]
+    fn disc_swap_during_a_read_ends_it() {
+        let (mut cd, read) = cdrom_with_gated_disc();
+        assert!(matches!(read10(&mut cd), ScsiCmdResult::Pending));
+        let (other, _) = cdrom_with_gated_disc();
+        cd.set_backend(other.backend);
+        assert!(
+            read.lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .send(Ok(vec![0x55; 2048]))
+                .is_err()
+        );
+        assert!(matches!(
+            cd.wait_pending(),
+            Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+        ));
+        assert_eq!(
+            cd.common.req_sense(),
+            (CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE)
+        );
     }
 }
