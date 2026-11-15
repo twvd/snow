@@ -450,6 +450,14 @@ impl Workspace {
         if let Some(p) = result.shared_dir.as_mut() {
             p.after_deserialize(parent)?;
         }
+        // Workspaces saved before the shared folder was written out hold an
+        // empty path: they load with no folder chosen
+        #[cfg(feature = "afp_server")]
+        result.afp_shared_dir.take_if(|p| p.is_empty());
+        #[cfg(feature = "afp_server")]
+        if let Some(p) = result.afp_shared_dir.as_mut() {
+            p.after_deserialize(parent)?;
+        }
         for d in &mut result.scsi_targets {
             match d {
                 WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
@@ -512,6 +520,10 @@ impl Workspace {
             p.before_serialize(parent)?;
         }
         if let Some(p) = self.shared_dir.as_mut() {
+            p.before_serialize(parent)?;
+        }
+        #[cfg(feature = "afp_server")]
+        if let Some(p) = self.afp_shared_dir.as_mut() {
             p.before_serialize(parent)?;
         }
         // disks is deprecated
@@ -652,5 +664,31 @@ mod tests {
             let workspace: Workspace = serde_json::from_str(saved).unwrap();
             assert!(workspace.serial_bridges[0].is_none());
         }
+    }
+
+    /// The shared folder survives a save and a reload, and the empty path
+    /// that earlier versions saved loads as no folder
+    #[cfg(feature = "afp_server")]
+    #[test]
+    fn workspace_keeps_the_shared_folder() {
+        let dir = std::env::temp_dir().join(format!("snow-ws-afp-{}", std::process::id()));
+        let shared = dir.join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        let shared = shared.canonicalize().unwrap();
+        let path = dir.join("workspace.json");
+
+        let mut workspace = Workspace::default();
+        workspace.set_afp_shared_dir(Some(&shared));
+        // What earlier versions saved: the path as set, never made relative
+        let saved_before = serde_json::to_string(&workspace).unwrap();
+        workspace.write_file(&path).unwrap();
+        let loaded = Workspace::from_file(&path).unwrap();
+        assert_eq!(loaded.get_afp_shared_dir(), Some(shared));
+
+        std::fs::write(&path, saved_before).unwrap();
+        let loaded = Workspace::from_file(&path).unwrap();
+        assert_eq!(loaded.get_afp_shared_dir(), None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
