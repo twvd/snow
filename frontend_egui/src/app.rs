@@ -1907,7 +1907,6 @@ impl SnowGui {
                             }
 
                             if new_link_type != link_type {
-                                self.workspace.set_ethernet_link_type(new_link_type.clone());
                                 self.emu.set_eth_link(id, new_link_type);
                             }
 
@@ -3124,7 +3123,14 @@ impl SnowGui {
         }
         if let Some(path) = path {
             match Workspace::from_file(path) {
-                Ok(ws) => {
+                Ok(mut ws) => {
+                    let unread = ws.take_unread();
+                    if !unread.is_empty() {
+                        self.show_error(&format!(
+                            "Parts of the workspace can't be used:\n\n{}",
+                            unread.join("\n")
+                        ));
+                    }
                     self.workspace = ws;
                     self.workspace_file = Some(path.to_path_buf());
                     self.settings.add_recent_workspace(path);
@@ -3152,7 +3158,7 @@ impl SnowGui {
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
-            let devices = self.workspace.scsi_devices();
+            let devices = self.workspace.devices();
             let pram_path = self.workspace.get_pram_path();
             let init_args = self.workspace.init_args.clone();
             let model = self.workspace.model;
@@ -3196,8 +3202,8 @@ impl SnowGui {
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
         self.workspace.shader_configs = self.framebuffer.export_config();
-        if self.emu.scsi_slots().is_some() {
-            self.workspace.set_scsi_devices(&self.emu.devices());
+        if self.emu.is_initialized() {
+            self.workspace.set_devices(self.emu.devices());
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
