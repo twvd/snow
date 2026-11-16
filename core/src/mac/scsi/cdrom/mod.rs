@@ -33,7 +33,10 @@ use super::{
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
     toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
 };
-use crate::devices::{CdromFunction, CdromStatus, DeviceOps, FunctionMut};
+use crate::devices::{
+    BusKind, CdromFunction, CdromStatus, DeviceModel, DeviceOps, FunctionInfo, FunctionMut,
+    ModelInfo,
+};
 
 // CD-ROM protocol Documentation:
 //
@@ -1268,7 +1271,18 @@ impl ScsiTargetCdrom {
     }
 }
 
+pub const INFO: ModelInfo = ModelInfo::base(
+    DeviceModel::ScsiCdrom,
+    "CD-ROM drive",
+    BusKind::Scsi,
+    FunctionInfo::Cdrom,
+);
+
 impl DeviceOps for ScsiTargetCdrom {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Cdrom(self)
     }
