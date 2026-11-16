@@ -11,13 +11,14 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+#[cfg(feature = "ethernet")]
+use snow_core::devices::EthernetConfig;
+use snow_core::devices::EthernetLinkType;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
     CdromConfig, DeviceConfig, DeviceModel, FunctionConfig, HardDiskConfig, bus_id,
 };
-#[cfg(feature = "ethernet")]
-use snow_core::devices::{EthernetConfig, EthernetLinkType};
 use snow_core::mac::MacModel;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 
@@ -51,91 +52,47 @@ pub enum FramebufferMode {
     Detached,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub enum WorkspaceScsiTarget {
-    #[default]
+/// A value of the file that is read on its own: one that can't be read doesn't cost the rest
+/// of the file
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+enum Lenient<T> {
+    Read(T),
+    Unread(serde_json::Value),
+}
+
+/// A SCSI target of an older workspace. Read, never written.
+#[derive(Deserialize, Debug, Clone)]
+enum OldScsiTarget {
     None,
-    Disk(RelativePath),
+    Disk(PathBuf),
     Cdrom,
     /// Folder-backed ("Toolbox managed") CD-ROM: the guest swaps between the
     /// images in this folder via the BlueSCSI Toolbox CD commands.
-    CdromFolder(RelativePath),
-    // Do not feature gate Ethernet here to avoid problems with loading
-    // workspaces on builds without the ethernet feature
+    CdromFolder(PathBuf),
     Ethernet,
     Printer,
 }
 
-/// Workspace variant of link mode for ethernet device
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub enum WorkspaceEthernetLinkType {
-    /// Userland NAT
-    #[cfg(feature = "ethernet_nat")]
-    NAT,
-    /// Userland NAT with HTTPS stripping
-    #[cfg(feature = "ethernet_nat_https_stripping")]
-    NATHttpsStripping,
-    /// Raw sockets based bridge
-    #[cfg(feature = "ethernet_raw")]
-    Bridge(u32),
-    /// Tap interface based bridge
-    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-    TapBridge(String),
-    /// No link
-    #[serde(other)]
-    Down,
+/// What can't be read of the file, for the user: the entry of a list, by its place in it
+fn unread_entry(list: &str, index: usize, value: &serde_json::Value) -> String {
+    format!("{} #{}: can't be read ({})", list, index, value)
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for WorkspaceEthernetLinkType {
-    fn default() -> Self {
-        #[cfg(feature = "ethernet_nat")]
-        {
-            Self::NAT
-        }
-        #[cfg(not(feature = "ethernet_nat"))]
-        {
-            Self::Down
-        }
-    }
+/// A path of the workspace file, which is relative to the folder of the file
+fn absolute_path(parent: &Path, path: &Path) -> PathBuf {
+    let joined = parent.join(path);
+    joined.canonicalize().unwrap_or(joined)
 }
 
-#[cfg(feature = "ethernet")]
-impl From<EthernetLinkType> for WorkspaceEthernetLinkType {
-    fn from(ty: EthernetLinkType) -> Self {
-        match ty {
-            EthernetLinkType::Down => Self::Down,
-            #[cfg(feature = "ethernet_nat")]
-            EthernetLinkType::NAT => Self::NAT,
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            EthernetLinkType::NATHttpsStripping => Self::NATHttpsStripping,
-            #[cfg(feature = "ethernet_raw")]
-            EthernetLinkType::Bridge(i) => Self::Bridge(i),
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            EthernetLinkType::TapBridge(s) => Self::TapBridge(s),
-            // A link this build has no support for
-            #[allow(unreachable_patterns)]
-            _ => Self::Down,
-        }
-    }
-}
-
-#[cfg(feature = "ethernet")]
-impl From<WorkspaceEthernetLinkType> for EthernetLinkType {
-    fn from(ty: WorkspaceEthernetLinkType) -> Self {
-        match ty {
-            WorkspaceEthernetLinkType::Down => Self::Down,
-            #[cfg(feature = "ethernet_nat")]
-            WorkspaceEthernetLinkType::NAT => Self::NAT,
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            WorkspaceEthernetLinkType::NATHttpsStripping => Self::NATHttpsStripping,
-            #[cfg(feature = "ethernet_raw")]
-            WorkspaceEthernetLinkType::Bridge(i) => Self::Bridge(i),
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            WorkspaceEthernetLinkType::TapBridge(s) => Self::TapBridge(s),
-        }
-    }
+fn relative_path(parent: &Path, path: &Path) -> PathBuf {
+    pathdiff::diff_paths(path, parent).unwrap_or_else(|| {
+        log::info!(
+            "Cannot get relative path for {}, saving absolute path",
+            path.display()
+        );
+        path.to_path_buf()
+    })
 }
 
 /// A workspace representation which contains:
@@ -179,12 +136,21 @@ pub struct Workspace {
     extension_rom_path: Option<RelativePath>,
 
     /// Last loaded disks
-    /// Deprecated; now scsi_targets
-    #[serde(skip_serializing)]
-    disks: [Option<RelativePath>; 7],
+    /// The devices of the machine, as device configs. Their paths are absolute here, and
+    /// relative to the workspace file in the file.
+    devices: Vec<Lenient<DeviceConfig>>,
 
-    /// Configured SCSI targets
-    scsi_targets: [WorkspaceScsiTarget; 7],
+    /// What the file had that couldn't be read, for the user
+    #[serde(skip)]
+    unread: Vec<String>,
+
+    /// Deprecated; now devices
+    #[serde(skip_serializing)]
+    disks: Vec<Lenient<Option<PathBuf>>>,
+
+    /// Deprecated; now devices
+    #[serde(skip_serializing)]
+    scsi_targets: Vec<Lenient<OldScsiTarget>>,
 
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
@@ -227,8 +193,9 @@ pub struct Workspace {
     #[serde(deserialize_with = "deserialize_shader_configs_lenient")]
     pub shader_configs: Vec<ShaderConfig>,
 
-    /// Ethernet link type
-    pub ethernet_link_type: WorkspaceEthernetLinkType,
+    /// Deprecated; now the link of each Ethernet adapter in devices
+    #[serde(skip_serializing)]
+    ethernet_link_type: Lenient<EthernetLinkType>,
 
     /// Serial bridges per SCC channel (index 0 = Channel A, index 1 = Channel B)
     pub serial_bridges: [Option<SerialBridgeConfig>; 2],
@@ -297,8 +264,10 @@ impl Default for Workspace {
             display_card_rom_path: None,
             pram_path: None,
             extension_rom_path: None,
-            disks: Default::default(),
-            scsi_targets: Default::default(),
+            devices: Vec::new(),
+            unread: Vec::new(),
+            disks: Vec::new(),
+            scsi_targets: Vec::new(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -312,7 +281,7 @@ impl Default for Workspace {
             framebuffer_mode: FramebufferMode::default(),
             shader_enabled: false,
             shader_configs: Vec::new(),
-            ethernet_link_type: WorkspaceEthernetLinkType::default(),
+            ethernet_link_type: Lenient::Read(EthernetLinkType::default()),
             serial_bridges: [None, None],
             iie_joystick_bindings: None,
             #[cfg(feature = "afp_server")]
@@ -381,26 +350,7 @@ impl Workspace {
         if let Some(p) = result.afp_shared_dir.as_mut() {
             p.after_deserialize(parent)?;
         }
-        for d in &mut result.scsi_targets {
-            match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
-                    p.after_deserialize(parent)?;
-                }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
-            }
-        }
-        for (i, d) in result.disks.iter_mut().enumerate() {
-            if let Some(p) = d.as_mut() {
-                p.after_deserialize(parent)?;
-
-                // Migrate
-                result.scsi_targets[i] = WorkspaceScsiTarget::Disk(p.clone());
-            }
-        }
-        result.disks = core::array::from_fn(|_| None);
+        result.read_devices(parent);
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
@@ -449,69 +399,128 @@ impl Workspace {
         if let Some(p) = self.afp_shared_dir.as_mut() {
             p.before_serialize(parent)?;
         }
-        // disks is deprecated
-        for d in &mut self.scsi_targets {
-            match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
-                    p.before_serialize(parent)?;
-                }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
-            }
-        }
         for p in &mut self.floppy_images {
             p.before_serialize(parent)?;
         }
 
-        let file = File::create(path)?;
-        Ok(serde_json::to_writer_pretty(file, self)?)
+        // The paths of the devices are relative in the file
+        let devices = self.devices.clone();
+        for device in &mut self.devices {
+            if let Lenient::Read(config) = device {
+                config.convert_paths(|path| relative_path(parent, path));
+            }
+        }
+        let written = File::create(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|file| Ok(serde_json::to_writer_pretty(file, self)?));
+        self.devices = devices;
+        written
     }
 
-    /// The SCSI devices of the workspace, as device configs. The id of a SCSI slot is the
-    /// SCSI ID, in decimal.
-    pub fn scsi_devices(&self) -> Vec<DeviceConfig> {
+    /// Makes the list of devices of a workspace that was just read: the device configs of the
+    /// file that can be read, then those made from the fields of older workspaces, with their
+    /// paths made absolute. What can't be read is noted for the user.
+    fn read_devices(&mut self, parent: &Path) {
         let mut devices = vec![];
-        for (id, target) in self.scsi_targets.iter().enumerate() {
+        for (i, device) in std::mem::take(&mut self.devices).into_iter().enumerate() {
+            match device {
+                Lenient::Read(config) => devices.push(config),
+                Lenient::Unread(value) => self.unread.push(unread_entry("Device", i, &value)),
+            }
+        }
+        self.convert_old_fields(&mut devices);
+        for config in &mut devices {
+            config.convert_paths(|path| absolute_path(parent, path));
+        }
+        self.devices = devices.into_iter().map(Lenient::Read).collect();
+    }
+
+    /// Turns the fields of older workspaces into device configs. A file saved since has none
+    /// of them. The id of a SCSI slot is the SCSI ID, in decimal.
+    fn convert_old_fields(&mut self, devices: &mut Vec<DeviceConfig>) {
+        // The targets, by SCSI ID
+        let mut targets = vec![];
+        for (id, target) in std::mem::take(&mut self.scsi_targets)
+            .into_iter()
+            .enumerate()
+        {
+            targets.push(match target {
+                Lenient::Read(target) => target,
+                Lenient::Unread(value) => {
+                    self.unread.push(unread_entry("SCSI", id, &value));
+                    OldScsiTarget::None
+                }
+            });
+        }
+        // `disks` came before `scsi_targets`, and only had the images of hard disks
+        for (id, disk) in std::mem::take(&mut self.disks).into_iter().enumerate() {
+            let disk = match disk {
+                Lenient::Read(Some(path)) => OldScsiTarget::Disk(path),
+                Lenient::Read(None) => continue,
+                Lenient::Unread(value) => {
+                    self.unread.push(unread_entry("SCSI", id, &value));
+                    continue;
+                }
+            };
+            if targets.len() <= id {
+                targets.resize(id + 1, OldScsiTarget::None);
+            }
+            targets[id] = disk;
+        }
+
+        #[cfg(feature = "ethernet")]
+        let link = match &self.ethernet_link_type {
+            Lenient::Read(link) => link.clone(),
+            Lenient::Unread(value) => {
+                self.unread
+                    .push(format!("The Ethernet link can't be read ({})", value));
+                EthernetLinkType::Down
+            }
+        };
+        for (id, target) in targets.into_iter().enumerate() {
             let (model, function) = match target {
-                WorkspaceScsiTarget::None => continue,
-                WorkspaceScsiTarget::Disk(p) => (
+                OldScsiTarget::None => continue,
+                OldScsiTarget::Disk(path) => (
                     DeviceModel::ScsiHardDisk,
-                    FunctionConfig::HardDisk(HardDiskConfig {
-                        media: Some(p.get_absolute()),
-                    }),
+                    FunctionConfig::HardDisk(HardDiskConfig { media: Some(path) }),
                 ),
-                WorkspaceScsiTarget::Cdrom => (
+                OldScsiTarget::Cdrom => (
                     DeviceModel::ScsiCdrom,
                     FunctionConfig::Cdrom(CdromConfig::default()),
                 ),
-                WorkspaceScsiTarget::CdromFolder(p) => (
+                OldScsiTarget::CdromFolder(path) => (
                     DeviceModel::ScsiCdrom,
-                    FunctionConfig::Cdrom(CdromConfig {
-                        folder: Some(p.get_absolute()),
-                    }),
+                    FunctionConfig::Cdrom(CdromConfig { folder: Some(path) }),
                 ),
                 #[cfg(feature = "ethernet")]
-                // The workspace keeps no address: the adapter gets a random one
-                WorkspaceScsiTarget::Ethernet => (
+                // The workspace kept no address: the adapter gets a random one
+                OldScsiTarget::Ethernet => (
                     DeviceModel::DaynaPortScsiLink,
                     FunctionConfig::Ethernet(EthernetConfig {
                         mac: None,
-                        link: self.get_ethernet_link_type(),
+                        link: link.clone(),
                     }),
                 ),
-                #[cfg(not(feature = "ethernet"))]
-                WorkspaceScsiTarget::Ethernet => continue,
                 #[cfg(feature = "printer")]
-                WorkspaceScsiTarget::Printer => (
+                OldScsiTarget::Printer => (
                     DeviceModel::LaserWriterIISC,
                     FunctionConfig::Printer(PrinterConfig {
                         output_dir: Some(crate::emulator::default_print_dir()),
                     }),
                 ),
+                // A device this build doesn't have
+                #[cfg(not(feature = "ethernet"))]
+                OldScsiTarget::Ethernet => {
+                    self.unread
+                        .push(format!("SCSI #{}: this build has no Ethernet adapter", id));
+                    continue;
+                }
                 #[cfg(not(feature = "printer"))]
-                WorkspaceScsiTarget::Printer => continue,
+                OldScsiTarget::Printer => {
+                    self.unread
+                        .push(format!("SCSI #{}: this build has no printer", id));
+                    continue;
+                }
             };
             devices.push(DeviceConfig {
                 bus: bus_id::SCSI.into(),
@@ -521,35 +530,27 @@ impl Workspace {
                 function,
             });
         }
-        devices
     }
 
-    /// Takes the SCSI devices of a machine, from its device configs
-    pub fn set_scsi_devices(&mut self, devices: &[DeviceConfig]) {
-        self.scsi_targets = Default::default();
-        for config in devices.iter().filter(|c| c.bus == bus_id::SCSI) {
-            let target = match &config.function {
-                FunctionConfig::HardDisk(HardDiskConfig { media: Some(p) }) => {
-                    WorkspaceScsiTarget::Disk(RelativePath::from_absolute(p))
-                }
-                // A disk whose image isn't a file can't be saved
-                FunctionConfig::HardDisk(_) => WorkspaceScsiTarget::None,
-                FunctionConfig::Cdrom(CdromConfig { folder: Some(p) }) => {
-                    WorkspaceScsiTarget::CdromFolder(RelativePath::from_absolute(p))
-                }
-                FunctionConfig::Cdrom(_) => WorkspaceScsiTarget::Cdrom,
-                FunctionConfig::Ethernet(_) => WorkspaceScsiTarget::Ethernet,
-                FunctionConfig::Printer(_) => WorkspaceScsiTarget::Printer,
-            };
-            if let Some(slot) = config
-                .slot
-                .parse::<usize>()
-                .ok()
-                .and_then(|id| self.scsi_targets.get_mut(id))
-            {
-                *slot = target;
-            }
-        }
+    /// The devices of the workspace, as device configs
+    pub fn devices(&self) -> Vec<DeviceConfig> {
+        self.devices
+            .iter()
+            .filter_map(|device| match device {
+                Lenient::Read(config) => Some(config.clone()),
+                Lenient::Unread(_) => None,
+            })
+            .collect()
+    }
+
+    /// Takes the devices of a machine, to be saved
+    pub fn set_devices(&mut self, devices: Vec<DeviceConfig>) {
+        self.devices = devices.into_iter().map(Lenient::Read).collect();
+    }
+
+    /// What the file had that couldn't be read, to show the user once
+    pub fn take_unread(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unread)
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {
@@ -609,16 +610,6 @@ impl Workspace {
             .iter()
             .map(|p| p.get_absolute())
             .collect()
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn get_ethernet_link_type(&self) -> EthernetLinkType {
-        self.ethernet_link_type.clone().into()
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn set_ethernet_link_type(&mut self, ethernet_link_type: EthernetLinkType) {
-        self.ethernet_link_type = ethernet_link_type.into();
     }
 
     /// Persists a window location
@@ -688,5 +679,150 @@ mod tests {
         assert_eq!(loaded.get_afp_shared_dir(), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A folder of its own for a test, removed when the test is done
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "snow_workspace_{}_{}",
+                name,
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir.canonicalize().unwrap())
+        }
+
+        /// The workspace of a file with these contents
+        fn load(&self, contents: &str) -> Workspace {
+            let path = self.0.join("test.snoww");
+            std::fs::write(&path, contents).unwrap();
+            Workspace::from_file(&path).unwrap()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scsi(slot: &str, model: DeviceModel, function: FunctionConfig) -> DeviceConfig {
+        DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: slot.into(),
+            model: Some(model),
+            rom: None,
+            function,
+        }
+    }
+
+    fn disk(slot: &str, media: PathBuf) -> DeviceConfig {
+        scsi(
+            slot,
+            DeviceModel::ScsiHardDisk,
+            FunctionConfig::HardDisk(HardDiskConfig { media: Some(media) }),
+        )
+    }
+
+    fn cdrom(slot: &str, folder: Option<PathBuf>) -> DeviceConfig {
+        scsi(
+            slot,
+            DeviceModel::ScsiCdrom,
+            FunctionConfig::Cdrom(CdromConfig { folder }),
+        )
+    }
+
+    #[test]
+    fn scsi_targets_of_an_older_workspace_become_device_configs() {
+        let dir = TestDir::new("old");
+        let mut workspace = dir.load(
+            r#"{"scsi_targets":[{"Disk":"hd.img"},"None","Cdrom",{"CdromFolder":"cds"},
+                "Ethernet","Printer","None"],
+                "ethernet_link_type":"Down"}"#,
+        );
+        let devices = workspace.devices();
+        assert_eq!(
+            devices[..3],
+            [
+                disk("0", dir.0.join("hd.img")),
+                cdrom("2", None),
+                cdrom("3", Some(dir.0.join("cds"))),
+            ]
+        );
+        #[cfg(feature = "ethernet")]
+        {
+            let FunctionConfig::Ethernet(ethernet) = &devices[3].function else {
+                panic!("An Ethernet adapter has an Ethernet config");
+            };
+            assert_eq!(devices[3].model, Some(DeviceModel::DaynaPortScsiLink));
+            assert_eq!(devices[3].slot, "4");
+            assert_eq!(ethernet.link, EthernetLinkType::Down);
+        }
+        #[cfg(feature = "printer")]
+        assert_eq!(
+            devices.last().unwrap().model,
+            Some(DeviceModel::LaserWriterIISC)
+        );
+        // What this build has no device for is said
+        let missing = [cfg!(feature = "ethernet"), cfg!(feature = "printer")];
+        assert_eq!(
+            workspace.take_unread().len(),
+            missing.iter().filter(|&&has| !has).count()
+        );
+    }
+
+    #[test]
+    fn disks_of_an_older_workspace_become_hard_disks() {
+        let dir = TestDir::new("disks");
+        let workspace = dir.load(r#"{"disks":[null,"a.img",null,null,null,null,null]}"#);
+        assert_eq!(workspace.devices(), [disk("1", dir.0.join("a.img"))]);
+    }
+
+    #[test]
+    fn devices_are_saved_with_relative_paths() {
+        let dir = TestDir::new("save");
+        let devices = vec![
+            disk("0", dir.0.join("hd.img")),
+            cdrom("3", Some(dir.0.join("sub").join("cds"))),
+        ];
+        let path = dir.0.join("saved.snoww");
+        let mut workspace = Workspace::default();
+        workspace.set_devices(devices.clone());
+        workspace.write_file(&path).unwrap();
+        // The workspace keeps its absolute paths
+        assert_eq!(workspace.devices(), devices);
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["devices"],
+            serde_json::json!([
+                { "bus": "SCSI", "slot": "0", "model": "ScsiHardDisk",
+                  "function": { "HardDisk": { "media": "hd.img" } } },
+                { "bus": "SCSI", "slot": "3", "model": "ScsiCdrom",
+                  "function": { "Cdrom": { "folder": "sub/cds" } } },
+            ])
+        );
+        // The older fields are no longer written
+        for old in ["disks", "scsi_targets", "ethernet_link_type"] {
+            assert!(saved.get(old).is_none(), "{old} is written");
+        }
+
+        assert_eq!(Workspace::from_file(&path).unwrap().devices(), devices);
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_read_does_not_cost_the_others() {
+        let dir = TestDir::new("unread");
+        let mut workspace = dir.load(
+            r#"{"devices":[
+                {"bus":"SCSI","slot":"0","model":"NoSuchDevice","function":{"Cdrom":{}}},
+                {"bus":"SCSI","slot":"3","model":"ScsiCdrom","function":{"Cdrom":{}}}]}"#,
+        );
+        assert_eq!(workspace.devices(), [cdrom("3", None)]);
+        assert_eq!(workspace.take_unread().len(), 1);
     }
 }
