@@ -30,7 +30,12 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::TwoImg;
 
 use super::disk::file_title;
-use crate::devices::{FloppyFunction, FloppyStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
+use crate::mac::swim::device::SwimBusDevice;
+use crate::tickable::Ticks;
 
 /// Bytes in a block.
 pub const BLOCK_SIZE: usize = 512;
@@ -139,9 +144,9 @@ pub struct UniDisk {
     cmd: Vec<u8>,
     /// The contents of the last data packet.
     data: Vec<u8>,
-    /// The response on the wire, and the next bit to send.
+    /// The response on the wire, and the next byte to send.
     tx: Vec<u8>,
-    tx_bit: usize,
+    tx_pos: usize,
 }
 
 /// Whether the phase lines enable the bus: PH1 and PH3 set.
@@ -205,7 +210,7 @@ impl UniDisk {
             Bus::Listen => self.rx = None,
             Bus::Ready => {
                 self.bus = Bus::Send;
-                self.tx_bit = 0;
+                self.tx_pos = 0;
             }
             _ => {}
         }
@@ -237,7 +242,7 @@ impl UniDisk {
     }
 
     /// A byte the IIe's IWM finished writing while the bus is enabled.
-    pub fn receive(&mut self, byte: u8) {
+    fn receive(&mut self, byte: u8) {
         if self.bus != Bus::Listen || !self.req {
             return;
         }
@@ -285,21 +290,6 @@ impl UniDisk {
             }
             _ => self.bus = Bus::Ignore,
         }
-    }
-
-    /// The next bit of the response for the IWM's read side (0 when
-    /// not sending).
-    pub fn next_bit(&mut self) -> bool {
-        if self.bus != Bus::Send {
-            return false;
-        }
-        let byte = self.tx[self.tx_bit / 8];
-        let bit = byte & (0x80 >> (self.tx_bit % 8)) != 0;
-        self.tx_bit += 1;
-        if self.tx_bit == self.tx.len() * 8 {
-            self.bus = Bus::Sent;
-        }
-        bit
     }
 
     /// Runs the command and gets its response ready.
@@ -583,6 +573,84 @@ fn encode(src: u8, stat: u8, contents: &[u8]) -> Vec<u8> {
     out
 }
 
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::UniDisk35,
+        "UniDisk 3.5",
+        BusKind::IieDisk,
+        FunctionInfo::Floppy(FloppyInfo {
+            images: FloppyImages::Files {
+                label: "Apple II 3.5\" disks",
+                extensions: &["po", "2mg"],
+            },
+            blank_formats: &[],
+            guest_ejects: false,
+            rpm_control: false,
+            writable: true,
+        }),
+    )
+};
+
+impl DeviceOps for UniDisk {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Floppy
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Floppy(self)
+    }
+}
+
+#[typetag::serde]
+impl SwimBusDevice for UniDisk {
+    fn connected(&mut self, _connector: usize, _tick_rate: Ticks) {}
+
+    fn set_lines(&mut self, lines: u8) {
+        self.set_phases(lines);
+    }
+
+    fn strobe(&mut self, _lines: u8) -> bool {
+        false
+    }
+
+    /// The sense line is /ACK while the bus is enabled.
+    fn sense(&self, _lines: u8) -> bool {
+        self.ack()
+    }
+
+    fn tick(&mut self, _ticks: Ticks) {}
+
+    /// The next byte of the response for the IWM's read side (none
+    /// when not sending).  The response is sent once the drive is
+    /// asked for a byte past its last.
+    fn read_byte(&mut self, _ticks: Ticks) -> Option<u8> {
+        if self.bus != Bus::Send {
+            return None;
+        }
+        let byte = self.tx.get(self.tx_pos).copied();
+        if byte.is_none() {
+            self.bus = Bus::Sent;
+        }
+        self.tx_pos += 1;
+        byte
+    }
+
+    /// A byte the IIe's IWM finished writing while the bus is enabled.
+    fn write_byte(&mut self, byte: u8) {
+        self.receive(byte);
+    }
+
+    #[cfg(test)]
+    fn as_unidisk(&mut self) -> &mut UniDisk {
+        self
+    }
+}
+
 impl FloppyFunction for UniDisk {
     fn status(&self) -> FloppyStatus {
         FloppyStatus {
@@ -637,6 +705,10 @@ mod tests {
     struct Iie {
         disk: DiskII,
         motor: bool,
+        /// The cycles run so far
+        cycles: u64,
+        /// A running sum of what each access returned, with the cycle it was made at
+        sum: u64,
     }
 
     impl Iie {
@@ -644,6 +716,8 @@ mod tests {
             Self {
                 disk: DiskII::new(drives_525, unidisk),
                 motor: false,
+                cycles: 0,
+                sum: 0,
             }
         }
 
@@ -651,11 +725,20 @@ mod tests {
             for _ in 0..cycles {
                 self.disk.tick(1, self.motor);
             }
+            self.cycles += cycles;
         }
 
         /// An access to `$C0E0`–`$C0EF` at the end of a 4-cycle
         /// instruction, as the card's `io_read`/`io_write` do it.
         fn access(&mut self, addr: u16, write: bool, val: u8) -> u8 {
+            let result = self.access_at_end(addr, write, val);
+            for value in [self.cycles, addr.into(), result.into()] {
+                self.sum = (self.sum ^ value).wrapping_mul(0x0100_0000_01B3);
+            }
+            result
+        }
+
+        fn access_at_end(&mut self, addr: u16, write: bool, val: u8) -> u8 {
             self.tick(4);
             match addr {
                 0xC0E0..=0xC0E7 => {
@@ -956,7 +1039,7 @@ mod tests {
         let (stat, st) = iie.call(0x81, &[0, 3, 0, 0, 0, 0, 0, 0, 0], None).unwrap();
         assert_eq!(stat, 0);
         assert_eq!(st, [0xE8, 0x40, 0x06, 0x00]);
-        iie.disk.unidisk.as_mut().unwrap().insert(image(), true);
+        iie.disk.smart_unidisk().insert(image(), true);
         let (stat, dib) = iie.call(0x81, &[0, 3, 0, 0, 3, 0, 0, 0, 0], None).unwrap();
         assert_eq!(stat, 0);
         assert_eq!(dib.len(), 25);
@@ -976,11 +1059,7 @@ mod tests {
         assert_eq!(stat, ERR_OFFLINE);
 
         let img = image();
-        iie.disk
-            .unidisk
-            .as_mut()
-            .unwrap()
-            .insert(img.clone(), false);
+        iie.disk.smart_unidisk().insert(img.clone(), false);
         // READBLOCK 1599 (the last).
         let (stat, block) = iie
             .call(0x81, &[1, 3, 0, 0x08, 0x3F, 0x06, 0, 0, 0], None)
@@ -1008,7 +1087,7 @@ mod tests {
             .unwrap();
         assert_eq!(stat, 0);
         assert_eq!(block, data);
-        let image = iie.disk.unidisk.as_ref().unwrap().image().unwrap();
+        let image = iie.disk.smart_unidisk().image().unwrap();
         assert_eq!(&image[2 * BLOCK_SIZE..3 * BLOCK_SIZE], &data);
         assert_eq!(&image[3 * BLOCK_SIZE..], &img[3 * BLOCK_SIZE..]);
 
@@ -1021,7 +1100,7 @@ mod tests {
         assert_eq!(&block[TAG_SIZE..], &data);
 
         // A write-protected disk.
-        iie.disk.unidisk.as_mut().unwrap().insert(img, true);
+        iie.disk.smart_unidisk().insert(img, true);
         let (stat, _) = iie
             .call(0x81, &[2, 3, 0, 0x08, 2, 0, 0, 0, 0], Some(&data))
             .unwrap();
@@ -1032,12 +1111,12 @@ mod tests {
     fn control_eject() {
         let mut iie = Iie::new(0, true);
         init(&mut iie);
-        iie.disk.unidisk.as_mut().unwrap().insert(image(), false);
+        iie.disk.smart_unidisk().insert(image(), false);
         let (stat, _) = iie
             .call(0x81, &[4, 3, 0, 0, 4, 0, 0, 0, 0], Some(&[]))
             .unwrap();
         assert_eq!(stat, 0);
-        assert!(iie.disk.unidisk.as_ref().unwrap().image().is_none());
+        assert!(iie.disk.smart_unidisk().image().is_none());
         // DOWNLOAD is not supported.
         let (stat, _) = iie
             .call(0x81, &[4, 3, 0, 0, 7, 0, 0, 0, 0], Some(&[0xEA]))
@@ -1078,6 +1157,33 @@ mod tests {
         iie.read(0xC0E3);
         iie.read(0xC0E7);
         assert!(iie.ack());
+    }
+
+    /// Every access of a few SmartPort calls returns what it did, at the same cycle, as
+    /// before the UniDisk exchanged whole bytes with the controller: the sum was recorded
+    /// then.
+    #[test]
+    fn a_smartport_exchange_cycle_for_cycle() {
+        let mut iie = Iie::new(1, true);
+        init(&mut iie);
+        // STATUS with no disk, then with one: the device information block
+        iie.call(0x81, &[0, 3, 0, 0, 0, 0, 0, 0, 0], None).unwrap();
+        let img = image();
+        iie.disk.smart_unidisk().insert(img.clone(), false);
+        iie.call(0x81, &[0, 3, 0, 0, 3, 0, 0, 0, 0], None).unwrap();
+        // READBLOCK 1599, WRITEBLOCK 2, READBLOCK 2
+        let (_, block) = iie
+            .call(0x81, &[1, 3, 0, 0x08, 0x3F, 0x06, 0, 0, 0], None)
+            .unwrap();
+        assert_eq!(block, &img[1599 * BLOCK_SIZE..1600 * BLOCK_SIZE]);
+        iie.call(0x81, &[2, 3, 0, 0x08, 2, 0, 0, 0, 0], Some(&block))
+            .unwrap();
+        let (_, back) = iie
+            .call(0x81, &[1, 3, 0, 0x08, 2, 0, 0, 0, 0], None)
+            .unwrap();
+        assert_eq!(back, block);
+
+        assert_eq!((iie.cycles, iie.sum), (69120, 3_710_185_258_641_107_088));
     }
 
     #[test]
