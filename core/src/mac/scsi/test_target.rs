@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
-use crate::devices::{DeviceOps, FunctionMut};
+use crate::devices::{DeviceOps, FunctionMut, ModelInfo};
 use crate::emulator::EmuContext;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetType};
@@ -53,6 +53,10 @@ impl Debuggable for SlowTarget {
 }
 
 impl DeviceOps for SlowTarget {
+    fn info(&self) -> &'static ModelInfo {
+        &crate::mac::scsi::disk::INFO
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         unreachable!()
     }

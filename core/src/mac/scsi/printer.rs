@@ -9,7 +9,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::debuggable::Debuggable;
-use crate::devices::{DeviceOps, FunctionMut, PrinterFunction, PrinterStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, FunctionInfo, FunctionMut, ModelInfo, PrinterFunction,
+    PrinterStatus,
+};
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
@@ -228,7 +231,18 @@ impl ScsiTargetPrinter {
     }
 }
 
+pub const INFO: ModelInfo = ModelInfo::base(
+    DeviceModel::LaserWriterIISC,
+    "LaserWriter IISC",
+    BusKind::Scsi,
+    FunctionInfo::Printer,
+);
+
 impl DeviceOps for ScsiTargetPrinter {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Printer(self)
     }
