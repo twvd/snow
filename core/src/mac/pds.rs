@@ -3,12 +3,12 @@
 //! A processor-direct slot, or PDS, is an expansion connector wired to the CPU's own bus. A Mac
 //! has one at most. See docs/misc/pds.md.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
-use crate::devices::DeviceOps;
+use crate::devices::{BusOps, DeviceOps, MadeDevice};
 use crate::emulator::EmuContext;
 use crate::mac::dma::DmaOps;
 use crate::tickable::Ticks;
@@ -61,6 +61,9 @@ pub struct Pds {
 }
 
 impl Pds {
+    /// The id of the slot of the bus: a machine has one
+    pub const SLOT_IDS: [&str; 1] = ["0"];
+
     pub(crate) fn new(tick_rate: Ticks) -> Self {
         Self {
             card: None,
@@ -68,19 +71,8 @@ impl Pds {
         }
     }
 
-    /// Puts `card` in the slot
-    pub(crate) fn insert(&mut self, mut card: Box<dyn PdsSlot>) {
-        card.connected(self.tick_rate);
-        self.card = Some(card);
-    }
-
     pub(crate) fn card(&self) -> Option<&dyn PdsSlot> {
         self.card.as_deref()
-    }
-
-    pub(crate) fn card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
-        let card = self.card.as_mut()?;
-        Some(&mut **card)
     }
 
     /// One read cycle of the CPU for the card, at the address on the CPU's bus, in the memory
@@ -123,6 +115,42 @@ impl Pds {
         if let Some(card) = &mut self.card {
             card.reset(hard);
         }
+    }
+}
+
+impl BusOps for Pds {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        if !Self::SLOT_IDS.contains(&slot) {
+            return None;
+        }
+        let card = self.card.as_mut()?;
+        // A card is a DeviceOps too
+        Some(&mut **card)
+    }
+
+    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
+        if !Self::SLOT_IDS.contains(&slot) {
+            bail!("No such processor-direct slot");
+        }
+        let MadeDevice::Pds(mut card) = device else {
+            bail!("Not a card for a processor-direct slot");
+        };
+        if self.card.is_some() {
+            bail!("The processor-direct slot already has a card");
+        }
+        card.connected(self.tick_rate);
+        self.card = Some(card);
+        Ok(())
+    }
+
+    fn detach(&mut self, slot: &str) -> Result<()> {
+        if !Self::SLOT_IDS.contains(&slot) {
+            bail!("No such processor-direct slot");
+        }
+        if self.card.take().is_none() {
+            bail!("The processor-direct slot has no card");
+        }
+        Ok(())
     }
 }
 
@@ -250,7 +278,8 @@ pub(crate) mod tests {
     #[test]
     fn the_card_is_saved_and_loaded() {
         let mut pds = Pds::new(1);
-        pds.insert(Box::new(pds_iie::PdsIIeCard::new()));
+        let card = Box::new(pds_iie::PdsIIeCard::new());
+        pds.attach("0", MadeDevice::Pds(card)).unwrap();
 
         let saved = serde_json::to_string(&pds).unwrap();
         let pds: Pds = serde_json::from_str(&saved).unwrap();

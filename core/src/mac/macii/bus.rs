@@ -21,6 +21,7 @@ use crate::mac::nubus::Nubus;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
+use crate::mac::pds::Pds;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -213,6 +214,10 @@ pub struct MacIIBus {
     /// hard-wired
     se30_video: Option<SE30Video>,
 
+    /// The processor-direct slot of the SE/30, the 68030 Direct Slot, with its pseudo-slots
+    /// $9, $A and $B
+    pds: Pds,
+
     /// Mouse mode
     mouse_mode: MouseMode,
 }
@@ -354,6 +359,7 @@ impl MacIIBus {
             nubus: cards,
             dma_writes: 0,
             se30_video,
+            pds: Pds::new(BUS_FREQUENCY),
             mouse_mode,
         };
 
@@ -497,6 +503,27 @@ impl MacIIBus {
 
     fn no_write(&mut self, _addr: Address, _len: u32, _val: u32) -> Option<()> {
         None
+    }
+
+    /// A cycle in the standard or super slot space of a pseudo-slot of the SE/30's
+    /// processor-direct slot, $9, $A or $B (Designing Cards and Drivers for the Macintosh
+    /// Family, 3rd ed., ch. 15, Table 15-12), if a card is there and answers. The card takes the
+    /// CPU's cycles as they are, with the address on the 68030's bus, always in the 32-bit map.
+    /// Where it doesn't answer, the cycle is what it is without a card.
+    fn pds_access(&mut self, acc: BusAccess<Bus68020>) -> Option<BusResponse> {
+        let pseudo_slot =
+            matches!(acc.addr >> 28, 0x9..=0xB) || matches!(acc.addr >> 24, 0xF9..=0xFB);
+        if !pseudo_slot || self.pds.card().is_none() {
+            return None;
+        }
+        let resp = bus_access_long(
+            acc,
+            NUBUS_WAITS,
+            &mut self.pds,
+            |pds, a, len| pds.read(a, len, true),
+            |pds, a, len, val| pds.write(a, len, true, val),
+        );
+        (resp != BusResponse::BusError).then_some(resp)
     }
 
     /// Unimplemented but some stray reads/writes end up here
@@ -840,6 +867,7 @@ impl MacIIBus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::PDS_SE30 if self.model == MacModel::SE30 => Some(&mut self.pds),
             _ => None,
         }
     }
@@ -905,6 +933,7 @@ impl Bus<Address, Byte> for MacIIBus {
             // superslot_read() and superslot_write() have it
             Region::SuperSlot => match self.nubus.access(acc, NUBUS_WAITS) {
                 Some(resp) if resp != BusResponse::BusError => resp,
+                _ if let Some(resp) = self.pds_access(acc) => resp,
                 _ => bus_access_long(
                     acc,
                     NUBUS_WAITS,
@@ -915,6 +944,8 @@ impl Bus<Address, Byte> for MacIIBus {
             },
             Region::Slot => {
                 if let Some(resp) = self.nubus.access(acc, NUBUS_WAITS) {
+                    resp
+                } else if let Some(resp) = self.pds_access(acc) {
                     resp
                 } else if acc.addr >> 24 == 0xFE
                     && let Some(video) = self.se30_video.as_mut()
@@ -974,6 +1005,7 @@ impl Bus<Address, Byte> for MacIIBus {
         if let Some(video) = self.se30_video.as_mut() {
             video.reset();
         }
+        self.pds.reset(hard);
         self.asc.reset();
 
         self.amu_active = false;
@@ -1095,7 +1127,12 @@ impl Tickable for MacIIBus {
             nubus_waits: NUBUS_WAITS,
         };
         self.nubus.tick(native_ticks, ctx, &mut nubus_dma)?;
-        let mut slot_irqs = self.nubus.irqs();
+        self.pds.tick(native_ticks, ctx, &mut dma)?;
+        // The interrupt lines /IRQ1 to /IRQ3 of the SE/30's processor-direct slot, those of its
+        // pseudo-slots $9 to $B, are VIA 2 PA0 to PA2, as the slots $9 to $B of a Macintosh II
+        // (Designing Cards and Drivers for the Macintosh Family, 3rd ed., ch. 15, "Interrupt
+        // handling for the Macintosh SE/30 and Macintosh IIsi 68030 Direct Slot")
+        let mut slot_irqs = self.nubus.irqs() | (self.pds.irqs() & 0b111);
         if let Some(video) = self.se30_video.as_mut() {
             video.tick(native_ticks, ctx)?;
             if video.get_irq() {
@@ -1212,7 +1249,9 @@ impl Debuggable for MacIIBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, MadeDevice, ModelInfo};
     use crate::mac::nubus::NubusSlot;
+    use crate::mac::pds::PdsSlot;
     use std::fmt::Display;
 
     const PATTERN: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
@@ -1296,5 +1335,87 @@ mod tests {
         assert_eq!(bus.ram[to..to + PATTERN.len()], PATTERN);
         // The memory views are told of a write that the CPU didn't make
         assert_ne!(bus.inspect_generation(), generation);
+    }
+
+    /// A card in the SE/30's processor-direct slot which reads back the address it is given,
+    /// and holds the interrupt lines of pseudo-slots $9 and $B
+    #[derive(Serialize, Deserialize)]
+    struct Se30PdsCard;
+
+    impl DeviceOps for Se30PdsCard {
+        fn info(&self) -> &'static ModelInfo {
+            &crate::mac::maclc::pds_iie::INFO
+        }
+
+        fn config(&self) -> FunctionConfig {
+            FunctionConfig::AppleIIeCard(Default::default())
+        }
+
+        fn function(&mut self) -> FunctionMut<'_> {
+            unreachable!()
+        }
+    }
+
+    #[typetag::serde]
+    impl PdsSlot for Se30PdsCard {
+        fn read(&mut self, addr: Address, _size: u32, map32: bool) -> Option<u32> {
+            assert!(map32);
+            (addr >> 24 != 0xFB).then_some(addr)
+        }
+
+        fn write(&mut self, _addr: Address, _size: u32, _map32: bool, _val: u32) -> Option<()> {
+            None
+        }
+
+        fn irqs(&self) -> u8 {
+            0b101
+        }
+
+        fn reset(&mut self, _hard: bool) {}
+
+        fn tick(&mut self, _: Ticks, _: &dyn EmuContext, _: &mut dyn DmaOps) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Debuggable for Se30PdsCard {
+        fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn the_se30_runs_the_card_of_its_processor_direct_slot() {
+        use crate::bus::access::Bus68020;
+
+        let mut bus = MacIIBus::new(
+            MacModel::SE30,
+            &vec![0; 256 * 1024],
+            &[],
+            None,
+            MacMonitor::default(),
+            MouseMode::Disabled,
+            None,
+            true,
+        );
+        let read =
+            |bus: &mut MacIIBus, addr| bus.access(BusAccess::<Bus68020>::read(addr, 4, 0)).unwrap();
+        // An empty slot is a bus error, as the Slot Manager expects
+        assert_eq!(read(&mut bus, 0xF900_1234), BusResponse::BusError);
+
+        bus.pds
+            .attach("0", MadeDevice::Pds(Box::new(Se30PdsCard)))
+            .unwrap();
+        // The card gets the address on the CPU's bus, in the spaces of $9 to $B
+        for addr in [0xF900_1234, 0xFA00_0010, 0x9000_0020, 0xB000_0030] {
+            assert_eq!(read(&mut bus, addr), BusResponse::ack(4, addr, NUBUS_WAITS));
+        }
+        // Where it doesn't answer, as without a card; outside the spaces, never
+        assert_eq!(read(&mut bus, 0xFB00_0000), BusResponse::BusError);
+        assert_eq!(read(&mut bus, 0xFC00_0000), BusResponse::BusError);
+
+        // Its interrupt lines are those of slots $9 to $B, active low
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.via2.a_in.v2irqs(), 0b11_1010);
     }
 }
