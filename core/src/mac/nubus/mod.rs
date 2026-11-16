@@ -9,7 +9,6 @@ use crate::bus::access::{
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
-use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
 use mdc12::Mdc12;
@@ -18,10 +17,9 @@ use std::fmt::{Display, Formatter};
 use toby::Toby;
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub enum NubusCard<TRenderer: Renderer> {
-    MDC12(Mdc12<TRenderer>),
-    Toby(Toby<TRenderer>),
+pub enum NubusCard {
+    MDC12(Mdc12),
+    Toby(Toby),
 }
 
 /// What a NuBus slot sees of a card
@@ -50,10 +48,7 @@ macro_rules! with_card {
     };
 }
 
-impl<TRenderer> NubusCard<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl NubusCard {
     pub fn slot(&mut self) -> &mut dyn NubusSlot {
         with_card!(self, c => c)
     }
@@ -63,7 +58,7 @@ where
     }
 
     /// The card's video, if it has some
-    pub fn video(&mut self) -> Option<&mut dyn VideoOutput<TRenderer>> {
+    pub fn video(&mut self) -> Option<&mut dyn VideoOutput> {
         match self {
             Self::MDC12(c) => Some(c),
             Self::Toby(c) => Some(c),
@@ -73,10 +68,7 @@ where
 
 // Statically dispatched, for the paths run on every bus tick and access
 
-impl<TRenderer> NubusSlot for NubusCard<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl NubusSlot for NubusCard {
     fn get_irq(&self) -> bool {
         with_card!(self, c => c.get_irq())
     }
@@ -94,10 +86,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for NubusCard<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for NubusCard {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         with_card!(self, c => c.tick(ticks, ctx))
     }
@@ -242,15 +231,11 @@ where
 
 /// The cards in the NuBus slots of a machine, $9 to $E
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Nubus<TRenderer: Renderer> {
-    cards: [Option<NubusCard<TRenderer>>; 6],
+pub struct Nubus {
+    cards: [Option<NubusCard>; 6],
 }
 
-impl<TRenderer> Default for Nubus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Default for Nubus {
     fn default() -> Self {
         Self {
             cards: core::array::from_fn(|_| None),
@@ -258,16 +243,13 @@ where
     }
 }
 
-impl<TRenderer> Nubus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Nubus {
     /// Puts `card` in `slot`, $9 to $E
-    pub fn insert(&mut self, slot: u8, card: NubusCard<TRenderer>) {
+    pub fn insert(&mut self, slot: u8, card: NubusCard) {
         self.cards[usize::from(slot - 0x9)] = Some(card);
     }
 
-    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard<TRenderer>> {
+    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard> {
         self.cards.iter_mut().flatten()
     }
 
@@ -322,19 +304,13 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for NubusCard<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for NubusCard {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         self.slot_ref().get_debug_properties()
     }
 }
 
-impl<TRenderer> Display for NubusCard<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for NubusCard {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.slot_ref().to_string())
     }

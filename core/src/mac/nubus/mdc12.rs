@@ -9,7 +9,8 @@ use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::{MacMonitor, VideoOutput};
-use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
 
@@ -66,10 +67,11 @@ pub enum Bpp {
 
 /// Macintosh Display Card 1.2.341-0868
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Mdc12<TRenderer: Renderer> {
+pub struct Mdc12 {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
+    /// The card has drawn a frame: a card loaded from a save state has one to show
+    has_drawn: bool,
 
     monitor: MacMonitor,
     rom: Vec<u8>,
@@ -89,13 +91,11 @@ pub struct Mdc12<TRenderer: Renderer> {
     palette_cnt: usize,
 }
 
-impl<TRenderer> Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    pub fn new(rom: &[u8], renderer: TRenderer, monitor: MacMonitor) -> Self {
+impl Mdc12 {
+    pub fn new(rom: &[u8], monitor: MacMonitor) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer: ChannelRenderer::default(),
+            has_drawn: false,
             monitor,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
@@ -196,10 +196,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl NubusSlot for Mdc12 {
     // VRAM, below the registers at $20_0000, is memory and answers every size.
     // A register is one to a long word, and the card decodes only its address:
     // a write takes the low bits of what the CPU drives, whatever its size, and
@@ -301,25 +298,20 @@ where
     }
 }
 
-impl<TRenderer> Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Mdc12 {
     /// Prepares the image and sends it to the frontend
     fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut());
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
+        self.has_drawn = true;
         Ok(())
     }
 }
 
-impl<TRenderer> VideoOutput<TRenderer> for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl VideoOutput for Mdc12 {
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.ctrl.0 = 0;
@@ -327,20 +319,25 @@ where
         Ok(())
     }
 
-    fn set_renderer(&mut self, renderer: TRenderer) -> Result<()> {
-        self.renderer = Some(renderer);
-        self.render()
+    fn frames(&self) -> FrameReceiver {
+        // A card loaded from a save state has drawn nothing since. If it had drawn before the
+        // save, its picture as it is now is left for the frontend, which then has it before
+        // the machine runs. A card just made leaves nothing.
+        let frames = self.renderer.get_receiver();
+        if self.has_drawn {
+            let mut frame = DisplayBuffer::new(0usize, 0usize);
+            self.render_to(&mut frame);
+            *frames.lock().unwrap() = Some(frame);
+        }
+        frames
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for Mdc12 {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.frame_wanted() {
                 self.render()?;
             }
 
@@ -353,10 +350,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Mdc12 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_group};
@@ -381,11 +375,29 @@ where
     }
 }
 
-impl<TRenderer> Display for Mdc12<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for Mdc12 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Macintosh Display Card 8-24")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_card_shows_nothing() {
+        let card = Mdc12::new(&[], MacMonitor::RGB12);
+        assert!(card.frames().lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn restored_card_shows_its_picture() {
+        let mut card = Mdc12::new(&[], MacMonitor::RGB12);
+        card.render().unwrap();
+        let saved = serde_json::to_string(&card).unwrap();
+        let card: Mdc12 = serde_json::from_str(&saved).unwrap();
+        let frame = card.frames().lock().unwrap().take().unwrap();
+        assert_eq!((frame.width(), frame.height()), (512, 384));
     }
 }
