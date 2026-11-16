@@ -37,6 +37,7 @@ impl DeviceConfig {
     /// it to make their paths relative to its file, and absolute again.
     pub fn convert_paths(&mut self, convert: impl Fn(&Path) -> PathBuf) {
         let in_function = match &mut self.function {
+            FunctionConfig::Floppy => None,
             FunctionConfig::HardDisk(disk) => disk.media.as_mut(),
             FunctionConfig::Cdrom(cdrom) => cdrom.folder.as_mut(),
             FunctionConfig::Ethernet(_) => None,

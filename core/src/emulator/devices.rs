@@ -13,15 +13,16 @@ use anyhow::{Context, Result, bail};
 use log::*;
 
 use super::Emulator;
-use super::comm::EmulatorEvent;
+use super::comm::{EmulatorEvent, FddStatus};
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
-    Bus, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FunctionConfig,
-    FunctionInfo, FunctionMut, HardDiskConfig, bus_id, device_configs, models_for,
-    new_ethernet_address,
+    Bus, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FloppyFunction,
+    FunctionConfig, FunctionInfo, FunctionMut, FunctionStatus, HardDiskConfig, bus_id,
+    device_configs, models_for, new_ethernet_address,
 };
 use crate::mac::scsi::disk_image::DiskImage;
+use crate::mac::swim::drive::DriveType;
 
 impl Emulator {
     /// The device in a slot, seen through its function
@@ -124,6 +125,53 @@ impl Emulator {
         match self.function_in(bus, slot)? {
             FunctionMut::HardDisk(disk) => disk.branch(path),
             _ => bail!("This device isn't a hard disk"),
+        }
+    }
+
+    /// The floppy drive on a connector of the floppy controller, by its number
+    pub(super) fn floppy(&mut self, drive: usize) -> Result<&mut dyn FloppyFunction> {
+        let device = self
+            .config
+            .swim_mut()
+            .drive_at(drive)
+            .with_context(|| format!("Cannot insert disk: Drive {} not present", drive))?;
+        match device.function() {
+            FunctionMut::Floppy(floppy) => Ok(floppy),
+            _ => bail!("Not a floppy drive"),
+        }
+    }
+
+    /// The state of the floppy drive on a connector, for `EmulatorStatus`
+    pub(super) fn fdd_status(&mut self, drive: usize) -> FddStatus {
+        let Some(device) = self.config.swim_mut().drive_at(drive) else {
+            return FddStatus {
+                present: false,
+                ejected: true,
+                image_title: String::new(),
+                dirty: false,
+                drive_type: DriveType::None,
+                writeback_supported: false,
+                writeback_enabled: false,
+            };
+        };
+        let drive_type = match device.info().model {
+            DeviceModel::Mac400KDrive => DriveType::GCR400K,
+            DeviceModel::Mac800KDrive => DriveType::GCR800K,
+            DeviceModel::Mac800KPwmDrive => DriveType::GCR800KPWM,
+            DeviceModel::MacSuperDrive => DriveType::SuperDrive,
+            _ => DriveType::None,
+        };
+        let FunctionStatus::Floppy(status) = device.function().status() else {
+            unreachable!()
+        };
+        FddStatus {
+            present: true,
+            ejected: status.ejected,
+            image_title: status.title,
+            dirty: status.dirty,
+            drive_type,
+            writeback_supported: status.writeback_supported,
+            writeback_enabled: status.writeback_enabled,
         }
     }
 

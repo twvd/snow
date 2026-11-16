@@ -1980,6 +1980,8 @@ impl SnowGui {
                 FunctionStatus::Ethernet(_) => (),
                 #[cfg(not(feature = "printer"))]
                 FunctionStatus::Printer(_) => (),
+                // Not the function of a SCSI device
+                FunctionStatus::Floppy(_) => (),
             }
         } else {
             ui.menu_button(
