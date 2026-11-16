@@ -9,10 +9,40 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use snow_floppy::FloppyImage;
 
 use crate::emulator::comm::EthernetCaptureStatus;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::renderer::AudioProvider;
+
+pub trait FloppyFunction {
+    /// The live state of the drive. Called at each status update.
+    fn status(&self) -> FloppyStatus;
+    /// Puts the disk of the image file `path` in the drive. Called when the user picks an
+    /// image.
+    fn load(&mut self, path: &Path, read_only: bool) -> Result<()>;
+    /// Ejects the disk. Called when the user ejects it from the menu.
+    fn eject(&mut self);
+    /// Puts the disk of an image already in memory in the drive, such as a blank disk. Called
+    /// when the user picks one.
+    fn insert_image(&mut self, image: Box<FloppyImage>, read_only: bool) -> Result<()>;
+    /// Saves the disk to the image file `path`. Called when the user saves the disk.
+    fn save(&mut self, path: &Path) -> Result<()>;
+    /// Turns write-back on or off: with it, the writes of the guest go to the file the disk
+    /// came from. Called when the user changes it.
+    fn set_writeback(&mut self, enabled: bool) -> Result<()>;
+    /// Writes the disk back to the file it came from, if write-back is on and the drive has
+    /// stopped since the last write; with `force`, even while the disk turns. A disk that was
+    /// ejected with unsaved writes is written back too. Called by the emulator after each
+    /// batch of instructions, and with `force` before a menu eject and when it quits.
+    fn write_back(&mut self, force: bool) -> Result<()>;
+    /// Takes the image of the last disk ejected, which the frontend can put back or save.
+    /// Called at each status update.
+    fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>>;
+    /// Makes the disk turn faster or slower, by `rpm` turns per minute. Called when the user
+    /// changes the speed adjustment.
+    fn set_rpm_adjustment(&mut self, rpm: i32) -> Result<()>;
+}
 
 pub trait HardDiskFunction {
     /// The live state of the disk. Called at each status update.
@@ -119,6 +149,20 @@ impl FunctionMut<'_> {
             Self::Printer(printer) => FunctionStatus::Printer(printer.status()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloppyStatus {
+    /// The title of the disk in the drive
+    pub title: String,
+    /// No disk is in the drive
+    pub ejected: bool,
+    /// The disk has writes that aren't saved to a file
+    pub dirty: bool,
+    /// The disk can be written back to the file it came from
+    pub writeback_supported: bool,
+    /// Its writes go to that file
+    pub writeback_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

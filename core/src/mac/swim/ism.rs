@@ -721,7 +721,8 @@ mod tests {
     /// SWIM in ISM mode, a disk spinning in the first drive
     fn swim(setup: u8) -> Swim {
         let mut swim = Swim::new(&[DriveType::SuperDrive], true, 16_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
         swim.drives[0].not_ready = 0;
@@ -939,7 +940,8 @@ mod tests {
     #[test]
     fn swim2_enable_without_motoron() {
         let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
         swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
@@ -985,8 +987,8 @@ mod tests {
         assert!(swim.drives[0].floppy_inserted);
 
         let mut swim2 = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
-        swim2
-            .disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim2.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim2.reset();
         assert_eq!(swim2.mode, SwimMode::Ism);
