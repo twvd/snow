@@ -31,8 +31,8 @@ use snow_floppy::loaders::TwoImg;
 
 use super::disk::file_title;
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
-    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
 use crate::mac::swim::device::SwimBusDevice;
 use crate::tickable::Ticks;
@@ -573,8 +573,13 @@ fn encode(src: u8, stat: u8, contents: &[u8]) -> Vec<u8> {
     out
 }
 
+fn create(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(UniDisk::new())))
+}
+
 pub const INFO: ModelInfo = ModelInfo {
     fixed: true,
+    create: Some(create),
     ..ModelInfo::base(
         DeviceModel::UniDisk35,
         "UniDisk 3.5",

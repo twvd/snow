@@ -14,7 +14,6 @@ use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
-use crate::mac::pds::PdsSlot;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::tickable::{Tickable, Ticks};
@@ -149,17 +148,6 @@ machine_bus!(
     LcIII(LcIIIBus, lc_iii, lc_iii_mut),
 );
 
-impl MachineBus020 {
-    /// The card in the PDS of an LC
-    pub(crate) fn iie_card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
-        match self {
-            Self::MacII(_) => None,
-            Self::LcI(bus) => bus.iie_card_mut(),
-            Self::LcIII(bus) => bus.iie_card_mut(),
-        }
-    }
-}
-
 machine_bus!(
     /// The bus of a machine with a 68040
     MachineBus040,
@@ -168,13 +156,3 @@ machine_bus!(
     Lc475(Lc475Bus, lc475, lc475_mut),
     Quadra800(Quadra800Bus, quadra800, quadra800_mut),
 );
-
-impl MachineBus040 {
-    /// The card in the PDS of an LC 475
-    pub(crate) fn iie_card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
-        match self {
-            Self::Quadra700(_) | Self::Quadra800(_) => None,
-            Self::Lc475(bus) => bus.iie_card_mut(),
-        }
-    }
-}

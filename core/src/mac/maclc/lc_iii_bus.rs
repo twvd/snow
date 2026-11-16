@@ -4,7 +4,6 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::pds_iie::{IieCardSettings, PdsIIeCard};
 use super::pseudovia::PseudoVia;
 use super::sonora;
 use super::via::Via;
@@ -24,7 +23,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::egret::Egret;
-use crate::mac::pds::{Pds, PdsSlot};
+use crate::mac::pds::Pds;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -216,7 +215,6 @@ impl LcIIIBus {
         ram_size: Option<usize>,
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
-        iie_card: Option<IieCardSettings>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let monitor = monitor
@@ -230,11 +228,6 @@ impl LcIIIBus {
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
         egret.adb_add_device(AdbKeyboard::new());
-
-        let mut pds = Pds::new(C16M_FREQUENCY);
-        if let Some(settings) = iie_card {
-            pds.insert(Box::new(PdsIIeCard::with_settings(&settings)));
-        }
 
         let mut bus = Self {
             model,
@@ -259,7 +252,7 @@ impl LcIIIBus {
             sound: V8Sound::new(V8Variant::Sonora),
             sound_clock: 0,
 
-            pds,
+            pds: Pds::new(C16M_FREQUENCY),
             dma_writes: 0,
 
             overlay: true,
@@ -290,11 +283,6 @@ impl LcIIIBus {
     /// Apple IIe Card's Option Panel configuration panels).
     pub fn set_security_jumper(&mut self, installed: bool) {
         self.egret.set_security_jumper(installed);
-    }
-
-    /// The card in the PDS slot, if installed.
-    pub(crate) fn iie_card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
-        self.pds.card_mut()
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -804,14 +792,8 @@ impl LcIIIBus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
-            // A bus that the card in the slot adds
-            _ => self
-                .pds
-                .card_mut()?
-                .extra_buses()
-                .into_iter()
-                .find(|(added, _)| added.id == bus)
-                .map(|(_, ops)| ops),
+            bus_id::PDS_LC => Some(&mut self.pds),
+            _ => None,
         }
     }
 
@@ -1158,6 +1140,8 @@ impl Debuggable for LcIIIBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::MadeDevice;
+    use crate::mac::maclc::pds_iie::PdsIIeCard;
 
     /// Seconds counted by the Egret, which is clocked like the VIA, while the
     /// bus runs for a second less `less` cycles
@@ -1166,7 +1150,6 @@ mod tests {
             MacModel::LCIII,
             &vec![0; 512 * 1024],
             MouseMode::Disabled,
-            None,
             None,
             None,
             None,
@@ -1201,8 +1184,9 @@ mod tests {
             None,
             None,
             None,
-            Some(IieCardSettings::default()),
         );
+        let card = Box::new(PdsIIeCard::new());
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         fn read(bus: &mut LcIIIBus, addr: Address) -> u32 {
             match bus.access(BusAccess::<Bus68020>::read(addr, 1, 0)).unwrap() {
                 BusResponse::Ack { data, .. } => data,
@@ -1240,13 +1224,13 @@ mod tests {
             None,
             None,
             None,
-            None,
         );
-        bus.pds.insert(Box::new(DmaCard {
+        let card = Box::new(DmaCard {
             from: FROM,
             to: TO,
             not_ram: 0x4000_0000,
-        }));
+        });
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         // The RAM is at its addresses once the boot overlay is off, and the soldered RAM once
         // the RAM configuration register enables it
         bus.overlay = false;
@@ -1274,16 +1258,17 @@ mod tests {
             None,
             None,
             None,
-            None,
         );
         // The slot interrupt and the summary of the slot interrupts enabled
         bus.pseudovia.write(0x12, 0xA0);
         bus.pseudovia.write(0x13, 0x82);
-        bus.pds.insert(Box::new(IrqCard { irqs: 0 }));
+        let card = |irqs| MadeDevice::Pds(Box::new(IrqCard { irqs }));
+        bus.pds.attach("0", card(0)).unwrap();
         bus.tick(1, ()).unwrap();
         assert_eq!(bus.get_irq(), None);
 
-        bus.pds.insert(Box::new(IrqCard { irqs: 1 }));
+        bus.pds.detach("0").unwrap();
+        bus.pds.attach("0", card(1)).unwrap();
         bus.tick(1, ()).unwrap();
         assert_eq!(bus.get_irq(), Some(2));
     }

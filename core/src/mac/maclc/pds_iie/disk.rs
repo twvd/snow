@@ -29,10 +29,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{TwoImg, Woz, WozData};
 
-use super::unidisk::{UniDisk, bus_enabled};
+use super::unidisk::bus_enabled;
 use crate::devices::{
-    BusKind, BusOps, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo,
-    FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
+    BusKind, BusOps, DeviceConfig, DeviceModel, DeviceOps, FloppyFunction, FloppyImages,
+    FloppyInfo, FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
 use crate::mac::swim::device::SwimBusDevice;
 use crate::mac::swim::stream::FloppyStream;
@@ -408,8 +408,13 @@ impl Drive5 {
     }
 }
 
+fn create(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(Drive5::new())))
+}
+
 pub const INFO: ModelInfo = ModelInfo {
     fixed: true,
+    create: Some(create),
     ..ModelInfo::base(
         DeviceModel::Apple525Drive,
         "Apple 5.25 Drive",
@@ -841,26 +846,6 @@ impl DiskII {
     /// from 1
     pub const SLOT_IDS: [&str; 2] = ["1", "2"];
 
-    /// A controller with `count` 5.25" drives connected (0 to 2),
-    /// behind a UniDisk 3.5 if `unidisk` is set.
-    pub fn new(count: usize, unidisk: bool) -> Self {
-        let mut disk = Self::default();
-        if unidisk {
-            disk.attach_last(Box::new(UniDisk::new()));
-        }
-        for _ in 0..count {
-            disk.attach_last(Box::new(Drive5::new()));
-        }
-        disk
-    }
-
-    /// Puts a device at the end of the chain, if there is room.
-    fn attach_last(&mut self, device: Box<dyn SwimBusDevice>) {
-        if let Some(place) = self.devices.iter().position(Option::is_none) {
-            self.put(place, device);
-        }
-    }
-
     /// Puts a device at a place on the chain.
     fn put(&mut self, place: usize, mut device: Box<dyn SwimBusDevice>) {
         device.connected(place, super::NORMAL_HZ as Ticks);
@@ -1068,7 +1053,22 @@ impl DiskII {
 }
 
 #[cfg(test)]
+use super::unidisk::UniDisk;
+
+#[cfg(test)]
 impl DiskII {
+    /// A controller with `count` 5.25" drives connected (0 to 2),
+    /// behind a UniDisk 3.5 if `unidisk` is set.
+    pub fn new(count: usize, unidisk: bool) -> Self {
+        let mut disk = Self::default();
+        let unidisk = unidisk.then(|| Box::new(UniDisk::new()) as Box<dyn SwimBusDevice>);
+        let drives = (0..count).map(|_| Box::new(Drive5::new()) as Box<dyn SwimBusDevice>);
+        for (slot, device) in Self::SLOT_IDS.iter().zip(unidisk.into_iter().chain(drives)) {
+            disk.attach(slot, MadeDevice::Swim(device)).unwrap();
+        }
+        disk
+    }
+
     /// A 5.25" drive (0 or 1), if that drive is connected.
     fn drive_525(&mut self, drive: usize) -> Option<&mut dyn SwimBusDevice> {
         self.drive_at(*self.drives.get(drive)?)
