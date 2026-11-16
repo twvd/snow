@@ -23,7 +23,14 @@
 //!   command with one packet: the error code in STAT, and the data
 //!   (status list or block) as its contents.
 
+use std::path::Path;
+
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use snow_floppy::loaders::TwoImg;
+
+use super::disk::file_title;
+use crate::devices::{FloppyFunction, FloppyStatus};
 
 /// Bytes in a block.
 pub const BLOCK_SIZE: usize = 512;
@@ -111,6 +118,9 @@ pub struct UniDisk {
     /// re-inserts it from the menu).
     #[serde(skip, default)]
     image: Option<Vec<u8>>,
+    /// The name of the image's file, which titles the disk.
+    #[serde(skip, default)]
+    title: String,
     /// The inserted disk is write-protected.
     locked: bool,
     /// The bus ID given by INIT ($81 = the first device), 0 before.
@@ -155,11 +165,6 @@ impl UniDisk {
         true
     }
 
-    /// Ejects the disk.
-    pub fn eject(&mut self) {
-        self.image = None;
-    }
-
     /// The inserted image, as written by the IIe.
     pub fn image(&self) -> Option<&[u8]> {
         self.image.as_deref()
@@ -188,6 +193,7 @@ impl UniDisk {
     fn bus_reset(&mut self) {
         *self = Self {
             image: self.image.take(),
+            title: std::mem::take(&mut self.title),
             locked: self.locked,
             ..Self::default()
         };
@@ -575,6 +581,49 @@ fn encode(src: u8, stat: u8, contents: &[u8]) -> Vec<u8> {
     out.push((sum >> 1) | 0xAA);
     out.push(PEND);
     out
+}
+
+impl FloppyFunction for UniDisk {
+    fn status(&self) -> FloppyStatus {
+        FloppyStatus {
+            title: self.title.clone(),
+            ejected: self.image.is_none(),
+            dirty: false,
+            writeback_supported: false,
+            writeback_enabled: false,
+        }
+    }
+
+    /// Inserts a 400K or 800K block image (ProDOS order), in a 2IMG
+    /// file or not. Writes from the IIe stay in memory.
+    fn load(&mut self, path: &Path, read_only: bool) -> Result<()> {
+        let cannot_read = |e| anyhow!("Cannot read '{}': {}", path.display(), e);
+        let file = std::fs::read(path).map_err(|e| cannot_read(e.into()))?;
+        // A 2IMG header carries the lock flag; a raw image is the
+        // blocks alone
+        let (data, locked) = if TwoImg::detect(&file) {
+            let img = TwoImg::parse(&file).map_err(cannot_read)?;
+            (img.data.to_vec(), img.locked)
+        } else {
+            (file, false)
+        };
+        let len = data.len();
+        if !self.insert(data, locked || read_only) {
+            bail!(
+                "Cannot insert UniDisk 3.5 image '{}': not a 400K or 800K block image ({} bytes)",
+                path.display(),
+                len
+            );
+        }
+        self.title = file_title(path);
+        log::debug!("IIe Card UniDisk 3.5 disk inserted ({} bytes)", len);
+        Ok(())
+    }
+
+    fn eject(&mut self) {
+        self.image = None;
+        self.title.clear();
+    }
 }
 
 #[cfg(test)]
@@ -1029,5 +1078,32 @@ mod tests {
         iie.read(0xC0E3);
         iie.read(0xC0E7);
         assert!(iie.ack());
+    }
+
+    #[test]
+    fn a_unidisk_loads_and_ejects_a_block_image() {
+        use super::super::disk::tests::TestFile;
+
+        // The Floppy status, not the SmartPort STATUS command
+        let status = |unidisk: &UniDisk| FloppyFunction::status(unidisk);
+        let mut unidisk = UniDisk::new();
+        assert!(status(&unidisk).ejected);
+
+        let file = TestFile::new("disk.po", &vec![0; 1600 * 512]);
+        unidisk.load(&file.0, false).unwrap();
+        assert!(!status(&unidisk).ejected);
+        assert!(status(&unidisk).title.ends_with("disk.po"));
+        assert!(!unidisk.locked);
+        // Write-protected when asked
+        unidisk.load(&file.0, true).unwrap();
+        assert!(unidisk.locked);
+
+        unidisk.eject();
+        assert!(status(&unidisk).ejected);
+
+        let short = TestFile::new("short.po", &[0; 1000]);
+        let e = unidisk.load(&short.0, false).unwrap_err().to_string();
+        assert!(e.starts_with("Cannot insert UniDisk 3.5 image"), "{e}");
+        assert!(status(&unidisk).ejected);
     }
 }

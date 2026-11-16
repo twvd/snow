@@ -91,19 +91,19 @@ pub mod unidisk;
 
 use std::cell::RefCell;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::FloppyFunction;
 use crate::tickable::{Tickable, Ticks};
 #[cfg(feature = "iie-debug")]
 use log::{Level, log_enabled};
 
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
-use disk::{DiskII, DskImage, DskOrder};
-use snow_floppy::loaders::Woz;
+use disk::DiskII;
 
 /// A device on the card's external disk port (the Y-cable's floppy
 /// connector)
@@ -2034,38 +2034,18 @@ impl PdsIIeCard {
         }
     }
 
-    /// Inserts a WOZ image, or a 16-sector DSK image in `order`, into a
-    /// 5.25" drive (0 or 1).
-    pub fn insert_disk(&mut self, drive: usize, bytes: &[u8], order: DskOrder) -> Result<()> {
-        let img = if Woz::detect(bytes) {
-            DskImage::from_woz(&Woz::parse(bytes)?)?
-        } else {
-            DskImage::load(bytes, order)
-                .ok_or_else(|| anyhow::anyhow!("not a 143 360-byte 16-sector DSK image"))?
-        };
-        if !self
-            .cpu
-            .bus
-            .state
-            .borrow_mut()
-            .disk
-            .insert(drive, Some(img))
-        {
-            bail!("5.25\" drive {} is not connected", drive + 1);
-        }
-        log::debug!(
-            "IIe Card 5.25\" disk inserted in drive {} ({} bytes, {:?})",
-            drive + 1,
-            bytes.len(),
-            order
-        );
-        Ok(())
+    /// The Floppy function of a 5.25" drive (0 or 1), if that drive
+    /// is connected.
+    pub fn drive_525(&mut self, drive: usize) -> Option<&mut dyn FloppyFunction> {
+        let disk = &mut self.cpu.bus.state.get_mut().disk;
+        let drive = disk.drives.get_mut(drive)?.as_mut()?;
+        Some(drive)
     }
 
-    /// Ejects a 5.25" drive's image.
-    pub fn eject_disk(&mut self, drive: usize) {
-        self.cpu.bus.state.borrow_mut().disk.insert(drive, None);
-        log::debug!("IIe Card 5.25\" disk ejected from drive {}", drive + 1);
+    /// The Floppy function of the UniDisk 3.5, if one is connected.
+    pub fn unidisk(&mut self) -> Option<&mut dyn FloppyFunction> {
+        let unidisk = self.cpu.bus.state.get_mut().disk.unidisk.as_mut()?;
+        Some(unidisk)
     }
 
     /// Sets what the host has on the game port: the paddle positions
@@ -2076,28 +2056,6 @@ impl PdsIIeCard {
         s.stick_kept |= port.keep_stick;
         s.btn[0] = port.buttons[0];
         s.btn[1] = port.buttons[1];
-    }
-
-    /// Inserts a 400K or 800K block image (ProDOS order) into the
-    /// UniDisk 3.5.  Writes from the IIe stay in memory.
-    pub fn insert_unidisk(&mut self, data: Vec<u8>, locked: bool) -> Result<()> {
-        let len = data.len();
-        let mut s = self.cpu.bus.state.borrow_mut();
-        let Some(unidisk) = &mut s.disk.unidisk else {
-            bail!("no UniDisk 3.5 is connected");
-        };
-        if !unidisk.insert(data, locked) {
-            bail!("not a 400K or 800K block image ({} bytes)", len);
-        }
-        log::debug!("IIe Card UniDisk 3.5 disk inserted ({} bytes)", len);
-        Ok(())
-    }
-
-    /// Ejects the UniDisk 3.5's disk.
-    pub fn eject_unidisk(&mut self) {
-        if let Some(unidisk) = &mut self.cpu.bus.state.borrow_mut().disk.unidisk {
-            unidisk.eject();
-        }
     }
 
     /// Loads firmware into a bank through the host path, at the load
@@ -4222,7 +4180,8 @@ mod tests {
         for (i, b) in img.iter_mut().enumerate() {
             *b = (i / 512 + i * 3) as u8;
         }
-        card.insert_unidisk(img.clone(), false).unwrap();
+        let unidisk = card.cpu.bus.state.get_mut().disk.unidisk.as_mut().unwrap();
+        assert!(unidisk.insert(img.clone(), false));
 
         // `$CEC1`: the bus reset.  Then INIT for unit 1 ($CE5E–$CE91):
         // command 5, 2 parameters, from the buffer at $0042, 9 bytes.

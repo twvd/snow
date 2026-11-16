@@ -23,11 +23,14 @@
 //! A WOZ image brings its own tracks and map, and the rate its bits come
 //! at: the cell clock follows it.
 
-use anyhow::{Result, bail};
+use std::path::Path;
+
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use snow_floppy::loaders::{Woz, WozData};
+use snow_floppy::loaders::{TwoImg, Woz, WozData};
 
 use super::unidisk::{UniDisk, bus_enabled};
+use crate::devices::{FloppyFunction, FloppyStatus};
 use crate::tickable::Ticks;
 
 /// Tracks in a sector image.
@@ -314,6 +317,9 @@ pub struct Drive5 {
     /// it from the menu).
     #[serde(skip, default)]
     pub image: Option<DskImage>,
+    /// The name of the image's file, which titles the disk.
+    #[serde(skip, default)]
+    title: String,
     /// The head position in quarter-tracks (0..QUARTERS).
     pos: i16,
     /// The bit-cell index into the current track.
@@ -402,6 +408,77 @@ impl Drive5 {
     /// track there).
     pub fn head_bit(&self) -> bool {
         self.track().is_some_and(|t| t.bit(self.cell))
+    }
+}
+
+/// The sectors in a `.dsk` file and their order: a 2IMG header names
+/// the order, else the extension does.
+fn dsk_sectors<'a>(file: &'a [u8], path: &Path) -> Result<(&'a [u8], DskOrder)> {
+    if TwoImg::detect(file) {
+        let img = TwoImg::parse(file)?;
+        let order = if img.format == TwoImg::FORMAT_PRODOS {
+            DskOrder::Prodos
+        } else {
+            DskOrder::Dos
+        };
+        Ok((img.data, order))
+    } else if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("po"))
+    {
+        Ok((file, DskOrder::Prodos))
+    } else {
+        Ok((file, DskOrder::Dos))
+    }
+}
+
+/// The name of an image's file, which titles the disk in the menus.
+pub(super) fn file_title(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+impl FloppyFunction for Drive5 {
+    fn status(&self) -> FloppyStatus {
+        FloppyStatus {
+            title: self.title.clone(),
+            ejected: self.image.is_none(),
+            dirty: false,
+            writeback_supported: false,
+            writeback_enabled: false,
+        }
+    }
+
+    /// Inserts a 16-sector `.dsk` image, in a 2IMG file or not, or a
+    /// 5.25" WOZ image. The drive never writes: `read_only` changes
+    /// nothing.
+    fn load(&mut self, path: &Path, _read_only: bool) -> Result<()> {
+        let cannot_read = |e| anyhow!("Cannot read '{}': {}", path.display(), e);
+        let file = std::fs::read(path).map_err(|e| cannot_read(e.into()))?;
+        let (bytes, order) = dsk_sectors(&file, path).map_err(cannot_read)?;
+        let image = if Woz::detect(bytes) {
+            Woz::parse(bytes).and_then(|woz| DskImage::from_woz(&woz))
+        } else {
+            DskImage::load(bytes, order)
+                .ok_or_else(|| anyhow!("not a 143 360-byte 16-sector DSK image"))
+        };
+        let image =
+            image.map_err(|e| anyhow!("Cannot insert IIe disk '{}': {}", path.display(), e))?;
+        self.image = Some(image);
+        self.title = file_title(path);
+        log::debug!(
+            "IIe Card 5.25\" disk inserted ({} bytes, {:?})",
+            bytes.len(),
+            order
+        );
+        Ok(())
+    }
+
+    fn eject(&mut self) {
+        self.image = None;
+        self.title.clear();
+        log::debug!("IIe Card 5.25\" disk ejected");
     }
 }
 
@@ -679,6 +756,7 @@ impl DiskII {
             if let Some(old) = old {
                 *new = Some(Drive5 {
                     image: old.image.take(),
+                    title: std::mem::take(&mut old.title),
                     ..Drive5::new()
                 });
             }
@@ -812,7 +890,7 @@ impl DiskII {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use snow_floppy::loaders::WozTrack;
 
@@ -1087,5 +1165,59 @@ mod tests {
         disk.selected = true;
         assert_ne!(disk.iwm_read(false) & 0x80, 0, "no drive");
         assert!(!disk.insert(1, None));
+    }
+
+    /// A file of its own for a test, removed when the test is done
+    pub(in super::super) struct TestFile(pub std::path::PathBuf);
+
+    impl TestFile {
+        pub(in super::super) fn new(name: &str, bytes: &[u8]) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("snow_iie_{}_{}", std::process::id(), name));
+            std::fs::write(&path, bytes).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_drive_loads_and_ejects_a_dsk_file() {
+        let mut drive = Drive5::new();
+        assert!(drive.status().ejected);
+
+        let file = TestFile::new("disk.dsk", &vec![0; TRACKS * 16 * 256]);
+        drive.load(&file.0, false).unwrap();
+        let status = drive.status();
+        assert!(!status.ejected);
+        assert!(status.title.ends_with("disk.dsk"));
+        assert!(!status.writeback_supported);
+
+        drive.eject();
+        assert!(drive.status().ejected);
+        assert_eq!(drive.status().title, "");
+    }
+
+    #[test]
+    fn a_drive_refuses_what_is_not_a_disk() {
+        let mut drive = Drive5::new();
+        let file = TestFile::new("short.dsk", &[0; 1000]);
+        let e = drive.load(&file.0, false).unwrap_err().to_string();
+        assert!(e.starts_with("Cannot insert IIe disk"), "{e}");
+        assert!(e.ends_with("not a 143 360-byte 16-sector DSK image"), "{e}");
+
+        let e = drive.load(Path::new("/nowhere/none.dsk"), false);
+        assert!(e.unwrap_err().to_string().starts_with("Cannot read"));
+        assert!(drive.status().ejected);
+
+        // What only a Mac drive does
+        assert!(drive.save(&file.0).is_err());
+        assert!(drive.set_writeback(true).is_err());
+        assert!(drive.set_rpm_adjustment(1).is_err());
+        assert!(drive.take_ejected_image().is_none());
     }
 }
