@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
-use crate::devices::{DeviceOps, FunctionMut, HardDiskFunction, HardDiskStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, FunctionInfo, FunctionMut, HardDiskFunction, HardDiskStatus,
+    ModelInfo,
+};
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
@@ -65,7 +68,18 @@ impl ScsiTargetDisk {
     }
 }
 
+pub const INFO: ModelInfo = ModelInfo::base(
+    DeviceModel::ScsiHardDisk,
+    "Hard disk",
+    BusKind::Scsi,
+    FunctionInfo::HardDisk,
+);
+
 impl DeviceOps for ScsiTargetDisk {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::HardDisk(self)
     }

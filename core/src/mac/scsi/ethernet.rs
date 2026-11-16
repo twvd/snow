@@ -1,7 +1,10 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{DeviceOps, EthernetFunction, EthernetLinkType, EthernetStatus, FunctionMut};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, EthernetFunction, EthernetInfo, EthernetLinkType,
+    EthernetStatus, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -955,7 +958,21 @@ impl ScsiTarget for ScsiTargetEthernet {
     }
 }
 
+pub const INFO: ModelInfo = ModelInfo::base(
+    DeviceModel::DaynaPortScsiLink,
+    "DaynaPORT SCSI/Link",
+    BusKind::Scsi,
+    FunctionInfo::Ethernet(EthernetInfo {
+        // Dayna Communications
+        oui: [0x00, 0x80, 0x19],
+    }),
+);
+
 impl DeviceOps for ScsiTargetEthernet {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Ethernet(self)
     }

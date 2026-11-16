@@ -68,6 +68,22 @@ pub trait PrinterFunction {
     fn status(&self) -> PrinterStatus;
 }
 
+/// The function of a device model, with what a device of that function supports, for the
+/// frontend to offer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionInfo {
+    HardDisk,
+    Cdrom,
+    Ethernet(EthernetInfo),
+    Printer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EthernetInfo {
+    /// The maker's prefix: the first three bytes of the Ethernet addresses of this device model
+    pub oui: [u8; 3],
+}
+
 /// A device, seen through its function
 pub enum FunctionMut<'a> {
     HardDisk(&'a mut dyn HardDiskFunction),
