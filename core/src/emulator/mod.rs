@@ -24,7 +24,7 @@ use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{BusOps, FloppyFunction, FunctionMut, FunctionStatus};
+use crate::devices::{BusOps, FunctionMut, FunctionStatus};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
@@ -61,7 +61,7 @@ use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange,
+    EmulatorStatus, InputRecording, MemoryNotifierRange,
 };
 
 /// Mouse emulation mode
@@ -872,10 +872,12 @@ impl Emulator {
     pub fn status_update(&mut self) -> Result<()> {
         // An ejected disk is written back before its image is handed over
         self.flush_pending_writebacks(false);
-        for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
-            if let Some(img) = drive.take_ejected_image() {
+        for drive in 0..Swim::CONNECTORS {
+            if let Ok(floppy) = self.floppy(drive)
+                && let Some(img) = floppy.take_ejected_image()
+            {
                 self.event_sender
-                    .send(EmulatorEvent::FloppyEjected(i, img))?;
+                    .send(EmulatorEvent::FloppyEjected(drive, img))?;
             }
         }
         for (id, target) in self
@@ -916,25 +918,14 @@ impl Emulator {
             }
         }
 
+        let fdd = core::array::from_fn(|drive| self.fdd_status(drive));
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.config.cpu_regs().clone(),
                 running: self.run,
                 breakpoints: self.config.cpu_breakpoints().to_vec(),
                 cycles: self.config.cpu_cycles(),
-                fdd: core::array::from_fn(|i| {
-                    let drive = &self.config.swim().drives[i];
-                    let status = drive.status();
-                    FddStatus {
-                        present: drive.is_present(),
-                        ejected: status.ejected,
-                        image_title: status.title,
-                        dirty: status.dirty,
-                        drive_type: drive.drive_type,
-                        writeback_supported: status.writeback_supported,
-                        writeback_enabled: status.writeback_enabled,
-                    }
-                }),
+                fdd,
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
                 speed: self.config.speed(),
@@ -1219,7 +1210,9 @@ impl Emulator {
     /// Writes the disk of a floppy drive back to the file it came from, if a save is due or
     /// `force` is set, and reports a failed save to the user
     fn floppy_write_back(&mut self, drive: usize, force: bool) {
-        if let Err(e) = self.config.swim_mut().drives[drive].write_back(force) {
+        if let Ok(floppy) = self.floppy(drive)
+            && let Err(e) = floppy.write_back(force)
+        {
             self.user_error(&format!("Floppy #{}: {:#}", drive + 1, e));
         }
     }
@@ -1227,7 +1220,7 @@ impl Emulator {
     /// Runs the writeback saves that are due across all drives. With `force`, saves any
     /// dirty disk that has writeback armed.
     fn flush_pending_writebacks(&mut self, force: bool) {
-        for drive in 0..self.config.swim().drives.len() {
+        for drive in 0..Swim::CONNECTORS {
             self.floppy_write_back(drive, force);
         }
     }
@@ -1381,8 +1374,10 @@ impl Tickable for Emulator {
                         return Ok(0);
                     }
                     EmulatorCommand::InsertFloppy(drive, filename, wp) => {
-                        let floppy = &mut self.config.swim_mut().drives[drive];
-                        if let Err(e) = floppy.load(Path::new(&filename), wp) {
+                        let result = self
+                            .floppy(drive)
+                            .and_then(|floppy| floppy.load(Path::new(&filename), wp));
+                        if let Err(e) = result {
                             self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
@@ -1532,19 +1527,26 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::InsertFloppyImage(drive, img, wp) => {
-                        let floppy = &mut self.config.swim_mut().drives[drive];
-                        if let Err(e) = floppy.insert_image(img, wp) {
+                        let result = self
+                            .floppy(drive)
+                            .and_then(|floppy| floppy.insert_image(img, wp));
+                        if let Err(e) = result {
                             self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
                     EmulatorCommand::EjectFloppy(drive) => {
                         self.floppy_write_back(drive, true);
-                        self.config.swim_mut().drives[drive].eject();
+                        match self.floppy(drive) {
+                            Ok(floppy) => floppy.eject(),
+                            Err(e) => self.user_error(&format!("{:#}", e)),
+                        }
                     }
                     EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
-                        let floppy = &mut self.config.swim_mut().drives[drive];
-                        if let Err(e) = floppy.set_writeback(enabled) {
+                        let result = self
+                            .floppy(drive)
+                            .and_then(|floppy| floppy.set_writeback(enabled));
+                        if let Err(e) = result {
                             self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
@@ -1611,7 +1613,8 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
-                        if let Err(e) = self.config.swim_mut().drives[drive].save(&filename) {
+                        let result = self.floppy(drive).and_then(|floppy| floppy.save(&filename));
+                        if let Err(e) = result {
                             self.user_error(&format!(
                                 "Cannot save file '{}': {}",
                                 filename.file_name().unwrap_or_default().to_string_lossy(),
@@ -1879,14 +1882,17 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
-                        for drive in &mut self.config.swim_mut().drives {
-                            drive.seed_weak_bits(seed);
+                        for drive in 0..Swim::CONNECTORS {
+                            if let Ok(floppy) = self.floppy(drive) {
+                                floppy.seed_weak_bits(seed);
+                            }
                         }
                     }
                     EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
-                        if let Some(floppy) = self.config.swim_mut().drives.get_mut(drive)
-                            && let Err(e) = floppy.set_rpm_adjustment(adjustment)
-                        {
+                        let result = self
+                            .floppy(drive)
+                            .and_then(|floppy| floppy.set_rpm_adjustment(adjustment));
+                        if let Err(e) = result {
                             self.user_error(&format!("Floppy #{}: {:#}", drive + 1, e));
                         }
                     }

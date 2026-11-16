@@ -124,7 +124,7 @@ impl ScsiBus {
                     FunctionInfo::HardDisk => 0x00,    // fixed disk
                     FunctionInfo::Cdrom => 0x02,       // optical / CD-ROM
                     FunctionInfo::Ethernet(_) => 0x06, // DaynaPORT
-                    FunctionInfo::Printer => 0xFF,     // not a Toolbox device type
+                    _ => 0xFF,                         // not a Toolbox device type
                 };
             }
         }
