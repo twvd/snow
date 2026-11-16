@@ -332,6 +332,10 @@ impl CdromBackend for PhysicalDriveCdromBackend {
         self.thread.apply_media_check(check)
     }
 
+    fn is_loading(&self) -> bool {
+        self.thread.is_opening()
+    }
+
     fn take_load_error(&mut self) -> Option<anyhow::Error> {
         self.thread.take_load_error()
     }
@@ -747,6 +751,20 @@ mod tests {
             panic!("CDDA read failed");
         };
         assert!(sector.data.iter().all(|b| *b == 9));
+    }
+
+    #[test]
+    fn backend_is_loading_while_the_drive_opens() {
+        let state = drive_with_disc();
+        let (gate, gate_receiver) = crossbeam_channel::unbounded();
+        state.lock().unwrap().open_gate = Some(gate_receiver);
+        let mut backend =
+            PhysicalDriveCdromBackend::new::<FakeDrive>(Path::new("fake"), state).unwrap();
+        assert!(backend.is_loading());
+
+        gate.send(()).unwrap();
+        assert!(wait_for_open(&mut backend.thread).is_none());
+        assert!(!backend.is_loading());
     }
 
     #[test]

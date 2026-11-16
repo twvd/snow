@@ -12,7 +12,8 @@ use crate::{
     emulator::{EmuContext, comm::EmulatorSpeed},
     mac::scsi::{
         ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND,
-        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
+        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_LOGICAL_UNIT_BECOMING_READY,
+        ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY, ScsiCheckCondition,
         cdrom::backends::{
             cuesheet::CuesheetCdromBackend, drive_thread::Reply, is_physical_cdrom_drive_path,
             iso::IsoCdromBackend, new_physical_cdrom_drive_backend,
@@ -310,6 +311,12 @@ pub trait CdromBackend: Send {
     /// keep this default.
     fn apply_media_check(&mut self, check: MediaCheck) -> Result<(), CdromError> {
         check.result
+    }
+
+    /// Whether the backend is still loading its media in the background, as a
+    /// physical drive while it opens
+    fn is_loading(&self) -> bool {
+        false
     }
 
     /// The error loading the media failed with, for a backend that loads it
@@ -1473,6 +1480,23 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn blocks(&self) -> Option<usize> {
         Some(self.backend.as_ref()?.byte_len().div_ceil(self.blocksize))
+    }
+
+    fn read_capacity(&mut self) -> Result<usize, ScsiCheckCondition> {
+        if self.backend.as_ref().is_some_and(|b| b.is_loading()) {
+            // As TEST UNIT READY answers meanwhile
+            return Err(ScsiCheckCondition {
+                key: CC_KEY_NOT_READY,
+                asc: ASC_LOGICAL_UNIT_BECOMING_READY,
+            });
+        }
+        match self.blocks() {
+            Some(blocks) if blocks > 0 => Ok(blocks),
+            _ => Err(ScsiCheckCondition {
+                key: CC_KEY_NOT_READY,
+                asc: ASC_MEDIUM_NOT_PRESENT,
+            }),
+        }
     }
 
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
@@ -2874,6 +2898,97 @@ mod tests {
         fn read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
             Started::Done(Err(CdromError::BackendDead))
         }
+    }
+
+    /// A backend without a disc yet: loading one, or with none
+    struct LoadingBackend {
+        loading: bool,
+    }
+
+    impl CdromBackend for LoadingBackend {
+        fn check_media(&mut self) -> Started<MediaCheck> {
+            Started::Done(Err(CdromError::BackendDead))
+        }
+
+        fn is_loading(&self) -> bool {
+            self.loading
+        }
+
+        fn byte_len(&self) -> usize {
+            0
+        }
+
+        fn read_bytes(&self, _offset: usize, _length: usize) -> Started<Vec<u8>> {
+            Started::Done(Err(CdromError::BackendDead))
+        }
+
+        fn image_path(&self) -> Option<&Path> {
+            None
+        }
+
+        fn sessions(&self) -> Option<&[SessionInfo]> {
+            None
+        }
+
+        fn tracks(&self) -> Option<&[TrackInfo]> {
+            None
+        }
+
+        fn read_cdda_sector(&self, _sector: u32) -> Started<RawSector> {
+            Started::Done(Err(CdromError::BackendDead))
+        }
+    }
+
+    const READ_CAPACITY: [u8; 10] = [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    /// READ CAPACITY(10), then the sense key and ASC/ASCQ that REQUEST SENSE
+    /// reports
+    fn read_capacity_with_sense(cd: &mut ScsiTargetCdrom) -> (ScsiCmdResult, u8, u16) {
+        let result = cd.cmd(&READ_CAPACITY, None).unwrap();
+        let ScsiCmdResult::DataIn(sense) = cd.cmd(&[0x03, 0, 0, 0, 18, 0], None).unwrap() else {
+            panic!("REQUEST SENSE returns data");
+        };
+        (
+            result,
+            sense[2] & 0x0F,
+            u16::from_be_bytes([sense[12], sense[13]]),
+        )
+    }
+
+    #[test]
+    fn read_capacity_while_loading_is_becoming_ready() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let (result, key, asc) = read_capacity_with_sense(&mut cd);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_LOGICAL_UNIT_BECOMING_READY);
+    }
+
+    #[test]
+    fn read_capacity_without_a_disc_is_medium_not_present() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        let (result, key, asc) = read_capacity_with_sense(&mut cd);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_MEDIUM_NOT_PRESENT);
+    }
+
+    #[test]
+    fn read_capacity_reports_the_last_block() {
+        let (mut cd, _, _) = gated_cdrom();
+        let ScsiCmdResult::DataIn(data) = cd.cmd(&READ_CAPACITY, None).unwrap() else {
+            panic!("READ CAPACITY returns data");
+        };
+        // 4096 bytes in blocks of 2048: the last block is 1
+        assert_eq!(data, [0, 0, 0, 1, 0, 0, 0x08, 0]);
     }
 
     fn cdrom_with_failed_load() -> ScsiTargetCdrom {

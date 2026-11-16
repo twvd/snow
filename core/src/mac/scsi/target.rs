@@ -11,7 +11,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
     ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT,
     ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_NOT_READY,
-    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCheckCondition, ScsiCmdResult,
 };
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
@@ -144,6 +144,18 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;
+
+    /// The number of blocks, for READ CAPACITY, or the CHECK CONDITION to
+    /// report without any: by default NOT READY / MEDIUM NOT PRESENT.
+    fn read_capacity(&mut self) -> Result<usize, ScsiCheckCondition> {
+        match self.blocks() {
+            Some(blocks) if blocks > 0 => Ok(blocks),
+            _ => Err(ScsiCheckCondition {
+                key: CC_KEY_NOT_READY,
+                asc: ASC_MEDIUM_NOT_PRESENT,
+            }),
+        }
+    }
 
     /// Returns the drives total capacity in bytes
     fn capacity(&self) -> Option<usize> {
@@ -428,13 +440,21 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             0x25 => {
                 // READ CAPACITY(10)
                 let mut result = vec![0; 8];
-                let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
+                let Some(blocksize) = self.blocksize() else {
                     log::warn!("READ CAPACITY(10) command to non-block device");
                     self.common()
                         .set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
+                let blocks = match self.read_capacity() {
+                    Ok(blocks) => blocks,
+                    Err(cc) => {
+                        self.common().set_cc(cc.key, cc.asc);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                };
 
+                // The address of the last block
                 result[0..4].copy_from_slice(&((blocks as u32) - 1).to_be_bytes());
                 result[4..8].copy_from_slice(&(blocksize as u32).to_be_bytes());
                 Ok(ScsiCmdResult::DataIn(result))
