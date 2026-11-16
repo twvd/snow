@@ -152,7 +152,21 @@ fn main() -> Result<()> {
         }))?;
     }
     if let Some(path) = env("RUNNER_FLOPPY") {
-        cmd.send(EmulatorCommand::InsertFloppy(0, path, true))?;
+        // The first floppy drive of the Mac model
+        let buses = model.buses();
+        let Some(slot) = buses
+            .iter()
+            .filter(|bus| bus.id == bus_id::SWIM)
+            .find_map(|bus| bus.slots.first())
+        else {
+            bail!("{model} has no floppy drive");
+        };
+        cmd.send(EmulatorCommand::LoadMedia(
+            bus_id::SWIM.to_string(),
+            slot.id.clone(),
+            PathBuf::from(path),
+            true,
+        ))?;
     }
     if let Some(hz) = env("RUNNER_OVERCLOCK") {
         cmd.send(EmulatorCommand::SetOverclock(Some(

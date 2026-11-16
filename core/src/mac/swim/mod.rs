@@ -231,7 +231,7 @@ struct SwimChip {
 
 impl Swim {
     /// The number of drive connectors
-    pub(crate) const CONNECTORS: usize = 3;
+    const CONNECTORS: usize = 3;
 
     /// The ids of the slots of the bus: the drive connectors, counted from 1
     pub const SLOT_IDS: [&str; Self::CONNECTORS] = ["1", "2", "3"];

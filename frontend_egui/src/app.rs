@@ -40,7 +40,7 @@ use egui_toast::{Toast, ToastKind, ToastOptions};
 use rand::Rng;
 use strum::IntoEnumIterator;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -81,8 +81,9 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 }
 
 enum FloppyDialogTarget {
-    /// Insert disk into a drive / save an image from a drive to a file
-    Drive(usize),
+    /// Insert disk into a drive / save an image from a drive to a file. The drive is named
+    /// by the ids of its bus and of its slot.
+    Drive(String, String),
     /// Save this image to a file (invalid on load)
     Image(Box<FloppyImage>),
 }
@@ -97,7 +98,8 @@ enum PendingConfirm {
     /// User picked a non-MOOF floppy and a sibling `.moof` was found.
     /// Button indices: 0 = load MOOF, 1 = load original, 2 = cancel.
     MoofVariant {
-        driveidx: usize,
+        bus: String,
+        slot: String,
         original: PathBuf,
         moof: PathBuf,
         wp: bool,
@@ -105,12 +107,17 @@ enum PendingConfirm {
     /// A writeback-capable image was just loaded into a drive.
     /// Button indices: 0 = enable writeback, 1 = leave disabled.
     /// 'Remember' enabled.
-    Writeback { driveidx: usize, path: PathBuf },
+    Writeback {
+        bus: String,
+        slot: String,
+        path: PathBuf,
+    },
     /// User picked an image whose format has no writer and no MOOF sibling
     /// exists. Offer to save them as a sibling file.
     /// Button indices: 0 = save MOOF and load it, 1 = load original, 2 = cancel.
     OfferMoofConversion {
-        driveidx: usize,
+        bus: String,
+        slot: String,
         original: PathBuf,
         moof_path: PathBuf,
         moof_bytes: Vec<u8>,
@@ -285,7 +292,8 @@ pub struct SnowGui {
     /// Timestamp of the last user input that triggered a dynamic fast-forward slowdown.
     dynamic_ff_input_time: Option<Instant>,
 
-    floppy_rpm_adjustment: [i32; 3],
+    /// The RPM adjustment of each floppy drive, by the ids of its bus and of its slot
+    floppy_rpm_adjustment: HashMap<(String, String), i32>,
 
     /// Temporary files that need cleanup on exit
     temp_files: Vec<PathBuf>,
@@ -497,7 +505,7 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_record),
-            floppy_dialog_target: FloppyDialogTarget::Drive(0),
+            floppy_dialog_target: FloppyDialogTarget::Drive(String::new(), String::new()),
             floppy_dialog_last: None,
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
@@ -569,7 +577,7 @@ impl SnowGui {
             ff_on: false,
             dynamic_ff_input_time: None,
 
-            floppy_rpm_adjustment: [0, 0, 0],
+            floppy_rpm_adjustment: HashMap::new(),
 
             temp_files: vec![],
 
@@ -2303,13 +2311,12 @@ impl SnowGui {
     }
 
     fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
-        let fdds: Vec<(usize, _)> = (0..3)
-            .filter_map(|i| self.emu.get_fdd_status(i).cloned().map(|d| (i, d)))
-            .collect();
-        for (i, d) in fdds {
+        for drive in self.emu.floppy_slots() {
+            let (bus, slot, d) = (drive.bus.as_str(), drive.slot.as_str(), &drive.status);
+            let last_image = self.emu.last_image(bus, slot);
             ui.menu_button(
                 format!(
-                    "{} Floppy #{}: {}",
+                    "{} {}: {}",
                     if d.ejected {
                         egui_material_icons::icons::ICON_EJECT
                     } else if d.writeback_enabled {
@@ -2319,30 +2326,33 @@ impl SnowGui {
                     } else {
                         egui_material_icons::icons::ICON_SAVE
                     },
-                    i + 1,
-                    if d.ejected {
-                        "(ejected)"
-                    } else {
-                        &d.image_title
-                    }
+                    drive.label,
+                    if d.ejected { "(ejected)" } else { &d.title }
                 ),
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
-                    if ui.button("Insert blank 400/800K floppy").clicked() {
-                        self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
+                    if ui
+                        .add_enabled(
+                            drive.info.blank_formats.contains(&FloppyType::Mac800K),
+                            egui::Button::new("Insert blank 400/800K floppy"),
+                        )
+                        .clicked()
+                    {
+                        self.emu.insert_blank_floppy(bus, slot, FloppyType::Mac800K);
                     }
                     if ui
                         .add_enabled(
-                            self.emu.get_model().unwrap().fdd_hd(),
+                            drive.info.blank_formats.contains(&FloppyType::Mfm144M),
                             egui::Button::new("Insert blank 1.44MB floppy"),
                         )
                         .clicked()
                     {
-                        self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
+                        self.emu.insert_blank_floppy(bus, slot, FloppyType::Mfm144M);
                     }
                     ui.separator();
                     if ui.button("Load image...").clicked() {
-                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                        self.floppy_dialog_target =
+                            FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
                         self.floppy_dialog_wp = self.floppy_wp_default;
                         self.floppy_dialog
                             .pick_file(self.settings.native_file_dialogs);
@@ -2353,7 +2363,7 @@ impl SnowGui {
                             self.settings.get_recent_floppy_images_for_display()
                         {
                             if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                                self.request_load_floppy(i, &path, self.floppy_wp_default);
+                                self.request_load_floppy(bus, slot, &path, self.floppy_wp_default);
                             }
                         }
                         if self.settings.recent_floppy_images.is_empty() {
@@ -2362,12 +2372,12 @@ impl SnowGui {
                     });
                     if ui
                         .add_enabled(
-                            self.emu.last_images[i].borrow().is_some(),
+                            last_image.is_some(),
                             egui::Button::new("Re-insert last ejected floppy"),
                         )
                         .clicked()
                     {
-                        self.emu.reload_floppy(i);
+                        self.emu.reload_floppy(bus, slot);
                     }
                     ui.checkbox(&mut self.floppy_wp_default, "Mount write-protected")
                         .on_hover_text(
@@ -2388,7 +2398,7 @@ impl SnowGui {
                             resp.on_hover_text("Writeback only supported for MOOF files");
                         }
                         if wb != d.writeback_enabled {
-                            self.emu.set_floppy_writeback(i, wb);
+                            self.emu.set_floppy_writeback(bus, slot, wb);
                         }
                     }
                     ui.separator();
@@ -2396,18 +2406,19 @@ impl SnowGui {
                         .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
                         .clicked()
                     {
-                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                        self.floppy_dialog_target =
+                            FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
                         self.floppy_dialog
                             .save_file(self.settings.native_file_dialogs);
                     }
                     if ui
                         .add_enabled(
-                            self.emu.last_images[i].borrow().is_some(),
+                            last_image.is_some(),
                             egui::Button::new("Save last ejected image..."),
                         )
                         .clicked()
+                        && let Some(img) = last_image
                     {
-                        let img = self.emu.last_images[i].borrow().clone().unwrap();
                         self.floppy_dialog_target = FloppyDialogTarget::Image(img);
                         self.floppy_dialog
                             .save_file(self.settings.native_file_dialogs);
@@ -2415,24 +2426,31 @@ impl SnowGui {
                     ui.separator();
 
                     if ui
-                        .add_enabled(!d.ejected, egui::Button::new("Force eject"))
+                        .add_enabled(
+                            !d.ejected,
+                            egui::Button::new(if drive.info.guest_ejects {
+                                "Force eject"
+                            } else {
+                                "Eject"
+                            }),
+                        )
                         .clicked()
                     {
-                        self.emu.force_eject(i);
+                        self.emu.force_eject(bus, slot);
                     }
 
-                    if d.drive_type.has_pwm_control() {
+                    if drive.info.rpm_control {
                         ui.separator();
                         ui.label("Simulate drive RPM variance");
+                        let adjustment = self
+                            .floppy_rpm_adjustment
+                            .entry((bus.to_string(), slot.to_string()))
+                            .or_default();
                         if ui
-                            .add(
-                                egui::Slider::new(&mut self.floppy_rpm_adjustment[i], -100..=100)
-                                    .suffix(" RPM"),
-                            )
+                            .add(egui::Slider::new(adjustment, -100..=100).suffix(" RPM"))
                             .changed()
                         {
-                            self.emu
-                                .set_floppy_rpm_adjustment(i, self.floppy_rpm_adjustment[i]);
+                            self.emu.set_floppy_rpm_adjustment(bus, slot, *adjustment);
                         }
                     }
                 },
@@ -2687,14 +2705,15 @@ impl SnowGui {
             })
     }
 
-    /// Loads `path` into `driveidx`. If a sibling `.moof` is found alongside
+    /// Loads `path` into the drive in a slot. If a sibling `.moof` is found alongside
     /// a non-MOOF image, prompts the user to choose. If the format has no
     /// writer but converting to MOOF would succeed, offers to save a
     /// sibling MOOF.
-    pub fn request_load_floppy(&mut self, driveidx: usize, path: &Path, wp: bool) {
+    pub fn request_load_floppy(&mut self, bus: &str, slot: &str, path: &Path, wp: bool) {
         if let Some(moof) = Self::moof_sibling(path) {
             self.pending_confirm = PendingConfirm::MoofVariant {
-                driveidx,
+                bus: bus.to_string(),
+                slot: slot.to_string(),
                 original: path.to_path_buf(),
                 moof: moof.clone(),
                 wp,
@@ -2709,14 +2728,20 @@ impl SnowGui {
                 ),
                 vec!["Load MOOF".into(), "Load original".into(), "Cancel".into()],
             );
-        } else if self.maybe_offer_moof_conversion(driveidx, path, wp) {
+        } else if self.maybe_offer_moof_conversion(bus, slot, path, wp) {
             // Dialog opened; wait for answer.
         } else {
-            self.do_load_floppy(driveidx, path, wp);
+            self.do_load_floppy(bus, slot, path, wp);
         }
     }
 
-    fn maybe_offer_moof_conversion(&mut self, driveidx: usize, path: &Path, wp: bool) -> bool {
+    fn maybe_offer_moof_conversion(
+        &mut self,
+        bus: &str,
+        slot: &str,
+        path: &Path,
+        wp: bool,
+    ) -> bool {
         if wp || self.settings.convert_to_moof_mode == PromptChoice::Never {
             return false;
         }
@@ -2753,7 +2778,7 @@ impl SnowGui {
         match self.settings.convert_to_moof_mode {
             PromptChoice::Always => {
                 match std::fs::write(&moof_path, &moof_bytes) {
-                    Ok(()) => self.do_load_floppy(driveidx, &moof_path, wp),
+                    Ok(()) => self.do_load_floppy(bus, slot, &moof_path, wp),
                     Err(e) => {
                         self.show_error(&format!(
                             "Could not save '{}': {}",
@@ -2761,14 +2786,15 @@ impl SnowGui {
                             e
                         ));
                         // Fall back to loading the original.
-                        self.do_load_floppy(driveidx, path, wp);
+                        self.do_load_floppy(bus, slot, path, wp);
                     }
                 }
                 true
             }
             PromptChoice::Ask => {
                 self.pending_confirm = PendingConfirm::OfferMoofConversion {
-                    driveidx,
+                    bus: bus.to_string(),
+                    slot: slot.to_string(),
                     original: path.to_path_buf(),
                     moof_path: moof_path.clone(),
                     moof_bytes,
@@ -2796,15 +2822,15 @@ impl SnowGui {
         }
     }
 
-    fn do_load_floppy(&mut self, driveidx: usize, path: &Path, wp: bool) {
-        self.emu.load_floppy(driveidx, path, wp);
+    fn do_load_floppy(&mut self, bus: &str, slot: &str, path: &Path, wp: bool) {
+        self.emu.load_floppy(bus, slot, path, wp);
         self.settings.add_recent_floppy_image(path);
-        self.apply_writeback_policy(driveidx, path);
+        self.apply_writeback_policy(bus, slot, path);
     }
 
     /// Decides what to do about writeback for an image that was just
-    /// loaded into `driveidx`. Honours [`AppSettings::writeback_mode`].
-    fn apply_writeback_policy(&mut self, driveidx: usize, path: &Path) {
+    /// loaded into the drive in a slot. Honours [`AppSettings::writeback_mode`].
+    fn apply_writeback_policy(&mut self, bus: &str, slot: &str, path: &Path) {
         let writeback_capable = path
             .extension()
             .is_some_and(snow_floppy::loaders::extension_has_saver);
@@ -2813,12 +2839,13 @@ impl SnowGui {
         }
         match self.settings.writeback_mode {
             PromptChoice::Always => {
-                self.floppy_enable_writeback(driveidx, path);
+                self.floppy_enable_writeback(bus, slot, path);
             }
             PromptChoice::Never => {}
             PromptChoice::Ask => {
                 self.pending_confirm = PendingConfirm::Writeback {
-                    driveidx,
+                    bus: bus.to_string(),
+                    slot: slot.to_string(),
                     path: path.to_path_buf(),
                 };
                 self.confirm_dialog.ask_with_remember(
@@ -2833,14 +2860,14 @@ impl SnowGui {
         }
     }
 
-    fn floppy_enable_writeback(&mut self, driveidx: usize, path: &Path) {
+    fn floppy_enable_writeback(&mut self, bus: &str, slot: &str, path: &Path) {
         if self.settings.backup_on_writeback
             && let Err(e) = Self::floppy_backup_image(path)
         {
             self.show_error(&format!("Could not back up '{}': {}", path.display(), e));
             return;
         }
-        self.emu.set_floppy_writeback(driveidx, true);
+        self.emu.set_floppy_writeback(bus, slot, true);
     }
 
     fn floppy_backup_image(path: &Path) -> std::io::Result<()> {
@@ -2870,12 +2897,9 @@ impl SnowGui {
     /// Returns `false` if no drive is available; otherwise the load may be
     /// gated on a confirmation dialog.
     pub fn request_load_floppy_firstfree(&mut self, path: &Path, wp: bool) -> bool {
-        for i in 0..3 {
-            if let Some(d) = self.emu.get_fdd_status(i)
-                && d.present
-                && d.ejected
-            {
-                self.request_load_floppy(i, path, wp);
+        for drive in self.emu.floppy_slots() {
+            if drive.status.ejected {
+                self.request_load_floppy(&drive.bus, &drive.slot, path, wp);
                 return true;
             }
         }
@@ -4077,7 +4101,8 @@ impl eframe::App for SnowGui {
         if let Some(answer) = self.confirm_dialog.take_answer() {
             match std::mem::take(&mut self.pending_confirm) {
                 PendingConfirm::MoofVariant {
-                    driveidx,
+                    bus,
+                    slot,
                     original,
                     moof,
                     wp,
@@ -4088,13 +4113,13 @@ impl eframe::App for SnowGui {
                         _ => None,           // Cancel
                     };
                     if let Some(p) = target {
-                        self.do_load_floppy(driveidx, &p, wp);
+                        self.do_load_floppy(&bus, &slot, &p, wp);
                     }
                 }
-                PendingConfirm::Writeback { driveidx, path } => {
+                PendingConfirm::Writeback { bus, slot, path } => {
                     let enable = answer.button == 0;
                     if enable {
-                        self.floppy_enable_writeback(driveidx, &path);
+                        self.floppy_enable_writeback(&bus, &slot, &path);
                     }
                     if answer.remember {
                         self.settings.writeback_mode = if enable {
@@ -4106,7 +4131,8 @@ impl eframe::App for SnowGui {
                     }
                 }
                 PendingConfirm::OfferMoofConversion {
-                    driveidx,
+                    bus,
+                    slot,
                     original,
                     moof_path,
                     moof_bytes,
@@ -4114,14 +4140,14 @@ impl eframe::App for SnowGui {
                 } => {
                     match answer.button {
                         0 => match std::fs::write(&moof_path, &moof_bytes) {
-                            Ok(()) => self.do_load_floppy(driveidx, &moof_path, wp),
+                            Ok(()) => self.do_load_floppy(&bus, &slot, &moof_path, wp),
                             Err(e) => self.show_error(&format!(
                                 "Could not save '{}': {}",
                                 moof_path.display(),
                                 e
                             )),
                         },
-                        1 => self.do_load_floppy(driveidx, &original, wp),
+                        1 => self.do_load_floppy(&bus, &slot, &original, wp),
                         _ => {} // Cancel
                     }
                     // Cancel never persists a remembered choice.
@@ -4240,11 +4266,12 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.floppy_dialog.take_picked() {
             match self.floppy_dialog.mode() {
                 DialogMode::PickFile => {
-                    let FloppyDialogTarget::Drive(driveidx) = self.floppy_dialog_target else {
+                    let FloppyDialogTarget::Drive(bus, slot) = &self.floppy_dialog_target else {
                         unreachable!()
                     };
                     let wp = self.floppy_dialog_wp;
-                    self.request_load_floppy(driveidx, &path, wp);
+                    let (bus, slot) = (bus.clone(), slot.clone());
+                    self.request_load_floppy(&bus, &slot, &path, wp);
                 }
                 DialogMode::SaveFile => {
                     if !path
@@ -4256,8 +4283,8 @@ impl eframe::App for SnowGui {
                         self.show_error(&"Saved floppy image must have .MOOF extension");
                     } else {
                         match &self.floppy_dialog_target {
-                            FloppyDialogTarget::Drive(driveidx) => {
-                                self.emu.save_floppy(*driveidx, &path);
+                            FloppyDialogTarget::Drive(bus, slot) => {
+                                self.emu.save_floppy(bus, slot, &path);
                             }
                             FloppyDialogTarget::Image(img) => {
                                 if let Err(e) = snow_floppy::loaders::Moof::save_file(

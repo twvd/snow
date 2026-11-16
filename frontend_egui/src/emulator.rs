@@ -20,13 +20,13 @@ use snow_core::debuggable::DebuggableProperties;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
-    Bus, BusKind, CdromConfig, Device, DeviceConfig, FunctionConfig, FunctionInfo, FunctionStatus,
-    HardDiskConfig, bus_id, device_configs, models_for,
+    Bus, BusKind, CdromConfig, Device, DeviceConfig, FloppyInfo, FloppyStatus, FunctionConfig,
+    FunctionInfo, FunctionStatus, HardDiskConfig, bus_id, device_configs, models_for,
 };
 #[cfg(feature = "ethernet")]
 use snow_core::devices::{EthernetConfig, EthernetLinkType};
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
@@ -76,6 +76,19 @@ impl ScsiSlot {
             .and_then(|device| device.name.as_deref())
             .unwrap_or_default()
     }
+}
+
+/// A floppy drive of the machine, as the Drives menu shows it
+pub struct FloppySlot {
+    /// The id of its bus
+    pub bus: String,
+    /// The id of its slot
+    pub slot: String,
+    /// What the menus call the drive
+    pub label: String,
+    /// What its device model accepts and can do
+    pub info: FloppyInfo,
+    pub status: FloppyStatus,
 }
 
 /// Results of initializing the emulator, includes channels
@@ -189,7 +202,9 @@ pub struct EmulatorState {
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
-    pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
+    /// The image of the last disk ejected from each floppy drive, by the ids of its bus and of
+    /// its slot
+    pub last_images: RefCell<HashMap<(String, String), Box<FloppyImage>>>,
     /// Memory notifiers as the emulator has them, or will when there is one
     memory_notifiers: HashMap<u32, MemoryNotifierRange>,
     /// Received memory notifications: id, address, contents
@@ -593,12 +608,16 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
-                EmulatorEvent::FloppyEjected(idx, img) => {
+                EmulatorEvent::FloppyEjected(bus, slot, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
-                        format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                        format!(
+                            "{} ejected ({})",
+                            self.slot_label(&bus, &slot),
+                            img.get_title()
+                        ),
                     ));
-                    *self.last_images[idx].borrow_mut() = Some(img);
+                    self.last_images.borrow_mut().insert((bus, slot), img);
                 }
                 EmulatorEvent::Buses(buses) => {
                     // The statuses that follow are those of the new list
@@ -766,16 +785,43 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// Returns a reference to floppy drive status for the requested drive.
-    pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
-        let status = self.status.as_ref()?;
-        if status.fdd.len() < drive {
-            return None;
+    /// What the menus and the messages call a slot: the name its device gives, or the title
+    /// of its bus and the id of the slot
+    pub fn slot_label(&self, bus: &str, slot: &str) -> String {
+        let bus_of = self.buses.iter().find(|b| b.id == bus);
+        let name = bus_of
+            .and_then(|b| b.slots.iter().find(|s| s.id == slot))
+            .and_then(|s| s.device.as_ref())
+            .and_then(|device| device.name.clone());
+        let title = bus_of.map_or(bus, |b| b.title.as_str());
+        name.unwrap_or_else(|| format!("{} #{}", title, slot))
+    }
+
+    /// The floppy drives of the machine, in the order of the list of buses
+    pub fn floppy_slots(&self) -> Vec<FloppySlot> {
+        let mut drives = vec![];
+        for bus in self.buses.iter() {
+            for slot in &bus.slots {
+                let Some(device) = &slot.device else {
+                    continue;
+                };
+                let FunctionInfo::Floppy(info) = device.model.info().function else {
+                    continue;
+                };
+                let Some(FunctionStatus::Floppy(status)) = self.device_status(&bus.id, &slot.id)
+                else {
+                    continue;
+                };
+                drives.push(FloppySlot {
+                    bus: bus.id.clone(),
+                    slot: slot.id.clone(),
+                    label: self.slot_label(&bus.id, &slot.id),
+                    info,
+                    status: status.clone(),
+                });
+            }
         }
-        if !status.fdd[drive].present {
-            return None;
-        }
-        Some(&status.fdd[drive])
+        drives
     }
 
     /// The status of the device in a slot, by the ids of its bus and of the slot
@@ -824,15 +870,16 @@ impl EmulatorState {
     }
 
     /// Loads a floppy image from the specified path.
-    pub fn load_floppy(&self, driveidx: usize, path: &Path, wp: bool) {
+    pub fn load_floppy(&self, bus: &str, slot: &str, path: &Path, wp: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::InsertFloppy(
-                driveidx,
-                path.to_string_lossy().to_string(),
+            .send(EmulatorCommand::LoadMedia(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
                 wp,
             ))
             .unwrap();
@@ -901,11 +948,12 @@ impl EmulatorState {
         };
 
         // Find a free floppy drive
-        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
-            if d.present && d.ejected {
+        for drive in self.floppy_slots() {
+            if drive.status.ejected {
                 sender
                     .send(EmulatorCommand::InsertFloppyImage(
-                        i,
+                        drive.bus,
+                        drive.slot,
                         Box::new(
                             snow_floppy::loaders::Moof::load(
                                 include_bytes!("../assets/BlueSCSI Toolbox.moof"),
@@ -923,29 +971,38 @@ impl EmulatorState {
     }
 
     /// Reloads last ejected floppy
-    pub fn reload_floppy(&self, driveidx: usize) {
+    pub fn reload_floppy(&self, bus: &str, slot: &str) {
         let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        let key = (bus.to_string(), slot.to_string());
+        let Some(image) = self.last_images.borrow_mut().remove(&key) else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
-                self.last_images[driveidx].borrow_mut().take().unwrap(),
-                false,
+                key.0, key.1, image, false,
             ))
             .unwrap();
     }
 
+    /// The image of the last disk ejected from a floppy drive
+    pub fn last_image(&self, bus: &str, slot: &str) -> Option<Box<FloppyImage>> {
+        let key = (bus.to_string(), slot.to_string());
+        self.last_images.borrow().get(&key).cloned()
+    }
+
     /// Inserts a blank floppy
-    pub fn insert_blank_floppy(&self, driveidx: usize, t: FloppyType) {
+    pub fn insert_blank_floppy(&self, bus: &str, slot: &str, t: FloppyType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
+                bus.to_string(),
+                slot.to_string(),
                 Box::new(FloppyImage::new(t, "Blank")),
                 false,
             ))
@@ -953,24 +1010,32 @@ impl EmulatorState {
     }
 
     /// Saves a floppy image to the specified path.
-    pub fn save_floppy(&self, driveidx: usize, path: &Path) {
+    pub fn save_floppy(&self, bus: &str, slot: &str, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SaveFloppy(driveidx, path.to_path_buf()))
+            .send(EmulatorCommand::SaveFloppy(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
+            ))
             .unwrap();
     }
 
     /// Toggles automatic writeback of a floppy drive's image to its source file.
-    pub fn set_floppy_writeback(&self, driveidx: usize, enabled: bool) {
+    pub fn set_floppy_writeback(&self, bus: &str, slot: &str, enabled: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SetFloppyWriteback(driveidx, enabled))
+            .send(EmulatorCommand::SetFloppyWriteback(
+                bus.to_string(),
+                slot.to_string(),
+                enabled,
+            ))
             .unwrap();
     }
 
@@ -1252,11 +1317,14 @@ impl EmulatorState {
         self.messages.pop_front()
     }
 
-    pub fn force_eject(&self, driveidx: usize) {
+    pub fn force_eject(&self, bus: &str, slot: &str) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::EjectFloppy(driveidx))
+            .send(EmulatorCommand::EjectMedia(
+                bus.to_string(),
+                slot.to_string(),
+            ))
             .unwrap();
     }
 
@@ -1507,12 +1575,16 @@ impl EmulatorState {
         self.debug_framebuffers = v;
     }
 
-    pub fn set_floppy_rpm_adjustment(&self, drive: usize, adjustment: i32) {
+    pub fn set_floppy_rpm_adjustment(&self, bus: &str, slot: &str, adjustment: i32) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
         sender
-            .send(EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment))
+            .send(EmulatorCommand::SetFloppyRpmAdjustment(
+                bus.to_string(),
+                slot.to_string(),
+                adjustment,
+            ))
             .unwrap();
     }
 
