@@ -1,13 +1,17 @@
-use std::fmt::Display;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::{NubusSlot, bus_long, lanes, standard_offset};
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo,
+    DisplayStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo, RomInfo,
+};
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
+use crate::mac::MacMonitor;
 use crate::mac::dma::DmaOps;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
@@ -28,6 +32,8 @@ pub struct Toby {
     /// The card has drawn a frame: a card loaded from a save state has one to show
     has_drawn: bool,
 
+    /// The file its ROM came from, if it was read from one
+    rom_path: Option<PathBuf>,
     rom: Vec<u8>,
     pub vram: Vec<u8>,
 
@@ -64,6 +70,7 @@ impl Toby {
         Self {
             renderer: ChannelRenderer::default(),
             has_drawn: false,
+            rom_path: None,
             rom: rom.to_owned(),
             vram: vec![0; Self::VRAM_SIZE],
             mode: 0,
@@ -135,6 +142,61 @@ impl Toby {
     }
 }
 
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    if !matches!(config.function, FunctionConfig::Display(_)) {
+        bail!("Not the Config of a display");
+    }
+    let path = config
+        .rom
+        .as_ref()
+        .with_context(|| format!("The {} needs its ROM file", INFO.name))?;
+    let rom = std::fs::read(path).with_context(|| format!("Cannot read '{}'", path.display()))?;
+    let mut card = Toby::new(&rom);
+    card.rom_path = Some(path.clone());
+    Ok(MadeDevice::Nubus(Box::new(card)))
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    rom: Some(RomInfo {
+        label: "Toby video card ROM (342-0008)",
+        digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
+        optional: false,
+    }),
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::MacIIVideoCard,
+        "Macintosh II Video Card (Toby)",
+        BusKind::Nubus,
+        FunctionInfo::Display(DisplayInfo {
+            // The card has one video mode, 640x480, and doesn't read what is on its
+            // connector
+            monitors: &[MacMonitor::HiRes14],
+            default_monitor: 0,
+            vram_sizes: &[Toby::VRAM_SIZE],
+            default_vram_size: 0,
+        }),
+    )
+};
+
+impl DeviceOps for Toby {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn rom(&self) -> Option<&Path> {
+        self.rom_path.as_deref()
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig::default())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
+    }
+}
+
 #[typetag::serde]
 impl NubusSlot for Toby {
     // The card decodes 20 address bits and mirrors the rest. The framebuffer is
@@ -159,7 +221,7 @@ impl NubusSlot for Toby {
             // Declaration ROM, on lane 0, at the top of the slot space
             r @ 0xF_0000..=0xF_FFFC => u32::from(self.read_rom(r)) << 24,
             r => {
-                log::warn!("{}: read from unimplemented register {:05X}", self, r);
+                log::warn!("{}: read from unimplemented register {:05X}", INFO.name, r);
                 0
             }
         };
@@ -220,7 +282,7 @@ impl NubusSlot for Toby {
             }
             r => log::warn!(
                 "{}: write to unimplemented register {:05X} {:08X}",
-                self,
+                INFO.name,
                 r,
                 val
             ),
@@ -251,10 +313,6 @@ impl NubusSlot for Toby {
         self.in_vblank = self.vblank_ticks >= ctx.bus_frequency() / 60 * 480 / 525;
         Ok(())
     }
-
-    fn video(&mut self) -> Option<&mut dyn VideoOutput> {
-        Some(self)
-    }
 }
 
 impl Toby {
@@ -270,7 +328,11 @@ impl Toby {
     }
 }
 
-impl VideoOutput for Toby {
+impl DisplayFunction for Toby {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
@@ -307,12 +369,6 @@ impl Debuggable for Toby {
             dbgprop_bool!("VBlank enable", self.vblank_enable),
             dbgprop_bool!("VBlank IRQ", self.vblank_irq),
         ]
-    }
-}
-
-impl Display for Toby {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Macintosh II Video Card (Toby)")
     }
 }
 

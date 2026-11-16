@@ -15,10 +15,11 @@ Terms used here:
 
 ## Cards take whole transactions
 
-A card answers transactions through its slot trait, `NubusSlot`:
+A card answers transactions through its slot trait, `NubusSlot`. It is a subtrait of `DeviceOps`,
+which every device implements:
 
 ```rust
-pub trait NubusSlot: Send + Debuggable + Display {
+pub trait NubusSlot: Send + DeviceOps + Debuggable {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the size, right-justified
     /// as the 68k sees them. `addr` has the digit of the slot cleared: $F0xx_xxxx or $0xxx_xxxx.
     /// None: the card doesn't answer at that address.
@@ -33,8 +34,6 @@ pub trait NubusSlot: Send + Debuggable + Display {
     fn reset(&mut self);
     /// Time passing. A card that masters the bus does its DMA here, through `dma`.
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()>;
-    /// The card's video, if it has some. None by default.
-    fn video(&mut self) -> Option<&mut dyn VideoOutput> { None }
 }
 ```
 
@@ -92,12 +91,15 @@ as the Slot Manager expects of an empty slot.
 - routes a cycle in either address space of a slot to the card there;
 - ticks the cards;
 - gives their interrupts, one bit per slot: bit n for slot `$9 + n`, as VIA 2 port A has them on
-  every machine.
+  every machine;
+- gives the emulator's device code the card in a slot, as the bus's `BusOps`.
 
-The cards are trait objects, `Box<dyn NubusSlot>`, as SCSI targets are: `Nubus` talks to a card
-through `NubusSlot` and doesn't know which card it is. The `typetag` crate lets serde save and
-restore them. When a card is put in its slot, `Nubus::insert()` tells it the number of the slot
-and the rate of its ticks with `connected()`.
+A card is made by the create function its `ModelInfo` names, which returns `MadeDevice::Nubus`.
+`BusOps::attach()` then puts it in its slot, and tells it the number of the slot and the rate of
+its ticks with `connected()`. This is done while the machine is being made, and never once it has
+run. The cards are trait objects, `Box<dyn NubusSlot>`, as SCSI targets are: `Nubus` talks to a
+card through `NubusSlot` and doesn't know which card it is. The `typetag` crate lets serde save
+and restore them. A card with video provides the Display function and creates its own renderer.
 
 | Mac model | Slots | Slot interrupts | Source |
 | --- | --- | --- | --- |
@@ -120,10 +122,11 @@ in the memory views of the debugger.
 
 ## Adding a card
 
-A new card, in `core/src/mac/nubus/`:
+A new card is one file in `core/src/mac/nubus/`. The card:
 
-1. implements `NubusSlot`, `Debuggable` and `Display`, with `#[typetag::serde]` on its
-   `impl NubusSlot` so that save states keep it;
-2. if it has video, implements `VideoOutput`, creates its own renderer, and returns itself from
-   `NubusSlot::video()`;
-3. gets a `NubusDeviceKind`, which the Mac II bus makes the card from.
+1. implements `DeviceOps`, `NubusSlot` and `Debuggable`, with `#[typetag::serde]` on its
+   `impl NubusSlot` so that save states keep it. If it has video, it also implements
+   `DisplayFunction`, and creates its own renderer;
+2. has a `ModelInfo` with `fixed: true`, its ROM if it has one, and a create function returning
+   `MadeDevice::Nubus`;
+3. gets its device model and the arm for its `ModelInfo` in `DeviceModel::info()`.

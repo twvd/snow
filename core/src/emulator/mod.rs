@@ -25,7 +25,7 @@ use crate::cpu_m68k::{
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
     AppleIIeCardFunction, BusOps, DeviceConfig, DeviceModel, FunctionConfig, FunctionMut,
-    FunctionStatus, bus_id,
+    FunctionStatus, MadeDevice, bus_id,
 };
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -37,6 +37,9 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
+use crate::mac::nubus::NubusSlot;
+use crate::mac::nubus::mdc12::Mdc12;
+use crate::mac::nubus::toby::Toby;
 use crate::mac::pds::Pds;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
@@ -45,15 +48,13 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
-use crate::mac::{
-    AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
-};
+use crate::mac::{AbsoluteMouse, ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::AudioProvider;
 use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use log::*;
 use std::fmt;
 
@@ -477,6 +478,9 @@ impl Emulator {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
 
+        // The video card of a Macintosh II, which goes in a slot once the machine is made
+        let mut video_card = None;
+
         let mut config = match model {
             MacModel::Early128K
             | MacModel::Early512K
@@ -519,19 +523,7 @@ impl Emulator {
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
+                video_card = Some(Self::video_card(extra_roms, monitor)?);
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -543,9 +535,8 @@ impl Emulator {
                 let bus = MacIIBus::new(
                     model,
                     rom,
-                    &nubus,
+                    None,
                     extension_rom,
-                    monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
                     !pmmu_enabled,
@@ -561,19 +552,7 @@ impl Emulator {
             MacModel::MacIIx | MacModel::MacIIcx => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
+                video_card = Some(Self::video_card(extra_roms, monitor)?);
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -582,16 +561,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    &nubus,
-                    extension_rom,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    false,
-                );
+                let bus =
+                    MacIIBus::new(model, rom, None, extension_rom, mouse_mode, ram_size, false);
                 let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -607,11 +578,6 @@ impl Emulator {
                 else {
                     bail!("Macintosh SE/30 requires video ROM")
                 };
-                let nubus = [NubusCardConfig {
-                    slot: 0xE,
-                    kind: NubusDeviceKind::SE30Video,
-                    rom: vrom,
-                }];
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -623,9 +589,8 @@ impl Emulator {
                 let bus = MacIIBus::new(
                     model,
                     rom,
-                    &nubus,
+                    Some(vrom),
                     extension_rom,
-                    monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
                     false,
@@ -722,7 +687,6 @@ impl Emulator {
 
         config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
-        let frame_recv = config.video_frames();
 
         let mut emu = Self {
             config,
@@ -748,6 +712,13 @@ impl Emulator {
             device_statuses: vec![],
         };
         emu.add_default_devices(override_fdd_type)?;
+        // The video card of a Macintosh II, in its first slot
+        if let Some(card) = video_card {
+            emu.config
+                .bus_ops(bus_id::NUBUS)
+                .context("This machine has no NuBus")?
+                .attach(model.nubus_slots()[0], MadeDevice::Nubus(card))?;
+        }
         // The Apple IIe Card, on a Mac model with the slot it fits
         if let Some(settings) = iie_card
             && model.buses().iter().any(|bus| bus.id == bus_id::PDS_LC)
@@ -761,6 +732,7 @@ impl Emulator {
             };
             emu.add_device_to(&card, true)?;
         }
+        let frame_recv = emu.config.video_frames();
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -874,6 +846,21 @@ impl Emulator {
     /// This can be used to test date-dependent software behavior (e.g., easter eggs).
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
         self.config.set_datetime(dt);
+    }
+
+    /// The video card of a Macintosh II, made from the ROM that the frontend gave for it
+    fn video_card(
+        extra_roms: &[ExtraROMs],
+        monitor: Option<MacMonitor>,
+    ) -> Result<Box<dyn NubusSlot>> {
+        for rom in extra_roms {
+            match rom {
+                ExtraROMs::MDC12(data) => return Ok(Box::new(Mdc12::new(data, monitor))),
+                ExtraROMs::Toby(data) => return Ok(Box::new(Toby::new(data))),
+                _ => (),
+            }
+        }
+        bail!("Macintosh II requires display card ROM")
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {

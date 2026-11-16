@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
+use crate::devices::{DisplayFunction, DisplayStatus};
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -134,7 +134,11 @@ impl SE30Video {
     }
 }
 
-impl VideoOutput for SE30Video {
+impl DisplayFunction for SE30Video {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;

@@ -7,7 +7,6 @@ use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
-use crate::renderer::FrameReceiver;
 use crate::tickable::Ticks;
 use pds::Pds;
 use scsi::bus::ScsiBus;
@@ -36,15 +35,6 @@ pub mod sound;
 pub mod swim;
 pub mod via;
 pub mod via_common;
-
-/// What the machine sees of a video, built-in or on a card: it owns its renderer
-pub trait VideoOutput {
-    /// Shows a blank screen, when the machine resets or stops
-    fn blank(&mut self) -> anyhow::Result<()>;
-    /// Where the frontend picks up the frames of this video. Called by the emulator once, when
-    /// the machine is made or loaded from a save state.
-    fn frames(&self) -> FrameReceiver;
-}
 
 /// Warm start signature: the ROM skips its memory test when it finds it
 pub const WARM_START_SIGNATURE: (Address, u32) = (0x000CFC, 0x574C5343);
@@ -384,6 +374,14 @@ impl MacModel {
                 &ScsiBus::SLOT_IDS,
             ));
         }
+        if !self.nubus_slots().is_empty() {
+            buses.push(Bus::new(
+                BusKind::Nubus,
+                bus_id::NUBUS,
+                "NuBus",
+                self.nubus_slots(),
+            ));
+        }
         match self {
             Self::LC | Self::LCII | Self::LCIII | Self::LC475 => buses.push(Bus::new(
                 BusKind::LcPds,
@@ -494,14 +492,11 @@ impl MacModel {
         }
     }
 
-    /// The NuBus slot numbers ($9-$E) available on this model.
-    pub fn nubus_slots(self) -> &'static [u8] {
+    /// The ids of the NuBus slots of this model that take a card
+    pub fn nubus_slots(self) -> &'static [&'static str] {
         match self {
-            Self::MacII | Self::MacIIFDHD | Self::MacIIx => &[0x9, 0xA, 0xB, 0xC, 0xD, 0xE],
-            Self::MacIIcx => &[0x9, 0xA, 0xB],
-            Self::SE30 => &[0xE],
-            Self::Quadra700 => &[0xD, 0xE],
-            Self::Quadra800 => &[0xC, 0xD, 0xE],
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx => &["9", "A", "B", "C", "D", "E"],
+            Self::MacIIcx => &["9", "A", "B"],
             _ => &[],
         }
     }
@@ -681,17 +676,6 @@ impl Display for PdsCardKind {
     }
 }
 
-/// Configuration for a single NuBus slot: which card, in which slot, with which
-/// declaration ROM.
-pub struct NubusCardConfig<'a> {
-    /// Slot number ($9-$E)
-    pub slot: u8,
-    /// Type of card
-    pub kind: NubusDeviceKind,
-    /// Declaration ROM for the card
-    pub rom: &'a [u8],
-}
-
 /// Definitions of Macintosh monitors
 #[derive(
     Clone,
@@ -723,10 +707,15 @@ pub enum MacMonitor {
     VGA,
     /// Macintosh 19" RGB monitor (1024x768)
     RGB19,
+    /// Nothing on the connector of the video
+    NoMonitor,
 }
 
 impl Display for MacMonitor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Self::NoMonitor {
+            return write!(f, "No monitor");
+        }
         write!(
             f,
             "{} ({}x{})",
@@ -739,6 +728,7 @@ impl Display for MacMonitor {
                 Self::TwoPageBW => "Macintosh 21\" Two-Page monitor",
                 Self::VGA => "VGA monitor",
                 Self::RGB19 => "Macintosh 19\" RGB monitor",
+                Self::NoMonitor => "",
             },
             self.width(),
             self.height()
@@ -760,6 +750,10 @@ impl MacMonitor {
             // ROM only takes with lines 0 and 2 the other way round
             Self::VGA => [7, 1, 1, 6],
             Self::RGB19 => [7, 3, 4, 4],
+            // No line is tied to another or to the ground: 111, then 11 11 11 for the other
+            // two lines while each is driven low (Macintosh LC III Developer Note, monitor
+            // sense codes)
+            Self::NoMonitor => [7, 3, 5, 6],
         }
     }
 
@@ -773,6 +767,7 @@ impl MacMonitor {
             Self::TwoPageBW => 1152,
             Self::VGA => 640,
             Self::RGB19 => 1024,
+            Self::NoMonitor => 0,
         }
     }
 
@@ -786,6 +781,7 @@ impl MacMonitor {
             Self::TwoPageBW => 870,
             Self::VGA => 480,
             Self::RGB19 => 768,
+            Self::NoMonitor => 0,
         }
     }
 
@@ -794,7 +790,7 @@ impl MacMonitor {
             Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB19 | Self::RGB21 | Self::VGA => {
                 true
             }
-            Self::PortraitBW | Self::TwoPageBW => false,
+            Self::PortraitBW | Self::TwoPageBW | Self::NoMonitor => false,
         }
     }
 }

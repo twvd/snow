@@ -7,17 +7,16 @@ use crate::bus::access::{
     BusAccess, BusResponse, CpuBus, bus_access_long, bus_access_word, write_lanes,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{BusOps, DeviceOps, MadeDevice};
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
 use crate::mac::dma::DmaOps;
 use crate::tickable::Ticks;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 
 /// What a NuBus slot sees of a card
 #[typetag::serde(tag = "type")]
-pub trait NubusSlot: Send + Debuggable + Display {
+pub(crate) trait NubusSlot: Send + DeviceOps + Debuggable {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the
     /// size, right-justified as the 68k sees them. `addr` is the NuBus address
     /// with the digit of the slot cleared (see [`card_address`]): $F0xx_xxxx
@@ -40,11 +39,6 @@ pub trait NubusSlot: Send + Debuggable + Display {
     /// Called by the machine at each of its ticks, with the time that passed. A card that
     /// masters the bus does its DMA here, through `dma`.
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()>;
-
-    /// The card's video, if it has some
-    fn video(&mut self) -> Option<&mut dyn VideoOutput> {
-        None
-    }
 }
 
 /// The address a card is given of a NuBus address in its slot: the digit of
@@ -159,7 +153,7 @@ fn read_cycle(
 ///
 /// This is what the NuChip of the Mac II, IIx and IIcx does. A 68040 makes only
 /// cycles that are NuBus transactions already, and they go through unchanged.
-pub fn card_access<B: CpuBus>(
+pub(crate) fn card_access<B: CpuBus>(
     acc: BusAccess<B>,
     waits: Ticks,
     card: &mut dyn NubusSlot,
@@ -184,30 +178,44 @@ pub fn card_access<B: CpuBus>(
     }
 }
 
+/// The ids of the slots $9 to $E
+const SLOT_IDS: [&str; 6] = ["9", "A", "B", "C", "D", "E"];
+
+/// The number of a slot, $9 to $E
+fn slot_number(slot: &str) -> Option<u8> {
+    let index = SLOT_IDS.iter().position(|&id| id == slot)?;
+    Some(0x9 + index as u8)
+}
+
 /// The cards in the NuBus slots of a machine, $9 to $E
 #[derive(Serialize, Deserialize)]
 pub struct Nubus {
     cards: [Option<Box<dyn NubusSlot>>; 6],
+
+    /// The slots the machine has, of $9 to $E
+    slots: [bool; 6],
 
     /// The number of ticks in one second, for the ticks that `tick()` counts
     tick_rate: Ticks,
 }
 
 impl Nubus {
-    pub fn new(tick_rate: Ticks) -> Self {
+    /// The NuBus of a machine with the slots of these ids, and no card
+    pub fn new(tick_rate: Ticks, slots: &[&str]) -> Self {
         Self {
             cards: core::array::from_fn(|_| None),
+            slots: SLOT_IDS.map(|id| slots.contains(&id)),
             tick_rate,
         }
     }
 
-    /// Puts `card` in `slot`, $9 to $E
-    pub fn insert(&mut self, slot: u8, mut card: Box<dyn NubusSlot>) {
-        card.connected(slot, self.tick_rate);
-        self.cards[usize::from(slot - 0x9)] = Some(card);
+    /// The place in `cards` of a slot the machine has
+    fn index(&self, slot: &str) -> Option<usize> {
+        let index = usize::from(slot_number(slot)? - 0x9);
+        self.slots[index].then_some(index)
     }
 
-    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn NubusSlot>> {
+    pub(crate) fn cards_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn NubusSlot>> {
         self.cards.iter_mut().flatten()
     }
 
@@ -246,22 +254,52 @@ impl Nubus {
         }
     }
 
-    /// The debugger's entry for each of the machine's `slots`, with its card
+    /// The debugger's entry for each of the machine's slots, with its card
     /// or empty
-    pub fn debug_properties(&self, slots: &[u8]) -> DebuggableProperties {
+    pub fn debug_properties(&self) -> DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_group, dbgprop_nest};
 
+        let slots = SLOT_IDS.iter().zip(&self.cards).zip(self.slots);
         slots
-            .iter()
-            .map(|&slot| match &self.cards[usize::from(slot - 0x9)] {
+            .filter(|(_, has_slot)| *has_slot)
+            .map(|((slot, card), _)| match card {
                 Some(card) => dbgprop_nest!(
-                    format!("NuBus slot ${:1X} ({:?})", slot, card.to_string()),
+                    format!("NuBus slot ${} ({:?})", slot, card.info().name),
                     card
                 ),
-                None => dbgprop_group!(format!("NuBus slot ${:1X} (empty)", slot), vec![]),
+                None => dbgprop_group!(format!("NuBus slot ${} (empty)", slot), vec![]),
             })
             .collect()
+    }
+}
+
+impl BusOps for Nubus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        let card = self.cards[self.index(slot)?].as_mut()?;
+        // A card is a DeviceOps too
+        Some(&mut **card)
+    }
+
+    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
+        let index = self.index(slot).context("No such NuBus slot")?;
+        let MadeDevice::Nubus(mut card) = device else {
+            bail!("Not a NuBus card");
+        };
+        if self.cards[index].is_some() {
+            bail!("The NuBus slot already has a card");
+        }
+        card.connected(0x9 + index as u8, self.tick_rate);
+        self.cards[index] = Some(card);
+        Ok(())
+    }
+
+    fn detach(&mut self, slot: &str) -> Result<()> {
+        let index = self.index(slot).context("No such NuBus slot")?;
+        if self.cards[index].take().is_none() {
+            bail!("The NuBus slot has no card");
+        }
+        Ok(())
     }
 }
 
@@ -328,20 +366,33 @@ mod tests {
 
     #[test]
     fn cards_are_saved_and_loaded() {
-        let mut nubus = Nubus::new(1);
-        nubus.insert(0x9, Box::new(Mdc12::new(&[], MacMonitor::RGB12)));
-        nubus.insert(0xB, Box::new(Toby::new(&[])));
+        let mut nubus = Nubus::new(1, &["9", "A", "B"]);
+        let card = Box::new(Mdc12::new(&[], Some(MacMonitor::RGB12)));
+        nubus.attach("9", MadeDevice::Nubus(card)).unwrap();
+        let card = Box::new(Toby::new(&[]));
+        nubus.attach("B", MadeDevice::Nubus(card)).unwrap();
+        // A slot the machine doesn't have, and one that is taken
+        assert!(
+            nubus
+                .attach("C", MadeDevice::Nubus(Box::new(Toby::new(&[]))))
+                .is_err()
+        );
+        assert!(
+            nubus
+                .attach("B", MadeDevice::Nubus(Box::new(Toby::new(&[]))))
+                .is_err()
+        );
 
         let saved = serde_json::to_string(&nubus).unwrap();
         let nubus: Nubus = serde_json::from_str(&saved).unwrap();
         let cards = nubus
             .cards
             .iter()
-            .map(|card| card.as_ref().map(|c| c.to_string()));
+            .map(|card| card.as_ref().map(|c| c.info().name));
         assert!(cards.eq([
-            Some("Macintosh Display Card 8-24".to_string()),
+            Some("Macintosh Display Card 8-24"),
             None,
-            Some("Macintosh II Video Card (Toby)".to_string()),
+            Some("Macintosh II Video Card (Toby)"),
             None,
             None,
             None,
