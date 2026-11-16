@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use snow_floppy::FloppyImage;
+use snow_floppy::{FloppyImage, FloppyType};
 
 use crate::emulator::comm::EthernetCaptureStatus;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -105,6 +105,7 @@ pub trait PrinterFunction {
 /// frontend to offer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionInfo {
+    Floppy(FloppyInfo),
     HardDisk,
     Cdrom,
     Ethernet(EthernetInfo),
@@ -120,6 +121,7 @@ pub struct EthernetInfo {
 /// What was chosen for a device, by function
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FunctionConfig {
+    Floppy,
     HardDisk(HardDiskConfig),
     Cdrom(CdromConfig),
     Ethernet(EthernetConfig),
@@ -128,6 +130,7 @@ pub enum FunctionConfig {
 
 /// A device, seen through its function
 pub enum FunctionMut<'a> {
+    Floppy(&'a mut dyn FloppyFunction),
     HardDisk(&'a mut dyn HardDiskFunction),
     Cdrom(&'a mut dyn CdromFunction),
     Ethernet(&'a mut dyn EthernetFunction),
@@ -137,6 +140,7 @@ pub enum FunctionMut<'a> {
 /// The live state of a device, for the frontend to show
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionStatus {
+    Floppy(FloppyStatus),
     HardDisk(HardDiskStatus),
     Cdrom(CdromStatus),
     Ethernet(EthernetStatus),
@@ -146,12 +150,34 @@ pub enum FunctionStatus {
 impl FunctionMut<'_> {
     pub fn status(&self) -> FunctionStatus {
         match self {
+            Self::Floppy(floppy) => FunctionStatus::Floppy(floppy.status()),
             Self::HardDisk(disk) => FunctionStatus::HardDisk(disk.status()),
             Self::Cdrom(cdrom) => FunctionStatus::Cdrom(cdrom.status()),
             Self::Ethernet(ethernet) => FunctionStatus::Ethernet(ethernet.status()),
             Self::Printer(printer) => FunctionStatus::Printer(printer.status()),
         }
     }
+}
+
+/// What a floppy drive's device model accepts and can do
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloppyInfo {
+    /// The image files it accepts
+    pub images: FloppyImages,
+    /// The blank disks it can be given
+    pub blank_formats: &'static [FloppyType],
+    /// The guest ejects its disks. False: the user does.
+    pub guest_ejects: bool,
+    /// Its speed can be changed
+    pub rpm_control: bool,
+    /// It writes to its image
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloppyImages {
+    /// The Mac's floppy images
+    Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

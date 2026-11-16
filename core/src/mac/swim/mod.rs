@@ -3,6 +3,7 @@
 //! Floppy drive controller consisting of two different controllers:
 //! Integrated Wozniak Machine, Integrated Sander Machine.
 
+pub mod device;
 pub mod drive;
 pub mod ism;
 pub mod iwm;
@@ -15,6 +16,7 @@ use anyhow::Result;
 use ism::{IsmError, IsmSetup, IsmStatus};
 use rand::Rng;
 
+use device::SwimBusDevice;
 use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
 use serde::{Deserialize, Serialize};
@@ -139,6 +141,8 @@ pub struct Swim {
     /// False on the SWIM2, which only has the ISM register set
     iwm_available: bool,
 
+    /// The ticks of the controller in one second
+    base_frequency: Ticks,
     cycles: Ticks,
     mode: SwimMode,
 
@@ -164,7 +168,24 @@ pub struct Swim {
 
     chip: SwimChip,
 
-    pub(crate) drives: [FloppyDrive; 3],
+    /// The devices on the drive connectors
+    drives: [Option<Box<dyn SwimBusDevice>>; Self::CONNECTORS],
+
+    /// The ticks the devices haven't been given yet. They get them before any other of their
+    /// methods is called, not on each tick of the controller.
+    pending_ticks: Ticks,
+
+    /// The device and the level of the control lines last given to `set_lines()`
+    lines_sent: (usize, u8),
+
+    /// SEL and the internal drive select, which the machine sets at any time, as they were
+    /// when the control lines were last looked at
+    machine_lines: (bool, bool),
+
+    /// Whether the disk of the selected device spun when it was last asked. None: it is asked
+    /// at the next tick.
+    #[serde(skip)]
+    spinning: Option<bool>,
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
@@ -209,19 +230,28 @@ struct SwimChip {
 }
 
 impl Swim {
+    /// The number of drive connectors
+    pub(crate) const CONNECTORS: usize = 3;
+
     /// The controller is ticked at `base_frequency`, which is its FCLK
     pub fn new(drives: &[DriveType], ism_available: bool, base_frequency: Ticks) -> Self {
+        let mut devices: [Option<Box<dyn SwimBusDevice>>; Self::CONNECTORS] = Default::default();
+        for (connector, drive_type) in drives.iter().enumerate() {
+            let mut drive = Box::new(FloppyDrive::new(*drive_type));
+            drive.connected(connector, base_frequency);
+            devices[connector] = Some(drive);
+        }
+
         Self {
-            drives: core::array::from_fn(|i| {
-                FloppyDrive::new(
-                    i,
-                    *drives.get(i).unwrap_or(&DriveType::None),
-                    base_frequency,
-                )
-            }),
+            drives: devices,
+            pending_ticks: 0,
+            lines_sent: (0, 0),
+            machine_lines: (false, false),
+            spinning: None,
             ism_available,
             iwm_available: true,
 
+            base_frequency,
             cycles: 0,
             // SWIM boots in IWM mode
             mode: Default::default(),
@@ -288,13 +318,15 @@ impl Swim {
     /// power-on mode with all drive control lines low. The drives keep their
     /// disks.
     pub fn reset(&mut self) {
-        let base_frequency = self.drives[0].base_frequency;
+        let base_frequency = self.base_frequency;
         let mut fresh = if self.iwm_available {
             Self::new(&[], self.ism_available, base_frequency)
         } else {
             Self::new_swim2(&[], base_frequency)
         };
         std::mem::swap(&mut fresh.drives, &mut self.drives);
+        fresh.pending_ticks = self.pending_ticks;
+        fresh.lines_sent = self.lines_sent;
         fresh.cycles = self.cycles;
         fresh.last_access = self.last_access;
         fresh.sel = self.sel;
@@ -368,12 +400,66 @@ impl Swim {
         }
     }
 
-    fn get_selected_drive(&self) -> &FloppyDrive {
-        &self.drives[self.get_selected_drive_idx()]
+    /// Gives the devices the time that passed since they last got it. Called before any
+    /// other method of a device.
+    fn sync_devices(&mut self) {
+        if self.pending_ticks == 0 {
+            return;
+        }
+        for device in self.drives.iter_mut().flatten() {
+            device.tick(self.pending_ticks);
+        }
+        self.pending_ticks = 0;
     }
 
-    fn get_selected_drive_mut(&mut self) -> &mut FloppyDrive {
-        &mut self.drives[self.get_selected_drive_idx()]
+    /// Gets the device on a connector, for the emulator to act on it
+    pub(crate) fn drive_at(&mut self, connector: usize) -> Option<&mut dyn SwimBusDevice> {
+        self.sync_devices();
+        // A disk may go in or out
+        self.spinning = None;
+        let device = self.drives.get_mut(connector)?.as_mut()?;
+        Some(&mut **device)
+    }
+
+    /// The strobe line rose: the selected device gets it
+    fn strobe(&mut self) {
+        let selected = self.get_selected_drive_idx();
+        let lines = self.get_selected_drive_reg_u8();
+        self.sync_devices();
+        self.spinning = None;
+        if let Some(device) = &mut self.drives[selected] {
+            // A device says here whether it passes the selection on to the next one of its
+            // chain. None of the devices of a Mac is chained yet.
+            device.strobe(lines);
+        }
+    }
+
+    /// Gets the level of the sense line: that of the selected device, or high on a connector
+    /// with no device, which has a pull-up
+    fn sense(&mut self) -> bool {
+        let lines = self.get_selected_drive_reg_u8();
+        self.sync_devices();
+        self.drives[self.get_selected_drive_idx()]
+            .as_ref()
+            .is_none_or(|device| device.sense(lines))
+    }
+
+    /// Gives the selected device the level of the control lines, if a line changed or
+    /// another device is selected
+    fn update_lines(&mut self) {
+        self.machine_lines = (self.sel, self.intdrive);
+        let lines = (
+            self.get_selected_drive_idx(),
+            self.get_selected_drive_reg_u8(),
+        );
+        if lines != self.lines_sent {
+            self.lines_sent = lines;
+            self.sync_devices();
+            self.spinning = None;
+            if let Some(device) = &mut self.drives[lines.0] {
+                device.set_lines(lines.1);
+            }
+        }
     }
 
     /// Converts the four register selection I/Os to a u8 value which can be used
@@ -398,10 +484,12 @@ impl Swim {
 
 impl BusMember<Address> for Swim {
     fn read(&mut self, addr: Address) -> Option<u8> {
-        match self.mode {
+        let result = match self.mode {
             SwimMode::Iwm => self.iwm_read(addr),
             SwimMode::Ism => self.ism_read(addr),
-        }
+        };
+        self.update_lines();
+        result
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
@@ -409,6 +497,7 @@ impl BusMember<Address> for Swim {
             SwimMode::Iwm => self.iwm_write(addr, val),
             SwimMode::Ism => self.ism_write(addr, val),
         }
+        self.update_lines();
         Some(())
     }
 }
@@ -416,21 +505,33 @@ impl BusMember<Address> for Swim {
 impl Tickable for Swim {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.cycles += ticks;
-        for drv in &mut self.drives {
-            drv.cycles = self.cycles;
+        self.pending_ticks += ticks;
+        if (self.sel, self.intdrive) != self.machine_lines {
+            self.update_lines();
         }
 
-        let selected = self.get_selected_drive_idx();
-        let stream = self.drives[selected].stream();
-        if stream.spinning {
-            // Advance read/write operation
-            let head = stream.head(self.sel);
-            match self.mode {
-                SwimMode::Iwm => self.chip.iwm_tick(stream, head, ticks, self.cycles)?,
-                SwimMode::Ism => self.chip.ism_tick(stream, head, ticks)?,
+        // Whether a disk spins only changes when the controller or the emulator calls its
+        // device: one that doesn't isn't asked again until then
+        if self.spinning != Some(false) {
+            self.sync_devices();
+            let selected = self.get_selected_drive_idx();
+            let stream = self.drives[selected]
+                .as_mut()
+                .and_then(|device| device.stream())
+                .filter(|stream| stream.spinning);
+            self.spinning = Some(stream.is_some());
+            if let Some(stream) = stream {
+                // Advance read/write operation
+                let head = stream.head(self.sel);
+                match self.mode {
+                    SwimMode::Iwm => self.chip.iwm_tick(stream, head, ticks, self.cycles)?,
+                    SwimMode::Ism => self.chip.ism_tick(stream, head, ticks)?,
+                }
+                return Ok(ticks);
             }
-        } else if self.mode == SwimMode::Ism {
-            let byte_ticks = self.drives[selected].base_frequency * 16 / 1_000_000;
+        }
+        if self.mode == SwimMode::Ism {
+            let byte_ticks = self.base_frequency * 16 / 1_000_000;
             self.chip.ism_tick_no_disk(ticks, byte_ticks);
         }
 
@@ -443,11 +544,10 @@ impl Debuggable for Swim {
         use crate::debuggable::*;
         use crate::{
             dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group,
-            dbgprop_header, dbgprop_nest, dbgprop_string, dbgprop_udec, dbgprop_word,
-            dbgprop_word_bin,
+            dbgprop_header, dbgprop_string, dbgprop_udec, dbgprop_word, dbgprop_word_bin,
         };
 
-        vec![
+        let mut result = vec![
             dbgprop_enum!("Mode", self.mode),
             dbgprop_udec!("ISM switch counter", self.chip.ism_switch_ctr),
             dbgprop_group!(
@@ -517,30 +617,43 @@ impl Debuggable for Swim {
                     dbgprop_word!("CRC", self.chip.ism_crc),
                 ]
             ),
-            dbgprop_nest!(
-                format!("Drive #1 ({})", self.drives[0].drive_type),
-                self.drives[0]
-            ),
-            dbgprop_nest!(
-                format!("Drive #2 ({})", self.drives[1].drive_type),
-                self.drives[1]
-            ),
-            dbgprop_nest!(
-                format!("Drive #3 ({})", self.drives[2].drive_type),
-                self.drives[2]
-            ),
-        ]
+        ];
+        for (connector, device) in self.drives.iter().enumerate() {
+            if let Some(device) = device {
+                result.push(dbgprop_group!(
+                    format!("Drive #{} ({})", connector + 1, device.info().name),
+                    device.debug_properties()
+                ));
+            }
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+impl Swim {
+    /// The floppy drive on a connector, for the tests that look inside a drive
+    pub(super) fn drive(&mut self, connector: usize) -> &mut FloppyDrive {
+        self.drive_at(connector).unwrap().as_floppy_drive()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use snow_floppy::loaders::{FloppyImageLoader, Moof};
     use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength};
 
     use super::*;
+    use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, ModelInfo};
 
+    const CA0H: Address = 1 << 9;
+    const CA1H: Address = 3 << 9;
+    const CA2H: Address = 5 << 9;
+    const LSTRBH: Address = 7 << 9;
     const ENABLE: Address = 9 << 9;
+    const EXTDRIVEH: Address = 11 << 9;
     const Q6L: Address = 12 << 9;
     const Q6H: Address = 13 << 9;
     const Q7L: Address = 14 << 9;
@@ -586,9 +699,9 @@ mod tests {
     /// The controller with a disk turning in its first drive, which is ready
     fn swim_with(drive: DriveType, image: FloppyImage) -> Swim {
         let mut swim = Swim::new(&[drive], true, 16_000_000);
-        swim.drives[0].disk_insert(image).unwrap();
-        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
-        swim.drives[0].not_ready = 0;
+        swim.drive(0).disk_insert(image).unwrap();
+        swim.drive(0).write_drive_reg(DRIVE_MOTOR_ON);
+        swim.drive(0).not_ready = 0;
         swim
     }
 
@@ -623,7 +736,7 @@ mod tests {
         }
         let mut swim = swim_with(DriveType::GCR800K, image);
         swim.read(ENABLE);
-        let turn = swim.drives[0].get_ticks_per_bit() * len as Ticks;
+        let turn = swim.drive(0).get_ticks_per_bit() * len as Ticks;
 
         // A turn and a quarter
         assert_eq!(
@@ -724,7 +837,7 @@ mod tests {
     #[test]
     fn a_byte_written_to_a_stopped_drive_stays() {
         let mut swim = Swim::new(&[DriveType::GCR800K], true, 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         // The IWM writes, but the motor of the drive is off: the disk doesn't spin
@@ -737,8 +850,8 @@ mod tests {
         assert_eq!(swim.read(Q7H).unwrap() & 0x80, 0);
 
         // Once the disk spins, the byte goes to it
-        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
-        swim.drives[0].not_ready = 0;
+        swim.drive(0).write_drive_reg(DRIVE_MOTOR_ON);
+        swim.drive(0).not_ready = 0;
         swim.tick(10_000, ()).unwrap();
         assert_eq!(swim.read(Q7H).unwrap() & 0x80, 0x80);
     }
@@ -754,7 +867,7 @@ mod tests {
             image.set_track_bit(0, TRACK, pos, false);
         }
         let mut swim = swim_with(DriveType::SuperDrive, image);
-        let turn = swim.drives[0].get_ticks_per_bit() * len as Ticks;
+        let turn = swim.drive(0).get_ticks_per_bit() * len as Ticks;
 
         // To ISM mode: Q6 on, then the sequence on the mode register
         swim.write(Q6H, 0);
@@ -818,5 +931,133 @@ mod tests {
         }
         assert_eq!((count, sum), (45, 9_063_078_967_827_888_595));
         assert_eq!(swim.read(ISM_ERROR), Some(0x00));
+    }
+
+    /// A device that notes what the controller gives it, and answers on the sense line when
+    /// CA2 and SEL are high
+    #[derive(Default, Serialize, Deserialize)]
+    struct Probe {
+        #[serde(skip)]
+        notes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Probe {
+        fn note(&self, note: String) {
+            self.notes.lock().unwrap().push(note);
+        }
+    }
+
+    impl DeviceOps for Probe {
+        fn info(&self) -> &'static ModelInfo {
+            &drive::INFO_800K
+        }
+
+        fn config(&self) -> FunctionConfig {
+            FunctionConfig::Floppy
+        }
+
+        fn function(&mut self) -> FunctionMut<'_> {
+            unreachable!()
+        }
+    }
+
+    #[typetag::serde]
+    impl SwimBusDevice for Probe {
+        fn connected(&mut self, connector: usize, tick_rate: Ticks) {
+            self.note(format!("connected {} {}", connector, tick_rate));
+        }
+
+        fn set_lines(&mut self, lines: u8) {
+            self.note(format!("lines {:04b}", lines));
+        }
+
+        fn strobe(&mut self, lines: u8) -> bool {
+            self.note(format!("strobe {:04b}", lines));
+            false
+        }
+
+        fn sense(&self, lines: u8) -> bool {
+            lines == 0b1001
+        }
+
+        fn tick(&mut self, ticks: Ticks) {
+            self.note(format!("tick {}", ticks));
+        }
+    }
+
+    #[test]
+    fn devices_get_the_lines_the_strobe_and_the_time() {
+        let mut swim = Swim::new(&[], false, 16_000_000);
+        let probes = [Probe::default(), Probe::default()];
+        let notes = probes.each_ref().map(|probe| probe.notes.clone());
+        for (connector, probe) in probes.into_iter().enumerate() {
+            swim.drives[connector] = Some(Box::new(probe));
+        }
+        swim.read(ENABLE);
+
+        // A line changes: the selected device is told, once
+        swim.read(CA2H);
+        swim.read(CA2H);
+        // The machine changes SEL: the controller sees it at its next tick
+        swim.sel = true;
+        swim.tick(5, ()).unwrap();
+        swim.read(LSTRBH);
+        // The status register has the sense line of the selected device in bit 7
+        assert_eq!(swim.read(Q6H).unwrap() & 0x80, 0x80);
+        swim.read(CA0H);
+        assert_eq!(swim.read(Q6H).unwrap() & 0x80, 0x00);
+        // The other device is selected, and learns the lines
+        swim.read(EXTDRIVEH);
+
+        assert_eq!(
+            *notes[0].lock().unwrap(),
+            [
+                "lines 1000",
+                "tick 5",
+                "lines 1001",
+                "strobe 1001",
+                "lines 1011"
+            ]
+        );
+        assert_eq!(*notes[1].lock().unwrap(), ["tick 5", "lines 1011"]);
+    }
+
+    #[test]
+    fn connector_without_a_device_reads_high() {
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.read(ENABLE);
+        swim.read(EXTDRIVEH);
+        swim.read(Q6H);
+        for lines in [CA0H, CA1H, CA2H] {
+            assert_eq!(swim.read(lines).unwrap() & 0x80, 0x80);
+        }
+        swim.sel = true;
+        assert_eq!(swim.read(Q6H).unwrap() & 0x80, 0x80);
+        // A strobe goes nowhere
+        swim.read(LSTRBH);
+        swim.tick(100, ()).unwrap();
+    }
+
+    #[test]
+    fn drives_come_back_from_a_saved_state() {
+        let mut swim = swim_with(
+            DriveType::GCR800K,
+            FloppyImage::new(FloppyType::Mac800K, "saved"),
+        );
+        swim.tick(1000, ()).unwrap();
+
+        let state = serde_json::to_string(&swim).unwrap();
+        let mut loaded: Swim = serde_json::from_str(&state).unwrap();
+        assert!(loaded.drive_at(1).is_none());
+        let FunctionMut::Floppy(floppy) = loaded.drive_at(0).unwrap().function() else {
+            unreachable!()
+        };
+        assert_eq!(floppy.status().title, "saved");
+        // It turns as the one that was saved does
+        assert!(loaded.drive(0).stream().is_some());
+        assert_eq!(
+            loaded.drive(0).get_ticks_per_bit(),
+            swim.drive(0).get_ticks_per_bit()
+        );
     }
 }

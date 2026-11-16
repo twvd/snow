@@ -293,13 +293,7 @@ impl Swim {
                                 IsmFifoEntry::Marker(_)
                             ))
                             .with_crc_error(!last_entry.crc_valid())
-                            .with_sense(
-                                !self.ism_drive_enabled()
-                                    || !self.get_selected_drive().is_present()
-                                    || self
-                                        .get_selected_drive()
-                                        .read_sense(self.get_selected_drive_reg_u8()),
-                            )
+                            .with_sense(!self.ism_drive_enabled() || self.sense())
                             // "This bit is set to 1 if either the MotorOn bit in the
                             // mode register is a 1 or the timer is timing out" (SWIM
                             // Chip User's Reference, handshake register bit 4)
@@ -480,8 +474,7 @@ impl Swim {
         self.ca2 = outputs & (1 << 2) != 0;
         if !self.lstrb && outputs & (1 << 3) != 0 && self.ism_drive_enabled() {
             // Write strobe
-            let reg = self.get_selected_drive_reg_u8();
-            self.get_selected_drive_mut().write_drive_reg(reg);
+            self.strobe();
         }
         self.lstrb = outputs & (1 << 3) != 0;
     }
@@ -729,11 +722,11 @@ mod tests {
     /// SWIM in ISM mode, a disk spinning in the first drive
     fn swim(setup: u8) -> Swim {
         let mut swim = Swim::new(&[DriveType::SuperDrive], true, 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
-        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
-        swim.drives[0].not_ready = 0;
+        swim.drive(0).write_drive_reg(DRIVE_MOTOR_ON);
+        swim.drive(0).not_ready = 0;
 
         // Q6 on, then the sequence on the mode register
         swim.write(reg(13), 0);
@@ -756,7 +749,7 @@ mod tests {
     }
 
     fn tick_bit(swim: &mut Swim) {
-        let ticks = swim.drives[0].get_ticks_per_bit();
+        let ticks = swim.drive(0).get_ticks_per_bit();
         swim.tick(ticks, ()).unwrap();
     }
 
@@ -765,7 +758,7 @@ mod tests {
         const DATA: [u8; 8] = [0xFF, 0xD5, 0xAA, 0x96, 0x9A, 0xB3, 0xDE, 0xAA];
 
         let mut swim = swim(0x44);
-        let position = swim.drives[0].stream.track_position;
+        let position = swim.drive(0).stream.track_position;
 
         start(&mut swim, MODE_WRITE);
         let mut data = DATA.iter();
@@ -782,11 +775,11 @@ mod tests {
         // The write ends when the FIFO runs empty
         assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
         assert_eq!(
-            swim.drives[0].stream.track_position,
+            swim.drive(0).stream.track_position,
             position + DATA.len() * 8 + 1
         );
 
-        swim.drives[0].stream.track_position = position;
+        swim.drive(0).stream.track_position = position;
         start(&mut swim, 0);
         swim.write(reg(REG_MODE_ONE), MODE_ACTION);
         let mut read = vec![];
@@ -909,14 +902,14 @@ mod tests {
             swim.write(reg(REG_PHASES), phases);
         }
         swim.tick(1, ()).unwrap();
-        assert!(swim.drives[0].floppy_inserted);
+        assert!(swim.drive(0).floppy_inserted);
 
         swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
         for phases in PHASES_EJECT {
             swim.write(reg(REG_PHASES), phases);
         }
         swim.tick(1, ()).unwrap();
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 
     #[test]
@@ -965,10 +958,10 @@ mod tests {
     #[test]
     fn swim2_enable_without_motoron() {
         let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
-        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
+        swim.drive(0).write_drive_reg(DRIVE_MOTOR_ON);
         swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_MOTOR_ON);
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
@@ -979,12 +972,12 @@ mod tests {
         // As the Mac OS driver ejects in ISM mode: motor off, drive left
         // enabled, LSTRB raised and lowered by two writes
         let mut swim = swim(0x20);
-        swim.drives[0].write_drive_reg(0b1100);
+        swim.drive(0).write_drive_reg(0b1100);
         swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
         swim.write(reg(REG_PHASES), PHASES_EJECT[1]);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 
     #[test]
@@ -997,7 +990,7 @@ mod tests {
         swim.write(reg(REG_MODE_ZERO), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
         swim.tick(1, ()).unwrap();
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 
     #[test]
@@ -1009,14 +1002,15 @@ mod tests {
         swim.reset();
         assert_eq!(swim.mode, SwimMode::Iwm);
         assert!(!swim.lstrb && !swim.ca0 && !swim.ca1 && !swim.ca2);
-        assert!(swim.drives[0].floppy_inserted);
+        assert!(swim.drive(0).floppy_inserted);
 
         let mut swim2 = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
-        swim2.drives[0]
+        swim2
+            .drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim2.reset();
         assert_eq!(swim2.mode, SwimMode::Ism);
-        assert!(swim2.drives[0].floppy_inserted);
+        assert!(swim2.drive(0).floppy_inserted);
     }
 }

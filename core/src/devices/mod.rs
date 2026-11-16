@@ -14,14 +14,17 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
+use crate::mac::swim;
 
 /// A type of bus. A device model fits one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusKind {
     Scsi,
+    Swim,
 }
 
 /// A bus of a machine: a list of slots
@@ -130,6 +133,10 @@ pub enum DeviceModel {
     DaynaPortScsiLink,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
+    Mac400KDrive,
+    Mac800KDrive,
+    Mac800KPwmDrive,
+    MacSuperDrive,
 }
 
 impl DeviceModel {
@@ -141,6 +148,10 @@ impl DeviceModel {
             Self::DaynaPortScsiLink => &scsi::ethernet::INFO,
             #[cfg(feature = "printer")]
             Self::LaserWriterIISC => &scsi::printer::INFO,
+            Self::Mac400KDrive => &swim::drive::INFO_400K,
+            Self::Mac800KDrive => &swim::drive::INFO_800K,
+            Self::Mac800KPwmDrive => &swim::drive::INFO_800K_PWM,
+            Self::MacSuperDrive => &swim::drive::INFO_SUPERDRIVE,
         }
     }
 }
@@ -246,6 +257,12 @@ pub(crate) trait DeviceOps {
     /// The device, seen through its function. Called by the emulator to run a command of the
     /// frontend on the device, or to read its status.
     fn function(&mut self) -> FunctionMut<'_>;
+
+    /// What the debugger shows of the device. Called when the debugger asks for the state of
+    /// the machine.
+    fn debug_properties(&self) -> DebuggableProperties {
+        vec![]
+    }
 }
 
 #[cfg(test)]
@@ -262,7 +279,8 @@ mod tests {
     #[test]
     fn models_fit_the_macs_with_their_bus() {
         let models = |mac| models_for(BusKind::Scsi, mac).map(|info| info.model);
-        assert!(models(MacModel::Plus).eq(DeviceModel::iter()));
+        let scsi = DeviceModel::iter().filter(|model| model.info().bus == BusKind::Scsi);
+        assert!(models(MacModel::Plus).eq(scsi));
         // No SCSI on the first Macs
         assert_eq!(models(MacModel::Early512K).count(), 0);
     }
