@@ -2,7 +2,6 @@
 
 use anyhow::Result;
 use log::*;
-use num::clamp;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use snow_floppy::TrackType;
@@ -119,8 +118,7 @@ impl Swim {
                         return;
                     }
 
-                    let reg = self.get_selected_drive_reg_u8();
-                    self.get_selected_drive_mut().write_drive_reg(reg);
+                    self.strobe();
                 }
             }
             8 => {
@@ -129,7 +127,7 @@ impl Swim {
                     // millisecond" for the timer when the LATCH mode bit is
                     // set.
                     let hold = if self.chip.iwm_mode.latch() {
-                        self.drives[0].base_frequency / 2000
+                        self.base_frequency / 2000
                     } else {
                         MOTOR_TIMER
                     };
@@ -169,9 +167,7 @@ impl Swim {
             }
             (true, false) => {
                 // Read status register
-                let sense = self
-                    .get_selected_drive()
-                    .read_sense(self.get_selected_drive_reg_u8());
+                let sense = self.sense();
                 self.chip.iwm_status.set_sense(sense);
                 self.chip
                     .iwm_status
@@ -245,25 +241,10 @@ impl Swim {
             26, 22, 43, 57, 38, 47, 17, 28, 10, 25, 21, 37, 46, 9, 24, 45, 8, 7, 6,
         ];
 
-        if !self.get_selected_drive().drive_type.has_pwm_control() {
-            // Skip expensive calculation for non-PWM drives
-            return Ok(());
-        }
-
-        for drv in &mut self.drives {
-            drv.pwm_avg_sum += VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()] as i64;
-            drv.pwm_avg_count += 1;
-            if drv.pwm_avg_count >= 100 {
-                let idx = clamp(
-                    drv.pwm_avg_sum / (drv.pwm_avg_count as i64 / 10) - 11,
-                    0,
-                    399,
-                );
-                drv.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
-                drv.update_ticks_per_bit();
-                drv.pwm_avg_sum = 0;
-                drv.pwm_avg_count = 0;
-            }
+        let pulse = VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()];
+        self.sync_devices();
+        for device in self.drives.iter_mut().flatten() {
+            device.set_pwm(pulse);
         }
         Ok(())
     }
@@ -434,7 +415,7 @@ mod tests {
     #[test]
     fn bit_rate_follows_the_pwm_speed() {
         let mut swim = Swim::new(&[DriveType::GCR400K], false, 8_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac400K, ""))
             .unwrap();
 
@@ -443,7 +424,7 @@ mod tests {
             for _ in 0..100 {
                 swim.push_pwm(pwm).unwrap();
             }
-            swim.drives[0].get_ticks_per_bit()
+            swim.drive(0).get_ticks_per_bit()
         };
         let fast = ticks_per_bit(0x2B);
         let slow = ticks_per_bit(0x3E);
@@ -459,7 +440,7 @@ mod tests {
     fn lstrb_writes_on_rising_edge_only() {
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
         swim.read(ENABLE);
-        let start = swim.drives[0].stream.track;
+        let start = swim.drive(0).stream.track;
 
         // TRACKUP (all lines low), then TRACKSTEP (CA0 high) with LSTRBH accessed
         // five times: one rising edge, one step
@@ -471,12 +452,12 @@ mod tests {
             swim.read(LSTRBH);
         }
         swim.read(LSTRBL);
-        assert_eq!(swim.drives[0].stream.track, start + 1);
+        assert_eq!(swim.drive(0).stream.track, start + 1);
 
         // A new pulse steps again
         swim.read(LSTRBH);
         swim.read(LSTRBL);
-        assert_eq!(swim.drives[0].stream.track, start + 2);
+        assert_eq!(swim.drive(0).stream.track, start + 2);
     }
 
     #[test]
@@ -487,7 +468,7 @@ mod tests {
         const MODE: Address = 15 << 9;
 
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         // Mode $17, as Mac OS sets it: one-second timer disabled
@@ -505,7 +486,7 @@ mod tests {
         swim.tick(1, ()).unwrap();
         swim.read(LSTRBL);
         swim.tick(1, ()).unwrap();
-        assert!(swim.drives[0].floppy_inserted);
+        assert!(swim.drive(0).floppy_inserted);
 
         // The same strobe with the drive enabled ejects
         swim.read(ENABLE);
@@ -513,13 +494,13 @@ mod tests {
         swim.tick(1, ()).unwrap();
         swim.read(LSTRBL);
         swim.tick(1, ()).unwrap();
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 
     #[test]
     fn enable_held_by_timer() {
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
 
@@ -535,7 +516,7 @@ mod tests {
         swim.tick(1, ()).unwrap();
         swim.read(LSTRBL);
         swim.tick(1, ()).unwrap();
-        assert!(swim.drives[0].floppy_inserted);
+        assert!(swim.drive(0).floppy_inserted);
 
         swim.read(ENABLE);
         swim.read(DISABLE);
@@ -543,7 +524,7 @@ mod tests {
         swim.tick(1, ()).unwrap();
         swim.read(LSTRBL);
         swim.tick(1, ()).unwrap();
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 
     #[test]
@@ -577,7 +558,7 @@ mod tests {
         // As the Mac OS driver ejects in IWM mode: drive enabled, LSTRB
         // raised and lowered again
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.drives[0]
+        swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim.read(ENABLE);
@@ -586,6 +567,6 @@ mod tests {
         swim.read(CA2H);
         swim.read(LSTRBH);
         swim.read(LSTRBL);
-        assert!(!swim.drives[0].floppy_inserted);
+        assert!(!swim.drive(0).floppy_inserted);
     }
 }

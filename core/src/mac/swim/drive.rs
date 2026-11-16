@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use log::*;
+use num::clamp;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
@@ -9,9 +10,13 @@ use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use strum::Display;
 
+use super::device::SwimBusDevice;
 use super::stream::FloppyStream;
-use crate::debuggable::Debuggable;
-use crate::devices::{FloppyFunction, FloppyStatus};
+use crate::debuggable::DebuggableProperties;
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 
@@ -212,17 +217,77 @@ enum DriveWriteReg {
     UNKNOWN,
 }
 
+/// What the Mac's floppy drives accept and can do
+const MAC_FLOPPY: FloppyInfo = FloppyInfo {
+    images: FloppyImages::Mac,
+    blank_formats: &[FloppyType::Mac800K],
+    guest_ejects: true,
+    rpm_control: false,
+    writable: true,
+};
+
+pub const INFO_400K: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::Mac400KDrive,
+        "400K drive",
+        BusKind::Swim,
+        FunctionInfo::Floppy(FloppyInfo {
+            rpm_control: true,
+            ..MAC_FLOPPY
+        }),
+    )
+};
+
+pub const INFO_800K: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::Mac800KDrive,
+        "800K drive",
+        BusKind::Swim,
+        FunctionInfo::Floppy(MAC_FLOPPY),
+    )
+};
+
+pub const INFO_800K_PWM: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::Mac800KPwmDrive,
+        "800K drive (PWM)",
+        BusKind::Swim,
+        FunctionInfo::Floppy(FloppyInfo {
+            rpm_control: true,
+            ..MAC_FLOPPY
+        }),
+    )
+};
+
+pub const INFO_SUPERDRIVE: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::MacSuperDrive,
+        "SuperDrive",
+        BusKind::Swim,
+        FunctionInfo::Floppy(FloppyInfo {
+            blank_formats: &[FloppyType::Mac800K, FloppyType::Mfm144M],
+            ..MAC_FLOPPY
+        }),
+    )
+};
+
 /// A single disk drive, attached to the drive controller
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FloppyDrive {
+    /// The connector the drive is on, from 0
     idx: usize,
-    pub(super) base_frequency: Ticks,
-    pub(crate) drive_type: DriveType,
-    pub(super) cycles: Ticks,
+    /// The ticks of the controller in one second
+    base_frequency: Ticks,
+    drive_type: DriveType,
+    cycles: Ticks,
 
     pub(super) floppy_inserted: bool,
     stepdir: HeadStepDirection,
-    pub(super) motor: bool,
+    motor: bool,
 
     /// The disk in the drive, the track under the heads and the position on it
     pub(super) stream: FloppyStream,
@@ -237,14 +302,14 @@ pub(crate) struct FloppyDrive {
     mfm: bool,
 
     // While > cycles, the drive head is moving
-    pub(super) stepping: Ticks,
+    stepping: Ticks,
     // While > cycles, the drive is not ready
     // (e.g. stepping, spindle motor changing speed)
     pub(super) not_ready: Ticks,
 
-    pub(super) pwm_avg_sum: i64,
-    pub(super) pwm_avg_count: usize,
-    pub(super) pwm_dutycycle: Ticks,
+    pwm_avg_sum: i64,
+    pwm_avg_count: usize,
+    pwm_dutycycle: Ticks,
 
     /// RPM adjustment for PWM-controlled drives
     rpm_adjustment: i32,
@@ -277,10 +342,12 @@ impl FloppyDrive {
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
-    pub fn new(idx: usize, drive_type: DriveType, base_frequency: Ticks) -> Self {
+    /// A drive that isn't on a connector yet: `connected()` gives it its place and the
+    /// frequency of its ticks
+    pub fn new(drive_type: DriveType) -> Self {
         Self {
-            idx,
-            base_frequency,
+            idx: 0,
+            base_frequency: 0,
             drive_type,
             cycles: 0,
             floppy_inserted: false,
@@ -304,11 +371,6 @@ impl FloppyDrive {
             pending_writeback: false,
             eject_writeback: None,
         }
-    }
-
-    /// Returns true if drive is present
-    pub fn is_present(&self) -> bool {
-        self.drive_type != DriveType::None
     }
 
     /// Returns true if drive's spindle motor is running
@@ -346,7 +408,7 @@ impl FloppyDrive {
                     self.drive_type.io_present()
                 }
             }
-            DriveReg::INSTALLED => !self.is_present(),
+            DriveReg::INSTALLED => false,
             DriveReg::READY if !self.motor => self.drive_type.io_ready(),
             DriveReg::READY => !(self.not_ready < self.cycles),
             DriveReg::TKO => self.stream.track != 0,
@@ -498,9 +560,6 @@ impl FloppyDrive {
 
     /// Inserts a disk into the disk drive
     pub(super) fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
-        if !self.is_present() {
-            bail!("Cannot insert disk: Drive {} not present", self.idx);
-        }
         info!(
             "Drive {}: disk inserted, {} tracks, title: '{}'",
             self.idx,
@@ -566,14 +625,6 @@ impl FloppyDrive {
     /// Gets the amount of ticks a physical bit is under the drive head
     pub fn get_ticks_per_bit(&self) -> Ticks {
         self.stream.ticks_per_bit()
-    }
-
-    /// Gets the disk under the heads, for the controller to read and write while it spins
-    #[inline]
-    pub(super) fn stream(&mut self) -> &mut FloppyStream {
-        self.stream.spinning = self.is_running();
-        self.stream.not_ready = self.not_ready > self.cycles;
-        &mut self.stream
     }
 
     pub(super) fn update_ticks_per_bit(&mut self) {
@@ -763,8 +814,26 @@ impl FloppyFunction for FloppyDrive {
     }
 }
 
-impl Debuggable for FloppyDrive {
-    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+impl DeviceOps for FloppyDrive {
+    fn info(&self) -> &'static ModelInfo {
+        match self.drive_type {
+            DriveType::None => unreachable!(),
+            DriveType::GCR400K => &INFO_400K,
+            DriveType::GCR800K => &INFO_800K,
+            DriveType::GCR800KPWM => &INFO_800K_PWM,
+            DriveType::SuperDrive => &INFO_SUPERDRIVE,
+        }
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Floppy
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Floppy(self)
+    }
+
+    fn debug_properties(&self) -> DebuggableProperties {
         use crate::debuggable::*;
 
         vec![
@@ -794,6 +863,61 @@ impl Debuggable for FloppyDrive {
     }
 }
 
+#[typetag::serde]
+impl SwimBusDevice for FloppyDrive {
+    fn connected(&mut self, connector: usize, tick_rate: Ticks) {
+        self.idx = connector;
+        self.base_frequency = tick_rate;
+    }
+
+    fn set_lines(&mut self, _lines: u8) {}
+
+    fn strobe(&mut self, lines: u8) -> bool {
+        self.write_drive_reg(lines);
+        false
+    }
+
+    fn sense(&self, lines: u8) -> bool {
+        self.read_sense(lines)
+    }
+
+    fn set_pwm(&mut self, pulse: u8) {
+        if !self.drive_type.has_pwm_control() {
+            return;
+        }
+
+        self.pwm_avg_sum += i64::from(pulse);
+        self.pwm_avg_count += 1;
+        if self.pwm_avg_count >= 100 {
+            let idx = clamp(
+                self.pwm_avg_sum / (self.pwm_avg_count as i64 / 10) - 11,
+                0,
+                399,
+            );
+            self.pwm_dutycycle = ((idx * 100) / 419) as Ticks;
+            self.update_ticks_per_bit();
+            self.pwm_avg_sum = 0;
+            self.pwm_avg_count = 0;
+        }
+    }
+
+    fn tick(&mut self, ticks: Ticks) {
+        self.cycles += ticks;
+    }
+
+    #[inline]
+    fn stream(&mut self) -> Option<&mut FloppyStream> {
+        self.stream.spinning = self.is_running();
+        self.stream.not_ready = self.not_ready > self.cycles;
+        Some(&mut self.stream)
+    }
+
+    #[cfg(test)]
+    fn as_floppy_drive(&mut self) -> &mut FloppyDrive {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,9 +930,16 @@ mod tests {
 
     const BASE_FREQUENCY: Ticks = 8_000_000;
 
+    /// A drive on a connector of a controller
+    fn drive(connector: usize, drive_type: DriveType) -> FloppyDrive {
+        let mut drv = FloppyDrive::new(drive_type);
+        drv.connected(connector, BASE_FREQUENCY);
+        drv
+    }
+
     #[test]
     fn disk_double_tacho_outer() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.stream.track = 0;
@@ -829,7 +960,7 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_inner() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.stream.track = 79;
@@ -851,7 +982,7 @@ mod tests {
 
     #[test]
     fn insert_spins_up() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         // MOTORON, then let it spin up
@@ -868,7 +999,7 @@ mod tests {
 
     #[test]
     fn eject_arms_writeback_of_unsaved_writes() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         drv.image_path = Some(PathBuf::from("disk.img"));
@@ -936,7 +1067,7 @@ mod tests {
     #[test]
     fn load_puts_the_disk_of_a_file_in_the_drive() {
         let dir = TestDir::new("load");
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         assert!(drv.status().ejected);
 
         drv.load(&dir.moof(), false).unwrap();
@@ -952,23 +1083,17 @@ mod tests {
     }
 
     #[test]
-    fn load_refuses_a_missing_file_and_a_missing_drive() {
+    fn load_refuses_a_missing_file() {
         let dir = TestDir::new("refuse");
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         let e = drv.load(&dir.0.join("none.moof"), false).unwrap_err();
         assert!(e.to_string().starts_with("Cannot load image"));
         assert!(drv.status().ejected);
-
-        let mut none = FloppyDrive::new(1, DriveType::None, BASE_FREQUENCY);
-        let e = none.load(&dir.moof(), false).unwrap_err();
-        assert_eq!(e.to_string(), "Cannot insert disk: Drive 1 not present");
-        let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
-        assert!(none.insert_image(image, false).is_err());
     }
 
     #[test]
     fn eject_hands_over_the_image_once() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         let image = Box::new(FloppyImage::new(FloppyType::Mac800K, "blank"));
         drv.insert_image(image, false).unwrap();
         assert_eq!(drv.status().title, "blank");
@@ -982,7 +1107,7 @@ mod tests {
 
     #[test]
     fn insert_image_has_no_file_to_write_back_to() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
         drv.insert_image(image, true).unwrap();
         assert!(drv.stream.floppy.get_write_protect());
@@ -996,7 +1121,7 @@ mod tests {
     #[test]
     fn save_writes_an_image_file() {
         let dir = TestDir::new("save");
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
         drv.insert_image(image, false).unwrap();
         let bit = flip_bit(&mut drv);
@@ -1010,7 +1135,7 @@ mod tests {
     fn writeback_saves_when_the_motor_stops() {
         let dir = TestDir::new("motor");
         let path = dir.moof();
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.load(&path, false).unwrap();
         drv.set_writeback(true).unwrap();
         assert!(drv.status().writeback_enabled);
@@ -1031,7 +1156,7 @@ mod tests {
     fn writeback_saves_a_turning_disk_when_forced() {
         let dir = TestDir::new("force");
         let path = dir.moof();
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.load(&path, false).unwrap();
 
         // Without writeback, nothing is saved
@@ -1050,7 +1175,7 @@ mod tests {
     fn writeback_saves_an_ejected_disk() {
         let dir = TestDir::new("ejected");
         let path = dir.moof();
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.load(&path, false).unwrap();
         drv.set_writeback(true).unwrap();
         let bit = flip_bit(&mut drv);
@@ -1068,7 +1193,7 @@ mod tests {
     fn writeback_reports_a_failed_save() {
         let dir = TestDir::new("failed");
         let path = dir.moof();
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         drv.load(&path, false).unwrap();
         drv.set_writeback(true).unwrap();
         flip_bit(&mut drv);
@@ -1085,13 +1210,13 @@ mod tests {
 
     #[test]
     fn rpm_adjustment_only_on_a_drive_with_speed_control() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR400K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR400K);
         drv.pwm_dutycycle = 50;
         let rpm = drv.get_track_rpm();
         drv.set_rpm_adjustment(10).unwrap();
         assert_eq!(drv.get_track_rpm(), rpm + 10);
 
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let mut drv = drive(0, DriveType::GCR800K);
         assert!(drv.set_rpm_adjustment(10).is_err());
     }
 }
