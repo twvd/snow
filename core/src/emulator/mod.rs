@@ -46,8 +46,7 @@ use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
 };
 use crate::renderer::AudioProvider;
-use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::{DisplayBuffer, Renderer};
+use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
@@ -288,9 +287,9 @@ fn search_memory(
 #[derive(Serialize, Deserialize)]
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
-    Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
+    Compact(Box<CpuM68000<CompactMacBus>>),
     /// Macintosh Portable
-    Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
+    Portable(Box<CpuM68000<MacPortableBus>>),
     /// Macintosh II, with the AMU or a 68851
     MacII(Box<CpuM68020<MachineBus020>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
@@ -363,7 +362,7 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
-        fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn after_deserialize(&mut self) -> () { bus.after_deserialize() }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
         fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
@@ -379,6 +378,7 @@ dispatch! {
         fn input_release_all(&mut self) -> () { bus.input_release_all() }
         fn progkey(&mut self) -> () { bus.progkey() }
         fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
+        fn video_frames(&mut self) -> FrameReceiver { bus.video_frames() }
 
         fn rtc_mut(&mut self) -> &mut Rtc { bus.rtc_mut() }
     }
@@ -421,7 +421,7 @@ impl Emulator {
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, FrameReceiver)> {
         Self::new_with_extra(
             rom,
             extra_roms,
@@ -452,12 +452,10 @@ impl Emulator {
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, FrameReceiver)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
 
         let mut config = match model {
             MacModel::Early128K
@@ -480,7 +478,6 @@ impl Emulator {
                     model,
                     rom,
                     extension_rom,
-                    renderer,
                     mouse_mode,
                     ram_size,
                     override_fdd_type,
@@ -500,8 +497,7 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus =
-                    MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
+                let bus = MacPortableBus::new(model, rom, extension_rom, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -536,7 +532,6 @@ impl Emulator {
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -579,7 +574,6 @@ impl Emulator {
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -618,7 +612,6 @@ impl Emulator {
                     rom,
                     &nubus,
                     extension_rom,
-                    vec![renderer],
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -636,7 +629,7 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let mut bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
+                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
@@ -648,7 +641,7 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let mut bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
+                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
@@ -660,7 +653,7 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let mut bus = LcIIIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
+                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
@@ -680,7 +673,6 @@ impl Emulator {
                     model,
                     rom,
                     extension_rom,
-                    renderer,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -696,7 +688,6 @@ impl Emulator {
                 let bus = Lc475Bus::new(
                     model,
                     rom,
-                    renderer,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -713,7 +704,6 @@ impl Emulator {
                 let bus = Quadra800Bus::new(
                     model,
                     rom,
-                    renderer,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
@@ -726,6 +716,7 @@ impl Emulator {
 
         config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
+        let frame_recv = config.video_frames();
 
         let mut emu = Self {
             config,
@@ -761,11 +752,9 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, FrameReceiver)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
         let time = Instant::now();
 
         let fstr = path
@@ -776,7 +765,8 @@ impl Emulator {
         let f = File::open(path)?;
 
         let mut config = load_state_from(f, tmpdir)?;
-        config.after_deserialize(renderer);
+        config.after_deserialize();
+        let frame_recv = config.video_frames();
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
         // stuck.

@@ -32,7 +32,7 @@ use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
-use snow_core::renderer::DisplayBuffer;
+use snow_core::renderer::FrameReceiver;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -78,7 +78,7 @@ impl From<Option<ScsiTargetStatus>> for ScsiTarget {
 
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
-    pub frame_receiver: Arc<Mutex<Option<DisplayBuffer>>>,
+    pub frame_receiver: FrameReceiver,
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -448,7 +448,7 @@ impl EmulatorState {
     fn init_finalize(
         &mut self,
         mut emulator: Emulator,
-        frame_recv: Arc<Mutex<Option<DisplayBuffer>>>,
+        frame_recv: FrameReceiver,
         cmd: EmulatorCommandSender,
         audio_disabled: bool,
         pause: bool,

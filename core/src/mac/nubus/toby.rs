@@ -8,7 +8,8 @@ use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
-use crate::renderer::{DisplayBuffer, Renderer, render_packed};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -20,10 +21,11 @@ pub const TOBY_ROM_SIZE: usize = 4096;
 /// A fixed-frequency 640x480 NuBus video card supporting 1/2/4/8 bpp with a
 /// 256-entry CLUT.
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Toby<TRenderer: Renderer> {
+pub struct Toby {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
+    /// The card has drawn a frame: a card loaded from a save state has one to show
+    has_drawn: bool,
 
     rom: Vec<u8>,
     pub vram: Vec<u8>,
@@ -47,10 +49,7 @@ pub struct Toby<TRenderer: Renderer> {
     pub render: LatchingEvent,
 }
 
-impl<TRenderer> Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Toby {
     /// Visible dots in one scanline
     const H_VISIBLE: usize = 640;
     /// Visible lines in one frame
@@ -60,9 +59,10 @@ where
     /// Default framebuffer base offset
     const FB_BASE: usize = 0x20;
 
-    pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(rom: &[u8]) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer: ChannelRenderer::default(),
+            has_drawn: false,
             rom: rom.to_owned(),
             vram: vec![0; Self::VRAM_SIZE],
             mode: 0,
@@ -134,10 +134,7 @@ where
     }
 }
 
-impl<TRenderer> NubusSlot for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl NubusSlot for Toby {
     // The card decodes 20 address bits and mirrors the rest. The framebuffer is
     // memory and answers every size; it's stored inverted, like everything on
     // the card. A register decodes only its address and has its byte lane, as
@@ -239,45 +236,45 @@ where
     }
 }
 
-impl<TRenderer> Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Toby {
     /// Prepares the image and sends it to the frontend
     fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut());
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
+        self.has_drawn = true;
         Ok(())
     }
 }
 
-impl<TRenderer> VideoOutput<TRenderer> for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl VideoOutput for Toby {
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
         Ok(())
     }
 
-    fn set_renderer(&mut self, renderer: TRenderer) -> Result<()> {
-        self.renderer = Some(renderer);
-        self.render()
+    fn frames(&self) -> FrameReceiver {
+        // A card loaded from a save state has drawn nothing since. If it had drawn before the
+        // save, its picture as it is now is left for the frontend, which then has it before
+        // the machine runs. A card just made leaves nothing.
+        let frames = self.renderer.get_receiver();
+        if self.has_drawn {
+            let mut frame = DisplayBuffer::new(0usize, 0usize);
+            self.render_to(&mut frame);
+            *frames.lock().unwrap() = Some(frame);
+        }
+        frames
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for Toby {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.frame_wanted() {
                 self.render()?;
             }
             self.vblank_ticks -= ctx.bus_frequency() / 60;
@@ -290,10 +287,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Toby {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_byte, dbgprop_group, dbgprop_long};
@@ -312,11 +306,31 @@ where
     }
 }
 
-impl<TRenderer> Display for Toby<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for Toby {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Macintosh II Video Card (Toby)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_card_shows_nothing() {
+        assert!(Toby::new(&[]).frames().lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn restored_card_shows_its_picture() {
+        let mut card = Toby::new(&[]);
+        card.render().unwrap();
+        let saved = serde_json::to_string(&card).unwrap();
+        let card: Toby = serde_json::from_str(&saved).unwrap();
+        let frame = card.frames().lock().unwrap().take().unwrap();
+        assert_eq!(
+            (usize::from(frame.width()), usize::from(frame.height())),
+            (Toby::H_VISIBLE, Toby::V_VISIBLE)
+        );
     }
 }

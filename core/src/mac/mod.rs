@@ -8,6 +8,7 @@ use swim::drive::DriveType;
 use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::keymap::Keymap;
+use crate::renderer::FrameReceiver;
 use crate::tickable::Ticks;
 
 pub mod adb;
@@ -34,12 +35,12 @@ pub mod via;
 pub mod via_common;
 
 /// What the machine sees of a video, built-in or on a card: it owns its renderer
-pub trait VideoOutput<TRenderer> {
+pub trait VideoOutput {
     /// Shows a blank screen, when the machine resets or stops
     fn blank(&mut self) -> anyhow::Result<()>;
-    /// Gives back the renderer after a state is loaded, which a state doesn't hold, and shows the
-    /// last frame again if it can
-    fn set_renderer(&mut self, renderer: TRenderer) -> anyhow::Result<()>;
+    /// Where the frontend picks up the frames of this video. Called by the emulator once, when
+    /// the machine is made or loaded from a save state.
+    fn frames(&self) -> FrameReceiver;
 }
 
 /// Warm start signature: the ROM skips its memory test when it finds it

@@ -20,9 +20,9 @@ use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -98,8 +98,7 @@ const MAP: [[Region; 256]; 2] = {
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Quadra700Bus<TRenderer: Renderer> {
+pub struct Quadra700Bus {
     /// Interrupt level, until a tick of the bus or an access to the I/O area
     #[serde(skip)]
     irq: Option<Option<u8>>,
@@ -150,16 +149,13 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 
     /// Built-in video controller
-    pub(crate) dafb: Dafb<TRenderer>,
+    pub(crate) dafb: Dafb,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra700Bus {
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -175,7 +171,6 @@ where
         model: MacModel,
         rom: &[u8],
         extension_rom: Option<&[u8]>,
-        renderer: TRenderer,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
@@ -218,12 +213,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            dafb: Dafb::new(
-                renderer,
-                monitor,
-                DafbKind::Dafb,
-                Dafb::<TRenderer>::VRAM_SIZE,
-            ),
+            dafb: Dafb::new(monitor, DafbKind::Dafb, Dafb::VRAM_SIZE),
             mouse_mode,
         };
 
@@ -248,8 +238,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.dafb.render().unwrap();
 
         self.asc.after_deserialize();
@@ -684,6 +673,11 @@ where
         self.dafb.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.dafb.frames()
+    }
+
     /// Dispatches a key event to the keyboard
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.via1.adb.event(&AdbEvent::Key(ke));
@@ -699,10 +693,7 @@ where
     }
 }
 
-impl<TRenderer> Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra700Bus {
     /// Wait states of the memories on the system bus (RAM and ROM behind the
     /// MCU, VRAM behind the DAFB): for a single cycle or the first long word
     /// of a burst, and for each further long word of a burst. None for the
@@ -721,10 +712,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for Quadra700Bus {
     type Cpu = Bus68040;
 
     fn get_mask(&self) -> Address {
@@ -807,10 +795,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for Quadra700Bus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.irq = None;
         struct BusEmuContext {
@@ -924,10 +909,7 @@ where
     }
 }
 
-impl<TRenderer> Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra700Bus {
     fn compute_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
@@ -991,10 +973,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for Quadra700Bus {
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
@@ -1005,10 +984,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for Quadra700Bus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1049,10 +1025,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Quadra700Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Quadra700Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_group, dbgprop_nest};

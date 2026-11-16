@@ -12,8 +12,9 @@
 use super::{sonora, v8};
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::Debuggable;
-use crate::mac::{MacModel, MacMonitor};
-use crate::renderer::{DisplayBuffer, Renderer, render_packed};
+use crate::mac::{MacModel, MacMonitor, VideoOutput};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::Ticks;
 use crate::types::Byte;
 
@@ -139,10 +140,9 @@ impl Ramdac {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Video<TRenderer: Renderer> {
+pub struct Video {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
 
     monitor: MacMonitor,
     vram: Vec<u8>,
@@ -157,13 +157,10 @@ pub struct Video<TRenderer: Renderer> {
     shown: Option<(usize, usize, u8)>,
 }
 
-impl<TRenderer> Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    pub fn new(renderer: TRenderer, monitor: MacMonitor, vram_size: usize) -> Self {
+impl Video {
+    pub fn new(monitor: MacMonitor, vram_size: usize) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer: ChannelRenderer::default(),
             monitor,
             vram: vec![0; vram_size],
             ramdac: Ramdac::new(),
@@ -318,19 +315,26 @@ where
             self.shown = shown;
         }
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut(), mode);
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
         Ok(())
     }
 
+    /// False while the last frame has not been picked up yet
+    pub fn frame_wanted(&self) -> bool {
+        self.renderer.frame_wanted()
+    }
+}
+
+impl VideoOutput for Video {
     /// Shows a black screen
-    pub fn blank(&mut self) -> Result<()> {
+    fn blank(&mut self) -> Result<()> {
         if self.shown.take().is_some() {
             log::debug!("Video blanked");
         }
-        let renderer = self.renderer.as_mut().unwrap();
+        let renderer = &mut self.renderer;
         let buf = renderer.buffer_mut();
         buf.set_size(self.monitor.width(), self.monitor.height());
         for pixel in buf.chunks_exact_mut(4) {
@@ -339,12 +343,13 @@ where
         renderer.update()?;
         Ok(())
     }
+
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
+    }
 }
 
-impl<TRenderer> Debuggable for Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Video {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_byte, dbgprop_string, dbgprop_udec};
@@ -363,13 +368,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
-    fn video(monitor: MacMonitor, vram_size: usize) -> Video<NullRenderer> {
-        Video::new(NullRenderer::new(0, 0).unwrap(), monitor, vram_size)
+    fn video(monitor: MacMonitor, vram_size: usize) -> Video {
+        Video::new(monitor, vram_size)
     }
 
-    fn mode(video: &Video<NullRenderer>, depth: u8, row_bytes: usize) -> Mode {
+    fn mode(video: &Video, depth: u8, row_bytes: usize) -> Mode {
         Mode {
             width: video.monitor().width(),
             height: video.monitor().height(),
@@ -379,7 +383,7 @@ mod tests {
         }
     }
 
-    fn set_colour(video: &mut Video<NullRenderer>, address: u8, rgb: [u8; 3]) {
+    fn set_colour(video: &mut Video, address: u8, rgb: [u8; 3]) {
         video.write_ramdac(RAMDAC_ADDRESS, address);
         for c in rgb {
             video.write_ramdac(RAMDAC_DATA, c);

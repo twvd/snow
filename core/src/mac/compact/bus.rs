@@ -21,9 +21,9 @@ use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -65,8 +65,7 @@ enum Region {
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct CompactMacBus<TRenderer: Renderer> {
+pub struct CompactMacBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -76,7 +75,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     pub(crate) scc: Scc,
-    pub(crate) video: Video<TRenderer>,
+    pub(crate) video: Video,
 
     #[serde(skip)]
     pub(crate) audio: AudioPath,
@@ -142,10 +141,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     openbus: [Byte; 2],
 }
 
-impl<TRenderer> CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl CompactMacBus {
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -157,7 +153,6 @@ where
         model: MacModel,
         rom: &[u8],
         extension_rom: Option<&[u8]>,
-        renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
@@ -187,7 +182,7 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             via: Via::new(model),
-            video: Video::new(renderer),
+            video: Video::default(),
             audio: {
                 let mut audio = AudioPath::default();
                 audio.set_gain(volume_gain(0));
@@ -239,9 +234,8 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self) {
         self.map = build_map(self.model);
-        self.video.renderer = Some(renderer);
         // Make sure we have at least the last frame available
         self.video.render().unwrap();
     }
@@ -665,6 +659,11 @@ where
         self.video.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.video.frames()
+    }
+
     fn plusmouse_tick(&mut self) {
         if self.mouse_mode != MouseMode::RelativeHw
             || (self.plusmouse_rel_x == 0 && self.plusmouse_rel_y == 0)
@@ -724,10 +723,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for CompactMacBus {
     type Cpu = Bus68000;
 
     fn get_mask(&self) -> Address {
@@ -812,10 +808,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for CompactMacBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -950,10 +943,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for CompactMacBus {
     fn get_irq(&mut self) -> Option<u8> {
         // Programmer's key
         if self.progkey_pressed.get_clear() {
@@ -976,10 +966,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for CompactMacBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
@@ -1110,10 +1097,7 @@ fn empty_map() -> AddressMap {
     [[Region::None; MAP_BLOCKS]; 2]
 }
 
-impl<TRenderer> Debuggable for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for CompactMacBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;

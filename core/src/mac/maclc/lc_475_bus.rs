@@ -35,9 +35,9 @@ use crate::mac::sound::dfac2::Dfac2;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -196,8 +196,7 @@ const MAP: [[Region; 256]; 2] = {
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Lc475Bus<TRenderer: Renderer> {
+pub struct Lc475Bus {
     /// Interrupt level, until a tick of the bus or an access to the I/O area
     #[serde(skip)]
     irq: Option<Option<u8>>,
@@ -272,16 +271,13 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     iie_card: Option<PdsIIeCard>,
 
     /// Built-in video
-    pub(crate) dafb: Dafb<TRenderer>,
+    pub(crate) dafb: Dafb,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -296,7 +292,6 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        renderer: TRenderer,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
@@ -349,7 +344,6 @@ where
             iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
 
             dafb: Dafb::new(
-                renderer,
                 monitor,
                 DafbKind::MemcJr,
                 vram_size.unwrap_or(VRAM_SIZES[1]),
@@ -416,8 +410,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.dafb.render().unwrap();
 
         self.sound.after_deserialize();
@@ -1010,6 +1003,11 @@ where
         self.dafb.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.dafb.frames()
+    }
+
     /// Dispatches a key event to the keyboard
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.cuda.adb_event(&AdbEvent::Key(ke));
@@ -1025,10 +1023,7 @@ where
     }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// MEMCjr): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
@@ -1046,10 +1041,7 @@ where
     }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     /// Catches up with the RAM refreshes, nearly always a single one. Returns
     /// how long an access at this time waits for the last.
     #[cold]
@@ -1072,10 +1064,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for Lc475Bus {
     type Cpu = Bus68040;
 
     fn get_mask(&self) -> Address {
@@ -1180,10 +1169,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for Lc475Bus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.irq = None;
         struct BusEmuContext {
@@ -1322,10 +1308,7 @@ where
     }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     fn compute_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
@@ -1345,10 +1328,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for Lc475Bus {
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
@@ -1359,10 +1339,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for Lc475Bus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1408,10 +1385,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Lc475Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;
@@ -1433,13 +1407,11 @@ where
 mod tests {
     use super::*;
     use crate::mac::maclc::pds_iie::DECL_ROM;
-    use crate::renderer::NullRenderer;
 
-    fn bus_with_card(iie_card: Option<IieCardSettings>) -> Lc475Bus<NullRenderer> {
+    fn bus_with_card(iie_card: Option<IieCardSettings>) -> Lc475Bus {
         Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
             MacMonitor::default(),
             MouseMode::Disabled,
             Some(4 * 1024 * 1024),
@@ -1448,7 +1420,7 @@ mod tests {
         )
     }
 
-    fn bus() -> Lc475Bus<NullRenderer> {
+    fn bus() -> Lc475Bus {
         bus_with_card(None)
     }
 
@@ -1477,7 +1449,6 @@ mod tests {
         let mut bus = Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
             MacMonitor::default(),
             MouseMode::Disabled,
             Some(12 * 1024 * 1024),
