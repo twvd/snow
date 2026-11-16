@@ -14,9 +14,10 @@ use super::device::SwimBusDevice;
 use super::stream::FloppyStream;
 use crate::debuggable::DebuggableProperties;
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
-    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
+use crate::mac::MacModel;
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 
@@ -97,6 +98,28 @@ impl DriveType {
             Self::GCR400K => true,
             Self::GCR800KPWM => true,
             Self::GCR800K | Self::SuperDrive => false,
+        }
+    }
+
+    /// The device model of a drive of this type
+    pub const fn device_model(self) -> Option<DeviceModel> {
+        match self {
+            Self::None => None,
+            Self::GCR400K => Some(DeviceModel::Mac400KDrive),
+            Self::GCR800K => Some(DeviceModel::Mac800KDrive),
+            Self::GCR800KPWM => Some(DeviceModel::Mac800KPwmDrive),
+            Self::SuperDrive => Some(DeviceModel::MacSuperDrive),
+        }
+    }
+
+    /// The type of drive of a device model, if it is one of a Mac floppy drive
+    pub const fn of_model(model: DeviceModel) -> Option<Self> {
+        match model {
+            DeviceModel::Mac400KDrive => Some(Self::GCR400K),
+            DeviceModel::Mac800KDrive => Some(Self::GCR800K),
+            DeviceModel::Mac800KPwmDrive => Some(Self::GCR800KPWM),
+            DeviceModel::MacSuperDrive => Some(Self::SuperDrive),
+            _ => None,
         }
     }
 
@@ -226,8 +249,56 @@ const MAC_FLOPPY: FloppyInfo = FloppyInfo {
     writable: true,
 };
 
+/// The drive the Mac model has on its first connector
+fn first_drive(mac: MacModel) -> Option<DeviceModel> {
+    mac.floppy_drives().first().map(|(_, model)| *model)
+}
+
+fn fits_400k(mac: MacModel) -> bool {
+    first_drive(mac) == Some(DeviceModel::Mac400KDrive)
+}
+
+fn fits_800k(mac: MacModel) -> bool {
+    first_drive(mac) == Some(DeviceModel::Mac800KDrive)
+}
+
+/// The 800K drive with its speed set by PWM, which the 128K and 512K can be upgraded with
+fn fits_800k_pwm(mac: MacModel) -> bool {
+    fits_400k(mac)
+}
+
+fn fits_superdrive(mac: MacModel) -> bool {
+    first_drive(mac) == Some(DeviceModel::MacSuperDrive)
+}
+
+fn create_400k(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(FloppyDrive::new(
+        DriveType::GCR400K,
+    ))))
+}
+
+fn create_800k(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(FloppyDrive::new(
+        DriveType::GCR800K,
+    ))))
+}
+
+fn create_800k_pwm(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(FloppyDrive::new(
+        DriveType::GCR800KPWM,
+    ))))
+}
+
+fn create_superdrive(_config: &DeviceConfig) -> Result<MadeDevice> {
+    Ok(MadeDevice::Swim(Box::new(FloppyDrive::new(
+        DriveType::SuperDrive,
+    ))))
+}
+
 pub const INFO_400K: ModelInfo = ModelInfo {
+    fits: fits_400k,
     fixed: true,
+    create: Some(create_400k),
     ..ModelInfo::base(
         DeviceModel::Mac400KDrive,
         "400K drive",
@@ -240,7 +311,9 @@ pub const INFO_400K: ModelInfo = ModelInfo {
 };
 
 pub const INFO_800K: ModelInfo = ModelInfo {
+    fits: fits_800k,
     fixed: true,
+    create: Some(create_800k),
     ..ModelInfo::base(
         DeviceModel::Mac800KDrive,
         "800K drive",
@@ -250,7 +323,9 @@ pub const INFO_800K: ModelInfo = ModelInfo {
 };
 
 pub const INFO_800K_PWM: ModelInfo = ModelInfo {
+    fits: fits_800k_pwm,
     fixed: true,
+    create: Some(create_800k_pwm),
     ..ModelInfo::base(
         DeviceModel::Mac800KPwmDrive,
         "800K drive (PWM)",
@@ -263,7 +338,9 @@ pub const INFO_800K_PWM: ModelInfo = ModelInfo {
 };
 
 pub const INFO_SUPERDRIVE: ModelInfo = ModelInfo {
+    fits: fits_superdrive,
     fixed: true,
+    create: Some(create_superdrive),
     ..ModelInfo::base(
         DeviceModel::MacSuperDrive,
         "SuperDrive",

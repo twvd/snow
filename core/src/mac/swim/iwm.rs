@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn bit_rate_follows_the_pwm_speed() {
-        let mut swim = Swim::new(&[DriveType::GCR400K], false, 8_000_000);
+        let mut swim = Swim::new(false, 8_000_000).with_drives(&[DriveType::GCR400K]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac400K, ""))
             .unwrap();
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn lstrb_writes_on_rising_edge_only() {
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.read(ENABLE);
         let start = swim.drive(0).stream.track;
 
@@ -467,7 +467,7 @@ mod tests {
         const Q7L: Address = 14 << 9;
         const MODE: Address = 15 << 9;
 
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn enable_held_by_timer() {
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
@@ -535,7 +535,7 @@ mod tests {
 
         // Status register: MOTOR-ON (bit 5) stays set until the timer
         // has counted down
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.read(ENABLE);
         swim.read(DISABLE);
         swim.read(Q7L);
@@ -557,7 +557,7 @@ mod tests {
     fn eject_brief_strobe() {
         // As the Mac OS driver ejects in IWM mode: drive enabled, LSTRB
         // raised and lowered again
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();

@@ -301,7 +301,7 @@ impl Quadra800Bus {
             via1: Via::new(model),
             via2: Via2::new(model),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
-            swim: Swim::new_swim2(model.fdd_drives(), C16M_FREQUENCY),
+            swim: Swim::new_swim2(C16M_FREQUENCY),
             swim_ready: 0,
             scc_ready: 0,
             // MODE pins strapped for a 16-bit DMA bus, as on the LC 475
@@ -924,6 +924,7 @@ impl Quadra800Bus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }
