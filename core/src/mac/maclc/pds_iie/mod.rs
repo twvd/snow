@@ -97,8 +97,8 @@ use serde::{Deserialize, Serialize};
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, BusKind, DeviceModel, DeviceOps, FloppyFunction, FunctionConfig,
-    FunctionInfo, FunctionMut, ModelInfo,
+    AppleIIeCardFunction, Bus, BusKind, BusOps, DeviceModel, DeviceOps, FunctionConfig,
+    FunctionInfo, FunctionMut, ModelInfo, bus_id,
 };
 use crate::tickable::{Tickable, Ticks};
 #[cfg(feature = "iie-debug")]
@@ -1642,6 +1642,17 @@ impl DeviceOps for PdsIIeCard {
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::AppleIIeCard(self)
     }
+
+    /// The card adds its disk port to the buses of the machine.
+    fn extra_buses(&mut self) -> Vec<(Bus, &mut dyn BusOps)> {
+        let port = Bus::new(
+            BusKind::IieDisk,
+            bus_id::IIE_DISK,
+            "Apple IIe disk",
+            &DiskII::SLOT_IDS,
+        );
+        vec![(port, &mut self.cpu.bus.state.get_mut().disk)]
+    }
 }
 
 impl AppleIIeCardFunction for PdsIIeCard {
@@ -2074,25 +2085,6 @@ impl PdsIIeCard {
             }
         } else {
             iie_debug!("IIe Card write {:06X} ignored", offset);
-        }
-    }
-
-    /// The Floppy function of a 5.25" drive (0 or 1), if that drive
-    /// is connected.
-    pub fn drive_525(&mut self, drive: usize) -> Option<&mut dyn FloppyFunction> {
-        let disk = &mut self.cpu.bus.state.get_mut().disk;
-        match disk.drive_525(drive)?.function() {
-            FunctionMut::Floppy(floppy) => Some(floppy),
-            _ => None,
-        }
-    }
-
-    /// The Floppy function of the UniDisk 3.5, if one is connected.
-    pub fn unidisk(&mut self) -> Option<&mut dyn FloppyFunction> {
-        let disk = &mut self.cpu.bus.state.get_mut().disk;
-        match disk.unidisk()?.function() {
-            FunctionMut::Floppy(floppy) => Some(floppy),
-            _ => None,
         }
     }
 

@@ -596,6 +596,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_drives_of_the_apple_iie_card_are_on_its_disk_port() {
+        use crate::emulator::MouseMode;
+        use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice};
+
+        let settings = IieCardSettings {
+            security_jumper: false,
+            disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
+        };
+        for model in [MacModel::LC, MacModel::LCIII, MacModel::LC475] {
+            let (mut emu, _) = Emulator::new_with_extra(
+                &vec![0; 1024 * 1024],
+                &[],
+                model,
+                None,
+                MouseMode::Disabled,
+                None,
+                None,
+                false,
+                false,
+                None,
+                None,
+                Some(settings),
+            )
+            .unwrap();
+
+            // The commands of the card count the drives of one device model
+            assert_eq!(emu.iie_drive_slot(DeviceModel::UniDisk35, 0), Some("1"));
+            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 0), Some("2"));
+            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 1), None);
+            // A drive of the card is reached as the Mac's are
+            let floppy = emu.floppy_in(bus_id::IIE_DISK, "2").unwrap();
+            assert!(floppy.status().ejected);
+
+            // Without the card, the machine has no such bus
+            assert!(machine(model).config.bus_ops(bus_id::IIE_DISK).is_none());
+        }
+    }
+
     /// The device models of the floppy drives of a machine, in the order of their slots
     fn floppy_drives(emu: &mut Emulator) -> Vec<DeviceModel> {
         let buses = emu.buses();

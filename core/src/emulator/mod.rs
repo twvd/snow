@@ -23,7 +23,9 @@ use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{AppleIIeCardFunction, BusOps, DeviceOps, FunctionMut, FunctionStatus};
+use crate::devices::{
+    AppleIIeCardFunction, BusOps, DeviceModel, DeviceOps, FunctionMut, FunctionStatus, bus_id,
+};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
@@ -34,6 +36,7 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
+use crate::mac::maclc::pds_iie::disk::DiskII;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
@@ -889,6 +892,15 @@ impl Emulator {
         }
     }
 
+    /// The slot, on the disk port of the Apple IIe Card, of the `n`th drive of a device model
+    fn iie_drive_slot(&mut self, model: DeviceModel, n: usize) -> Option<&'static str> {
+        let bus = self.config.bus_ops(bus_id::IIE_DISK)?;
+        DiskII::SLOT_IDS
+            .into_iter()
+            .filter(|slot| bus.device(slot).is_some_and(|d| d.info().model == model))
+            .nth(n)
+    }
+
     /// Sends the frontend the state of the machine and of its devices, as it is now. It is sent
     /// every 500 ms while the machine runs and after each command. A frontend that calls the
     /// emulator's methods itself calls this after it changed a device.
@@ -1374,23 +1386,18 @@ impl Tickable for Emulator {
                         return Ok(0);
                     }
                     EmulatorCommand::InsertIieDisk(drive, path) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        let result = match card {
-                            Some(card) => match card.drive_525(drive) {
-                                Some(floppy) => floppy.load(&path, true),
-                                None => Err(anyhow!(
-                                    "Cannot insert IIe disk '{}': 5.25\" drive {} is not connected",
-                                    path.display(),
-                                    drive + 1
-                                )),
-                            },
-                            None => Err(anyhow!("No Apple IIe Card installed")),
+                        let result = match self.iie_drive_slot(DeviceModel::Apple525Drive, drive) {
+                            Some(slot) => self
+                                .floppy_in(bus_id::IIE_DISK, slot)
+                                .and_then(|floppy| floppy.load(&path, true)),
+                            None if self.iie_card().is_none() => {
+                                Err(anyhow!("No Apple IIe Card installed"))
+                            }
+                            None => Err(anyhow!(
+                                "Cannot insert IIe disk '{}': 5.25\" drive {} is not connected",
+                                path.display(),
+                                drive + 1
+                            )),
                         };
                         if let Err(e) = result {
                             self.user_error(&format!("{:#}", e));
@@ -1403,34 +1410,24 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::EjectIieDisk(drive) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(floppy) = card.and_then(|card| card.drive_525(drive)) {
+                        if let Some(slot) = self.iie_drive_slot(DeviceModel::Apple525Drive, drive)
+                            && let Ok(floppy) = self.floppy_in(bus_id::IIE_DISK, slot)
+                        {
                             floppy.eject();
                         }
                     }
                     EmulatorCommand::InsertIieUniDisk(path) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        let result = match card {
-                            Some(card) => match card.unidisk() {
-                                Some(floppy) => floppy.load(&path, false),
-                                None => Err(anyhow!(
-                                    "Cannot insert UniDisk 3.5 image '{}': no UniDisk 3.5 is connected",
-                                    path.display()
-                                )),
-                            },
-                            None => Err(anyhow!("No Apple IIe Card installed")),
+                        let result = match self.iie_drive_slot(DeviceModel::UniDisk35, 0) {
+                            Some(slot) => self
+                                .floppy_in(bus_id::IIE_DISK, slot)
+                                .and_then(|floppy| floppy.load(&path, false)),
+                            None if self.iie_card().is_none() => {
+                                Err(anyhow!("No Apple IIe Card installed"))
+                            }
+                            None => Err(anyhow!(
+                                "Cannot insert UniDisk 3.5 image '{}': no UniDisk 3.5 is connected",
+                                path.display()
+                            )),
                         };
                         if let Err(e) = result {
                             self.user_error(&format!("{:#}", e));
@@ -1438,14 +1435,9 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::EjectIieUniDisk => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(floppy) = card.and_then(|card| card.unidisk()) {
+                        if let Some(slot) = self.iie_drive_slot(DeviceModel::UniDisk35, 0)
+                            && let Ok(floppy) = self.floppy_in(bus_id::IIE_DISK, slot)
+                        {
                             floppy.eject();
                         }
                     }

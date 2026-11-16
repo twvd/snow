@@ -12,6 +12,8 @@ use super::{DeviceModel, FunctionConfig};
 pub mod bus_id {
     pub const SCSI: &str = "SCSI";
     pub const SWIM: &str = "SWIM";
+    /// The disk port of the Apple IIe Card in the processor-direct slot of an LC
+    pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
 }
 
 /// One device, as described in a list of devices: where it is, which device it is, and what

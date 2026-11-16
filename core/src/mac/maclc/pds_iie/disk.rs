@@ -25,14 +25,14 @@
 
 use std::path::Path;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{TwoImg, Woz, WozData};
 
 use super::unidisk::{UniDisk, bus_enabled};
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
-    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+    BusKind, BusOps, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
 use crate::mac::swim::device::SwimBusDevice;
 use crate::mac::swim::stream::FloppyStream;
@@ -771,6 +771,40 @@ impl Iwm {
     }
 }
 
+/// The place on the chain of a slot
+fn slot_number(slot: &str) -> Option<usize> {
+    DiskII::SLOT_IDS.iter().position(|&id| id == slot)
+}
+
+impl BusOps for DiskII {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        let device = self.devices[slot_number(slot)?].as_mut()?;
+        // A device on the disk port is a DeviceOps too
+        Some(&mut **device)
+    }
+
+    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
+        let place = slot_number(slot).context("No such place on the disk port")?;
+        let MadeDevice::Swim(device) = device else {
+            bail!("Not a device for the disk port");
+        };
+        if self.devices[place].is_some() {
+            bail!("This place on the disk port already has a device");
+        }
+        self.put(place, device);
+        Ok(())
+    }
+
+    fn detach(&mut self, slot: &str) -> Result<()> {
+        let place = slot_number(slot).context("No such place on the disk port")?;
+        if self.devices[place].take().is_none() {
+            bail!("This place on the disk port has no device");
+        }
+        self.chain_changed();
+        Ok(())
+    }
+}
+
 /// The Disk II controller: the devices on its port, the drive select,
 /// the phase latch and the IWM registers.
 #[derive(Default, Serialize, Deserialize)]
@@ -803,49 +837,59 @@ pub struct DiskII {
 }
 
 impl DiskII {
+    /// The ids of the slots of the bus: the places on the chain, counted
+    /// from 1
+    pub const SLOT_IDS: [&str; 2] = ["1", "2"];
+
     /// A controller with `count` 5.25" drives connected (0 to 2),
     /// behind a UniDisk 3.5 if `unidisk` is set.
     pub fn new(count: usize, unidisk: bool) -> Self {
         let mut disk = Self::default();
         if unidisk {
-            disk.attach(Box::new(UniDisk::new()));
+            disk.attach_last(Box::new(UniDisk::new()));
         }
         for _ in 0..count {
-            disk.attach(Box::new(Drive5::new()));
+            disk.attach_last(Box::new(Drive5::new()));
         }
         disk
     }
 
-    /// Puts a device at the end of the chain, if there is room.  A
-    /// device with a stream is a 5.25" drive; one with none exchanges
-    /// bytes on the SmartPort bus.
-    fn attach(&mut self, mut device: Box<dyn SwimBusDevice>) {
-        let Some(place) = self.devices.iter().position(Option::is_none) else {
-            return;
-        };
-        device.connected(place, super::NORMAL_HZ as Ticks);
-        if device.stream().is_none() {
-            self.smart.get_or_insert(place);
-        } else if let Some(drive) = self.drives.iter_mut().find(|drive| drive.is_none()) {
-            *drive = Some(place);
+    /// Puts a device at the end of the chain, if there is room.
+    fn attach_last(&mut self, device: Box<dyn SwimBusDevice>) {
+        if let Some(place) = self.devices.iter().position(Option::is_none) {
+            self.put(place, device);
         }
+    }
+
+    /// Puts a device at a place on the chain.
+    fn put(&mut self, place: usize, mut device: Box<dyn SwimBusDevice>) {
+        device.connected(place, super::NORMAL_HZ as Ticks);
         self.devices[place] = Some(device);
+        self.chain_changed();
+    }
+
+    /// Finds again the SmartPort device and the 5.25" drives on the
+    /// chain.  A device with a stream is a 5.25" drive; one with none
+    /// exchanges bytes on the SmartPort bus.
+    fn chain_changed(&mut self) {
+        self.smart = None;
+        self.drives = [None; 2];
+        for (place, device) in self.devices.iter_mut().enumerate() {
+            let Some(device) = device else {
+                continue;
+            };
+            if device.stream().is_none() {
+                self.smart.get_or_insert(place);
+            } else if let Some(drive) = self.drives.iter_mut().find(|drive| drive.is_none()) {
+                *drive = Some(place);
+            }
+        }
     }
 
     /// The device at a place on the chain.
     fn drive_at(&mut self, place: Option<usize>) -> Option<&mut dyn SwimBusDevice> {
         let device = self.devices[place?].as_mut()?;
         Some(&mut **device)
-    }
-
-    /// A 5.25" drive (0 or 1), if that drive is connected.
-    pub(crate) fn drive_525(&mut self, drive: usize) -> Option<&mut dyn SwimBusDevice> {
-        self.drive_at(*self.drives.get(drive)?)
-    }
-
-    /// The UniDisk 3.5, if one is connected.
-    pub(crate) fn unidisk(&mut self) -> Option<&mut dyn SwimBusDevice> {
-        self.drive_at(self.smart)
     }
 
     /// Resets the controller. The drives keep their disks, and the
@@ -1025,6 +1069,16 @@ impl DiskII {
 
 #[cfg(test)]
 impl DiskII {
+    /// A 5.25" drive (0 or 1), if that drive is connected.
+    fn drive_525(&mut self, drive: usize) -> Option<&mut dyn SwimBusDevice> {
+        self.drive_at(*self.drives.get(drive)?)
+    }
+
+    /// The UniDisk 3.5, if one is connected.
+    fn unidisk(&mut self) -> Option<&mut dyn SwimBusDevice> {
+        self.drive_at(self.smart)
+    }
+
     /// A 5.25" drive that is connected, for the tests that look inside
     /// a drive.
     pub(super) fn drive(&mut self, drive: usize) -> &mut Drive5 {
@@ -1316,6 +1370,36 @@ pub(super) mod tests {
         disk.selected = true;
         assert_ne!(disk.iwm_read(false) & 0x80, 0, "no drive");
         assert!(disk.drive_525(1).is_none());
+    }
+
+    #[test]
+    fn the_devices_of_the_disk_port_are_reached_by_slot() {
+        fn model(disk: &mut DiskII, slot: &str) -> Option<DeviceModel> {
+            BusOps::device(disk, slot).map(|device| device.info().model)
+        }
+        fn drive() -> MadeDevice {
+            MadeDevice::Swim(Box::new(Drive5::new()))
+        }
+
+        // A UniDisk 3.5, and a 5.25" drive behind it
+        let mut disk = DiskII::new(1, true);
+        assert_eq!(model(&mut disk, "1"), Some(DeviceModel::UniDisk35));
+        assert_eq!(model(&mut disk, "2"), Some(DeviceModel::Apple525Drive));
+        assert_eq!(model(&mut disk, "3"), None);
+        assert_eq!((disk.smart, disk.drives), (Some(0), [Some(1), None]));
+
+        // A place that is taken is refused, and so is one the port doesn't have
+        assert!(disk.attach("2", drive()).is_err());
+        assert!(disk.attach("3", drive()).is_err());
+
+        // Without the UniDisk 3.5, the drive behind it is still drive 1
+        disk.detach("1").unwrap();
+        assert!(disk.detach("1").is_err());
+        assert_eq!((disk.smart, disk.drives), (None, [Some(1), None]));
+
+        // A drive put in front of it becomes drive 1
+        disk.attach("1", drive()).unwrap();
+        assert_eq!((disk.smart, disk.drives), (None, [Some(0), Some(1)]));
     }
 
     /// A file of its own for a test, removed when the test is done
