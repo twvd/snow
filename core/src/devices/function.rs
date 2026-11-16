@@ -84,6 +84,15 @@ pub struct EthernetInfo {
     pub oui: [u8; 3],
 }
 
+/// What was chosen for a device, by function
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FunctionConfig {
+    HardDisk(HardDiskConfig),
+    Cdrom(CdromConfig),
+    Ethernet(EthernetConfig),
+    Printer(PrinterConfig),
+}
+
 /// A device, seen through its function
 pub enum FunctionMut<'a> {
     HardDisk(&'a mut dyn HardDiskFunction),
@@ -112,12 +121,26 @@ impl FunctionMut<'_> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardDiskConfig {
+    /// The image file. None: given later, by `load_image()`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardDiskStatus {
     /// The image file. None: the image isn't a file.
     pub media: Option<PathBuf>,
     /// In bytes. 0: the disk has no image yet.
     pub capacity: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdromConfig {
+    /// A folder of disc images the guest switches between
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +151,15 @@ pub struct CdromStatus {
     pub folder: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EthernetConfig {
+    /// The adapter's Ethernet address. None: a random one, with the maker's prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<[u8; 6]>,
+    /// What it is connected to on the host
+    pub link: EthernetLinkType,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetStatus {
     /// The adapter's Ethernet address
@@ -136,6 +168,13 @@ pub struct EthernetStatus {
     pub link: EthernetLinkType,
     /// A capture of its packets to a file, if any
     pub capture: Option<EthernetCaptureStatus>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrinterConfig {
+    /// The folder its pages go to. None: the default folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

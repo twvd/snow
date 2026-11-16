@@ -2,8 +2,9 @@
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, EthernetFunction, EthernetInfo, EthernetLinkType,
-    EthernetStatus, FunctionInfo, FunctionMut, ModelInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, EthernetFunction, EthernetInfo,
+    EthernetLinkType, EthernetStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice,
+    ModelInfo, new_ethernet_address,
 };
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
@@ -18,7 +19,6 @@ use binrw::{BinWrite, binrw};
     all(feature = "ethernet_tap", target_os = "linux")
 ))]
 use crossbeam_channel::TrySendError;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ethernet_nat")]
 use snow_nat::NatEngineStats;
@@ -170,23 +170,15 @@ impl Drop for ScsiTargetEthernet {
     }
 }
 
-impl Default for ScsiTargetEthernet {
-    fn default() -> Self {
-        let mut rand = rand::rng();
-
+impl ScsiTargetEthernet {
+    /// An adapter with the Ethernet address `macaddress`, and its link down
+    fn new(macaddress: [u8; 6]) -> Self {
         Self {
             common: Default::default(),
-            macaddress: [
-                0x00,
-                0x80,
-                0x19,
-                rand.random(),
-                rand.random(),
-                rand.random(),
-            ],
+            macaddress,
             tx: None,
             rx: None,
-            link: Default::default(),
+            link: EthernetLinkType::Down,
             #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
             enabled: false,
@@ -958,15 +950,33 @@ impl ScsiTarget for ScsiTargetEthernet {
     }
 }
 
-pub const INFO: ModelInfo = ModelInfo::base(
-    DeviceModel::DaynaPortScsiLink,
-    "DaynaPORT SCSI/Link",
-    BusKind::Scsi,
-    FunctionInfo::Ethernet(EthernetInfo {
-        // Dayna Communications
-        oui: [0x00, 0x80, 0x19],
-    }),
-);
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::DaynaPortScsiLink,
+        "DaynaPORT SCSI/Link",
+        BusKind::Scsi,
+        FunctionInfo::Ethernet(ETHERNET),
+    )
+};
+
+const ETHERNET: EthernetInfo = EthernetInfo {
+    // Dayna Communications
+    oui: [0x00, 0x80, 0x19],
+};
+
+/// Makes an adapter with its link down. The emulator sets the link of the config once the
+/// adapter is in its slot: a link that can't start doesn't cost the adapter. An adapter with no
+/// address in its config gets a random one.
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::Ethernet(ethernet) = &config.function else {
+        anyhow::bail!("An Ethernet adapter needs an Ethernet adapter's config");
+    };
+    let mac = ethernet
+        .mac
+        .unwrap_or_else(|| new_ethernet_address(ETHERNET.oui, &[]));
+    Ok(MadeDevice::Scsi(Box::new(ScsiTargetEthernet::new(mac))))
+}
 
 impl DeviceOps for ScsiTargetEthernet {
     fn info(&self) -> &'static ModelInfo {
@@ -1247,7 +1257,7 @@ mod tests {
 
     #[test]
     fn link_shows_in_the_status() {
-        let mut adapter = ScsiTargetEthernet::default();
+        let mut adapter = ScsiTargetEthernet::new([0, 0x80, 0x19, 1, 2, 3]);
         let mac = adapter.macaddress;
         let FunctionMut::Ethernet(ethernet) = adapter.function() else {
             panic!("An Ethernet adapter has the Ethernet function");
@@ -1266,7 +1276,7 @@ mod tests {
     #[test]
     fn test_read_max_8_packets() {
         // Create a ScsiTargetEthernet instance
-        let mut eth = ScsiTargetEthernet::default();
+        let mut eth = ScsiTargetEthernet::new([0, 0x80, 0x19, 1, 2, 3]);
 
         // Create channels for testing
         let (tx, rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
