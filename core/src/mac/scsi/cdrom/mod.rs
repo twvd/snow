@@ -1050,17 +1050,26 @@ impl ScsiTargetCdrom {
     fn media_checked(&mut self, result: Result<(), CdromError>) -> Result<ScsiCmdResult> {
         match result {
             Ok(()) => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
-            Err(CdromError::CheckCondition(key, asc)) => {
+            Err(e) => self.disc_error(e),
+        }
+    }
+
+    /// Answers a command whose disc access failed: CHECK CONDITION with the
+    /// error's sense, or for a drive that became unusable, an eject and NOT
+    /// READY / MEDIUM NOT PRESENT. Other errors pass through.
+    fn disc_error(&mut self, error: CdromError) -> Result<ScsiCmdResult> {
+        match error {
+            CdromError::CheckCondition(key, asc) => {
                 self.common.set_cc(key, asc);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
-            Err(CdromError::BackendDead) => {
+            CdromError::BackendDead => {
                 log::error!("The CD-ROM drive became unusable");
                 self.eject_media();
                 self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
-            Err(CdromError::Other(e)) => Err(e),
+            CdromError::Other(e) => Err(e),
         }
     }
 
@@ -1095,16 +1104,7 @@ impl ScsiTargetCdrom {
 
         let initial_sector = match initial_sector {
             Ok(s) => s,
-            Err(CdromError::CheckCondition(key, asc)) => {
-                self.common.set_cc(key, asc);
-                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-            }
-            Err(CdromError::BackendDead) => {
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-            }
-            Err(CdromError::Other(e)) => return Err(e),
+            Err(e) => return self.disc_error(e),
         };
 
         if !initial_sector.qsub.is_audio() {
@@ -1151,16 +1151,6 @@ impl ScsiTargetCdrom {
                 result.resize(read.padded_length, 0);
                 Ok(ScsiCmdResult::DataIn(result))
             }
-            Err(CdromError::CheckCondition(cc, asc)) => {
-                self.common.set_cc(cc, asc);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
-            Err(CdromError::BackendDead) => {
-                log::error!("The CD-ROM drive became unusable");
-                self.eject_media();
-                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
             Err(CdromError::Other(e)) => {
                 log::error!(
                     "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
@@ -1172,6 +1162,7 @@ impl ScsiTargetCdrom {
                     .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
                 Err(e)
             }
+            Err(e) => self.disc_error(e),
         }
     }
 }
