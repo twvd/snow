@@ -192,9 +192,6 @@ pub struct EthernetCaptureStatus {
 pub struct FddStatus {
     pub present: bool,
     pub ejected: bool,
-    pub motor: bool,
-    pub writing: bool,
-    pub track: usize,
     pub image_title: String,
     pub dirty: bool,
     pub drive_type: crate::mac::swim::drive::DriveType,

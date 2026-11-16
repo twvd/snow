@@ -435,7 +435,8 @@ mod tests {
     #[test]
     fn bit_rate_follows_the_pwm_speed() {
         let mut swim = Swim::new(&[DriveType::GCR400K], false, 8_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac400K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac400K, ""))
             .unwrap();
 
         // No drive command in between: these only change the PWM duty cycle
@@ -487,7 +488,8 @@ mod tests {
         const MODE: Address = 15 << 9;
 
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         // Mode $17, as Mac OS sets it: one-second timer disabled
         swim.read(Q6H);
@@ -518,7 +520,8 @@ mod tests {
     #[test]
     fn enable_held_by_timer() {
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
 
         // Mode 0, as after a reset: the drive stays enabled for 2^23 FCLK
@@ -575,7 +578,8 @@ mod tests {
         // As the Mac OS driver ejects in IWM mode: drive enabled, LSTRB
         // raised and lowered again
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
-        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+        swim.drives[0]
+            .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         swim.read(ENABLE);
         swim.read(CA0H);
