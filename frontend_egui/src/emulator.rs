@@ -366,7 +366,8 @@ impl EmulatorState {
         ))?;
 
         for config in &devices {
-            // The machine has its floppy drives already, made from the arguments above
+            // The machine has its floppy drives and the card of its processor-direct slot
+            // already, made from the arguments above
             if config.model.is_some_and(|model| model.info().fixed) {
                 continue;
             }

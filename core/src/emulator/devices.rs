@@ -17,7 +17,7 @@ use super::comm::EmulatorEvent;
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
-    Bus, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FloppyFunction,
+    Bus, BusOps, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FloppyFunction,
     FunctionConfig, FunctionInfo, FunctionMut, HardDiskConfig, Slot, bus_id, device_configs,
     models_for, new_ethernet_address,
 };
@@ -37,10 +37,48 @@ fn floppy_slots(buses: &[Bus]) -> impl Iterator<Item = (&Bus, &Slot)> {
 }
 
 impl Emulator {
+    /// The bus with this id: one of the Mac model's, which the machine gives, or one that a
+    /// device of the machine adds, which that device gives
+    pub(super) fn bus_ops(&mut self, id: &str) -> Option<&mut dyn BusOps> {
+        if self.model.buses().iter().any(|bus| bus.id == id) {
+            return self.config.bus_ops(id);
+        }
+        let (_, bus, slot) = self
+            .added_buses()
+            .into_iter()
+            .find(|(added, _, _)| added.id == id)?;
+        let device = self.config.bus_ops(&bus)?.device(&slot)?;
+        device
+            .extra_buses()
+            .into_iter()
+            .find(|(added, _)| added.id == id)
+            .map(|(_, ops)| ops)
+    }
+
+    /// The buses that devices in the slots of the Mac model's buses add, as the Apple IIe Card
+    /// adds its disk port: each with the ids of the bus and of the slot of the device that adds
+    /// it
+    fn added_buses(&mut self) -> Vec<(Bus, String, String)> {
+        let mut added = vec![];
+        for bus in self.model.buses() {
+            let Some(ops) = self.config.bus_ops(&bus.id) else {
+                continue;
+            };
+            for slot in bus.slots {
+                let Some(device) = ops.device(&slot.id) else {
+                    continue;
+                };
+                for (extra, _) in device.extra_buses() {
+                    added.push((extra, bus.id.clone(), slot.id.clone()));
+                }
+            }
+        }
+        added
+    }
+
     /// The device in a slot, seen through its function
     pub(super) fn device_function(&mut self, bus: &str, slot: &str) -> Result<FunctionMut<'_>> {
         let device = self
-            .config
             .bus_ops(bus)
             .context("This machine has no such bus")?
             .device(slot)
@@ -52,7 +90,7 @@ impl Emulator {
     pub fn buses(&mut self) -> Vec<Bus> {
         let mut buses = self.model.buses();
         for bus in &mut buses {
-            let Some(ops) = self.config.bus_ops(&bus.id) else {
+            let Some(ops) = self.bus_ops(&bus.id) else {
                 continue;
             };
             for slot in &mut bus.slots {
@@ -265,7 +303,7 @@ impl Emulator {
 
     /// Adds a device to the machine: one that is being made if `new_machine` is set, which
     /// then takes the device models that are `fixed` too
-    fn add_device_to(&mut self, config: &DeviceConfig, new_machine: bool) -> Result<()> {
+    pub(super) fn add_device_to(&mut self, config: &DeviceConfig, new_machine: bool) -> Result<()> {
         let mac = self.model;
         let buses = mac.buses();
         let kind = buses
@@ -274,7 +312,6 @@ impl Emulator {
             .context("This machine has no such bus")?
             .kind;
         let bus = self
-            .config
             .bus_ops(&config.bus)
             .context("This machine has no such bus")?;
         if bus.device(&config.slot).is_some() {
@@ -293,7 +330,6 @@ impl Emulator {
             .with_context(|| format!("{} can't be added to a machine", info.name))?;
         let config = &self.with_ethernet_address(config, info.function);
         let bus = self
-            .config
             .bus_ops(&config.bus)
             .context("This machine has no such bus")?;
         bus.attach(&config.slot, create(config)?)?;
@@ -343,7 +379,6 @@ impl Emulator {
     /// applied, the device stays and the error says why.
     fn configure_device(&mut self, config: &DeviceConfig) -> Result<()> {
         let device = self
-            .config
             .bus_ops(&config.bus)
             .context("This machine has no such bus")?
             .device(&config.slot)
@@ -372,10 +407,7 @@ impl Emulator {
 
     /// Removes the device in a slot from the machine
     pub fn remove_device(&mut self, bus: &str, slot: &str) -> Result<()> {
-        let bus = self
-            .config
-            .bus_ops(bus)
-            .context("This machine has no such bus")?;
+        let bus = self.bus_ops(bus).context("This machine has no such bus")?;
         if let Some(device) = bus.device(slot)
             && device.info().fixed
         {
@@ -597,6 +629,49 @@ mod tests {
     }
 
     #[test]
+    fn the_apple_iie_card_is_made_from_a_device_config() {
+        use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice};
+
+        let settings = IieCardSettings {
+            security_jumper: false,
+            disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
+        };
+        let card = DeviceConfig {
+            bus: bus_id::PDS_LC.into(),
+            slot: "0".into(),
+            model: Some(DeviceModel::AppleIIePdsCard),
+            rom: None,
+            function: FunctionConfig::AppleIIeCard(settings),
+        };
+        for model in [
+            MacModel::LC,
+            MacModel::LCII,
+            MacModel::LCIII,
+            MacModel::LC475,
+        ] {
+            // The card is only added when the machine is made
+            let mut emu = machine(model);
+            assert!(emu.add_device(&card).is_err());
+            emu.add_device_to(&card, true).unwrap();
+
+            // The machine reports it with its settings, and can't lose it
+            assert_eq!(emu.devices(), vec![card.clone()]);
+            assert!(emu.remove_device(bus_id::PDS_LC, "0").is_err());
+            // It came with the drives its settings name
+            assert_eq!(emu.iie_drive_slot(DeviceModel::UniDisk35, 0), Some("1"));
+            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 0), Some("2"));
+        }
+
+        // It fits no other slot
+        let mut se30 = machine(MacModel::SE30);
+        let wrong = DeviceConfig {
+            bus: bus_id::PDS_SE30.into(),
+            ..card
+        };
+        assert!(se30.add_device_to(&wrong, true).is_err());
+    }
+
+    #[test]
     fn the_drives_of_the_apple_iie_card_are_on_its_disk_port() {
         use crate::emulator::MouseMode;
         use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice};
@@ -630,8 +705,13 @@ mod tests {
             let floppy = emu.floppy_in(bus_id::IIE_DISK, "2").unwrap();
             assert!(floppy.status().ejected);
 
+            // The machine answers for its own buses only: the emulator reaches the card's
+            // through the card
+            assert!(emu.config.bus_ops(bus_id::IIE_DISK).is_none());
+            assert!(emu.bus_ops(bus_id::IIE_DISK).is_some());
+
             // Without the card, the machine has no such bus
-            assert!(machine(model).config.bus_ops(bus_id::IIE_DISK).is_none());
+            assert!(machine(model).bus_ops(bus_id::IIE_DISK).is_none());
         }
     }
 

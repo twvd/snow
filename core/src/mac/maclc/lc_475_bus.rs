@@ -28,9 +28,8 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::cuda::Cuda;
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::macii::via2::Via2;
-use crate::mac::maclc::pds_iie::{IieCardSettings, PdsIIeCard};
 use crate::mac::maclc::via::Via;
-use crate::mac::pds::{Pds, PdsSlot};
+use crate::mac::pds::Pds;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
@@ -365,18 +364,12 @@ impl Lc475Bus {
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         vram_size: Option<usize>,
-        iie_card: Option<IieCardSettings>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let mut cuda = Cuda::default();
         cuda.adb_add_device(AdbMouse::new());
         cuda.adb_add_device(AdbKeyboard::new());
-
-        let mut pds = Pds::new(C16M_FREQUENCY);
-        if let Some(settings) = iie_card {
-            pds.insert(Box::new(PdsIIeCard::with_settings(&settings)));
-        }
 
         let mut bus = Self {
             irq: None,
@@ -415,7 +408,7 @@ impl Lc475Bus {
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
-            pds,
+            pds: Pds::new(C16M_FREQUENCY),
             dma_writes: 0,
 
             dafb: Dafb::new(
@@ -845,11 +838,6 @@ impl Lc475Bus {
         Some(())
     }
 
-    /// The card in the slot, if installed
-    pub(crate) fn iie_card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
-        self.pds.card_mut()
-    }
-
     /// One cycle of a card, at the address on the CPU's bus, which the 68040
     /// always gives in the 32-bit map: without a card nothing answers, which
     /// is a bus error, as the Slot Manager expects.
@@ -1084,14 +1072,8 @@ impl Lc475Bus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
-            // A bus that the card in the slot adds
-            _ => self
-                .pds
-                .card_mut()?
-                .extra_buses()
-                .into_iter()
-                .find(|(added, _)| added.id == bus)
-                .map(|(_, ops)| ops),
+            bus_id::PDS_LC => Some(&mut self.pds),
+            _ => None,
         }
     }
 
@@ -1503,9 +1485,10 @@ impl Debuggable for Lc475Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::maclc::pds_iie::DECL_ROM;
+    use crate::devices::MadeDevice;
+    use crate::mac::maclc::pds_iie::{DECL_ROM, PdsIIeCard};
 
-    fn bus_with_card(iie_card: Option<IieCardSettings>) -> Lc475Bus {
+    fn bus() -> Lc475Bus {
         Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
@@ -1513,17 +1496,14 @@ mod tests {
             MouseMode::Disabled,
             Some(4 * 1024 * 1024),
             None,
-            iie_card,
         )
-    }
-
-    fn bus() -> Lc475Bus {
-        bus_with_card(None)
     }
 
     #[test]
     fn iie_card_answers_in_the_slot() {
-        let mut bus = bus_with_card(Some(IieCardSettings::default()));
+        let mut bus = bus();
+        let card = Box::new(PdsIIeCard::new());
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         // The declaration ROM ends at the top of the slot, on the odd bytes
         assert_eq!(bus.slot_read(0xFEFF_FFFF, 1), Some(u32::from(DECL_ROM[0])));
         assert_eq!(bus.slot_read(0xFEFF_FFFE, 1), Some(0xFF));
@@ -1549,7 +1529,6 @@ mod tests {
             MacMonitor::default(),
             MouseMode::Disabled,
             Some(12 * 1024 * 1024),
-            None,
             None,
         );
         assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));
@@ -1604,11 +1583,12 @@ mod tests {
         const TO: Address = 0x2000;
 
         let mut bus = bus();
-        bus.pds.insert(Box::new(DmaCard {
+        let card = Box::new(DmaCard {
             from: FROM,
             to: TO,
             not_ram: 0x4000_0000,
-        }));
+        });
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         // The RAM is at its addresses once the boot overlay is off
         bus.overlay = false;
         let from = bus.ram_index(FROM).unwrap();
@@ -1628,11 +1608,13 @@ mod tests {
         use crate::mac::pds::tests::IrqCard;
 
         let mut bus = bus();
-        bus.pds.insert(Box::new(IrqCard { irqs: 0 }));
+        let card = |irqs| MadeDevice::Pds(Box::new(IrqCard { irqs }));
+        bus.pds.attach("0", card(0)).unwrap();
         bus.tick(1, ()).unwrap();
         assert!(bus.via2.a_in.v2irq6());
 
-        bus.pds.insert(Box::new(IrqCard { irqs: 1 }));
+        bus.pds.detach("0").unwrap();
+        bus.pds.attach("0", card(1)).unwrap();
         bus.tick(1, ()).unwrap();
         assert!(!bus.via2.a_in.v2irq6());
     }
