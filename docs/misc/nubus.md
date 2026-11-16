@@ -18,14 +18,21 @@ Terms used here:
 A card answers transactions through its slot trait, `NubusSlot`:
 
 ```rust
-pub trait NubusSlot: for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
+pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the size, right-justified
     /// as the 68k sees them. `addr` has the digit of the slot cleared: $F0xx_xxxx or $0xxx_xxxx.
     /// None: the card doesn't answer at that address.
     fn read_sized(&mut self, addr: Address, size: u32) -> Option<u32>;
     fn write_sized(&mut self, addr: Address, size: u32, val: u32) -> Option<()>;
+    /// Called by the machine to specify the slot and the tick rate, once, when the bus attaches
+    /// the card and before any other method. `slot` is the slot number, $9 to $E. `tick_rate`
+    /// is the number of ticks in one second, for the ticks that `tick()` counts. Nothing by
+    /// default.
+    fn connected(&mut self, slot: u8, tick_rate: Ticks) {}
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
+    /// The card's video, if it has some. None by default.
+    fn video(&mut self) -> Option<&mut dyn VideoOutput> { None }
 }
 ```
 
@@ -85,9 +92,10 @@ as the Slot Manager expects of an empty slot.
 - gives their interrupts, one bit per slot: bit n for slot `$9 + n`, as VIA 2 port A has them on
   every machine.
 
-The cards are kept in an enum, `NubusCard`, not as trait objects: a card is generic over the type
-of its renderer, and serde can't save a trait object of a generic type. A NuBus access is then a
-`match` on the enum.
+The cards are trait objects, `Box<dyn NubusSlot>`, as SCSI targets are: `Nubus` talks to a card
+through `NubusSlot` and doesn't know which card it is. The `typetag` crate lets serde save and
+restore them. When a card is put in its slot, `Nubus::insert()` tells it the number of the slot
+and the rate of its ticks with `connected()`.
 
 | Mac model | Slots | Slot interrupts | Source |
 | --- | --- | --- | --- |
@@ -104,7 +112,8 @@ and has plain `read()` and `write()` methods taking an offset in that space.
 
 A new card, in `core/src/mac/nubus/`:
 
-1. implements `NubusSlot`, `Debuggable`, `Display` and `Tickable`, and `VideoOutput` if it has
-   video;
-2. gets a variant in `NubusCard` and in the `with_card!` macro;
+1. implements `NubusSlot`, `Debuggable`, `Display` and `Tickable`, with `#[typetag::serde]` on its
+   `impl NubusSlot` so that save states keep it;
+2. if it has video, implements `VideoOutput`, creates its own renderer, and returns itself from
+   `NubusSlot::video()`;
 3. gets a `NubusDeviceKind`, which the Mac II bus makes the card from.

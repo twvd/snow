@@ -11,19 +11,12 @@ use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
-use mdc12::Mdc12;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
-use toby::Toby;
-
-#[derive(Serialize, Deserialize)]
-pub enum NubusCard {
-    MDC12(Mdc12),
-    Toby(Toby),
-}
+use std::fmt::Display;
 
 /// What a NuBus slot sees of a card
-pub trait NubusSlot: for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
+#[typetag::serde(tag = "type")]
+pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the
     /// size, right-justified as the 68k sees them. `addr` is the NuBus address
     /// with the digit of the slot cleared (see [`card_address`]): $F0xx_xxxx
@@ -34,61 +27,18 @@ pub trait NubusSlot: for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display
     /// One NuBus write, as `read_sized`
     fn write_sized(&mut self, addr: Address, size: u32, val: u32) -> Option<()>;
 
+    /// Called by the machine to specify the slot and the tick rate, once, when the bus attaches
+    /// the card and before any other method. `slot` is the slot number, $9 to $E. `tick_rate`
+    /// is the number of ticks in one second, for the ticks that `tick()` counts. Nothing by
+    /// default.
+    fn connected(&mut self, _slot: u8, _tick_rate: Ticks) {}
+
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
-}
-
-/// Evaluates `$e` with `$c` bound to the card in a NubusCard
-macro_rules! with_card {
-    ($card:expr, $c:ident => $e:expr) => {
-        match $card {
-            NubusCard::MDC12($c) => $e,
-            NubusCard::Toby($c) => $e,
-        }
-    };
-}
-
-impl NubusCard {
-    pub fn slot(&mut self) -> &mut dyn NubusSlot {
-        with_card!(self, c => c)
-    }
-
-    pub fn slot_ref(&self) -> &dyn NubusSlot {
-        with_card!(self, c => c)
-    }
 
     /// The card's video, if it has some
-    pub fn video(&mut self) -> Option<&mut dyn VideoOutput> {
-        match self {
-            Self::MDC12(c) => Some(c),
-            Self::Toby(c) => Some(c),
-        }
-    }
-}
-
-// Statically dispatched, for the paths run on every bus tick and access
-
-impl NubusSlot for NubusCard {
-    fn get_irq(&self) -> bool {
-        with_card!(self, c => c.get_irq())
-    }
-
-    fn read_sized(&mut self, addr: Address, size: u32) -> Option<u32> {
-        with_card!(self, c => c.read_sized(addr, size))
-    }
-
-    fn write_sized(&mut self, addr: Address, size: u32, val: u32) -> Option<()> {
-        with_card!(self, c => c.write_sized(addr, size, val))
-    }
-
-    fn reset(&mut self) {
-        with_card!(self, c => c.reset());
-    }
-}
-
-impl Tickable<&dyn EmuContext> for NubusCard {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        with_card!(self, c => c.tick(ticks, ctx))
+    fn video(&mut self) -> Option<&mut dyn VideoOutput> {
+        None
     }
 }
 
@@ -204,17 +154,17 @@ fn read_cycle(
 ///
 /// This is what the NuChip of the Mac II, IIx and IIcx does. A 68040 makes only
 /// cycles that are NuBus transactions already, and they go through unchanged.
-pub fn card_access<B, C>(acc: BusAccess<B>, waits: Ticks, card: &mut C) -> BusResponse
-where
-    B: CpuBus,
-    C: NubusSlot + ?Sized,
-{
+pub fn card_access<B: CpuBus>(
+    acc: BusAccess<B>,
+    waits: Ticks,
+    card: &mut dyn NubusSlot,
+) -> BusResponse {
     // The helpers want a sized device: the card's reference is one
     let mut card = card;
-    let read = |card: &mut &mut C, addr: Address, len: u32| {
+    let read = |card: &mut &mut dyn NubusSlot, addr: Address, len: u32| {
         read_cycle(card_address(addr), len, |a, size| card.read_sized(a, size))
     };
-    let write = |card: &mut &mut C, addr: Address, len: u32, val: u32| {
+    let write = |card: &mut &mut dyn NubusSlot, addr: Address, len: u32, val: u32| {
         let addr = card_address(addr);
         debug_assert!(
             natural(addr, len),
@@ -232,24 +182,27 @@ where
 /// The cards in the NuBus slots of a machine, $9 to $E
 #[derive(Serialize, Deserialize)]
 pub struct Nubus {
-    cards: [Option<NubusCard>; 6],
-}
+    cards: [Option<Box<dyn NubusSlot>>; 6],
 
-impl Default for Nubus {
-    fn default() -> Self {
-        Self {
-            cards: core::array::from_fn(|_| None),
-        }
-    }
+    /// The number of ticks in one second, for the ticks that `tick()` counts
+    tick_rate: Ticks,
 }
 
 impl Nubus {
+    pub fn new(tick_rate: Ticks) -> Self {
+        Self {
+            cards: core::array::from_fn(|_| None),
+            tick_rate,
+        }
+    }
+
     /// Puts `card` in `slot`, $9 to $E
-    pub fn insert(&mut self, slot: u8, card: NubusCard) {
+    pub fn insert(&mut self, slot: u8, mut card: Box<dyn NubusSlot>) {
+        card.connected(slot, self.tick_rate);
         self.cards[usize::from(slot - 0x9)] = Some(card);
     }
 
-    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut NubusCard> {
+    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn NubusSlot>> {
         self.cards.iter_mut().flatten()
     }
 
@@ -262,7 +215,7 @@ impl Nubus {
             s => s,
         };
         let card = self.cards.get_mut((slot as usize).checked_sub(0x9)?)?;
-        Some(card_access(acc, waits, card.as_mut()?))
+        Some(card_access(acc, waits, card.as_deref_mut()?))
     }
 
     pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
@@ -297,28 +250,22 @@ impl Nubus {
         slots
             .iter()
             .map(|&slot| match &self.cards[usize::from(slot - 0x9)] {
-                Some(card) => dbgprop_nest!(format!("NuBus slot ${:1X} ({})", slot, card), card),
+                Some(card) => dbgprop_nest!(
+                    format!("NuBus slot ${:1X} ({:?})", slot, card.to_string()),
+                    card
+                ),
                 None => dbgprop_group!(format!("NuBus slot ${:1X} (empty)", slot), vec![]),
             })
             .collect()
     }
 }
 
-impl Debuggable for NubusCard {
-    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
-        self.slot_ref().get_debug_properties()
-    }
-}
-
-impl Display for NubusCard {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.slot_ref().to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::mdc12::Mdc12;
+    use super::toby::Toby;
     use super::*;
+    use crate::mac::MacMonitor;
 
     /// The transactions a read makes, and what it returns from a card
     /// answering 0x10 + offset in each byte
@@ -372,5 +319,27 @@ mod tests {
         assert_eq!(cpu_write_cycles(0, 4), [(0, 4)]);
         assert_eq!(cpu_write_cycles(2, 4), [(2, 2), (4, 2)]);
         assert_eq!(cpu_write_cycles(6, 2), [(6, 2)]);
+    }
+
+    #[test]
+    fn cards_are_saved_and_loaded() {
+        let mut nubus = Nubus::new(1);
+        nubus.insert(0x9, Box::new(Mdc12::new(&[], MacMonitor::RGB12)));
+        nubus.insert(0xB, Box::new(Toby::new(&[])));
+
+        let saved = serde_json::to_string(&nubus).unwrap();
+        let nubus: Nubus = serde_json::from_str(&saved).unwrap();
+        let cards = nubus
+            .cards
+            .iter()
+            .map(|card| card.as_ref().map(|c| c.to_string()));
+        assert!(cards.eq([
+            Some("Macintosh Display Card 8-24".to_string()),
+            None,
+            Some("Macintosh II Video Card (Toby)".to_string()),
+            None,
+            None,
+            None,
+        ]));
     }
 }
