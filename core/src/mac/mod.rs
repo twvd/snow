@@ -9,6 +9,7 @@ use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bu
 use crate::keymap::Keymap;
 use crate::renderer::FrameReceiver;
 use crate::tickable::Ticks;
+use pds::Pds;
 use scsi::bus::ScsiBus;
 
 pub mod adb;
@@ -382,6 +383,22 @@ impl MacModel {
                 "SCSI",
                 &ScsiBus::SLOT_IDS,
             ));
+        }
+        match self {
+            Self::LC | Self::LCII | Self::LCIII | Self::LC475 => buses.push(Bus::new(
+                BusKind::LcPds,
+                bus_id::PDS_LC,
+                "PDS Slot",
+                &Pds::SLOT_IDS,
+            )),
+            // No card fits it yet
+            Self::SE30 => buses.push(Bus::new(
+                BusKind::Se30Pds,
+                bus_id::PDS_SE30,
+                "PDS Slot",
+                &Pds::SLOT_IDS,
+            )),
+            _ => (),
         }
         buses
     }

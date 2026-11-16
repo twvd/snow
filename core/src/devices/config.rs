@@ -12,6 +12,10 @@ use super::{DeviceModel, FunctionConfig};
 pub mod bus_id {
     pub const SCSI: &str = "SCSI";
     pub const SWIM: &str = "SWIM";
+    /// The processor-direct slot of the LC family
+    pub const PDS_LC: &str = "PDS_LC";
+    /// The processor-direct slot of the SE/30
+    pub const PDS_SE30: &str = "PDS_SE30";
     /// The disk port of the Apple IIe Card in the processor-direct slot of an LC
     pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
 }

@@ -24,7 +24,8 @@ use crate::cpu_m68k::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, BusOps, DeviceModel, FunctionMut, FunctionStatus, bus_id,
+    AppleIIeCardFunction, BusOps, DeviceConfig, DeviceModel, FunctionConfig, FunctionMut,
+    FunctionStatus, bus_id,
 };
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -37,6 +38,7 @@ use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
 use crate::mac::maclc::pds_iie::disk::DiskII;
+use crate::mac::pds::Pds;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
@@ -627,9 +629,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(
-                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
+                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
@@ -639,9 +639,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(
-                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
+                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
@@ -651,9 +649,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIIIBus::new(
-                    model, rom, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
+                let mut bus = LcIIIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
@@ -691,7 +687,6 @@ impl Emulator {
                     mouse_mode,
                     ram_size,
                     vram_size,
-                    iie_card,
                 );
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
@@ -740,6 +735,19 @@ impl Emulator {
             device_statuses: vec![],
         };
         emu.add_default_devices(override_fdd_type)?;
+        // The Apple IIe Card, on a Mac model with the slot it fits
+        if let Some(settings) = iie_card
+            && model.buses().iter().any(|bus| bus.id == bus_id::PDS_LC)
+        {
+            let card = DeviceConfig {
+                bus: bus_id::PDS_LC.to_string(),
+                slot: Pds::SLOT_IDS[0].to_string(),
+                model: Some(DeviceModel::AppleIIePdsCard),
+                rom: None,
+                function: FunctionConfig::AppleIIeCard(settings),
+            };
+            emu.add_device_to(&card, true)?;
+        }
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -848,22 +856,15 @@ impl Emulator {
 
     /// The Apple IIe Card of the machine, seen through its function, on a machine that has one
     fn iie_card(&mut self) -> Option<&mut dyn AppleIIeCardFunction> {
-        let card = match &mut self.config {
-            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-            _ => None,
-        };
-        match card?.function() {
-            FunctionMut::AppleIIeCard(card) => Some(card),
+        match self.function_in(bus_id::PDS_LC, Pds::SLOT_IDS[0]) {
+            Ok(FunctionMut::AppleIIeCard(card)) => Some(card),
             _ => None,
         }
     }
 
     /// The slot, on the disk port of the Apple IIe Card, of the `n`th drive of a device model
     fn iie_drive_slot(&mut self, model: DeviceModel, n: usize) -> Option<&'static str> {
-        let bus = self.config.bus_ops(bus_id::IIE_DISK)?;
+        let bus = self.bus_ops(bus_id::IIE_DISK)?;
         DiskII::SLOT_IDS
             .into_iter()
             .filter(|slot| bus.device(slot).is_some_and(|d| d.info().model == model))

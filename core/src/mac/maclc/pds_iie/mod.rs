@@ -91,14 +91,14 @@ pub mod unidisk;
 
 use std::cell::RefCell;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, Bus, BusKind, BusOps, DeviceModel, DeviceOps, FunctionConfig,
-    FunctionInfo, FunctionMut, ModelInfo, bus_id,
+    AppleIIeCardFunction, Bus, BusKind, BusOps, DeviceConfig, DeviceModel, DeviceOps,
+    FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo, bus_id,
 };
 use crate::emulator::EmuContext;
 use crate::mac::dma::DmaOps;
@@ -1623,8 +1623,19 @@ const LC_BANK2_AT_C000: bool = false;
 #[cfg(feature = "iie-debug")]
 const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
+/// Makes the card, with the drives its settings name on its disk port
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::AppleIIeCard(settings) = &config.function else {
+        bail!("Not the Config of an Apple IIe Card");
+    };
+    Ok(MadeDevice::Pds(Box::new(PdsIIeCard::with_settings(
+        settings,
+    )?)))
+}
+
 pub const INFO: ModelInfo = ModelInfo {
     fixed: true,
+    create: Some(create),
     ..ModelInfo::base(
         DeviceModel::AppleIIePdsCard,
         "Apple IIe Card",
@@ -1678,17 +1689,20 @@ impl AppleIIeCardFunction for PdsIIeCard {
 
 impl PdsIIeCard {
     /// Creates a card with its 65C02 stopped and the default settings.
+    #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_settings(&IieCardSettings::default())
+        Self::with_settings(&IieCardSettings::default()).unwrap()
     }
 
     /// Creates a card with its 65C02 stopped.  The host loads the
     /// firmware and sets control register 2 bit 7 to run it.
-    pub fn with_settings(settings: &IieCardSettings) -> Self {
+    ///
+    /// The card makes the drives of its disk port, each with the create
+    /// function of its device model: a UniDisk 3.5 first if the settings
+    /// have one, then the 5.25" drives.
+    pub fn with_settings(settings: &IieCardSettings) -> Result<Self> {
         let cpu = Cpu::new(PdsIIeBus::new(), Variant::M65C02);
-        cpu.bus.state.borrow_mut().disk =
-            DiskII::new(settings.drives_525(), settings.has_unidisk());
-        Self {
+        let mut card = Self {
             settings: *settings,
             cpu,
             data_out: 0,
@@ -1706,7 +1720,29 @@ impl PdsIIeCard {
             trace_prev_pc: None,
             #[cfg(feature = "iie-debug")]
             trace_file: None,
+        };
+
+        let unidisk = settings.has_unidisk().then_some(DeviceModel::UniDisk35);
+        let drives = std::iter::repeat_n(DeviceModel::Apple525Drive, settings.drives_525());
+        let disk = &mut card.cpu.bus.state.get_mut().disk;
+        for (slot, model) in DiskII::SLOT_IDS
+            .iter()
+            .zip(unidisk.into_iter().chain(drives))
+        {
+            let info = model.info();
+            let create = info
+                .create
+                .with_context(|| format!("{} can't be made", info.name))?;
+            let config = DeviceConfig {
+                bus: bus_id::IIE_DISK.to_string(),
+                slot: slot.to_string(),
+                model: Some(model),
+                rom: None,
+                function: FunctionConfig::Floppy,
+            };
+            disk.attach(slot, create(&config)?)?;
         }
+        Ok(card)
     }
 
     /// Reads one bus cycle of `len` bytes (1 or 2) from the host
@@ -2159,12 +2195,6 @@ impl PdsIIeCard {
     }
 }
 
-impl Default for PdsIIeCard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[typetag::serde]
 impl PdsSlot for PdsIIeCard {
     /// The card answers every cycle in the slot: what it doesn't decode
@@ -2429,7 +2459,7 @@ mod tests {
             security_jumper: true,
             disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
         };
-        let mut card = PdsIIeCard::with_settings(&settings);
+        let mut card = PdsIIeCard::with_settings(&settings).unwrap();
         assert_eq!(card.info().model, DeviceModel::AppleIIePdsCard);
         assert_eq!(card.config(), FunctionConfig::AppleIIeCard(settings));
         let FunctionMut::AppleIIeCard(iie) = card.function() else {
@@ -4258,7 +4288,7 @@ mod tests {
                 disk_chain: chain,
                 ..IieCardSettings::default()
             };
-            let mut card = PdsIIeCard::with_settings(&settings);
+            let mut card = PdsIIeCard::with_settings(&settings).unwrap();
             card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
             call_slot5(&mut card, &[], 0xCEC1);
             assert!(
@@ -4272,7 +4302,7 @@ mod tests {
             disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
             ..IieCardSettings::default()
         };
-        let mut card = PdsIIeCard::with_settings(&settings);
+        let mut card = PdsIIeCard::with_settings(&settings).unwrap();
         card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
         let mut img = vec![0u8; 1600 * 512];
         for (i, b) in img.iter_mut().enumerate() {

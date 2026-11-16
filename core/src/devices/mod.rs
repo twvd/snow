@@ -17,6 +17,7 @@ use strum::IntoEnumIterator;
 use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie;
+use crate::mac::pds::PdsSlot;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::swim;
@@ -29,6 +30,8 @@ pub enum BusKind {
     Swim,
     /// The processor-direct slot of the LC family
     LcPds,
+    /// The processor-direct slot of the SE/30
+    Se30Pds,
     /// The disk port of an Apple IIe Card
     IieDisk,
 }
@@ -193,6 +196,8 @@ pub(crate) enum MadeDevice {
     Scsi(Box<dyn ScsiTarget>),
     /// A device for a drive connector of the floppy controller
     Swim(Box<dyn SwimBusDevice>),
+    /// A card for a processor-direct slot
+    Pds(Box<dyn PdsSlot>),
 }
 
 /// The ROM file a device model needs, which the user provides
