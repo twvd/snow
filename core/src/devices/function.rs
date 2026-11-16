@@ -24,27 +24,41 @@ pub trait FloppyFunction {
     /// Ejects the disk. Called when the user ejects it from the menu.
     fn eject(&mut self);
     /// Puts the disk of an image already in memory in the drive, such as a blank disk. Called
-    /// when the user picks one.
-    fn insert_image(&mut self, image: Box<FloppyImage>, read_only: bool) -> Result<()>;
-    /// Saves the disk to the image file `path`. Called when the user saves the disk.
-    fn save(&mut self, path: &Path) -> Result<()>;
+    /// when the user picks one. Refused by default.
+    fn insert_image(&mut self, _image: Box<FloppyImage>, _read_only: bool) -> Result<()> {
+        bail!("This drive takes no image from memory")
+    }
+    /// Saves the disk to the image file `path`. Called when the user saves the disk. Refused
+    /// by default.
+    fn save(&mut self, _path: &Path) -> Result<()> {
+        bail!("This drive can't save its disk")
+    }
     /// Turns write-back on or off: with it, the writes of the guest go to the file the disk
-    /// came from. Called when the user changes it.
-    fn set_writeback(&mut self, enabled: bool) -> Result<()>;
+    /// came from. Called when the user changes it. Refused by default.
+    fn set_writeback(&mut self, _enabled: bool) -> Result<()> {
+        bail!("This drive can't write its disk back")
+    }
     /// Writes the disk back to the file it came from, if write-back is on and the drive has
     /// stopped since the last write; with `force`, even while the disk turns. A disk that was
     /// ejected with unsaved writes is written back too. Called by the emulator after each
-    /// batch of instructions, and with `force` before a menu eject and when it quits.
-    fn write_back(&mut self, force: bool) -> Result<()>;
+    /// batch of instructions, and with `force` before a menu eject and when it quits. Nothing
+    /// by default.
+    fn write_back(&mut self, _force: bool) -> Result<()> {
+        Ok(())
+    }
     /// Takes the image of the last disk ejected, which the frontend can put back or save.
-    /// Called at each status update.
-    fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>>;
+    /// Called at each status update. None by default.
+    fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
+        None
+    }
     /// Makes the disk turn faster or slower, by `rpm` turns per minute. Called when the user
-    /// changes the speed adjustment.
-    fn set_rpm_adjustment(&mut self, rpm: i32) -> Result<()>;
+    /// changes the speed adjustment. Refused by default.
+    fn set_rpm_adjustment(&mut self, _rpm: i32) -> Result<()> {
+        bail!("The speed of this drive can't be adjusted")
+    }
     /// Seeds the random bits of the drive, for runs that must repeat. None: random again.
-    /// Called on every floppy drive when the frontend sets the seed.
-    fn seed_weak_bits(&mut self, seed: Option<u64>);
+    /// Called on every floppy drive when the frontend sets the seed. Nothing by default.
+    fn seed_weak_bits(&mut self, _seed: Option<u64>) {}
 }
 
 pub trait HardDiskFunction {
