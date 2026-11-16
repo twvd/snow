@@ -1,10 +1,11 @@
 //! SCSI hard disk drive (block device)
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
+use crate::devices::{DeviceOps, FunctionMut, HardDiskFunction, HardDiskStatus};
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
@@ -22,6 +23,7 @@ pub const DISK_BLOCKSIZE: usize = 512;
 pub(super) struct ScsiTargetDisk {
     common: ScsiTargetCommon,
 
+    /// The disk's storage. A disk with none answers Not Ready.
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
 }
@@ -56,20 +58,55 @@ impl ScsiTargetDisk {
             .as_deref_mut()
             .expect("SCSI disk backend missing")
     }
+
+    fn not_ready(&mut self) -> Result<ScsiCmdResult> {
+        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+    }
+}
+
+impl DeviceOps for ScsiTargetDisk {
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::HardDisk(self)
+    }
+}
+
+impl HardDiskFunction for ScsiTargetDisk {
+    fn status(&self) -> HardDiskStatus {
+        HardDiskStatus {
+            media: self
+                .backend
+                .as_ref()
+                .and_then(|backend| backend.image_path())
+                .map(Path::to_path_buf),
+            capacity: self.capacity().unwrap_or(0),
+        }
+    }
+
+    fn branch(&mut self, path: &Path) -> Result<()> {
+        self.backend
+            .as_deref_mut()
+            .context("The disk has no image")?
+            .branch_media(path)
+    }
+
+    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
+        if self.backend.is_some() {
+            bail!("The disk already has an image");
+        }
+        self.backend = Some(image);
+        Ok(())
+    }
+
+    fn savestate_image(&self) -> Option<&[u8]> {
+        self.backend.as_ref()?.media_bytes()
+    }
 }
 
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetDisk {
     fn common(&mut self) -> &mut ScsiTargetCommon {
         &mut self.common
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("load_media on non-removable disk");
-    }
-
-    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
-        bail!("load_image on non-removable disk");
     }
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
@@ -81,6 +118,9 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        if self.backend.is_none() {
+            return self.not_ready();
+        }
         Ok(ScsiCmdResult::Status(STATUS_GOOD))
     }
 
@@ -208,7 +248,7 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn blocks(&self) -> Option<usize> {
-        Some(self.backend().byte_len() / DISK_BLOCKSIZE)
+        Some(self.backend.as_ref()?.byte_len() / DISK_BLOCKSIZE)
     }
 
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
@@ -229,11 +269,11 @@ impl ScsiTarget for ScsiTargetDisk {
         self.backend_mut().write_bytes(offset, data);
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        self.backend().image_path()
-    }
-
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        // READ(6) and WRITE(6) are only left to the device when it has no storage
+        if matches!(cmd[0], 0x08 | 0x0A) {
+            return self.not_ready();
+        }
         log::error!("Unknown command {:02X}h", cmd[0]);
         self.common
             .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
@@ -257,42 +297,119 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        self.backend = Some(Box::new(FileDiskImage::open_block_sized(
-            imgfn,
-            true,
-            DISK_BLOCKSIZE,
-        )?));
+    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
         Ok(())
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_len(&self) -> Option<usize> {
-        self.capacity()
-    }
-
-    #[cfg(feature = "savestates")]
-    fn savestate_img_data(&self) -> Option<&[u8]> {
-        self.backend().media_bytes()
-    }
-
-    fn branch_media(&mut self, path: &Path) -> Result<()> {
-        self.backend_mut().branch_media(path)
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
     }
 }
 
 impl Debuggable for ScsiTargetDisk {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// A disk image in memory, which notes the file it is branched to
+    struct MemoryImage {
+        data: Vec<u8>,
+        path: Option<PathBuf>,
+    }
+
+    impl DiskImage for MemoryImage {
+        fn byte_len(&self) -> usize {
+            self.data.len()
+        }
+
+        fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
+            self.data[offset..offset + length].to_vec()
+        }
+
+        fn write_bytes(&mut self, offset: usize, data: &[u8]) {
+            self.data[offset..offset + data.len()].copy_from_slice(data);
+        }
+
+        fn media_bytes(&self) -> Option<&[u8]> {
+            Some(&self.data)
+        }
+
+        fn image_path(&self) -> Option<&Path> {
+            self.path.as_deref()
+        }
+
+        fn branch_media(&mut self, path: &Path) -> Result<()> {
+            self.path = Some(path.to_path_buf());
+            Ok(())
+        }
+    }
+
+    fn image() -> Box<dyn DiskImage> {
+        Box::new(MemoryImage {
+            data: vec![0; 4 * DISK_BLOCKSIZE],
+            path: None,
+        })
+    }
+
+    fn function(disk: &mut ScsiTargetDisk) -> &mut dyn HardDiskFunction {
+        match disk.function() {
+            FunctionMut::HardDisk(disk) => disk,
+            _ => panic!("A hard disk has the HardDisk function"),
+        }
+    }
+
+    /// The status of a command, and the sense key it left
+    fn status_and_key(disk: &mut ScsiTargetDisk, cmd: &[u8]) -> (u8, u8) {
+        let ScsiCmdResult::Status(status) = disk.cmd(cmd, None).unwrap() else {
+            panic!("Expected a status");
+        };
+        (status, disk.common.req_sense().0)
+    }
+
+    #[test]
+    fn branch_changes_the_image_file() {
+        let mut disk = ScsiTargetDisk::new(image());
+        let disk = function(&mut disk);
+        assert_eq!(
+            disk.status(),
+            HardDiskStatus {
+                media: None,
+                capacity: 4 * DISK_BLOCKSIZE,
+            }
+        );
+
+        disk.branch(Path::new("branch.img")).unwrap();
+        assert_eq!(disk.status().media, Some(PathBuf::from("branch.img")));
+    }
+
+    #[test]
+    fn disk_without_storage_is_not_ready() {
+        let mut disk = ScsiTargetDisk {
+            common: Default::default(),
+            backend: None,
+        };
+        assert_eq!(function(&mut disk).status().capacity, 0);
+        assert!(function(&mut disk).branch(Path::new("b.img")).is_err());
+
+        let not_ready = (STATUS_CHECK_CONDITION, CC_KEY_NOT_READY);
+        // TEST UNIT READY, READ(6), READ CAPACITY(10), READ(10)
+        assert_eq!(status_and_key(&mut disk, &[0x00, 0, 0, 0, 0, 0]), not_ready);
+        assert_eq!(status_and_key(&mut disk, &[0x08, 0, 0, 0, 1, 0]), not_ready);
+        assert_eq!(status_and_key(&mut disk, &[0x25; 10]), not_ready);
+        assert_eq!(
+            status_and_key(&mut disk, &[0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
+            not_ready
+        );
+
+        // Its storage arrives: it is ready, and takes no other
+        function(&mut disk).load_image(image()).unwrap();
+        assert_eq!(
+            status_and_key(&mut disk, &[0x00, 0, 0, 0, 0, 0]),
+            (STATUS_GOOD, 0)
+        );
+        assert!(function(&mut disk).load_image(image()).is_err());
     }
 }

@@ -10,13 +10,13 @@ use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
+#[cfg(feature = "ethernet")]
+use crate::devices::EthernetLinkType;
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie::GamePort;
 use crate::mac::scc::SccCh;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::tickable::Ticks;
@@ -186,8 +186,7 @@ pub struct EmulatorStatus {
     pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
-#[cfg(feature = "ethernet")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EthernetCaptureStatus {
     pub active: bool,
     pub filename: Option<PathBuf>,

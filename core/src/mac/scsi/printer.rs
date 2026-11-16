@@ -4,9 +4,12 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "savestates")]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::debuggable::Debuggable;
+use crate::devices::{DeviceOps, FunctionMut, PrinterFunction, PrinterStatus};
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
@@ -225,6 +228,20 @@ impl ScsiTargetPrinter {
     }
 }
 
+impl DeviceOps for ScsiTargetPrinter {
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Printer(self)
+    }
+}
+
+impl PrinterFunction for ScsiTargetPrinter {
+    fn status(&self) -> PrinterStatus {
+        PrinterStatus {
+            output_dir: self.output_dir.clone(),
+        }
+    }
+}
+
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetPrinter {
     fn common(&mut self) -> &mut ScsiTargetCommon {
@@ -414,25 +431,6 @@ impl ScsiTarget for ScsiTargetPrinter {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
     /// Handle LaserWriter IISC SCSI commands for now, maybe others later
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
@@ -573,16 +571,6 @@ impl ScsiTarget for ScsiTargetPrinter {
             }
         }
     }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
-    }
 }
 
 impl Debuggable for ScsiTargetPrinter {
@@ -595,5 +583,19 @@ impl Debuggable for ScsiTargetPrinter {
             dbgprop_str!("Paper size", self.paper_name()),
             dbgprop_udec!("Pages printed", self.page_count),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_shows_in_the_status() {
+        let mut printer = ScsiTargetPrinter::new(PathBuf::from("pages"));
+        let FunctionMut::Printer(function) = printer.function() else {
+            panic!("A printer has the Printer function");
+        };
+        assert_eq!(function.status().output_dir, PathBuf::from("pages"));
     }
 }

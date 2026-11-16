@@ -10,6 +10,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
+use crate::devices::{CdromFunction, FunctionMut};
 use crate::emulator::EmuContext;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
@@ -119,35 +120,6 @@ impl ScsiBus {
         }
     }
 
-    /// Returns the capacity of a target or None if detached or no media
-    pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
-        self.targets[id].as_ref().and_then(|t| t.capacity())
-    }
-
-    /// Returns the length of image data to write to savestates or None if no data
-    #[cfg(feature = "savestates")]
-    pub fn get_savestate_img_len(&self, id: usize) -> Option<usize> {
-        self.targets[id]
-            .as_ref()
-            .and_then(|t| t.savestate_img_len())
-    }
-
-    /// Returns the image filename of a target or None if detached or no media
-    pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.image_fn())
-    }
-
-    /// Gets the target type (if attached) of an ID
-    pub fn get_target_type(&self, id: usize) -> Option<ScsiTargetType> {
-        self.targets[id].as_ref().map(|t| t.target_type())
-    }
-
-    /// Returns the Toolbox-managed image folder of a folder-backed CD-ROM at the
-    /// given ID, or None if the ID has no folder-backed CD-ROM attached.
-    pub fn get_cdrom_folder(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().and_then(|t| t.cdrom_image_dir())
-    }
-
     /// Builds the BlueSCSI Toolbox device-type map (one byte per SCSI ID) returned
     /// by the LIST_DEVICES metadata subcommand. 0xFF means no device on that ID.
     fn toolbox_device_map(&self) -> [u8; 8] {
@@ -215,15 +187,14 @@ impl ScsiBus {
     pub fn attach_cdrom_folder_at(
         &mut self,
         scsi_id: usize,
-        dir: PathBuf,
+        dir: &Path,
         audio_provider: Option<&mut (dyn AudioProvider + '_)>,
     ) -> Result<()> {
         if scsi_id >= Self::MAX_TARGETS {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
         let mut cdrom = ScsiTargetCdrom::new(audio_provider);
-        cdrom.set_image_dir(Some(dir));
-        if let Err(e) = cdrom.mount_first_image() {
+        if let Err(e) = cdrom.set_folder(dir) {
             log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
         }
         self.targets[scsi_id] = Some(Box::new(cdrom));
@@ -243,7 +214,10 @@ impl ScsiBus {
         let Some(target) = self.targets[scsi_id].as_mut() else {
             bail!("No target attached at SCSI ID {}", scsi_id);
         };
-        target.load_image(image)
+        let FunctionMut::Cdrom(cdrom) = target.function() else {
+            bail!("No CD-ROM drive at SCSI ID {}", scsi_id);
+        };
+        cdrom.load_image(image)
     }
 
     /// Attaches an Ethernet adapter at the given SCSI ID
@@ -267,8 +241,10 @@ impl ScsiBus {
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        for t in self.targets.iter_mut().flatten() {
-            t.set_audio_provider(provider)?;
+        for target in self.targets.iter_mut().flatten() {
+            if let FunctionMut::Cdrom(cdrom) = target.function() {
+                cdrom.set_audio_provider(provider)?;
+            }
         }
 
         Ok(())
