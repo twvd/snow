@@ -503,11 +503,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::devices::{CdromStatus, FunctionStatus};
+    use crate::devices::{CdromStatus, DisplayConfig, DisplayStatus, FunctionStatus};
     #[cfg(feature = "ethernet")]
     use crate::devices::{EthernetConfig, EthernetLinkType};
     use crate::emulator::comm::EmulatorEvent;
-    use crate::mac::MacModel;
+    use crate::mac::{MacModel, MacMonitor};
 
     /// A Macintosh Plus, which has a SCSI bus
     fn plus() -> Emulator {
@@ -612,7 +612,26 @@ mod tests {
 
         for model in MacModel::iter() {
             let mut emu = machine(model);
-            for bus in model.buses() {
+            // A Macintosh II of these tests has a video card in its first slot
+            let mut buses = model.buses();
+            let mut devices = vec![];
+            if let Some(nubus) = buses.iter_mut().find(|bus| bus.id == bus_id::NUBUS) {
+                let function = FunctionConfig::Display(DisplayConfig::default());
+                nubus.slots[0].device = Some(Device {
+                    model: DeviceModel::DisplayCard824,
+                    rom: None,
+                    function: function.clone(),
+                    name: None,
+                });
+                devices.push(DeviceConfig {
+                    bus: nubus.id.clone(),
+                    slot: nubus.slots[0].id.clone(),
+                    model: Some(DeviceModel::DisplayCard824),
+                    rom: None,
+                    function,
+                });
+            }
+            for bus in &buses {
                 let ops = emu
                     .config
                     .bus_ops(&bus.id)
@@ -632,9 +651,77 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(emu.buses(), model.buses());
-            assert_eq!(emu.devices(), vec![]);
+            assert_eq!(emu.buses(), buses);
+            assert_eq!(emu.devices(), devices);
         }
+    }
+
+    #[test]
+    fn a_video_card_is_made_from_its_rom_file() {
+        let dir = TestDir::new("video_card");
+        let rom = dir.file("card.rom", 4096);
+        let card = |slot: &str, model, rom: Option<&Path>, monitor| DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: slot.into(),
+            model: Some(model),
+            rom: rom.map(Path::to_path_buf),
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor,
+                vram_size: None,
+            }),
+        };
+        let mut emu = machine(MacModel::MacII);
+
+        // A second card, with the monitor chosen for it: the machine reports both as given
+        let second = card(
+            "A",
+            DeviceModel::DisplayCard824,
+            Some(&rom),
+            Some(MacMonitor::RGB12),
+        );
+        emu.add_device_to(&second, true).unwrap();
+        let third = card("B", DeviceModel::MacIIVideoCard, Some(&rom), None);
+        emu.add_device_to(&third, true).unwrap();
+        assert_eq!(emu.devices()[1..], [second.clone(), third]);
+        assert_eq!(
+            emu.device_function(bus_id::NUBUS, "A").unwrap().status(),
+            FunctionStatus::Display(DisplayStatus { connected: true })
+        );
+
+        // A card with nothing on its connector shows no display
+        let none = card(
+            "C",
+            DeviceModel::DisplayCard824,
+            Some(&rom),
+            Some(MacMonitor::NoMonitor),
+        );
+        emu.add_device_to(&none, true).unwrap();
+        assert_eq!(
+            emu.device_function(bus_id::NUBUS, "C").unwrap().status(),
+            FunctionStatus::Display(DisplayStatus { connected: false })
+        );
+
+        // A card needs its ROM file, is only added when the machine is made, and goes in a
+        // slot the machine has
+        let no_rom = card("D", DeviceModel::DisplayCard824, None, None);
+        assert!(emu.add_device_to(&no_rom, true).is_err());
+        let missing = card(
+            "D",
+            DeviceModel::DisplayCard824,
+            Some(&dir.0.join("no")),
+            None,
+        );
+        assert!(emu.add_device_to(&missing, true).is_err());
+        let late = card("D", DeviceModel::DisplayCard824, Some(&rom), None);
+        assert!(emu.add_device(&late).is_err());
+        let mut iicx = machine(MacModel::MacIIcx);
+        assert!(iicx.add_device_to(&late, true).is_err());
+        // No NuBus card goes in a machine without NuBus
+        assert!(
+            machine(MacModel::Plus)
+                .add_device_to(&second, true)
+                .is_err()
+        );
     }
 
     #[test]

@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::{FloppyImage, FloppyType};
 
 use crate::emulator::comm::EthernetCaptureStatus;
+use crate::mac::MacMonitor;
 use crate::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use crate::mac::scsi::disk_image::DiskImage;
-use crate::renderer::AudioProvider;
+use crate::renderer::{AudioProvider, FrameReceiver};
 
 pub trait FloppyFunction {
     /// The live state of the drive. Called at each status update.
@@ -116,6 +117,17 @@ pub trait PrinterFunction {
     fn status(&self) -> PrinterStatus;
 }
 
+/// A video display: a video card, or the built-in video of a machine. It owns its renderer.
+pub trait DisplayFunction {
+    /// The live state of the display. Called at each status update.
+    fn status(&self) -> DisplayStatus;
+    /// Where the frontend picks up the frames of this display. Called by the emulator once,
+    /// when the machine is made or loaded from a save state.
+    fn frames(&self) -> FrameReceiver;
+    /// Shows a blank screen. Called when the machine resets or stops.
+    fn blank(&mut self) -> Result<()>;
+}
+
 /// What only the Apple IIe Card has
 pub trait AppleIIeCardFunction {
     /// Whether the Apple IIe has the screen and the keyboard, as the event `IieInFront` reports
@@ -134,6 +146,7 @@ pub enum FunctionInfo {
     Cdrom,
     Ethernet(EthernetInfo),
     Printer,
+    Display(DisplayInfo),
     AppleIIeCard,
 }
 
@@ -151,6 +164,7 @@ pub enum FunctionConfig {
     Cdrom(CdromConfig),
     Ethernet(EthernetConfig),
     Printer(PrinterConfig),
+    Display(DisplayConfig),
     AppleIIeCard(IieCardSettings),
 }
 
@@ -161,6 +175,7 @@ pub enum FunctionMut<'a> {
     Cdrom(&'a mut dyn CdromFunction),
     Ethernet(&'a mut dyn EthernetFunction),
     Printer(&'a mut dyn PrinterFunction),
+    Display(&'a mut dyn DisplayFunction),
     AppleIIeCard(&'a mut dyn AppleIIeCardFunction),
 }
 
@@ -172,6 +187,7 @@ pub enum FunctionStatus {
     Cdrom(CdromStatus),
     Ethernet(EthernetStatus),
     Printer(PrinterStatus),
+    Display(DisplayStatus),
     AppleIIeCard,
 }
 
@@ -183,6 +199,7 @@ impl FunctionMut<'_> {
             Self::Cdrom(cdrom) => FunctionStatus::Cdrom(cdrom.status()),
             Self::Ethernet(ethernet) => FunctionStatus::Ethernet(ethernet.status()),
             Self::Printer(printer) => FunctionStatus::Printer(printer.status()),
+            Self::Display(display) => FunctionStatus::Display(display.status()),
             Self::AppleIIeCard(_) => FunctionStatus::AppleIIeCard,
         }
     }
@@ -288,6 +305,49 @@ pub struct PrinterConfig {
 pub struct PrinterStatus {
     /// The folder its pages go to
     pub output_dir: PathBuf,
+}
+
+/// What a device model with the Display function supports
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayInfo {
+    /// What can be on its connector, `MacMonitor::NoMonitor` included, ordered by size. Empty:
+    /// it has no connector, the screen is the machine's own.
+    pub monitors: &'static [MacMonitor],
+    /// The index in `monitors` of the monitor it has when none is chosen
+    pub default_monitor: usize,
+    /// The VRAM sizes it can have, in bytes, from the smallest. One: no choice.
+    pub vram_sizes: &'static [usize],
+    /// The index in `vram_sizes` of the size it has when none is chosen
+    pub default_vram_size: usize,
+}
+
+impl DisplayInfo {
+    /// The monitor of a video for which none is chosen. None: it has no connector.
+    pub fn default_monitor(&self) -> Option<MacMonitor> {
+        self.monitors.get(self.default_monitor).copied()
+    }
+
+    /// The VRAM size of a video for which none is chosen. None: its VRAM has one size, which
+    /// the device model doesn't list.
+    pub fn default_vram_size(&self) -> Option<usize> {
+        self.vram_sizes.get(self.default_vram_size).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConfig {
+    /// One of `DisplayInfo::monitors`. None: the default monitor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<MacMonitor>,
+    /// One of `DisplayInfo::vram_sizes`. None: the default size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayStatus {
+    /// False: nothing is on its connector, so it shows no display
+    pub connected: bool,
 }
 
 /// What an Ethernet adapter is connected to on the host

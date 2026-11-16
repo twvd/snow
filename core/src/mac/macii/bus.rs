@@ -10,17 +10,14 @@ use crate::bus::{
 };
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, bus_id};
+use crate::devices::{BusOps, DisplayFunction, FunctionMut, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
-use crate::mac::VideoOutput;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
 use crate::mac::nubus::Nubus;
-use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::toby::Toby;
 use crate::mac::pds::Pds;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
@@ -29,9 +26,7 @@ use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{
-    AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
@@ -274,39 +269,19 @@ impl MacIIBus {
     const OPENBUS: u8 = 0;
 
     #[allow(clippy::too_many_arguments)]
+    /// A machine with no card in its NuBus slots. `se30_video_rom` is the ROM of the SE/30's
+    /// video, on an SE/30.
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        nubus: &[NubusCardConfig],
+        se30_video_rom: Option<&[u8]>,
         extension_rom: Option<&[u8]>,
-        monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         amu: bool,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
-        let mut cards = Nubus::new(BUS_FREQUENCY);
-        let mut se30_video = None;
-        for cfg in nubus {
-            assert!(
-                model.nubus_slots().contains(&cfg.slot),
-                "NuBus slot {:#X} not available on {}",
-                cfg.slot,
-                model
-            );
-            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            match cfg.kind {
-                NubusDeviceKind::Mdc12 => {
-                    cards.insert(cfg.slot, Box::new(Mdc12::new(cfg.rom, monitor)));
-                }
-                NubusDeviceKind::Toby => {
-                    cards.insert(cfg.slot, Box::new(Toby::new(cfg.rom)));
-                }
-                NubusDeviceKind::SE30Video => {
-                    se30_video = Some(SE30Video::new(cfg.rom));
-                }
-            }
-        }
+        let cards = Nubus::new(BUS_FREQUENCY, model.nubus_slots());
+        let se30_video = se30_video_rom.map(SE30Video::new);
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let ram_config = Self::RAM_CONFIG
             .iter()
@@ -840,9 +815,9 @@ impl MacIIBus {
         if let Some(video) = self.se30_video.as_mut() {
             video.blank()?;
         }
-        for d in self.nubus.cards_mut() {
-            if let Some(video) = d.video() {
-                video.blank()?;
+        for card in self.nubus.cards_mut() {
+            if let FunctionMut::Display(display) = card.function() {
+                display.blank()?;
             }
         }
         Ok(())
@@ -851,15 +826,16 @@ impl MacIIBus {
     /// Where the frontend picks up the frames of the machine's video
     pub fn video_frames(&mut self) -> FrameReceiver {
         // TODO multiple video cards
-        let video = match self.se30_video.as_mut() {
-            Some(video) => video as &mut dyn VideoOutput,
-            None => self
-                .nubus
-                .cards_mut()
-                .find_map(|card| card.video())
-                .expect("no video card"),
-        };
-        video.frames()
+        if let Some(video) = &self.se30_video {
+            return video.frames();
+        }
+        self.nubus
+            .cards_mut()
+            .find_map(|card| match card.function() {
+                FunctionMut::Display(display) => Some(display.frames()),
+                _ => None,
+            })
+            .expect("no video card")
     }
 
     /// The bus with this id, for the emulator's device code
@@ -867,6 +843,7 @@ impl MacIIBus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::NUBUS if !self.model.nubus_slots().is_empty() => Some(&mut self.nubus),
             bus_id::PDS_SE30 if self.model == MacModel::SE30 => Some(&mut self.pds),
             _ => None,
         }
@@ -1241,7 +1218,7 @@ impl Debuggable for MacIIBus {
             result.push(dbgprop_nest!("SE/30 video", video));
             return result;
         }
-        result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
+        result.extend(self.nubus.debug_properties());
         result
     }
 }
@@ -1252,7 +1229,6 @@ mod tests {
     use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, MadeDevice, ModelInfo};
     use crate::mac::nubus::NubusSlot;
     use crate::mac::pds::PdsSlot;
-    use std::fmt::Display;
 
     const PATTERN: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     const FROM: Address = 0x1000;
@@ -1264,6 +1240,20 @@ mod tests {
     /// that nothing answers at
     #[derive(Serialize, Deserialize)]
     struct DmaCard;
+
+    impl DeviceOps for DmaCard {
+        fn info(&self) -> &'static ModelInfo {
+            &crate::mac::nubus::toby::INFO
+        }
+
+        fn config(&self) -> FunctionConfig {
+            FunctionConfig::Display(Default::default())
+        }
+
+        fn function(&mut self) -> FunctionMut<'_> {
+            unreachable!()
+        }
+    }
 
     #[typetag::serde]
     impl NubusSlot for DmaCard {
@@ -1305,25 +1295,20 @@ mod tests {
         }
     }
 
-    impl Display for DmaCard {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "DMA test card")
-        }
-    }
-
     #[test]
     fn a_card_reads_and_writes_the_ram_at_its_tick() {
         let mut bus = MacIIBus::new(
             MacModel::MacII,
             &vec![0; 256 * 1024],
-            &[],
             None,
-            MacMonitor::default(),
+            None,
             MouseMode::Disabled,
             None,
             true,
         );
-        bus.nubus.insert(0x9, Box::new(DmaCard));
+        bus.nubus
+            .attach("9", MadeDevice::Nubus(Box::new(DmaCard)))
+            .unwrap();
         // The RAM is at its addresses once the boot overlay is off
         bus.overlay = false;
         let from = FROM as usize;
@@ -1391,9 +1376,8 @@ mod tests {
         let mut bus = MacIIBus::new(
             MacModel::SE30,
             &vec![0; 256 * 1024],
-            &[],
             None,
-            MacMonitor::default(),
+            None,
             MouseMode::Disabled,
             None,
             true,
