@@ -1,4 +1,5 @@
 pub mod comm;
+mod devices;
 
 #[cfg(feature = "savestates")]
 pub mod save;
@@ -24,7 +25,7 @@ use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{FunctionMut, FunctionStatus};
+use crate::devices::{BusOps, FunctionMut, FunctionStatus, bus_id};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
@@ -58,7 +59,6 @@ use std::fmt;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
 use crate::mac::scsi::bus::ScsiBus;
-use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
@@ -382,6 +382,8 @@ dispatch! {
         fn progkey(&mut self) -> () { bus.progkey() }
         fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
         fn video_frames(&mut self) -> FrameReceiver { bus.video_frames() }
+
+        fn bus_ops(&mut self, id: &str) -> Option<&mut dyn BusOps> { bus.bus_ops(id) }
 
         fn persist_pram(&mut self, path: &Path) -> () { bus.persist_pram(path) }
         fn set_datetime(&mut self, dt: chrono::NaiveDateTime) -> () { bus.set_datetime(dt) }
@@ -1236,26 +1238,6 @@ impl Emulator {
             .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
     }
 
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
-    }
-
-    pub fn attach_disk_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        self.config.scsi_mut().attach_disk_image_at(image, scsi_id)
-    }
-
-    pub fn insert_cdrom_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        self.config.scsi_mut().insert_cdrom_image_at(image, scsi_id)
-    }
-
     fn user_error(&self, msg: &str) {
         self.event_sender
             .send(EmulatorEvent::UserMessage(
@@ -1482,37 +1464,6 @@ impl Emulator {
 
     pub fn get_cycles(&self) -> Ticks {
         self.config.cpu_cycles()
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom(&mut self, id: usize) {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
-        info!("SCSI ID #{}: CD-ROM drive attached", id);
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: &Path) -> Result<()> {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config
-            .scsi_mut()
-            .attach_cdrom_folder_at(id, dir, audio_provider)?;
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) {
-        self.config.scsi_mut().attach_ethernet_at(id);
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
-        self.config.scsi_mut().attach_printer_at(id, output_dir);
-        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
     }
 
     #[cfg(feature = "savestates")]
@@ -1821,7 +1772,9 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiAttachCdrom(id) => {
-                        self.attach_cdrom(id);
+                        if let Err(e) = self.attach_cdrom(id) {
+                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
@@ -1832,17 +1785,23 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::ScsiAttachEthernet(id) => {
-                        self.attach_ethernet(id);
+                        if let Err(e) = self.attach_ethernet(id) {
+                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                        }
                         self.status_update()?;
                     }
                     #[cfg(feature = "printer")]
                     EmulatorCommand::ScsiAttachPrinter(id, output_dir) => {
-                        self.attach_printer(id, output_dir);
+                        if let Err(e) = self.attach_printer(id, output_dir) {
+                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachScsiTarget(id) => {
-                        self.config.scsi_mut().detach_target(id);
-                        info!("SCSI ID #{}: target detached", id);
+                        match self.remove_device(bus_id::SCSI, &id.to_string()) {
+                            Ok(_) => info!("SCSI ID #{}: target detached", id),
+                            Err(e) => self.user_error(&format!("SCSI ID #{}: {:#}", id, e)),
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {

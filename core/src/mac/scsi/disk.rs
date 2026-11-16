@@ -6,8 +6,8 @@ use std::path::Path;
 
 use crate::debuggable::Debuggable;
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, FunctionInfo, FunctionMut, HardDiskFunction, HardDiskStatus,
-    ModelInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
+    HardDiskFunction, HardDiskStatus, MadeDevice, ModelInfo,
 };
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
@@ -32,24 +32,27 @@ pub(super) struct ScsiTargetDisk {
 }
 
 impl ScsiTargetDisk {
-    pub fn new(backend: Box<dyn DiskImage>) -> Self {
-        Self {
-            common: Default::default(),
-            backend: Some(backend),
-        }
-    }
-
-    /// Try to load a disk image, given the filename of the image.
+    /// A disk with the image file `media`, or with no storage yet.
     ///
     /// This locks the file on disk and memory maps the file for use by
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
-    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        Ok(Self::new(Box::new(FileDiskImage::open_block_sized(
-            filename,
-            true,
-            DISK_BLOCKSIZE,
-        )?)))
+    fn new(media: Option<&Path>) -> Result<Self> {
+        let mut disk = Self {
+            common: Default::default(),
+            backend: None,
+        };
+        if let Some(filename) = media {
+            if !filename.exists() {
+                bail!("File {} does not exist", filename.to_string_lossy());
+            }
+            disk.backend = Some(Box::new(FileDiskImage::open_block_sized(
+                filename,
+                true,
+                DISK_BLOCKSIZE,
+            )?));
+        }
+        Ok(disk)
     }
 
     fn backend(&self) -> &dyn DiskImage {
@@ -68,12 +71,24 @@ impl ScsiTargetDisk {
     }
 }
 
-pub const INFO: ModelInfo = ModelInfo::base(
-    DeviceModel::ScsiHardDisk,
-    "Hard disk",
-    BusKind::Scsi,
-    FunctionInfo::HardDisk,
-);
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::ScsiHardDisk,
+        "Hard disk",
+        BusKind::Scsi,
+        FunctionInfo::HardDisk,
+    )
+};
+
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::HardDisk(disk) = &config.function else {
+        bail!("A hard disk needs a hard disk's config");
+    };
+    Ok(MadeDevice::Scsi(Box::new(ScsiTargetDisk::new(
+        disk.media.as_deref(),
+    )?)))
+}
 
 impl DeviceOps for ScsiTargetDisk {
     fn info(&self) -> &'static ModelInfo {
@@ -385,26 +400,26 @@ mod tests {
 
     #[test]
     fn branch_changes_the_image_file() {
-        let mut disk = ScsiTargetDisk::new(image());
-        let disk = function(&mut disk);
+        let mut disk = ScsiTargetDisk::new(None).unwrap();
+        function(&mut disk).load_image(image()).unwrap();
         assert_eq!(
-            disk.status(),
+            function(&mut disk).status(),
             HardDiskStatus {
                 media: None,
                 capacity: 4 * DISK_BLOCKSIZE,
             }
         );
 
-        disk.branch(Path::new("branch.img")).unwrap();
-        assert_eq!(disk.status().media, Some(PathBuf::from("branch.img")));
+        function(&mut disk).branch(Path::new("branch.img")).unwrap();
+        assert_eq!(
+            function(&mut disk).status().media,
+            Some(PathBuf::from("branch.img"))
+        );
     }
 
     #[test]
     fn disk_without_storage_is_not_ready() {
-        let mut disk = ScsiTargetDisk {
-            common: Default::default(),
-            backend: None,
-        };
+        let mut disk = ScsiTargetDisk::new(None).unwrap();
         assert_eq!(function(&mut disk).status().capacity, 0);
         assert!(function(&mut disk).branch(Path::new("b.img")).is_err());
 
