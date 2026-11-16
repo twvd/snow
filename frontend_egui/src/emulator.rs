@@ -351,6 +351,10 @@ impl EmulatorState {
         ))?;
 
         for config in &devices {
+            // The machine has its floppy drives already, made from the arguments above
+            if config.model.is_some_and(|model| model.info().fixed) {
+                continue;
+            }
             if let Err(e) = emulator.add_device(config) {
                 error!("{} #{}: {:#}", config.bus, config.slot, e);
             }

@@ -317,7 +317,7 @@ impl Lc475Bus {
             cuda,
             dfac2: Dfac2::default(),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
-            swim: Swim::new_swim2(model.fdd_drives(), C16M_FREQUENCY),
+            swim: Swim::new_swim2(C16M_FREQUENCY),
             swim_ready: 0,
             // MODE pins strapped for a 16-bit DMA bus, as on the Quadra 700
             scsi: Esp::new(true),
@@ -1014,6 +1014,7 @@ impl Lc475Bus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }

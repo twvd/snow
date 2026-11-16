@@ -721,7 +721,7 @@ mod tests {
 
     /// SWIM in ISM mode, a disk spinning in the first drive
     fn swim(setup: u8) -> Swim {
-        let mut swim = Swim::new(&[DriveType::SuperDrive], true, 16_000_000);
+        let mut swim = Swim::new(true, 16_000_000).with_drives(&[DriveType::SuperDrive]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn swim2_params() {
-        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        let mut swim = Swim::new_swim2(16_000_000).with_drives(&[DriveType::SuperDrive]);
         let vals = [0x97, 0x22, 0x5A, 0x44];
         assert_eq!(params(&mut swim, &vals, 4), [0x90, 0x22, 0x50, 0x44]);
         // Wraps after four
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn swim2_stays_ism() {
-        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        let mut swim = Swim::new_swim2(16_000_000).with_drives(&[DriveType::SuperDrive]);
         assert_eq!(swim.read(reg(REG_STATUS)), Some(0x40));
         swim.write(reg(REG_MODE_ONE), 0x17);
         assert_eq!(swim.read(reg(REG_STATUS)), Some(0x57));
@@ -867,7 +867,7 @@ mod tests {
     fn write_no_disk() {
         const BYTE_TICKS: Ticks = 16 * 16;
 
-        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        let mut swim = Swim::new_swim2(16_000_000).with_drives(&[DriveType::SuperDrive]);
         swim.write(reg(REG_SETUP), 0x20);
         start(&mut swim, MODE_WRITE);
         swim.write(reg(REG_DATA), 0);
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn swim2_enable_without_motoron() {
-        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        let mut swim = Swim::new_swim2(16_000_000).with_drives(&[DriveType::SuperDrive]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
@@ -1004,7 +1004,7 @@ mod tests {
         assert!(!swim.lstrb && !swim.ca0 && !swim.ca1 && !swim.ca2);
         assert!(swim.drive(0).floppy_inserted);
 
-        let mut swim2 = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        let mut swim2 = Swim::new_swim2(16_000_000).with_drives(&[DriveType::SuperDrive]);
         swim2
             .drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))

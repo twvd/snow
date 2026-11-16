@@ -181,7 +181,7 @@ impl MacPortableBus {
             video: Video::default(),
             scc: Scc::new(RTXC_FREQUENCY),
             scc_ready: 0,
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
+            swim: Swim::new(model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,
@@ -618,6 +618,7 @@ impl MacPortableBus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }
