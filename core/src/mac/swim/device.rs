@@ -22,8 +22,9 @@ pub(crate) trait SwimBusDevice: DeviceOps + Send {
     fn connected(&mut self, connector: usize, tick_rate: Ticks);
 
     /// The control lines of the connector changed: CA0 to CA2 and SEL on a Mac, in bits 1 to 3
-    /// and 0. Called by the controller on the device it selects, when a line changes and when
-    /// it selects the device.
+    /// and 0; the four phase lines on the disk port of an Apple IIe Card. Called by the
+    /// controller on the device it selects, when a line changes; the Mac's controller also
+    /// calls it when it selects the device.
     fn set_lines(&mut self, lines: u8);
 
     /// The strobe line rose, with the control lines at `lines`. Called by the controller on
@@ -60,9 +61,10 @@ pub(crate) trait SwimBusDevice: DeviceOps + Send {
         None
     }
 
-    /// For a device that exchanges whole bytes with the controller: the byte it sends, if one
-    /// is due after `ticks` more ticks. Called by a controller on the device it selects, when
-    /// that device has no stream. Nothing by default.
+    /// For a device that exchanges whole bytes with the controller: the next byte it sends, if
+    /// it has one. Called by a controller on the device it selects, when that device has no
+    /// stream and the controller is ready for a byte, `ticks` after it last asked. Nothing by
+    /// default.
     fn read_byte(&mut self, _ticks: Ticks) -> Option<u8> {
         None
     }
@@ -75,5 +77,17 @@ pub(crate) trait SwimBusDevice: DeviceOps + Send {
     #[cfg(test)]
     fn as_floppy_drive(&mut self) -> &mut super::drive::FloppyDrive {
         panic!("Not a floppy drive")
+    }
+
+    /// The device as the 5.25" drive it is, for the tests that look inside a drive
+    #[cfg(test)]
+    fn as_drive5(&mut self) -> &mut crate::mac::maclc::pds_iie::disk::Drive5 {
+        panic!("Not a 5.25\" drive")
+    }
+
+    /// The device as the UniDisk 3.5 it is, for the tests that look inside a drive
+    #[cfg(test)]
+    fn as_unidisk(&mut self) -> &mut crate::mac::maclc::pds_iie::unidisk::UniDisk {
+        panic!("Not a UniDisk 3.5")
     }
 }

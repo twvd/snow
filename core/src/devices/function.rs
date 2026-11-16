@@ -192,6 +192,11 @@ pub struct FloppyInfo {
 pub enum FloppyImages {
     /// The Mac's floppy images
     Mac,
+    /// Image files of another kind: what the file dialog calls them, and their extensions
+    Files {
+        label: &'static str,
+        extensions: &'static [&'static str],
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

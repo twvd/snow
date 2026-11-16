@@ -96,7 +96,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::FloppyFunction;
+use crate::devices::{FloppyFunction, FunctionMut};
 use crate::tickable::{Tickable, Ticks};
 #[cfg(feature = "iie-debug")]
 use log::{Level, log_enabled};
@@ -2038,14 +2038,19 @@ impl PdsIIeCard {
     /// is connected.
     pub fn drive_525(&mut self, drive: usize) -> Option<&mut dyn FloppyFunction> {
         let disk = &mut self.cpu.bus.state.get_mut().disk;
-        let drive = disk.drives.get_mut(drive)?.as_mut()?;
-        Some(drive)
+        match disk.drive_525(drive)?.function() {
+            FunctionMut::Floppy(floppy) => Some(floppy),
+            _ => None,
+        }
     }
 
     /// The Floppy function of the UniDisk 3.5, if one is connected.
     pub fn unidisk(&mut self) -> Option<&mut dyn FloppyFunction> {
-        let unidisk = self.cpu.bus.state.get_mut().disk.unidisk.as_mut()?;
-        Some(unidisk)
+        let disk = &mut self.cpu.bus.state.get_mut().disk;
+        match disk.unidisk()?.function() {
+            FunctionMut::Floppy(floppy) => Some(floppy),
+            _ => None,
+        }
     }
 
     /// Sets what the host has on the game port: the paddle positions
@@ -4180,7 +4185,7 @@ mod tests {
         for (i, b) in img.iter_mut().enumerate() {
             *b = (i / 512 + i * 3) as u8;
         }
-        let unidisk = card.cpu.bus.state.get_mut().disk.unidisk.as_mut().unwrap();
+        let unidisk = card.cpu.bus.state.get_mut().disk.smart_unidisk();
         assert!(unidisk.insert(img.clone(), false));
 
         // `$CEC1`: the bus reset.  Then INIT for unit 1 ($CE5E–$CE91):

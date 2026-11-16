@@ -16,6 +16,7 @@ use strum::IntoEnumIterator;
 
 use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
+use crate::mac::maclc::pds_iie;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::swim;
@@ -26,6 +27,8 @@ use crate::mac::swim::device::SwimBusDevice;
 pub enum BusKind {
     Scsi,
     Swim,
+    /// The disk port of an Apple IIe Card
+    IieDisk,
 }
 
 /// A bus of a machine: a list of slots
@@ -138,6 +141,8 @@ pub enum DeviceModel {
     Mac800KDrive,
     Mac800KPwmDrive,
     MacSuperDrive,
+    UniDisk35,
+    Apple525Drive,
 }
 
 impl DeviceModel {
@@ -153,6 +158,8 @@ impl DeviceModel {
             Self::Mac800KDrive => &swim::drive::INFO_800K,
             Self::Mac800KPwmDrive => &swim::drive::INFO_800K_PWM,
             Self::MacSuperDrive => &swim::drive::INFO_SUPERDRIVE,
+            Self::UniDisk35 => &pds_iie::unidisk::INFO,
+            Self::Apple525Drive => &pds_iie::disk::INFO,
         }
     }
 }

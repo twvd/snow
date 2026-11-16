@@ -470,7 +470,8 @@ impl FloppyDrive {
             DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
             DriveReg::PRESENTHD => {
                 if self.drive_type == DriveType::SuperDrive {
-                    !(self.stream.floppy.get_type() == FloppyType::Mfm144M && self.floppy_inserted)
+                    !(self.stream.floppy().get_type() == FloppyType::Mfm144M
+                        && self.floppy_inserted)
                 } else {
                     self.drive_type.io_present()
                 }
@@ -487,7 +488,7 @@ impl FloppyDrive {
             DriveReg::RDDATA1 => self.drive_type.io_rddata1(),
             DriveReg::MFM => self.mfm,
             DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
-            DriveReg::WRTPRT => !self.stream.floppy.get_write_protect(),
+            DriveReg::WRTPRT => !self.stream.floppy().get_write_protect(),
             DriveReg::SWITCHED => self.switched,
             _ => {
                 warn!(
@@ -584,7 +585,7 @@ impl FloppyDrive {
                 self.motor = false;
                 if self.writeback_enabled
                     && self.image_path.is_some()
-                    && self.stream.floppy.is_dirty()
+                    && self.stream.floppy().is_dirty()
                 {
                     self.pending_writeback = true;
                 }
@@ -633,7 +634,7 @@ impl FloppyDrive {
             image.get_track_count() * image.get_side_count(),
             image.get_title()
         );
-        self.stream.floppy = image;
+        *self.stream.floppy_mut() = image;
         self.floppy_inserted = true;
         self.switched = true;
         self.stream.track_position = 0;
@@ -702,7 +703,7 @@ impl FloppyDrive {
                 / self.get_track_rpm()
                 / self
                     .stream
-                    .floppy
+                    .floppy()
                     .get_type()
                     .get_approx_track_length(self.stream.track) as u64)
                 + 1
@@ -759,7 +760,7 @@ impl FloppyDrive {
     fn write_back_inserted(&mut self, force: bool) -> Result<()> {
         if !self.writeback_enabled
             || !(force || self.pending_writeback)
-            || !self.stream.floppy.is_dirty()
+            || !self.stream.floppy().is_dirty()
         {
             return Ok(());
         }
@@ -769,9 +770,9 @@ impl FloppyDrive {
         self.pending_writeback = false;
 
         let name = file_name(&path);
-        write_image(&path, &self.stream.floppy)
+        write_image(&path, self.stream.floppy())
             .with_context(|| format!("writeback to '{}' failed", name))?;
-        self.stream.floppy.clear_dirty();
+        self.stream.floppy_mut().clear_dirty();
         info!("Floppy #{}: writeback auto-saved '{}'", self.idx + 1, name);
         Ok(())
     }
@@ -793,11 +794,11 @@ fn file_name(path: &Path) -> String {
 impl FloppyFunction for FloppyDrive {
     fn status(&self) -> FloppyStatus {
         FloppyStatus {
-            title: self.stream.floppy.get_title().to_owned(),
+            title: self.stream.floppy().get_title().to_owned(),
             ejected: !self.floppy_inserted,
-            dirty: self.stream.floppy.is_dirty(),
+            dirty: self.stream.floppy().is_dirty(),
             writeback_supported: self.image_path.is_some()
-                && self.stream.floppy.supports_writeback(),
+                && self.stream.floppy().supports_writeback(),
             writeback_enabled: self.writeback_enabled,
         }
     }
@@ -822,11 +823,11 @@ impl FloppyFunction for FloppyDrive {
         self.floppy_inserted = false;
         self.mfm = self.drive_type.io_mfm();
 
-        self.floppy_ejected = Some(Box::new(self.stream.floppy.clone()));
+        self.floppy_ejected = Some(Box::new(self.stream.floppy().clone()));
 
         // The writes since the last save must not be lost with the disk,
         // whoever ejects it
-        self.eject_writeback = if self.writeback_enabled && self.stream.floppy.is_dirty() {
+        self.eject_writeback = if self.writeback_enabled && self.stream.floppy().is_dirty() {
             self.image_path.clone()
         } else {
             None
@@ -844,11 +845,11 @@ impl FloppyFunction for FloppyDrive {
     }
 
     fn save(&mut self, path: &Path) -> Result<()> {
-        Moof::save_file(&self.stream.floppy, &path.to_string_lossy())
+        Moof::save_file(self.stream.floppy(), &path.to_string_lossy())
     }
 
     fn set_writeback(&mut self, enabled: bool) -> Result<()> {
-        if enabled && (self.image_path.is_none() || !self.stream.floppy.supports_writeback()) {
+        if enabled && (self.image_path.is_none() || !self.stream.floppy().supports_writeback()) {
             bail!("Writeback unavailable: image was not loaded from a writeback-capable file");
         }
         self.writeback_enabled = enabled;
@@ -1123,7 +1124,7 @@ mod tests {
     /// Writes the bit under the head of a drive that was just made, changing its value, and
     /// returns the new value. A blank disk is filled with noise.
     fn flip_bit(drv: &mut FloppyDrive) -> bool {
-        let bit = !drv.stream.floppy.get_track_bit(0, 4, 0);
+        let bit = !drv.stream.floppy().get_track_bit(0, 4, 0);
         drv.stream.write_bit(0, bit);
         bit
     }
@@ -1142,10 +1143,10 @@ mod tests {
         assert!(!status.dirty);
         assert!(status.writeback_supported);
         assert!(!status.writeback_enabled);
-        assert!(!drv.stream.floppy.get_write_protect());
+        assert!(!drv.stream.floppy().get_write_protect());
 
         drv.load(&dir.moof(), true).unwrap();
-        assert!(drv.stream.floppy.get_write_protect());
+        assert!(drv.stream.floppy().get_write_protect());
     }
 
     #[test]
@@ -1176,7 +1177,7 @@ mod tests {
         let mut drv = drive(0, DriveType::GCR800K);
         let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
         drv.insert_image(image, true).unwrap();
-        assert!(drv.stream.floppy.get_write_protect());
+        assert!(drv.stream.floppy().get_write_protect());
         assert!(!drv.status().writeback_supported);
         assert!(drv.set_writeback(true).is_err());
         assert!(!drv.status().writeback_enabled);
