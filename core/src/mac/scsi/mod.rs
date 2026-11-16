@@ -38,6 +38,14 @@ pub const ASC_ILLEGAL_MODE_FOR_THIS_TRACK: u16 = 0x6400;
 /// in BlueSCSI_Toolbox.h, set as a bare ASCQ, so ASC stays 0x00.
 pub const ASC_TOO_MANY_FILES: u16 = 0x0001;
 
+/// The sense of a CHECK CONDITION status: the sense key, and the ASC/ASCQ
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScsiCheckCondition {
+    pub(crate) key: u8,
+    /// ASC in the high byte, ASCQ in the low byte, as the `ASC_*` constants
+    pub(crate) asc: u16,
+}
+
 const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
     match cmdnum {
         // UNIT READY
