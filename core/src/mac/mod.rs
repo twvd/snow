@@ -14,6 +14,7 @@ use crate::tickable::Ticks;
 pub mod adb;
 pub mod compact;
 pub mod cuda;
+pub mod dma;
 pub mod egret;
 pub mod egret_common;
 pub mod iic;

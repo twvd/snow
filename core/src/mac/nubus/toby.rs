@@ -8,9 +8,10 @@ use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
+use crate::mac::dma::DmaOps;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
 /// Size of the Toby card declaration ROM (342-0008-a.bin)
@@ -236,6 +237,21 @@ impl NubusSlot for Toby {
         self.vblank_irq
     }
 
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, _dma: &mut dyn DmaOps) -> Result<()> {
+        self.vblank_ticks += ticks;
+        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+            if self.renderer.frame_wanted() {
+                self.render()?;
+            }
+            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            if self.vblank_enable {
+                self.vblank_irq = true;
+            }
+        }
+        self.in_vblank = self.vblank_ticks >= ctx.bus_frequency() / 60 * 480 / 525;
+        Ok(())
+    }
+
     fn video(&mut self) -> Option<&mut dyn VideoOutput> {
         Some(self)
     }
@@ -272,23 +288,6 @@ impl VideoOutput for Toby {
             *frames.lock().unwrap() = Some(frame);
         }
         frames
-    }
-}
-
-impl Tickable<&dyn EmuContext> for Toby {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.vblank_ticks += ticks;
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.frame_wanted() {
-                self.render()?;
-            }
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
-            if self.vblank_enable {
-                self.vblank_irq = true;
-            }
-        }
-        self.in_vblank = self.vblank_ticks >= ctx.bus_frequency() / 60 * 480 / 525;
-        Ok(ticks)
     }
 }
 

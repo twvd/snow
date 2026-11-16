@@ -14,6 +14,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::VideoOutput;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
 use crate::mac::nubus::Nubus;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
@@ -80,6 +81,50 @@ enum Region {
     SuperSlot,
     /// NuBus standard slots $9-$E
     Slot,
+}
+
+/// Offset in a RAM of `ram_len` bytes of the byte at physical address `addr`, if it is in RAM
+fn ram_offset(overlay: bool, ram_mask: usize, ram_len: usize, addr: Address) -> Option<usize> {
+    let idx = addr as usize & ram_mask;
+    (MAP[usize::from(overlay)][(addr >> 24) as usize] == Region::Ram && idx < ram_len)
+        .then_some(idx)
+}
+
+/// The machine's RAM, as a device that masters the bus reaches it. It borrows only the fields
+/// the DMA operations need, so that the bus can lend it while it ticks its cards.
+struct Dma<'a> {
+    ram: &'a mut [u8],
+    ram_mask: usize,
+    overlay: bool,
+    /// The wait states of an access to the RAM, as `MacIIBus::mem_waits()` gives them
+    ram_waits: Ticks,
+    writes: &'a mut u32,
+}
+
+impl DmaRam for Dma<'_> {
+    fn ram(&mut self) -> &mut [u8] {
+        self.ram
+    }
+
+    fn ram_offset(&self, addr: Address) -> Option<usize> {
+        ram_offset(self.overlay, self.ram_mask, self.ram.len(), addr)
+    }
+
+    fn ram_timing(&self, _write: bool) -> (u32, Ticks) {
+        (4, self.ram_waits)
+    }
+}
+
+impl DmaOps for Dma<'_> {
+    fn read(&mut self, addr: Address, data: &mut [u8]) -> DmaOutcome {
+        dma::read_ram(self, addr, data)
+    }
+
+    fn write(&mut self, addr: Address, data: &[u8]) -> DmaOutcome {
+        // Counted even when it stops short: what was written until then is in the RAM
+        *self.writes = self.writes.wrapping_add(1);
+        dma::write_ram(self, addr, data)
+    }
 }
 
 const fn region(overlay: bool, block: usize) -> Region {
@@ -156,6 +201,11 @@ pub struct MacIIBus {
 
     /// NuBus cards (base address: $9)
     nubus: Nubus,
+
+    /// Counts the writes devices made to the RAM by themselves, which the memory views can't
+    /// see otherwise
+    #[serde(skip)]
+    dma_writes: u32,
 
     /// The SE/30's video, which answers in slot $E like a card but is
     /// hard-wired
@@ -300,6 +350,7 @@ impl MacIIBus {
             progkey_pressed: LatchingEvent::default(),
 
             nubus: cards,
+            dma_writes: 0,
             se30_video,
             mouse_mode,
         };
@@ -667,10 +718,7 @@ impl MacIIBus {
 
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
     fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
-        let idx = addr as usize & self.ram_mask;
-        (MAP[usize::from(self.overlay)][(addr >> 24) as usize] == Region::Ram
-            && idx < self.ram.len())
-        .then_some(idx)
+        ram_offset(self.overlay, self.ram_mask, self.ram.len(), addr)
     }
 
     /// Updates the mouse position in absolute mode, given the current value
@@ -1011,8 +1059,20 @@ impl Tickable for MacIIBus {
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
-        // NuBus slot IRQs and ticks
-        self.nubus.tick(native_ticks, ctx)?;
+        // NuBus slot IRQs and ticks. A NuBus card's DMA crosses NuBus.
+        let ram_waits = self.mem_waits();
+        let mut dma = Dma {
+            ram: &mut self.ram,
+            ram_mask: self.ram_mask,
+            overlay: self.overlay,
+            ram_waits,
+            writes: &mut self.dma_writes,
+        };
+        let mut nubus_dma = NubusDma {
+            dma: &mut dma,
+            nubus_waits: NUBUS_WAITS,
+        };
+        self.nubus.tick(native_ticks, ctx, &mut nubus_dma)?;
         let mut slot_irqs = self.nubus.irqs();
         if let Some(video) = self.se30_video.as_mut() {
             video.tick(native_ticks, ctx)?;
@@ -1100,7 +1160,7 @@ impl InspectableBus<Address, Byte> for MacIIBus {
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay)
+        (self.dma_writes << 1) | u32::from(self.overlay)
     }
 }
 
@@ -1124,5 +1184,95 @@ impl Debuggable for MacIIBus {
         }
         result.extend(self.nubus.debug_properties(self.model.nubus_slots()));
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mac::nubus::NubusSlot;
+    use std::fmt::Display;
+
+    const PATTERN: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+    const FROM: Address = 0x1000;
+    const TO: Address = 0x2000;
+    /// Nothing answers in this block of the Mac II's map
+    const NOTHING: Address = 0xF000_0000;
+
+    /// A card that masters the bus at each tick: it copies a block of RAM, and tries a block
+    /// that nothing answers at
+    #[derive(Serialize, Deserialize)]
+    struct DmaCard;
+
+    #[typetag::serde]
+    impl NubusSlot for DmaCard {
+        fn read_sized(&mut self, _addr: Address, _size: u32) -> Option<u32> {
+            None
+        }
+
+        fn write_sized(&mut self, _addr: Address, _size: u32, _val: u32) -> Option<()> {
+            None
+        }
+
+        fn get_irq(&self) -> bool {
+            false
+        }
+
+        fn reset(&mut self) {}
+
+        fn tick(&mut self, _ticks: Ticks, _: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()> {
+            let mut block = [0; PATTERN.len()];
+            // A long word across NuBus: the NuBus transaction, then a single access to the RAM
+            // of a Macintosh II, a cycle and two wait states
+            assert_eq!(
+                dma.read(FROM, &mut block),
+                DmaOutcome {
+                    latency: NUBUS_WAITS + 3,
+                    ok: true
+                }
+            );
+            assert!(dma.write(TO, &block).ok);
+            assert!(!dma.read(NOTHING, &mut block).ok);
+            assert!(!dma.write(NOTHING, &block).ok);
+            Ok(())
+        }
+    }
+
+    impl Debuggable for DmaCard {
+        fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+            vec![]
+        }
+    }
+
+    impl Display for DmaCard {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DMA test card")
+        }
+    }
+
+    #[test]
+    fn a_card_reads_and_writes_the_ram_at_its_tick() {
+        let mut bus = MacIIBus::new(
+            MacModel::MacII,
+            &vec![0; 256 * 1024],
+            &[],
+            None,
+            MacMonitor::default(),
+            MouseMode::Disabled,
+            None,
+            true,
+        );
+        bus.nubus.insert(0x9, Box::new(DmaCard));
+        // The RAM is at its addresses once the boot overlay is off
+        bus.overlay = false;
+        let from = FROM as usize;
+        let to = TO as usize;
+        bus.ram[from..from + PATTERN.len()].copy_from_slice(&PATTERN);
+        let generation = bus.inspect_generation();
+
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.ram[to..to + PATTERN.len()], PATTERN);
+        // The memory views are told of a write that the CPU didn't make
+        assert_ne!(bus.inspect_generation(), generation);
     }
 }

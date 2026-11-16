@@ -18,7 +18,7 @@ Terms used here:
 A card answers transactions through its slot trait, `NubusSlot`:
 
 ```rust
-pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
+pub trait NubusSlot: Send + Debuggable + Display {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the size, right-justified
     /// as the 68k sees them. `addr` has the digit of the slot cleared: $F0xx_xxxx or $0xxx_xxxx.
     /// None: the card doesn't answer at that address.
@@ -31,6 +31,8 @@ pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + 
     fn connected(&mut self, slot: u8, tick_rate: Ticks) {}
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
+    /// Time passing. A card that masters the bus does its DMA here, through `dma`.
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()>;
     /// The card's video, if it has some. None by default.
     fn video(&mut self) -> Option<&mut dyn VideoOutput> { None }
 }
@@ -108,11 +110,19 @@ The slot interrupts combine into VIA 2 CA1.
 the logic board, with no NuBus between it and the CPU. It is a field of the SE/30's bus of its own,
 and has plain `read()` and `write()` methods taking an offset in that space.
 
+## Bus masters
+
+A NuBus card can be a bus master: it then reads and writes the machine's memory by itself, without
+the CPU, which is often called DMA. It does so in its `tick()`, through the `dma` argument: the
+two operations of `DmaOps`, which the machine provides. They reach the machine's RAM at the
+address the CPU uses, take no time, and don't touch the CPU's caches. A write through them shows
+in the memory views of the debugger.
+
 ## Adding a card
 
 A new card, in `core/src/mac/nubus/`:
 
-1. implements `NubusSlot`, `Debuggable`, `Display` and `Tickable`, with `#[typetag::serde]` on its
+1. implements `NubusSlot`, `Debuggable` and `Display`, with `#[typetag::serde]` on its
    `impl NubusSlot` so that save states keep it;
 2. if it has video, implements `VideoOutput`, creates its own renderer, and returns itself from
    `NubusSlot::video()`;
