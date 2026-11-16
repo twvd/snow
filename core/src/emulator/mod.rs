@@ -24,7 +24,7 @@ use crate::cpu_m68k::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, BusOps, DeviceModel, DeviceOps, FunctionMut, FunctionStatus, bus_id,
+    AppleIIeCardFunction, BusOps, DeviceModel, FunctionMut, FunctionStatus, bus_id,
 };
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
