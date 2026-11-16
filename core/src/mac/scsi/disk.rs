@@ -6,7 +6,9 @@ use std::path::Path;
 
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::ASC_INVALID_COMMAND;
+use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
 use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
+use crate::mac::scsi::CC_KEY_NOT_READY;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -210,6 +212,11 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
+        if self.blocks() == Some(0) {
+            // An empty image: nothing to read
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
         let offset = block_offset * DISK_BLOCKSIZE;
         let length = block_count * DISK_BLOCKSIZE;
         Ok(ScsiCmdResult::DataIn(
