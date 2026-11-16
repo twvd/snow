@@ -23,7 +23,7 @@ use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{BusOps, FunctionMut, FunctionStatus};
+use crate::devices::{AppleIIeCardFunction, BusOps, DeviceOps, FunctionMut, FunctionStatus};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
@@ -874,8 +874,8 @@ impl Emulator {
         self.event_recv.clone()
     }
 
-    /// Whether the Apple IIe Card is in front, on a machine that has one
-    fn iie_card_in_front(&mut self) -> bool {
+    /// The Apple IIe Card of the machine, seen through its function, on a machine that has one
+    fn iie_card(&mut self) -> Option<&mut dyn AppleIIeCardFunction> {
         let card = match &mut self.config {
             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
             EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
@@ -883,7 +883,10 @@ impl Emulator {
             EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
             _ => None,
         };
-        card.is_some_and(|card| card.in_front())
+        match card?.function() {
+            FunctionMut::AppleIIeCard(card) => Some(card),
+            _ => None,
+        }
     }
 
     /// Sends the frontend the state of the machine and of its devices, as it is now. It is sent
@@ -1395,14 +1398,7 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::SetIieGamePort(port) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
+                        if let Some(card) = self.iie_card() {
                             card.set_game_port(port);
                         }
                     }
@@ -1976,7 +1972,7 @@ impl Tickable for Emulator {
             // (e.g. by the SWIM controller turning a drive motor off).
             self.flush_pending_writebacks(false);
 
-            let iie_in_front = self.iie_card_in_front();
+            let iie_in_front = self.iie_card().is_some_and(|card| card.in_front());
             if iie_in_front != self.iie_in_front {
                 self.iie_in_front = iie_in_front;
                 self.event_sender
