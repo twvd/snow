@@ -17,12 +17,14 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceOps, bus_id};
+use crate::devices::{BusOps, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::egret::Egret;
+use crate::mac::pds::{Pds, PdsSlot};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -69,10 +71,70 @@ pub(super) enum Region {
     Io(Address),
     /// Video RAM, with the offset in its window
     Vram(usize),
-    /// PDS slot $E card, with the offset in the slot window
-    IieCard(Address),
+    /// The processor-direct slot
+    Pds,
     /// CPU ID register, with the number of the byte
     CpuId(usize),
+}
+
+/// The machine's RAM, as a device that masters the bus reaches it. It borrows only the fields
+/// the DMA operations need, so that the bus can lend it while it ticks its card.
+struct Dma<'a> {
+    ram: &'a mut [u8],
+    ram_soldered: usize,
+    /// The RAM configuration register of the Sonora
+    cfg: u8,
+    overlay: bool,
+    writes: &'a mut u32,
+}
+
+impl DmaRam for Dma<'_> {
+    fn ram(&mut self) -> &mut [u8] {
+        self.ram
+    }
+
+    /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
+    fn ram_offset(&self, addr: Address) -> Option<usize> {
+        let simm_size = self.ram.len() - self.ram_soldered;
+        match sonora::decode(addr)? {
+            Region::Ram(addr) if !self.overlay => {
+                sonora::ram_index(self.cfg, simm_size, self.ram_soldered, addr)
+            }
+            _ => None,
+        }
+    }
+
+    fn ram_timing(&self, write: bool) -> (u32, Ticks) {
+        let waits = if write {
+            sonora::RAM_WRITE_WAITS
+        } else {
+            sonora::RAM_READ_WAITS
+        };
+        (4, waits)
+    }
+}
+
+impl Dma<'_> {
+    /// An outcome with its latency, counted in clocks of the CPU's bus, given in ticks of C16M,
+    /// at which the card is ticked
+    fn in_c16m(outcome: DmaOutcome) -> DmaOutcome {
+        DmaOutcome {
+            latency: (outcome.latency * C16M_FREQUENCY).div_ceil(BUS_FREQUENCY),
+            ..outcome
+        }
+    }
+}
+
+impl DmaOps for Dma<'_> {
+    fn read(&mut self, addr: Address, data: &mut [u8]) -> DmaOutcome {
+        Self::in_c16m(dma::read_ram(self, addr, data))
+    }
+
+    fn write(&mut self, addr: Address, data: &[u8]) -> DmaOutcome {
+        // Counted even when it stops short: what was written until then is in the RAM
+        *self.writes = self.writes.wrapping_add(1);
+        Self::in_c16m(dma::write_ram(self, addr, data))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,8 +171,13 @@ pub struct LcIIIBus {
     sound: V8Sound,
     sound_clock: Ticks,
 
-    /// Apple IIe Card in the PDS slot, when installed
-    iie_card: Option<PdsIIeCard>,
+    /// The processor-direct slot
+    pds: Pds,
+
+    /// Counts the writes the card in the slot made to the RAM by itself, which the memory
+    /// views can't see otherwise
+    #[serde(skip)]
+    dma_writes: u32,
 
     overlay: bool,
 
@@ -164,6 +231,11 @@ impl LcIIIBus {
         egret.adb_add_device(AdbMouse::new());
         egret.adb_add_device(AdbKeyboard::new());
 
+        let mut pds = Pds::new(C16M_FREQUENCY);
+        if let Some(settings) = iie_card {
+            pds.insert(Box::new(PdsIIeCard::with_settings(&settings)));
+        }
+
         let mut bus = Self {
             model,
             video_regs: sonora::VideoRegs::new(),
@@ -187,7 +259,8 @@ impl LcIIIBus {
             sound: V8Sound::new(V8Variant::Sonora),
             sound_clock: 0,
 
-            iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
+            pds,
+            dma_writes: 0,
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -219,9 +292,9 @@ impl LcIIIBus {
         self.egret.set_security_jumper(installed);
     }
 
-    /// The Apple IIe card in the PDS slot, if installed.
-    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
-        self.iie_card.as_mut()
+    /// The card in the PDS slot, if installed.
+    pub(crate) fn iie_card_mut(&mut self) -> Option<&mut dyn PdsSlot> {
+        self.pds.card_mut()
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -382,20 +455,26 @@ impl LcIIIBus {
         }
     }
 
-    /// One cycle of the Apple IIe Card, with the offset in the slot: without
-    /// a card, the slot reads open bus and ignores writes.
-    fn iie_read(&mut self, offset: Address, len: u32) -> Option<u32> {
-        match &mut self.iie_card {
-            Some(card) => Some(card.slot_read(offset, len)),
-            None => Some(PdsIIeCard::open_bus(len)),
-        }
+    /// One cycle of the card in the processor-direct slot, at the address on
+    /// the CPU's bus: when nothing answers, the slot reads open bus and
+    /// ignores writes.
+    fn pds_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let open_bus = u32::MAX >> (32 - 8 * len);
+        Some(
+            self.pds
+                .read(addr, len, self.pds_map32())
+                .unwrap_or(open_bus),
+        )
     }
 
-    fn iie_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
-        if let Some(card) = &mut self.iie_card {
-            card.slot_write(offset, len, val);
-        }
+    fn pds_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.pds.write(addr, len, self.pds_map32(), val);
         Some(())
+    }
+
+    /// Whether a cycle of the slot uses the 32-bit memory map. The Sonora decodes 32-bit addresses only: the 24-bit map is made by the MMU.
+    fn pds_map32(&self) -> bool {
+        true
     }
 
     /// Width in bytes and wait states of the port answering a region.
@@ -413,7 +492,7 @@ impl LcIIIBus {
             Region::CpuId(_) => (4, IO_WAITS),
             // The Apple IIe Card is a 16-bit port (its declaration ROM
             // sits on the odd bytes, byte lanes 1+3).
-            Region::IieCard(_) => (2, IO_WAITS),
+            Region::Pds => (2, IO_WAITS),
         }
     }
 
@@ -727,8 +806,8 @@ impl LcIIIBus {
             bus_id::SWIM => Some(&mut self.swim),
             // A bus that the card in the slot adds
             _ => self
-                .iie_card
-                .as_mut()?
+                .pds
+                .card_mut()?
                 .extra_buses()
                 .into_iter()
                 .find(|(added, _)| added.id == bus)
@@ -770,7 +849,7 @@ impl Bus<Address, Byte> for LcIIIBus {
     fn access(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
         let resp = match self.decode(acc.addr) {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Some(Region::Vram(_) | Region::CpuId(_) | Region::IieCard(_)) if acc.pending > 0 => {
+            Some(Region::Vram(_) | Region::CpuId(_) | Region::Pds) if acc.pending > 0 => {
                 BusResponse::Stall(0)
             }
             // During the boot overlay, reads of the RAM area go to the ROM
@@ -819,11 +898,11 @@ impl Bus<Address, Byte> for LcIIIBus {
                 },
                 Self::ignore_write,
             ),
-            Some(region @ Region::IieCard(offset)) => self.cycle(
+            Some(region @ Region::Pds) => self.cycle(
                 acc,
                 self.port(&region, acc.write),
-                move |s, _, len| s.iie_read(offset, len),
-                move |s, _, len, val| s.iie_write(offset, len, val),
+                Self::pds_read,
+                Self::pds_write,
             ),
             None => BusResponse::BusError,
         };
@@ -854,11 +933,7 @@ impl Bus<Address, Byte> for LcIIIBus {
         self.sound.reset();
         self.overlay = true;
         self.mouse_ready = false;
-        // The card is an independent computer: only a hard reset (power
-        // on) resets it.  The host reloads the firmware after.
-        if hard && let Some(card) = &mut self.iie_card {
-            card.reset(true);
-        }
+        self.pds.reset(hard);
         Ok(false)
     }
 
@@ -921,11 +996,18 @@ impl Tickable for LcIIIBus {
             }
         }
 
-        // The Apple IIe Card runs in its own clock domain, ticked at C16M.
-        let bus_frequency = self.bus_frequency();
-        if let Some(card) = &mut self.iie_card {
-            let ticks = native_ticks * C16M_FREQUENCY / bus_frequency;
-            card.tick(ticks, ())?;
+        // The card in the processor-direct slot is ticked at C16M. It may
+        // master the bus, with the DMA operations.
+        if self.pds.card().is_some() {
+            let ticks = native_ticks * C16M_FREQUENCY / self.bus_frequency();
+            let mut dma = Dma {
+                ram: &mut self.ram,
+                ram_soldered: self.ram_soldered,
+                cfg: self.pseudovia.exp().0,
+                overlay: self.overlay,
+                writes: &mut self.dma_writes,
+            };
+            self.pds.tick(ticks, ctx, &mut dma)?;
         }
 
         // Host frame pacing
@@ -974,17 +1056,16 @@ impl Tickable for LcIIIBus {
         while self.sound_clock >= self.sound.sample_period() * self.bus_frequency() {
             self.sound_clock -= self.sound.sample_period() * self.bus_frequency();
 
-            // The Apple IIe Card's speaker is mixed in after the DFAC. The
-            // level is a guess; the sound filter takes its DC out.
-            let speaker = self
-                .iie_card
-                .as_mut()
-                .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
+            // The SNDOUT line of the slot, which has the Apple IIe Card's
+            // speaker, is mixed in after the DFAC. The level is a guess; the
+            // sound filter takes its DC out.
+            let speaker = self.pds.sound_pin_value() * IIE_SPEAKER_GAIN;
             self.sound.set_dfac(self.egret.dfac());
             self.sound
                 .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }
         self.pseudovia.set_asc_irq(self.sound.irq());
+        self.pseudovia.set_pds_irq(self.pds.irqs() & 1 != 0);
 
         self.scsi.tick(native_ticks, ctx)?;
         self.pseudovia
@@ -1048,7 +1129,7 @@ impl InspectableBus<Address, Byte> for LcIIIBus {
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay) | (u32::from(self.pseudovia.exp().0) << 1)
+        u32::from(self.overlay) | (u32::from(self.pseudovia.exp().0) << 1) | (self.dma_writes << 9)
     }
 }
 
@@ -1066,7 +1147,7 @@ impl Debuggable for LcIIIBus {
             dbgprop_nest!("Gate array registers", self.pseudovia),
             dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
-            match &self.iie_card {
+            match self.pds.card() {
                 Some(card) => dbgprop_nest!("Apple IIe Card", card),
                 None => dbgprop_group!("Apple IIe Card (absent)", Vec::new()),
             },
@@ -1142,5 +1223,68 @@ mod tests {
         assert_eq!(read(&mut bus, 0xFEEF_FFFF), top);
         // $50FC 0000 is not the PDS on the LC III.
         assert_ne!(read(&mut bus, 0x50FC_0018), 0xC1);
+    }
+
+    /// A card in the slot reads and writes the RAM by itself at its tick
+    #[test]
+    fn a_card_masters_the_bus() {
+        use crate::mac::pds::tests::{DmaCard, PATTERN};
+
+        const FROM: Address = 0x1000;
+        const TO: Address = 0x2000;
+
+        let mut bus = LcIIIBus::new(
+            MacModel::LCIII,
+            &vec![0; 1024 * 1024],
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            None,
+        );
+        bus.pds.insert(Box::new(DmaCard {
+            from: FROM,
+            to: TO,
+            not_ram: 0x4000_0000,
+        }));
+        // The RAM is at its addresses once the boot overlay is off, and the soldered RAM once
+        // the RAM configuration register enables it
+        bus.overlay = false;
+        bus.pseudovia.write(0x2_6001, 0x40);
+        let from = bus.inspect_ram_offset(FROM).unwrap();
+        let to = bus.inspect_ram_offset(TO).unwrap();
+        bus.ram[from..from + PATTERN.len()].copy_from_slice(&PATTERN);
+        let generation = bus.inspect_generation();
+
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.ram[to..to + PATTERN.len()], PATTERN);
+        // The memory views are told of a write that the CPU didn't make
+        assert_ne!(bus.inspect_generation(), generation);
+    }
+
+    /// The interrupt line of a card is the slot interrupt of slot $E, at level 2
+    #[test]
+    fn a_card_interrupts_at_level_2() {
+        use crate::mac::pds::tests::IrqCard;
+
+        let mut bus = LcIIIBus::new(
+            MacModel::LCIII,
+            &vec![0; 1024 * 1024],
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            None,
+        );
+        // The slot interrupt and the summary of the slot interrupts enabled
+        bus.pseudovia.write(0x12, 0xA0);
+        bus.pseudovia.write(0x13, 0x82);
+        bus.pds.insert(Box::new(IrqCard { irqs: 0 }));
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.get_irq(), None);
+
+        bus.pds.insert(Box::new(IrqCard { irqs: 1 }));
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.get_irq(), Some(2));
     }
 }

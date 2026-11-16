@@ -100,7 +100,10 @@ use crate::devices::{
     AppleIIeCardFunction, Bus, BusKind, BusOps, DeviceModel, DeviceOps, FunctionConfig,
     FunctionInfo, FunctionMut, ModelInfo, bus_id,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::emulator::EmuContext;
+use crate::mac::dma::DmaOps;
+use crate::mac::pds::PdsSlot;
+use crate::tickable::Ticks;
 #[cfg(feature = "iie-debug")]
 use log::{Level, log_enabled};
 
@@ -1572,7 +1575,7 @@ pub struct PdsIIeCard {
     /// instruction takes more cycles than the ticks received.
     clock_acc: i64,
     /// C16M ticks with the speaker high, and in all, since the last
-    /// [`Self::take_speaker_level`].
+    /// `sound_pin_value()`.
     speaker_high: Ticks,
     speaker_total: Ticks,
     /// C16M ticks since the host last wrote `$20`, up to `IN_FRONT_TIMEOUT`
@@ -2021,8 +2024,25 @@ impl PdsIIeCard {
         self.cpu.bus.state.borrow().trap.map_or(0, |t| t.addr)
     }
 
+    /// The offset in the card's space of an address on the CPU's bus, if the card answers
+    /// there. In the 32-bit map the card answers in the standard and super slot spaces of slot
+    /// $E, `$FE00 0000`-`$FEFF FFFF` and `$E000 0000`-`$EFFF FFFF`. In the 24-bit map, and in
+    /// the 32-bit map with A31 clear, it answers at `$E0 0000`-`$EF FFFF` (Macintosh LC
+    /// Developer Note, "Addressing guidelines"), and in its window `$FC 0000`-`$FF FFFF` above
+    /// the video RAM, at offset 0: the IIe Startup INIT's `$50FC 0000` base lands there.
+    fn slot_offset(addr: u32, map32: bool) -> Option<u32> {
+        if map32 && addr & 0x8000_0000 != 0 {
+            return matches!(addr >> 24, 0xE0..=0xEF | 0xFE).then_some(addr & 0xFF_FFFF);
+        }
+        match addr & 0xFF_FFFF {
+            addr @ 0xE0_0000..=0xEF_FFFF => Some(addr - 0xE0_0000),
+            addr @ 0xFC_0000..=0xFF_FFFF => Some(addr - 0xFC_0000 + 0x10_0000),
+            _ => None,
+        }
+    }
+
     /// What a `len`-byte read of the slot reads when nothing answers
-    pub fn open_bus(len: u32) -> u32 {
+    fn open_bus(len: u32) -> u32 {
         (0..len).fold(0, |v, _| v << 8 | 0xFF)
     }
 
@@ -2038,7 +2058,7 @@ impl PdsIIeCard {
     /// The card is a 16-bit port: the register block gets one access per
     /// bus cycle (the Slinky transfers once per cycle), and even bytes
     /// of the declaration ROM area read open bus.
-    pub fn slot_read(&mut self, offset: u32, len: u32) -> u32 {
+    fn slot_read(&mut self, offset: u32, len: u32) -> u32 {
         // The declaration ROM: an 8-bit ROM on the odd bytes of the
         // 16-bit port (byte lanes 1+3); even bytes read open bus.
         if (0xF_FC00..=0xF_FFFF).contains(&(offset & 0xF_FFFF)) {
@@ -2074,7 +2094,7 @@ impl PdsIIeCard {
 
     /// A write to the card's register block (see [`Self::slot_read`] for
     /// the address windows).  Bytes outside the block are ignored.
-    pub fn slot_write(&mut self, offset: u32, len: u32, val: u32) {
+    fn slot_write(&mut self, offset: u32, len: u32, val: u32) {
         if offset & 0xF_FFFF < 0x1_0000 {
             self.host_write((offset & 0xFFFF) as u16, len, val);
             #[cfg(feature = "iie-debug")]
@@ -2115,7 +2135,7 @@ impl PdsIIeCard {
     /// Resets the card.  A hard reset also clears the card RAM; either
     /// way the 65C02 is stopped until the host sets control register 2
     /// bit 7.
-    pub fn reset(&mut self, hard: bool) {
+    pub fn reset_card(&mut self, hard: bool) {
         {
             let mut s = self.cpu.bus.state.borrow_mut();
             if hard {
@@ -2133,20 +2153,6 @@ impl PdsIIeCard {
         self.cpu.reset();
     }
 
-    /// The average level of the speaker output since the last call, from 0
-    /// (low) to 1 (high). The card drives the speaker onto the PDS, and the
-    /// LC mixes it into its sound output.
-    pub fn take_speaker_level(&mut self) -> f32 {
-        let level = if self.speaker_total == 0 {
-            0.0
-        } else {
-            self.speaker_high as f32 / self.speaker_total as f32
-        };
-        self.speaker_high = 0;
-        self.speaker_total = 0;
-        level
-    }
-
     /// The 65C02 and its bus, for the debugger and tests.
     pub fn cpu(&self) -> &Cpu<PdsIIeBus> {
         &self.cpu
@@ -2159,8 +2165,55 @@ impl Default for PdsIIeCard {
     }
 }
 
-impl Tickable for PdsIIeCard {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+#[typetag::serde]
+impl PdsSlot for PdsIIeCard {
+    /// The card answers every cycle in the slot: what it doesn't decode
+    /// reads open bus.
+    fn read(&mut self, addr: u32, size: u32, map32: bool) -> Option<u32> {
+        let offset = Self::slot_offset(addr, map32)?;
+        Some(self.slot_read(offset, size))
+    }
+
+    fn write(&mut self, addr: u32, size: u32, map32: bool, val: u32) -> Option<()> {
+        let offset = Self::slot_offset(addr, map32)?;
+        self.slot_write(offset, size, val);
+        Some(())
+    }
+
+    /// The card's interrupt to the Mac isn't modelled.
+    fn irqs(&self) -> u8 {
+        0
+    }
+
+    /// The card is an independent computer: only a hard reset (power
+    /// on) resets it.  The host reloads the firmware after.
+    fn reset(&mut self, hard: bool) {
+        if hard {
+            self.reset_card(true);
+        }
+    }
+
+    fn tick(&mut self, ticks: Ticks, _: &dyn EmuContext, _: &mut dyn DmaOps) -> Result<()> {
+        self.run(ticks)
+    }
+
+    /// The card drives the Apple IIe's speaker onto the SNDOUT line of
+    /// the slot.
+    fn sound_pin_value(&mut self) -> f32 {
+        let level = if self.speaker_total == 0 {
+            0.0
+        } else {
+            self.speaker_high as f32 / self.speaker_total as f32
+        };
+        self.speaker_high = 0;
+        self.speaker_total = 0;
+        level
+    }
+}
+
+impl PdsIIeCard {
+    /// Runs the card for `ticks` ticks of C16M.
+    fn run(&mut self, ticks: Ticks) -> Result<()> {
         let mut s = self.cpu.bus.state.borrow_mut();
         // `$20` bit 5 asserts the 65C02's IRQ (host-driven).
         s.irq = s.host.ctrl2 & 0x20 != 0;
@@ -2180,7 +2233,7 @@ impl Tickable for PdsIIeCard {
             0
         };
         if !run {
-            return Ok(ticks);
+            return Ok(());
         }
 
         let hz = if fast { FAST_HZ } else { NORMAL_HZ };
@@ -2301,7 +2354,7 @@ impl Tickable for PdsIIeCard {
                 }
             }
         }
-        Ok(ticks)
+        Ok(())
     }
 }
 
@@ -2366,7 +2419,7 @@ mod tests {
     /// Runs the 65C02 for `steps` CPU instructions worth of time.
     fn run(card: &mut PdsIIeCard, steps: usize) {
         for _ in 0..steps * 16 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
     }
 
@@ -2477,7 +2530,7 @@ mod tests {
         // Ack through $0C: the CPU halts before the JMP.
         card.host_write(0x0C, 1, 0x00).unwrap();
         assert!(!card.suspended());
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert_eq!(card.cpu.regs.pc, 0x1006);
     }
 
@@ -2745,29 +2798,29 @@ mod tests {
         for _ in 0..20 {
             assert!(!card.in_front());
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
         assert!(card.in_front());
-        card.tick(IN_FRONT_TIMEOUT - step - 1, ()).unwrap();
+        card.run(IN_FRONT_TIMEOUT - step - 1).unwrap();
         assert!(card.in_front());
-        card.tick(1, ()).unwrap();
+        card.run(1).unwrap();
         assert!(!card.in_front());
 
         // A short burst of writes, as the self-test at launch makes
         for _ in 0..2 {
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
-        card.tick(IN_FRONT_TIMEOUT, ()).unwrap();
+        card.run(IN_FRONT_TIMEOUT).unwrap();
         assert!(!card.in_front());
 
         // Stopped
         for _ in 0..20 {
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
         card.host_write(0x20, 1, 0x08).unwrap();
-        card.tick(1, ()).unwrap();
+        card.run(1).unwrap();
         assert!(!card.in_front());
     }
 
@@ -2789,7 +2842,7 @@ mod tests {
         assert_eq!(card.trap_addr(), 0xC061);
         card.host_write(0x19, 1, 0xFF).unwrap();
         for _ in 0..4 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.regs.c as u8, 0xFF);
         assert_eq!(card.cpu.regs.pc, 0x1003);
@@ -2844,7 +2897,7 @@ mod tests {
             let start = card.cpu.cycles;
             // A tenth of a second
             for _ in 0..C16M_FREQUENCY / 10 {
-                card.tick(1, ()).unwrap();
+                card.run(1).unwrap();
             }
             let cycles = (card.cpu.cycles - start) as i64;
             assert!((cycles - hz / 10).abs() <= 3, "{cycles} cycles at {hz} Hz");
@@ -2931,7 +2984,7 @@ mod tests {
         let [x, y, p2, p3] = timers(&card);
         assert!(x.is_some() && x == y);
         assert_eq!((p2, p3), (None, None), "not on the connector");
-        card.reset(false);
+        card.reset_card(false);
         assert_eq!(timers(&card), [None; 4], "empty again after a reset");
     }
 
@@ -2983,7 +3036,7 @@ mod tests {
         card.host_write(0x19, 1, 0x04).unwrap();
         assert!(!card.suspended());
         for _ in 0..4 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         // The LDA re-executed and consumed the data-out value.
         assert_eq!(card.cpu.regs.c as u8, 0x04);
@@ -3118,7 +3171,7 @@ mod tests {
         // Stopped (bit 7 clear): nothing executes.
         let cycles = card.cpu.cycles;
         for _ in 0..10 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.cycles, cycles);
 
@@ -3126,14 +3179,14 @@ mod tests {
         // ROM image 0.
         hw16(&mut card, 0x20, 0x8800);
         assert_eq!(card.cpu.regs.pc, 0x7A62);
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert!(card.cpu.cycles > 0);
 
         // Clearing bit 7 stops it again.
         hw16(&mut card, 0x20, 0x0000);
         let cycles = card.cpu.cycles;
         for _ in 0..10 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.cycles, cycles);
     }
@@ -3225,7 +3278,7 @@ mod tests {
         // Ack through $0C: the CPU resumes past the trapped write.
         card.host_write(0x0C, 1, 0x00).unwrap();
         assert!(!card.suspended());
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert_eq!(card.cpu.regs.pc, 0x2005);
     }
 
@@ -3316,7 +3369,7 @@ mod tests {
         );
         run_program(&mut card, 0x1000);
         for _ in 0..8 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert!(!card.suspended());
         assert_eq!(card.cpu.regs.pc, 0x1008);
@@ -3393,7 +3446,7 @@ mod tests {
             if card.suspended() {
                 return;
             }
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         panic!("the 65C02 never trapped");
     }
@@ -4163,7 +4216,7 @@ mod tests {
             if card.suspended() {
                 card.host_write(0x0C, 1, 0x00).unwrap();
             }
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
             if card.cpu.regs.pc == spin {
                 let s = card.cpu.bus.state.borrow();
                 return s.ram[MAIN_RAM + 0x0300] & 0x01 != 0;
