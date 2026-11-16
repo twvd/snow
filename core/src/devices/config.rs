@@ -43,6 +43,7 @@ impl DeviceConfig {
             FunctionConfig::Cdrom(cdrom) => cdrom.folder.as_mut(),
             FunctionConfig::Ethernet(_) => None,
             FunctionConfig::Printer(printer) => printer.output_dir.as_mut(),
+            FunctionConfig::AppleIIeCard(_) => None,
         };
         for path in [self.rom.as_mut(), in_function].into_iter().flatten() {
             *path = convert(path);
