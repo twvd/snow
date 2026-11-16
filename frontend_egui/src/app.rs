@@ -2023,7 +2023,9 @@ impl SnowGui {
                 #[cfg(not(feature = "printer"))]
                 FunctionStatus::Printer(_) => (),
                 // Not the functions of a SCSI device
-                FunctionStatus::Floppy(_) | FunctionStatus::AppleIIeCard => (),
+                FunctionStatus::Floppy(_)
+                | FunctionStatus::Display(_)
+                | FunctionStatus::AppleIIeCard => (),
             }
         } else {
             ui.menu_button(

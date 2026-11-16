@@ -12,7 +12,8 @@
 use super::{sonora, v8};
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::Debuggable;
-use crate::mac::{MacModel, MacMonitor, VideoOutput};
+use crate::devices::{DisplayFunction, DisplayStatus};
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::Ticks;
@@ -328,7 +329,11 @@ impl Video {
     }
 }
 
-impl VideoOutput for Video {
+impl DisplayFunction for Video {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     /// Shows a black screen
     fn blank(&mut self) -> Result<()> {
         if self.shown.take().is_some() {
