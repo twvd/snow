@@ -18,6 +18,7 @@ mod audio_sdl2;
 mod consts;
 mod dialogs;
 mod emulator;
+mod gamepad;
 mod helpers;
 mod joystick;
 mod keymap;

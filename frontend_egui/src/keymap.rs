@@ -419,3 +419,17 @@ pub fn char_to_keystroke(ch: char) -> Option<KeyStroke> {
     };
     Some(KeyStroke { scancode, shift })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_winit::winit::keyboard::KeyCode;
+
+    #[test]
+    fn gamepad_skips_keys_without_a_mac_scancode() {
+        assert!(map_winit_keycode(KeyCode::WakeUp, CmdKeyMapping::Disabled).is_none());
+        assert!(map_winit_keycode(KeyCode::F13, CmdKeyMapping::RightAlt).is_none());
+        assert!(map_winit_keycode(KeyCode::ArrowLeft, CmdKeyMapping::RightCtrl).is_some());
+        assert!(map_winit_keycode(KeyCode::KeyZ, CmdKeyMapping::Disabled).is_some());
+    }
+}
