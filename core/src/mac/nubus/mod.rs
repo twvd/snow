@@ -9,14 +9,15 @@ use crate::bus::access::{
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
-use crate::tickable::{Tickable, Ticks};
+use crate::mac::dma::DmaOps;
+use crate::tickable::Ticks;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
 /// What a NuBus slot sees of a card
 #[typetag::serde(tag = "type")]
-pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + Display {
+pub trait NubusSlot: Send + Debuggable + Display {
     /// One NuBus read: `size` bytes (1, 2 or 4) at `addr`, aligned to the
     /// size, right-justified as the 68k sees them. `addr` is the NuBus address
     /// with the digit of the slot cleared (see [`card_address`]): $F0xx_xxxx
@@ -35,6 +36,10 @@ pub trait NubusSlot: Send + for<'a> Tickable<&'a dyn EmuContext> + Debuggable + 
 
     fn get_irq(&self) -> bool;
     fn reset(&mut self);
+
+    /// Called by the machine at each of its ticks, with the time that passed. A card that
+    /// masters the bus does its DMA here, through `dma`.
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()>;
 
     /// The card's video, if it has some
     fn video(&mut self) -> Option<&mut dyn VideoOutput> {
@@ -218,9 +223,9 @@ impl Nubus {
         Some(card_access(acc, waits, card.as_deref_mut()?))
     }
 
-    pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
+    pub fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()> {
         for card in self.cards_mut() {
-            card.tick(ticks, ctx)?;
+            card.tick(ticks, ctx, dma)?;
         }
         Ok(())
     }
