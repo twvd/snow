@@ -1,5 +1,5 @@
+use crate::devices::{DisplayFunction, DisplayStatus};
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -50,7 +50,11 @@ impl Default for Video {
     }
 }
 
-impl VideoOutput for Video {
+impl DisplayFunction for Video {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     fn blank(&mut self) -> Result<()> {
         self.framebuffer.fill(0xFF);
         self.render()

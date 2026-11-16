@@ -56,7 +56,7 @@
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
-use crate::mac::VideoOutput;
+use crate::devices::{DisplayFunction, DisplayStatus};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -269,7 +269,11 @@ impl Default for Video {
     }
 }
 
-impl VideoOutput for Video {
+impl DisplayFunction for Video {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     /// Blanks the display and sends an update to the renderer.
     fn blank(&mut self) -> Result<()> {
         self.framebuffers.iter_mut().for_each(|b| b.fill(0xFF));

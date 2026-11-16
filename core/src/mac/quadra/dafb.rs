@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::devices::{DisplayFunction, DisplayStatus};
 use crate::emulator::EmuContext;
-use crate::mac::{MacMonitor, VideoOutput};
+use crate::mac::MacMonitor;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -536,7 +537,11 @@ impl Dafb {
     }
 }
 
-impl VideoOutput for Dafb {
+impl DisplayFunction for Dafb {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus { connected: true }
+    }
+
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0);
         self.render()?;

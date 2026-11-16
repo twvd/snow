@@ -12,6 +12,7 @@ use super::{DeviceModel, FunctionConfig};
 pub mod bus_id {
     pub const SCSI: &str = "SCSI";
     pub const SWIM: &str = "SWIM";
+    pub const NUBUS: &str = "NuBus";
     /// The processor-direct slot of the LC family
     pub const PDS_LC: &str = "PDS_LC";
     /// The processor-direct slot of the SE/30
@@ -49,7 +50,7 @@ impl DeviceConfig {
             FunctionConfig::Cdrom(cdrom) => cdrom.folder.as_mut(),
             FunctionConfig::Ethernet(_) => None,
             FunctionConfig::Printer(printer) => printer.output_dir.as_mut(),
-            FunctionConfig::AppleIIeCard(_) => None,
+            FunctionConfig::Display(_) | FunctionConfig::AppleIIeCard(_) => None,
         };
         for path in [self.rom.as_mut(), in_function].into_iter().flatten() {
             *path = convert(path);

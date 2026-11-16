@@ -586,6 +586,7 @@ impl ModelSelectionDialog {
                         // VGA and 19" monitors are not known to work with the video cards
                         _ => MacMonitor::iter()
                             .filter(|&m| m != MacMonitor::VGA && m != MacMonitor::RGB19)
+                            .filter(|&m| m != MacMonitor::NoMonitor)
                             .collect(),
                     };
                     if !monitors.contains(&self.selected_monitor) {

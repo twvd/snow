@@ -17,6 +17,8 @@ use strum::IntoEnumIterator;
 use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie;
+use crate::mac::nubus;
+use crate::mac::nubus::NubusSlot;
 use crate::mac::pds::PdsSlot;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
@@ -28,6 +30,7 @@ use crate::mac::swim::device::SwimBusDevice;
 pub enum BusKind {
     Scsi,
     Swim,
+    Nubus,
     /// The processor-direct slot of the LC family
     LcPds,
     /// The processor-direct slot of the SE/30
@@ -148,6 +151,8 @@ pub enum DeviceModel {
     Mac800KDrive,
     Mac800KPwmDrive,
     MacSuperDrive,
+    DisplayCard824,
+    MacIIVideoCard,
     AppleIIePdsCard,
     UniDisk35,
     Apple525Drive,
@@ -166,6 +171,8 @@ impl DeviceModel {
             Self::Mac800KDrive => &swim::drive::INFO_800K,
             Self::Mac800KPwmDrive => &swim::drive::INFO_800K_PWM,
             Self::MacSuperDrive => &swim::drive::INFO_SUPERDRIVE,
+            Self::DisplayCard824 => &nubus::mdc12::INFO,
+            Self::MacIIVideoCard => &nubus::toby::INFO,
             Self::AppleIIePdsCard => &pds_iie::INFO,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
@@ -198,6 +205,8 @@ pub(crate) enum MadeDevice {
     Scsi(Box<dyn ScsiTarget>),
     /// A device for a drive connector of the floppy controller
     Swim(Box<dyn SwimBusDevice>),
+    /// A NuBus card
+    Nubus(Box<dyn NubusSlot>),
     /// A card for a processor-direct slot
     Pds(Box<dyn PdsSlot>),
 }
@@ -297,6 +306,24 @@ pub(crate) trait DeviceOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_defaults_of_a_video_are_in_its_lists() {
+        for model in DeviceModel::iter() {
+            let FunctionInfo::Display(display) = model.info().function else {
+                continue;
+            };
+            assert!(
+                display.monitors.is_empty() || display.default_monitor().is_some(),
+                "{model:?}"
+            );
+            assert!(
+                display.vram_sizes.is_empty() || display.default_vram_size().is_some(),
+                "{model:?}"
+            );
+            assert!(display.vram_sizes.is_sorted(), "{model:?}");
+        }
+    }
 
     #[test]
     fn every_device_model_has_its_info() {

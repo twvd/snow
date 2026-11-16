@@ -21,7 +21,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, bus_id};
+use crate::devices::{BusOps, DisplayFunction, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -35,7 +35,7 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, VideoOutput, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
@@ -1307,9 +1307,9 @@ impl Debuggable for Quadra800Bus {
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for slot in self.model.nubus_slots() {
+        for slot in ["C", "D", "E"] {
             result.push(dbgprop_group!(
-                format!("NuBus slot ${:1X} (empty)", slot),
+                format!("NuBus slot ${} (empty)", slot),
                 vec![]
             ));
         }
