@@ -37,7 +37,6 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DiskII;
 use crate::mac::pds::Pds;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
@@ -54,7 +53,7 @@ use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
@@ -862,15 +861,6 @@ impl Emulator {
         }
     }
 
-    /// The slot, on the disk port of the Apple IIe Card, of the `n`th drive of a device model
-    fn iie_drive_slot(&mut self, model: DeviceModel, n: usize) -> Option<&'static str> {
-        let bus = self.bus_ops(bus_id::IIE_DISK)?;
-        DiskII::SLOT_IDS
-            .into_iter()
-            .filter(|slot| bus.device(slot).is_some_and(|d| d.info().model == model))
-            .nth(n)
-    }
-
     /// Sends the frontend the state of the machine and of its devices, as it is now. It is sent
     /// every 500 ms while the machine runs and after each command. A frontend that calls the
     /// emulator's methods itself calls this after it changed a device.
@@ -1349,60 +1339,9 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertIieDisk(drive, path) => {
-                        let result = match self.iie_drive_slot(DeviceModel::Apple525Drive, drive) {
-                            Some(slot) => self
-                                .floppy_in(bus_id::IIE_DISK, slot)
-                                .and_then(|floppy| floppy.load(&path, true)),
-                            None if self.iie_card().is_none() => {
-                                Err(anyhow!("No Apple IIe Card installed"))
-                            }
-                            None => Err(anyhow!(
-                                "Cannot insert IIe disk '{}': 5.25\" drive {} is not connected",
-                                path.display(),
-                                drive + 1
-                            )),
-                        };
-                        if let Err(e) = result {
-                            self.user_error(&format!("{:#}", e));
-                        }
-                        self.status_update()?;
-                    }
                     EmulatorCommand::SetIieGamePort(port) => {
                         if let Some(card) = self.iie_card() {
                             card.set_game_port(port);
-                        }
-                    }
-                    EmulatorCommand::EjectIieDisk(drive) => {
-                        if let Some(slot) = self.iie_drive_slot(DeviceModel::Apple525Drive, drive)
-                            && let Ok(floppy) = self.floppy_in(bus_id::IIE_DISK, slot)
-                        {
-                            floppy.eject();
-                        }
-                    }
-                    EmulatorCommand::InsertIieUniDisk(path) => {
-                        let result = match self.iie_drive_slot(DeviceModel::UniDisk35, 0) {
-                            Some(slot) => self
-                                .floppy_in(bus_id::IIE_DISK, slot)
-                                .and_then(|floppy| floppy.load(&path, false)),
-                            None if self.iie_card().is_none() => {
-                                Err(anyhow!("No Apple IIe Card installed"))
-                            }
-                            None => Err(anyhow!(
-                                "Cannot insert UniDisk 3.5 image '{}': no UniDisk 3.5 is connected",
-                                path.display()
-                            )),
-                        };
-                        if let Err(e) = result {
-                            self.user_error(&format!("{:#}", e));
-                        }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::EjectIieUniDisk => {
-                        if let Some(slot) = self.iie_drive_slot(DeviceModel::UniDisk35, 0)
-                            && let Ok(floppy) = self.floppy_in(bus_id::IIE_DISK, slot)
-                        {
-                            floppy.eject();
                         }
                     }
                     EmulatorCommand::InsertFloppyImage(bus, slot, img, wp) => {

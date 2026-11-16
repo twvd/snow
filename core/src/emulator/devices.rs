@@ -86,21 +86,29 @@ impl Emulator {
         Ok(device.function())
     }
 
-    /// The buses of the machine, their slots and the devices in them, as they are now
+    /// The buses of the machine, their slots and the devices in them, as they are now: the
+    /// buses of the Mac model, then those that devices add
     pub fn buses(&mut self) -> Vec<Bus> {
         let mut buses = self.model.buses();
-        for bus in &mut buses {
-            let Some(ops) = self.bus_ops(&bus.id) else {
-                continue;
-            };
-            for slot in &mut bus.slots {
-                slot.device = ops.device(&slot.id).map(|device| Device {
-                    model: device.info().model,
-                    rom: device.rom().map(Path::to_path_buf),
-                    function: device.config(),
-                    name: device.name(),
-                });
+        // A bus that a device adds goes at the end of the list, and is filled in its turn
+        let mut index = 0;
+        while index < buses.len() {
+            let mut added = vec![];
+            if let Some(ops) = self.bus_ops(&buses[index].id) {
+                for slot in &mut buses[index].slots {
+                    slot.device = ops.device(&slot.id).map(|device| {
+                        added.extend(device.extra_buses().into_iter().map(|(bus, _)| bus));
+                        Device {
+                            model: device.info().model,
+                            rom: device.rom().map(Path::to_path_buf),
+                            function: device.config(),
+                            name: device.name(),
+                        }
+                    });
+                }
             }
+            buses.extend(added);
+            index += 1;
         }
         buses
     }
@@ -655,9 +663,22 @@ mod tests {
             // The machine reports it with its settings, and can't lose it
             assert_eq!(emu.devices(), vec![card.clone()]);
             assert!(emu.remove_device(bus_id::PDS_LC, "0").is_err());
-            // It came with the drives its settings name
-            assert_eq!(emu.iie_drive_slot(DeviceModel::UniDisk35, 0), Some("1"));
-            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 0), Some("2"));
+            // It came with the drives its settings name, on the bus it adds: the last one
+            let buses = emu.buses();
+            let disk = buses.last().unwrap();
+            assert_eq!(disk.id, bus_id::IIE_DISK);
+            let drives = disk.slots.iter().map(|slot| {
+                let device = slot.device.as_ref().unwrap();
+                (slot.id.as_str(), device.model, device.name.as_deref())
+            });
+            assert!(drives.eq([
+                ("1", DeviceModel::UniDisk35, Some("Apple IIe UniDisk 3.5")),
+                (
+                    "2",
+                    DeviceModel::Apple525Drive,
+                    Some("Apple IIe 5.25\" drive 2")
+                ),
+            ]));
         }
 
         // It fits no other slot
@@ -695,10 +716,6 @@ mod tests {
             )
             .unwrap();
 
-            // The commands of the card count the drives of one device model
-            assert_eq!(emu.iie_drive_slot(DeviceModel::UniDisk35, 0), Some("1"));
-            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 0), Some("2"));
-            assert_eq!(emu.iie_drive_slot(DeviceModel::Apple525Drive, 1), None);
             // A drive of the card is reached as the Mac's are
             let floppy = emu.floppy_in(bus_id::IIE_DISK, "2").unwrap();
             assert!(floppy.status().ejected);

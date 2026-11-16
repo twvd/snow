@@ -98,15 +98,16 @@ impl Bus {
 }
 
 /// The machine that has these buses, as the list of device configs it can be made from again.
-/// It leaves out a device that the Mac model has in its slot without being asked.
+///
+/// It leaves out a device that the Mac model has in its slot without being asked, and the
+/// devices on a bus that a device adds: that device makes them.
 pub fn device_configs(buses: &[Bus], mac: MacModel) -> Vec<DeviceConfig> {
     let defaults = mac.buses();
-    let default_device = |bus: &Bus, slot: &Slot| {
-        let bus = defaults.iter().find(|b| b.id == bus.id)?;
-        bus.slots.iter().find(|s| s.id == slot.id)?.device.clone()
-    };
     let mut configs = vec![];
     for bus in buses {
+        let Some(default_bus) = defaults.iter().find(|b| b.id == bus.id) else {
+            continue;
+        };
         for slot in &bus.slots {
             let Some(device) = &slot.device else {
                 continue;
@@ -116,7 +117,8 @@ pub fn device_configs(buses: &[Bus], mac: MacModel) -> Vec<DeviceConfig> {
                 name: None,
                 ..device.clone()
             };
-            if default_device(bus, slot) == Some(unnamed) {
+            let default_slot = default_bus.slots.iter().find(|s| s.id == slot.id);
+            if default_slot.and_then(|s| s.device.as_ref()) == Some(&unnamed) {
                 continue;
             }
             configs.push(DeviceConfig {
