@@ -10,7 +10,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-use crate::devices::{CdromFunction, FunctionMut};
+use crate::devices::{CdromFunction, FunctionInfo, FunctionMut};
 use crate::emulator::EmuContext;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
@@ -20,7 +20,6 @@ use crate::mac::scsi::ethernet::ScsiTargetEthernet;
 #[cfg(feature = "printer")]
 use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
-use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::{
     ASC_LOGICAL_UNIT_NOT_SUPPORTED, CC_KEY_ILLEGAL_REQUEST, STATUS_CHECK_CONDITION, ScsiCmdResult,
@@ -126,13 +125,11 @@ impl ScsiBus {
         let mut map = [0xFFu8; 8];
         for (id, slot) in map.iter_mut().enumerate().take(Self::MAX_TARGETS) {
             if let Some(target) = self.targets[id].as_ref() {
-                *slot = match target.target_type() {
-                    ScsiTargetType::Disk => 0x00,  // fixed disk
-                    ScsiTargetType::Cdrom => 0x02, // optical / CD-ROM
-                    #[cfg(feature = "ethernet")]
-                    ScsiTargetType::Ethernet => 0x06, // DaynaPORT
-                    #[cfg(feature = "printer")]
-                    ScsiTargetType::Printer => 0xFF, // not a Toolbox device type
+                *slot = match target.info().function {
+                    FunctionInfo::HardDisk => 0x00,    // fixed disk
+                    FunctionInfo::Cdrom => 0x02,       // optical / CD-ROM
+                    FunctionInfo::Ethernet(_) => 0x06, // DaynaPORT
+                    FunctionInfo::Printer => 0xFF,     // not a Toolbox device type
                 };
             }
         }
