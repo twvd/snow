@@ -10,6 +10,7 @@ use crate::bus::{
 };
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
+use crate::devices::{BusOps, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -832,6 +833,14 @@ impl MacIIBus {
                 .expect("no video card"),
         };
         video.frames()
+    }
+
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI => Some(self.scsi.bus_mut()),
+            _ => None,
+        }
     }
 
     /// Dispatches a key event to the keyboard
