@@ -8,10 +8,11 @@ use super::{NubusSlot, bus_long, lanes, standard_offset};
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
+use crate::mac::dma::DmaOps;
 use crate::mac::{MacMonitor, VideoOutput};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, MONOCHROME_LUT, render_packed};
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::{Field32, LatchingEvent, Word};
 
 bitfield! {
@@ -298,6 +299,21 @@ impl NubusSlot for Mdc12 {
         self.vblank_irq
     }
 
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, _dma: &mut dyn DmaOps) -> Result<()> {
+        self.vblank_ticks += ticks;
+        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+            if self.renderer.frame_wanted() {
+                self.render()?;
+            }
+
+            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            if self.vblank_enable {
+                self.vblank_irq = true;
+            }
+        }
+        Ok(())
+    }
+
     fn video(&mut self) -> Option<&mut dyn VideoOutput> {
         Some(self)
     }
@@ -335,23 +351,6 @@ impl VideoOutput for Mdc12 {
             *frames.lock().unwrap() = Some(frame);
         }
         frames
-    }
-}
-
-impl Tickable<&dyn EmuContext> for Mdc12 {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.vblank_ticks += ticks;
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.frame_wanted() {
-                self.render()?;
-            }
-
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
-            if self.vblank_enable {
-                self.vblank_irq = true;
-            }
-        }
-        Ok(ticks)
     }
 }
 
