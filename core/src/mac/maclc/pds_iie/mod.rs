@@ -96,7 +96,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::devices::{FloppyFunction, FunctionMut};
+use crate::devices::{
+    AppleIIeCardFunction, BusKind, DeviceModel, DeviceOps, FloppyFunction, FunctionConfig,
+    FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::tickable::{Tickable, Ticks};
 #[cfg(feature = "iie-debug")]
 use log::{Level, log_enabled};
@@ -1554,6 +1557,9 @@ impl Bus6502 for PdsIIeBus {
 /// the host register block, and the C16M clock divider.
 #[derive(Serialize, Deserialize)]
 pub struct PdsIIeCard {
+    /// What the card was made with
+    settings: IieCardSettings,
+
     /// The 65C02, which owns the card's bus.
     pub(crate) cpu: Cpu<PdsIIeBus>,
 
@@ -1614,13 +1620,49 @@ const LC_BANK2_AT_C000: bool = false;
 #[cfg(feature = "iie-debug")]
 const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
-impl PdsIIeCard {
-    /// Whether the IIe is in front: its 65C02 runs, and the host keeps writing
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::AppleIIePdsCard,
+        "Apple IIe Card",
+        BusKind::LcPds,
+        FunctionInfo::AppleIIeCard,
+    )
+};
+
+impl DeviceOps for PdsIIeCard {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::AppleIIeCard(self.settings)
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::AppleIIeCard(self)
+    }
+}
+
+impl AppleIIeCardFunction for PdsIIeCard {
+    /// The IIe is in front when its 65C02 runs, and the host keeps writing
     /// `$20`
-    pub fn in_front(&self) -> bool {
+    fn in_front(&self) -> bool {
         self.front_time >= IN_FRONT_SETTLE
     }
 
+    /// Sets what the host has on the game port: the paddle positions
+    /// for the next `$C070` and the buttons.
+    fn set_game_port(&mut self, port: GamePort) {
+        let mut s = self.cpu.bus.state.borrow_mut();
+        s.game_port = port;
+        s.stick_kept |= port.keep_stick;
+        s.btn[0] = port.buttons[0];
+        s.btn[1] = port.buttons[1];
+    }
+}
+
+impl PdsIIeCard {
     /// Creates a card with its 65C02 stopped and the default settings.
     pub fn new() -> Self {
         Self::with_settings(&IieCardSettings::default())
@@ -1633,6 +1675,7 @@ impl PdsIIeCard {
         cpu.bus.state.borrow_mut().disk =
             DiskII::new(settings.drives_525(), settings.has_unidisk());
         Self {
+            settings: *settings,
             cpu,
             data_out: 0,
             mem_addr: 0,
@@ -2053,16 +2096,6 @@ impl PdsIIeCard {
         }
     }
 
-    /// Sets what the host has on the game port: the paddle positions
-    /// for the next `$C070` and the buttons.
-    pub fn set_game_port(&mut self, port: GamePort) {
-        let mut s = self.cpu.bus.state.borrow_mut();
-        s.game_port = port;
-        s.stick_kept |= port.keep_stick;
-        s.btn[0] = port.buttons[0];
-        s.btn[1] = port.buttons[1];
-    }
-
     /// Loads firmware into a bank through the host path, at the load
     /// address from a Monx resource header (the firmware offset,
     /// relative to card `0x20000`): `$0000`–`$3FFF` = the main ROM
@@ -2343,6 +2376,21 @@ mod tests {
         for _ in 0..steps * 16 {
             card.tick(16, ()).unwrap();
         }
+    }
+
+    #[test]
+    fn the_card_provides_its_function_and_its_config() {
+        let settings = IieCardSettings {
+            security_jumper: true,
+            disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
+        };
+        let mut card = PdsIIeCard::with_settings(&settings);
+        assert_eq!(card.info().model, DeviceModel::AppleIIePdsCard);
+        assert_eq!(card.config(), FunctionConfig::AppleIIeCard(settings));
+        let FunctionMut::AppleIIeCard(iie) = card.function() else {
+            panic!("The card has another function");
+        };
+        assert!(!iie.in_front());
     }
 
     #[test]
