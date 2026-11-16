@@ -571,14 +571,7 @@ impl SnowGui {
 
             floppy_rpm_adjustment: [0, 0, 0],
 
-            // Always clean up images created by restoring save states
-            temp_files: Vec::from_iter((0..snow_core::mac::scsi::bus::ScsiBus::MAX_TARGETS).map(
-                |i| {
-                    let mut pb = env::temp_dir();
-                    pb.push(format!("snow_state_{}_{}.img", std::process::id(), i));
-                    pb
-                },
-            )),
+            temp_files: vec![],
 
             quick_states: Default::default(),
 
@@ -1867,7 +1860,7 @@ impl SnowGui {
                             id,
                         ),
                         |ui| {
-                            use snow_core::mac::scsi::ethernet::EthernetLinkType;
+                            use snow_core::devices::EthernetLinkType;
 
                             ui.set_min_width(Self::SUBMENU_WIDTH);
                             ui.strong("Link type");
@@ -3721,6 +3714,12 @@ impl SnowGui {
                 self.framebuffer
                     .load_shader_defaults(self.emu.get_model().unwrap());
                 self.framebuffer.connect_receiver(p.frame_receiver);
+                // Images created by restoring the state
+                for f in p.temp_files {
+                    if !self.temp_files.contains(&f) {
+                        self.temp_files.push(f);
+                    }
+                }
             }
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }

@@ -24,6 +24,7 @@ use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{FunctionMut, FunctionStatus};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
@@ -39,7 +40,7 @@ use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::mac::scc::Scc;
-use crate::mac::scsi::target::ScsiTargetEvent;
+use crate::mac::scsi::target::{ScsiTargetEvent, ScsiTargetType};
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{
@@ -50,7 +51,7 @@ use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use log::*;
 use std::fmt;
 
@@ -418,6 +419,8 @@ pub struct Emulator {
     memory_map_state: Option<MemoryMapState>,
     /// Last look at the memory notifiers
     memory_notify_time: Instant,
+    /// The temporary files a restored state made, which its devices carry on from
+    temp_files: Vec<PathBuf>,
 }
 
 type BreakpointHandler = Box<
@@ -750,6 +753,7 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            temp_files: vec![],
         };
         emu.status_update()?;
 
@@ -777,6 +781,12 @@ impl Emulator {
         self.breakpoint_handler = Some(Box::new(handler));
     }
 
+    /// The temporary files that a restored state made: the images its devices carry on from.
+    /// For the frontend to remove when it is done with the machine.
+    pub fn temp_files(&self) -> &[PathBuf] {
+        &self.temp_files
+    }
+
     /// Restores a saved emulator state into a new Emulator instance
     #[cfg(feature = "savestates")]
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
@@ -794,7 +804,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f, tmpdir)?;
+        let (mut config, temp_files) = load_state_from(f, tmpdir)?;
         config.after_deserialize();
         let frame_recv = config.video_frames();
         // The keys and buttons held down when the state was saved are not
@@ -823,6 +833,7 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            temp_files,
         };
         emu.status_update()?;
 
@@ -918,6 +929,58 @@ impl Emulator {
             }
         }
 
+        let scsi_targets = &mut self.config.scsi_mut().targets;
+        let scsi = core::array::from_fn(|i| {
+            let function = scsi_targets[i].as_mut()?.function();
+            Some(match function.status() {
+                FunctionStatus::HardDisk(disk) => ScsiTargetStatus {
+                    target_type: ScsiTargetType::Disk,
+                    capacity: Some(disk.capacity),
+                    image: disk.media,
+                    cdrom_folder: None,
+                    #[cfg(feature = "ethernet")]
+                    link_type: None,
+                    #[cfg(feature = "ethernet")]
+                    capture_status: None,
+                },
+                FunctionStatus::Cdrom(cdrom) => ScsiTargetStatus {
+                    target_type: ScsiTargetType::Cdrom,
+                    capacity: None,
+                    image: cdrom.image,
+                    cdrom_folder: cdrom.folder,
+                    #[cfg(feature = "ethernet")]
+                    link_type: None,
+                    #[cfg(feature = "ethernet")]
+                    capture_status: None,
+                },
+                #[cfg(feature = "ethernet")]
+                FunctionStatus::Ethernet(ethernet) => ScsiTargetStatus {
+                    target_type: ScsiTargetType::Ethernet,
+                    capacity: None,
+                    image: None,
+                    cdrom_folder: None,
+                    link_type: Some(ethernet.link),
+                    capture_status: ethernet.capture,
+                },
+                #[cfg(feature = "printer")]
+                FunctionStatus::Printer(_) => ScsiTargetStatus {
+                    target_type: ScsiTargetType::Printer,
+                    capacity: None,
+                    image: None,
+                    cdrom_folder: None,
+                    #[cfg(feature = "ethernet")]
+                    link_type: None,
+                    #[cfg(feature = "ethernet")]
+                    capture_status: None,
+                },
+                // No device of a build without the feature has these functions
+                #[cfg(not(feature = "ethernet"))]
+                FunctionStatus::Ethernet(_) => unreachable!(),
+                #[cfg(not(feature = "printer"))]
+                FunctionStatus::Printer(_) => unreachable!(),
+            })
+        });
+
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.config.cpu_regs().clone(),
@@ -939,33 +1002,7 @@ impl Emulator {
                 }),
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
-                scsi: core::array::from_fn(|i| {
-                    self.config
-                        .scsi()
-                        .get_target_type(i)
-                        .map(|t| ScsiTargetStatus {
-                            target_type: t,
-                            capacity: self.config.scsi().get_disk_capacity(i),
-                            image: self
-                                .config
-                                .scsi()
-                                .get_disk_imagefn(i)
-                                .map(|p| p.to_path_buf()),
-                            cdrom_folder: self
-                                .config
-                                .scsi()
-                                .get_cdrom_folder(i)
-                                .map(|p| p.to_path_buf()),
-                            #[cfg(feature = "ethernet")]
-                            link_type: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_link()),
-                            #[cfg(feature = "ethernet")]
-                            capture_status: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_capture_status()),
-                        })
-                }),
+                scsi,
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
@@ -1456,7 +1493,7 @@ impl Emulator {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
+    pub fn attach_cdrom_folder(&mut self, id: usize, dir: &Path) -> Result<()> {
         let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
         let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
         self.config
@@ -1479,11 +1516,11 @@ impl Emulator {
     }
 
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+    fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot)?;
+        save_state_to(&f, &mut self.config, screenshot)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -1748,11 +1785,14 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiBranchHdd(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
+                        let target = self.config.scsi_mut().targets[id]
                             .as_mut()
-                            .context("No target attached")?
-                            .branch_media(&filename)
-                        {
+                            .context("No target attached")?;
+                        let branched = match target.function() {
+                            FunctionMut::HardDisk(disk) => disk.branch(&filename),
+                            _ => Err(anyhow!("Not a hard disk")),
+                        };
+                        match branched {
                             Ok(_) => {
                                 info!("SCSI ID #{}: branched to file '{}'", id, filename.display());
                             }
@@ -1763,11 +1803,14 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiLoadMedia(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
+                        let target = self.config.scsi_mut().targets[id]
                             .as_mut()
-                            .context("No target attached")?
-                            .load_media(&filename)
-                        {
+                            .context("No target attached")?;
+                        let loaded = match target.function() {
+                            FunctionMut::Cdrom(cdrom) => cdrom.load(&filename),
+                            _ => Err(anyhow!("Not a CD-ROM drive")),
+                        };
+                        match loaded {
                             Ok(_) => {
                                 info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
                             }
@@ -1782,7 +1825,7 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
-                        if let Err(e) = self.attach_cdrom_folder(id, dir) {
+                        if let Err(e) = self.attach_cdrom_folder(id, &dir) {
                             self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
                         }
                         self.status_update()?;
@@ -2084,18 +2127,23 @@ impl Tickable for Emulator {
                         let target = self.config.scsi_mut().targets[idx]
                             .as_mut()
                             .context("Setting link on non-ethernet device")?;
-                        if let Err(e) = target.eth_set_link(link) {
+                        let FunctionMut::Ethernet(ethernet) = target.function() else {
+                            bail!("Setting link on non-ethernet device");
+                        };
+                        if let Err(e) = ethernet.set_link(link) {
                             self.user_error(&format!("SCSI #{}: {:#}", idx, e));
                         }
                         self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(idx, filename) => {
-                        match self.config.scsi_mut().targets[idx]
+                        let target = self.config.scsi_mut().targets[idx]
                             .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_start_capture(&filename)
-                        {
+                            .context("No ethernet device attached")?;
+                        let FunctionMut::Ethernet(ethernet) = target.function() else {
+                            bail!("No ethernet device attached");
+                        };
+                        match ethernet.start_capture(&filename) {
                             Ok(_) => {
                                 self.user_success(&format!(
                                     "SCSI #{}: Started pcap capture to '{}'",
@@ -2114,11 +2162,13 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStopCapture(idx) => {
-                        match self.config.scsi_mut().targets[idx]
+                        let target = self.config.scsi_mut().targets[idx]
                             .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_stop_capture()
-                        {
+                            .context("No ethernet device attached")?;
+                        let FunctionMut::Ethernet(ethernet) = target.function() else {
+                            bail!("No ethernet device attached");
+                        };
+                        match ethernet.stop_capture() {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
                                     "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
