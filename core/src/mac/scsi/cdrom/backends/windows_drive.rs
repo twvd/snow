@@ -12,7 +12,7 @@ use windows::{
         Storage::FileSystem::*,
         System::{IO::*, Ioctl::*, WindowsProgramming::*},
     },
-    core::HSTRING,
+    core::{HSTRING, Owned},
 };
 
 use crate::mac::scsi::{
@@ -81,12 +81,15 @@ pub fn new_backend(path: &Path) -> Result<PhysicalDriveCdromBackend> {
 /// The I/O of a physical CD-ROM drive on Windows. Only used on the drive
 /// thread (see `drive_thread`).
 struct WindowsPhysicalCdromDrive {
-    handle: HANDLE,
+    /// The open drive, closed when this is dropped
+    handle: Owned<HANDLE>,
     curr_media_change_count: Option<u32>,
     disc_info: Option<DiscInfo>,
 }
 
-// SAFETY: The drive handle should be safe to send between threads.
+// SAFETY: The drive handle should be safe to send between threads. `Owned`
+// isn't Send only because a HANDLE is a raw pointer.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for WindowsPhysicalCdromDrive {}
 
 fn get_disk_length(handle: HANDLE) -> Result<i64> {
@@ -421,8 +424,10 @@ fn get_media_change_count(drive: HANDLE) -> Result<Option<u32>> {
 
 impl WindowsPhysicalCdromDrive {
     fn new(path: &Path) -> Result<Self> {
+        // SAFETY: the handle comes straight from CreateFileW, and only `Owned`
+        // closes it
         let handle = unsafe {
-            CreateFileW(
+            Owned::new(CreateFileW(
                 &HSTRING::from(path),
                 GENERIC_READ.0,
                 FILE_SHARE_READ,
@@ -430,14 +435,14 @@ impl WindowsPhysicalCdromDrive {
                 OPEN_EXISTING,
                 FILE_ATTRIBUTE_NORMAL,
                 None,
-            )
-        }?;
+            )?)
+        };
 
         // Allow read commands to be sent directly to the driver without filtering.
         // Without this, Microsoft Virtual DVD-ROM will read all 0's on some sectors.
         let _ = unsafe {
             DeviceIoControl(
-                handle,
+                *handle,
                 FSCTL_ALLOW_EXTENDED_DASD_IO,
                 None,
                 0,
@@ -448,9 +453,10 @@ impl WindowsPhysicalCdromDrive {
             )
         };
 
+        let curr_media_change_count = get_media_change_count(*handle)?;
         let mut self_ = Self {
             handle,
-            curr_media_change_count: get_media_change_count(handle)?,
+            curr_media_change_count,
             disc_info: None,
         };
 
@@ -466,16 +472,16 @@ impl WindowsPhysicalCdromDrive {
 
         drop(self.disc_info.take());
 
-        let capacity: usize = get_disk_length(self.handle)?.try_into()?;
+        let capacity: usize = get_disk_length(*self.handle)?.try_into()?;
         log::debug!("detected capacity: 0x{:X}", capacity);
 
-        let (sessions, tracks) = read_full_toc(self.handle).or_else(|e| {
+        let (sessions, tracks) = read_full_toc(*self.handle).or_else(|e| {
             // Microsoft Virtual DVD-ROM supports Formatted TOC but not Full TOC.
             log::warn!(
                 "Failed to read Full TOC; falling back to Formatted TOC. Error: {}",
                 e
             );
-            read_formatted_toc(self.handle)
+            read_formatted_toc(*self.handle)
         })?;
 
         log::debug!("sessions: {:#?}", sessions);
@@ -485,7 +491,7 @@ impl WindowsPhysicalCdromDrive {
         // If ReadFile is performed on a drive handle before IOCTL_CDROM_RAW_READ,
         // IOCTL_CDROM_RAW_READ will stop working with "The parameter is incorrect."
         // This seems to fix it.
-        let _ = read_ioctl_cdrom_raw_read(self.handle, 0);
+        let _ = read_ioctl_cdrom_raw_read(*self.handle, 0);
 
         self.disc_info = Some(DiscInfo {
             capacity,
@@ -505,7 +511,7 @@ impl PhysicalCdromDrive for WindowsPhysicalCdromDrive {
     }
 
     fn check_media(&mut self) -> Result<(), CdromError> {
-        let media_change_count = match get_media_change_count(self.handle) {
+        let media_change_count = match get_media_change_count(*self.handle) {
             Ok(count) => count,
             Err(e) => {
                 if let Some(we) = e.downcast_ref::<windows_result::Error>()
@@ -549,27 +555,32 @@ impl PhysicalCdromDrive for WindowsPhysicalCdromDrive {
         // log::debug!("Reading 0x{:X} bytes from offset 0x{:X}", length, offset);
 
         // If move method is FILE_BEGIN, offset is treated as an unsigned value.
-        unsafe { SetFilePointerEx(self.handle, offset as i64, None, FILE_BEGIN) }
+        unsafe { SetFilePointerEx(*self.handle, offset as i64, None, FILE_BEGIN) }
             .map_err(|e| anyhow!(e))?;
 
         let mut result = vec![0; length];
-        unsafe { ReadFile(self.handle, Some(result.as_mut_slice()), None, None) }.map_err(|e| {
-            if e.code() == ERROR_INVALID_FUNCTION.into() {
-                // ReadFile returns ERROR_INVALID_FUNCTION if you try to read an audio sector.
-                log::warn!("Read failed with ERROR_INVALID_FUNCTION");
-                CdromError::CheckCondition(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
-            } else if e.code() == ERROR_NOT_READY.into() {
-                // ReadFile returns ERROR_NOT_READY if you eject the disc.
-                log::warn!("Read failed with ERROR_NOT_READY");
-                CdromError::CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
-            } else if e.code() == ERROR_FILE_INVALID.into() {
-                // ReadFile returns ERROR_FILE_INVALID if the CD-ROM drive was unplugged.
-                log::warn!("Read failed with ERROR_FILE_INVALID");
-                CdromError::BackendDead
-            } else {
-                CdromError::Other(e.into())
-            }
-        })?;
+        unsafe { ReadFile(*self.handle, Some(result.as_mut_slice()), None, None) }.map_err(
+            |e| {
+                if e.code() == ERROR_INVALID_FUNCTION.into() {
+                    // ReadFile returns ERROR_INVALID_FUNCTION if you try to read an audio sector.
+                    log::warn!("Read failed with ERROR_INVALID_FUNCTION");
+                    CdromError::CheckCondition(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
+                    )
+                } else if e.code() == ERROR_NOT_READY.into() {
+                    // ReadFile returns ERROR_NOT_READY if you eject the disc.
+                    log::warn!("Read failed with ERROR_NOT_READY");
+                    CdromError::CheckCondition(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT)
+                } else if e.code() == ERROR_FILE_INVALID.into() {
+                    // ReadFile returns ERROR_FILE_INVALID if the CD-ROM drive was unplugged.
+                    log::warn!("Read failed with ERROR_FILE_INVALID");
+                    CdromError::BackendDead
+                } else {
+                    CdromError::Other(e.into())
+                }
+            },
+        )?;
 
         Ok(result)
     }
@@ -587,7 +598,7 @@ impl PhysicalCdromDrive for WindowsPhysicalCdromDrive {
             .checked_sub(LBA_START_SECTOR)
             .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
 
-        let status = read_ioctl_cdrom_raw_read(self.handle, lba);
+        let status = read_ioctl_cdrom_raw_read(*self.handle, lba);
         match status {
             Ok(data) => Ok(RawSector {
                 data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
