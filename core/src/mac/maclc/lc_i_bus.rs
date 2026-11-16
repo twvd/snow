@@ -168,7 +168,7 @@ impl LcIBus {
             .filter(|s| video::vram_sizes(model).contains(s))
             .unwrap_or_else(|| video::vram_size_default(model));
         let video = Video::new(monitor, vram_size);
-        let swim = Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY);
+        let swim = Swim::new(model.fdd_hd(), BUS_FREQUENCY);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
         egret.adb_add_device(AdbKeyboard::new());
@@ -762,6 +762,7 @@ impl LcIBus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }

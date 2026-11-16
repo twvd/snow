@@ -195,7 +195,7 @@ impl Quadra700Bus {
             aux_irq_mode: false,
             soft_irq: false,
             scc: Scc::new(SCC_RTXC_FREQUENCY),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), C16M_FREQUENCY),
+            swim: Swim::new(model.fdd_hd(), C16M_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
             scsi_dma_stalled: false,
@@ -684,6 +684,7 @@ impl Quadra700Bus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }

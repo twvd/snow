@@ -11,6 +11,7 @@ use super::{DeviceModel, FunctionConfig};
 /// must not change.
 pub mod bus_id {
     pub const SCSI: &str = "SCSI";
+    pub const SWIM: &str = "SWIM";
 }
 
 /// One device, as described in a list of devices: where it is, which device it is, and what

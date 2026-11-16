@@ -322,7 +322,7 @@ impl MacIIBus {
             via2: Via2::new(model),
             scc_ready: 0,
             scc: Scc::new(RTXC_FREQUENCY),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
+            swim: Swim::new(model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: {
                 let asc = Asc::default();
@@ -839,6 +839,7 @@ impl MacIIBus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }

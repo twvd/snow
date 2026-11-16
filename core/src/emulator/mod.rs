@@ -482,14 +482,7 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus = CompactMacBus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    mouse_mode,
-                    ram_size,
-                    override_fdd_type,
-                );
+                let bus = CompactMacBus::new(model, rom, extension_rom, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -748,6 +741,7 @@ impl Emulator {
             buses: Arc::default(),
             device_statuses: vec![],
         };
+        emu.add_default_devices(override_fdd_type)?;
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
