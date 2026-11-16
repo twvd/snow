@@ -1,19 +1,19 @@
 //! SCSI target generic/shared code
 
+#[cfg(feature = "savestates")]
 use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
+use crate::devices::DeviceOps;
 use crate::emulator::EmuContext;
-use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
     ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT,
     ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_NOT_READY,
     STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCheckCondition, ScsiCmdResult,
 };
-use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
 // Documentation:
@@ -67,12 +67,13 @@ impl ScsiTargetCommon {
 
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
-pub(crate) trait ScsiTarget: Send + Debuggable {
+pub(crate) trait ScsiTarget: Send + Debuggable + DeviceOps {
     /// Return a mutable reference to the ScsiTargetCommon data
     fn common(&mut self) -> &mut ScsiTargetCommon;
 
-    /// Called after loading a savestate to restore SCSI image data that was
-    /// previously saved by `savestate_img_data`
+    /// Called after loading a savestate to restore the data that the target
+    /// saved with `savestate_img_data`, from the file `imgfn`. A hard disk's
+    /// image isn't saved this way: see `HardDiskFunction::savestate_image()`.
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
 
@@ -104,43 +105,11 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn ms_media_type(&self) -> u8;
     fn ms_device_specific(&self) -> u8;
 
-    // For CD-ROM drives
-    fn set_audio_provider(&mut self, _provider: &mut dyn AudioProvider) -> Result<()> {
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, link: super::ethernet::EthernetLinkType) -> Result<()>;
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType>;
-    #[cfg(feature = "ethernet")]
-    fn eth_start_capture(&mut self, _filename: &Path) -> Result<()> {
-        anyhow::bail!("Not an ethernet device")
-    }
-    #[cfg(feature = "ethernet")]
-    fn eth_stop_capture(&mut self) -> Option<(std::path::PathBuf, usize)> {
-        None
-    }
-    #[cfg(feature = "ethernet")]
-    fn eth_capture_status(&self) -> Option<crate::emulator::comm::EthernetCaptureStatus> {
-        None
-    }
-
     // For block devices
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult>;
     fn write(&mut self, block_offset: usize, data: &[u8]);
-    fn image_fn(&self) -> Option<&Path>;
-    fn load_media(&mut self, path: &Path) -> Result<()>;
-    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()>;
-    fn branch_media(&mut self, path: &Path) -> Result<()>;
-
-    /// For folder-backed ("Toolbox managed") CD-ROM drives: the folder of images
-    /// exposed to the guest via the BlueSCSI Toolbox CD commands. None otherwise.
-    fn cdrom_image_dir(&self) -> Option<&Path> {
-        None
-    }
 
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;

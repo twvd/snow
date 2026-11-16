@@ -1,6 +1,7 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{DeviceOps, EthernetFunction, EthernetLinkType, EthernetStatus, FunctionMut};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -69,40 +70,6 @@ struct PcapPacketHeader {
     ts_usec: u32,
     incl_len: u32,
     orig_len: u32,
-}
-
-/// Link mode for ethernet device
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub enum EthernetLinkType {
-    /// No link
-    Down,
-    /// Userland NAT
-    #[cfg(feature = "ethernet_nat")]
-    NAT,
-    /// Userland NAT with HTTPS stripping
-    #[cfg(feature = "ethernet_nat_https_stripping")]
-    NATHttpsStripping,
-    /// Raw sockets based bridge
-    #[cfg(feature = "ethernet_raw")]
-    Bridge(u32),
-    /// Tap interface based bridge
-    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-    TapBridge(String),
-}
-
-// Clippy is wrong, I don't think you can conditionally tag #[default] on an enum based on features
-#[allow(clippy::derivable_impls)]
-impl Default for EthernetLinkType {
-    fn default() -> Self {
-        #[cfg(feature = "ethernet_nat")]
-        {
-            Self::NAT
-        }
-        #[cfg(not(feature = "ethernet_nat"))]
-        {
-            Self::Down
-        }
-    }
 }
 
 /// Statistics for tap bridge
@@ -238,7 +205,7 @@ impl ScsiTargetEthernet {
         if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
             // Initialize link
             let link = self.link.clone();
-            if let Err(e) = self.eth_set_link(link) {
+            if let Err(e) = self.set_link(link) {
                 log::error!("Failed to set ethernet link: {}", e);
             }
         }
@@ -828,25 +795,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         unreachable!()
     }
 
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
             0x08 => {
@@ -1005,8 +953,24 @@ impl ScsiTarget for ScsiTargetEthernet {
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
         }
     }
+}
 
-    fn eth_set_link(&mut self, link: EthernetLinkType) -> Result<()> {
+impl DeviceOps for ScsiTargetEthernet {
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Ethernet(self)
+    }
+}
+
+impl EthernetFunction for ScsiTargetEthernet {
+    fn status(&self) -> EthernetStatus {
+        EthernetStatus {
+            mac: self.macaddress,
+            link: self.link.clone(),
+            capture: self.get_capture_status(),
+        }
+    }
+
+    fn set_link(&mut self, link: EthernetLinkType) -> Result<()> {
         // Terminate active links
         // Dropping the senders will cause the channel to close and the receiver threads to terminate
         self.rx = None;
@@ -1079,6 +1043,9 @@ impl ScsiTarget for ScsiTargetEthernet {
                 });
                 Ok(())
             }
+            // A link this build has no support for
+            #[allow(unreachable_patterns)]
+            _ => Err(anyhow::anyhow!("This build has no support for this link")),
         };
         if let Err(e) = started {
             // A link that fails to start may have set its channels already, and frames sent to
@@ -1091,20 +1058,12 @@ impl ScsiTarget for ScsiTargetEthernet {
         Ok(())
     }
 
-    fn eth_link(&self) -> Option<EthernetLinkType> {
-        Some(self.link.clone())
-    }
-
-    fn eth_start_capture(&mut self, filename: &Path) -> Result<()> {
+    fn start_capture(&mut self, filename: &Path) -> Result<()> {
         self.start_pcap_capture(filename)
     }
 
-    fn eth_stop_capture(&mut self) -> Option<(PathBuf, usize)> {
+    fn stop_capture(&mut self) -> Option<(PathBuf, usize)> {
         self.stop_pcap_capture()
-    }
-
-    fn eth_capture_status(&self) -> Option<EthernetCaptureStatus> {
-        self.get_capture_status()
     }
 }
 
@@ -1268,6 +1227,24 @@ impl Debuggable for ScsiTargetEthernet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_shows_in_the_status() {
+        let mut adapter = ScsiTargetEthernet::default();
+        let mac = adapter.macaddress;
+        let FunctionMut::Ethernet(ethernet) = adapter.function() else {
+            panic!("An Ethernet adapter has the Ethernet function");
+        };
+        ethernet.set_link(EthernetLinkType::Down).unwrap();
+        assert_eq!(
+            ethernet.status(),
+            EthernetStatus {
+                mac,
+                link: EthernetLinkType::Down,
+                capture: None,
+            }
+        );
+    }
 
     #[test]
     fn test_read_max_8_packets() {
