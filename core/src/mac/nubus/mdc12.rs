@@ -196,6 +196,7 @@ impl Mdc12 {
     }
 }
 
+#[typetag::serde]
 impl NubusSlot for Mdc12 {
     // VRAM, below the registers at $20_0000, is memory and answers every size.
     // A register is one to a long word, and the card decodes only its address:
@@ -295,6 +296,10 @@ impl NubusSlot for Mdc12 {
 
     fn get_irq(&self) -> bool {
         self.vblank_irq
+    }
+
+    fn video(&mut self) -> Option<&mut dyn VideoOutput> {
+        Some(self)
     }
 }
 

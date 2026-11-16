@@ -14,10 +14,10 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::VideoOutput;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::nubus::Nubus;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
-use crate::mac::nubus::{Nubus, NubusCard};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -228,7 +228,7 @@ impl MacIIBus {
         amu: bool,
     ) -> Self {
         // Build the NuBus cards from the provided configuration.
-        let mut cards = Nubus::default();
+        let mut cards = Nubus::new(BUS_FREQUENCY);
         let mut se30_video = None;
         for cfg in nubus {
             assert!(
@@ -240,10 +240,10 @@ impl MacIIBus {
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
             match cfg.kind {
                 NubusDeviceKind::Mdc12 => {
-                    cards.insert(cfg.slot, NubusCard::MDC12(Mdc12::new(cfg.rom, monitor)));
+                    cards.insert(cfg.slot, Box::new(Mdc12::new(cfg.rom, monitor)));
                 }
                 NubusDeviceKind::Toby => {
-                    cards.insert(cfg.slot, NubusCard::Toby(Toby::new(cfg.rom)));
+                    cards.insert(cfg.slot, Box::new(Toby::new(cfg.rom)));
                 }
                 NubusDeviceKind::SE30Video => {
                     se30_video = Some(SE30Video::new(cfg.rom));
