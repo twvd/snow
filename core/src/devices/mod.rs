@@ -19,6 +19,7 @@ use crate::mac::MacModel;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::swim;
+use crate::mac::swim::device::SwimBusDevice;
 
 /// A type of bus. A device model fits one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,8 @@ pub struct ModelInfo {
 pub(crate) enum MadeDevice {
     /// A device for a SCSI bus
     Scsi(Box<dyn ScsiTarget>),
+    /// A device for a drive connector of the floppy controller
+    Swim(Box<dyn SwimBusDevice>),
 }
 
 /// The ROM file a device model needs, which the user provides

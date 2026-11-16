@@ -367,7 +367,9 @@ impl BusOps for ScsiBus {
 
     fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
         let id = slot_number(slot).context("No such SCSI ID")?;
-        let MadeDevice::Scsi(target) = device;
+        let MadeDevice::Scsi(target) = device else {
+            bail!("Not a SCSI device");
+        };
         if self.targets[id].is_some() {
             bail!("SCSI ID {} already has a device", id);
         }

@@ -1101,7 +1101,9 @@ mod tests {
             function: FunctionConfig::HardDisk(HardDiskConfig::default()),
         };
         let create = DeviceModel::ScsiHardDisk.info().create.unwrap();
-        let MadeDevice::Scsi(mut disk) = create(&config).unwrap();
+        let MadeDevice::Scsi(mut disk) = create(&config).unwrap() else {
+            unreachable!()
+        };
         let FunctionMut::HardDisk(function) = disk.function() else {
             panic!("A hard disk has the HardDisk function");
         };

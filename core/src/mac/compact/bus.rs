@@ -20,7 +20,6 @@ use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use crate::mac::swim::Swim;
-use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, VideoOutput, WARM_START_SIGNATURE};
@@ -157,7 +156,6 @@ impl CompactMacBus {
         extension_rom: Option<&[u8]>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
-        override_fdd_type: Option<DriveType>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
@@ -166,12 +164,6 @@ impl CompactMacBus {
             ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
-
-        let fdds = if let Some(override_fdd_type) = override_fdd_type {
-            vec![override_fdd_type; model.fdd_drives().len()]
-        } else {
-            model.fdd_drives().to_vec()
-        };
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -191,11 +183,7 @@ impl CompactMacBus {
                 audio
             },
             scc: Scc::new(RTXC_FREQUENCY),
-            swim: Swim::new(
-                &fdds,
-                model.fdd_hd(),
-                BUS_FREQUENCY * swim_ticks_per_tick(model),
-            ),
+            swim: Swim::new(model.fdd_hd(), BUS_FREQUENCY * swim_ticks_per_tick(model)),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
@@ -670,6 +658,7 @@ impl CompactMacBus {
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI if self.model.has_scsi() => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
             _ => None,
         }
     }

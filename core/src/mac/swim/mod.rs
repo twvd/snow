@@ -12,12 +12,11 @@ pub mod stream;
 use std::cell::Cell;
 use std::collections::VecDeque;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use ism::{IsmError, IsmSetup, IsmStatus};
 use rand::Rng;
 
 use device::SwimBusDevice;
-use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
 use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
@@ -25,6 +24,7 @@ use snow_floppy::flux::FluxTicks;
 use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::devices::{BusOps, DeviceOps, MadeDevice};
 use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -233,17 +233,14 @@ impl Swim {
     /// The number of drive connectors
     pub(crate) const CONNECTORS: usize = 3;
 
-    /// The controller is ticked at `base_frequency`, which is its FCLK
-    pub fn new(drives: &[DriveType], ism_available: bool, base_frequency: Ticks) -> Self {
-        let mut devices: [Option<Box<dyn SwimBusDevice>>; Self::CONNECTORS] = Default::default();
-        for (connector, drive_type) in drives.iter().enumerate() {
-            let mut drive = Box::new(FloppyDrive::new(*drive_type));
-            drive.connected(connector, base_frequency);
-            devices[connector] = Some(drive);
-        }
+    /// The ids of the slots of the bus: the drive connectors, counted from 1
+    pub const SLOT_IDS: [&str; Self::CONNECTORS] = ["1", "2", "3"];
 
+    /// The controller is ticked at `base_frequency`, which is its FCLK. Its connectors are
+    /// empty.
+    pub fn new(ism_available: bool, base_frequency: Ticks) -> Self {
         Self {
-            drives: devices,
+            drives: Default::default(),
             pending_ticks: 0,
             lines_sent: (0, 0),
             machine_lines: (false, false),
@@ -305,8 +302,8 @@ impl Swim {
         }
     }
 
-    pub fn new_swim2(drives: &[DriveType], base_frequency: Ticks) -> Self {
-        let mut swim = Self::new(drives, true, base_frequency);
+    pub fn new_swim2(base_frequency: Ticks) -> Self {
+        let mut swim = Self::new(true, base_frequency);
         swim.iwm_available = false;
         swim.mode = SwimMode::Ism;
         swim.chip.ism_mode.set_ism(true);
@@ -320,9 +317,9 @@ impl Swim {
     pub fn reset(&mut self) {
         let base_frequency = self.base_frequency;
         let mut fresh = if self.iwm_available {
-            Self::new(&[], self.ism_available, base_frequency)
+            Self::new(self.ism_available, base_frequency)
         } else {
-            Self::new_swim2(&[], base_frequency)
+            Self::new_swim2(base_frequency)
         };
         std::mem::swap(&mut fresh.drives, &mut self.drives);
         fresh.pending_ticks = self.pending_ticks;
@@ -482,6 +479,43 @@ impl Swim {
     }
 }
 
+/// The connector of a slot
+fn slot_number(slot: &str) -> Option<usize> {
+    Swim::SLOT_IDS.iter().position(|&id| id == slot)
+}
+
+impl BusOps for Swim {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        let device = self.drive_at(slot_number(slot)?)?;
+        // A device on a drive connector is a DeviceOps too
+        Some(device)
+    }
+
+    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
+        let connector = slot_number(slot).context("No such drive connector")?;
+        let MadeDevice::Swim(mut device) = device else {
+            bail!("Not a device for a drive connector");
+        };
+        if self.drives[connector].is_some() {
+            bail!("The drive connector already has a device");
+        }
+        self.sync_devices();
+        device.connected(connector, self.base_frequency);
+        self.drives[connector] = Some(device);
+        self.spinning = None;
+        Ok(())
+    }
+
+    fn detach(&mut self, slot: &str) -> Result<()> {
+        let connector = slot_number(slot).context("No such drive connector")?;
+        if self.drives[connector].take().is_none() {
+            bail!("The drive connector has no device");
+        }
+        self.spinning = None;
+        Ok(())
+    }
+}
+
 impl BusMember<Address> for Swim {
     fn read(&mut self, addr: Address) -> Option<u8> {
         let result = match self.mode {
@@ -631,7 +665,19 @@ impl Debuggable for Swim {
 }
 
 #[cfg(test)]
+use drive::{DriveType, FloppyDrive};
+
+#[cfg(test)]
 impl Swim {
+    /// Puts a drive of each of these types on the connectors, from the first
+    pub(super) fn with_drives(mut self, drives: &[DriveType]) -> Self {
+        for (slot, drive_type) in Self::SLOT_IDS.iter().zip(drives) {
+            let drive = Box::new(FloppyDrive::new(*drive_type));
+            self.attach(slot, MadeDevice::Swim(drive)).unwrap();
+        }
+        self
+    }
+
     /// The floppy drive on a connector, for the tests that look inside a drive
     pub(super) fn drive(&mut self, connector: usize) -> &mut FloppyDrive {
         self.drive_at(connector).unwrap().as_floppy_drive()
@@ -698,7 +744,7 @@ mod tests {
 
     /// The controller with a disk turning in its first drive, which is ready
     fn swim_with(drive: DriveType, image: FloppyImage) -> Swim {
-        let mut swim = Swim::new(&[drive], true, 16_000_000);
+        let mut swim = Swim::new(true, 16_000_000).with_drives(&[drive]);
         swim.drive(0).disk_insert(image).unwrap();
         swim.drive(0).write_drive_reg(DRIVE_MOTOR_ON);
         swim.drive(0).not_ready = 0;
@@ -836,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_byte_written_to_a_stopped_drive_stays() {
-        let mut swim = Swim::new(&[DriveType::GCR800K], true, 16_000_000);
+        let mut swim = Swim::new(true, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.drive(0)
             .disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
@@ -987,11 +1033,12 @@ mod tests {
 
     #[test]
     fn devices_get_the_lines_the_strobe_and_the_time() {
-        let mut swim = Swim::new(&[], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000);
         let probes = [Probe::default(), Probe::default()];
         let notes = probes.each_ref().map(|probe| probe.notes.clone());
-        for (connector, probe) in probes.into_iter().enumerate() {
-            swim.drives[connector] = Some(Box::new(probe));
+        for (slot, probe) in Swim::SLOT_IDS.iter().zip(probes) {
+            swim.attach(slot, MadeDevice::Swim(Box::new(probe)))
+                .unwrap();
         }
         swim.read(ENABLE);
 
@@ -1012,6 +1059,7 @@ mod tests {
         assert_eq!(
             *notes[0].lock().unwrap(),
             [
+                "connected 0 16000000",
                 "lines 1000",
                 "tick 5",
                 "lines 1001",
@@ -1019,12 +1067,15 @@ mod tests {
                 "lines 1011"
             ]
         );
-        assert_eq!(*notes[1].lock().unwrap(), ["tick 5", "lines 1011"]);
+        assert_eq!(
+            *notes[1].lock().unwrap(),
+            ["connected 1 16000000", "tick 5", "lines 1011"]
+        );
     }
 
     #[test]
     fn connector_without_a_device_reads_high() {
-        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        let mut swim = Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K]);
         swim.read(ENABLE);
         swim.read(EXTDRIVEH);
         swim.read(Q6H);

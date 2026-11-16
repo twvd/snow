@@ -3,11 +3,9 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use swim::drive::DriveType;
-
 use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
-use crate::devices::{Bus, BusKind, bus_id};
+use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
 use crate::renderer::FrameReceiver;
 use crate::tickable::Ticks;
@@ -317,31 +315,38 @@ impl MacModel {
     }
 
     /// List of FDD drive types and amount
-    pub const fn fdd_drives(self) -> &'static [DriveType] {
+    /// The floppy drives this Mac model has, each with the id of its slot on the `SWIM` bus
+    pub(crate) const fn floppy_drives(self) -> &'static [(&'static str, DeviceModel)] {
+        use DeviceModel::{Mac400KDrive, Mac800KDrive, MacSuperDrive};
+
         match self {
-            Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
-            Self::Early512Ke | Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
+            Self::Early128K | Self::Early512K => &[("1", Mac400KDrive), ("2", Mac400KDrive)],
+            Self::Early512Ke | Self::Plus => &[("1", Mac800KDrive), ("2", Mac800KDrive)],
+            Self::SE => &[
+                ("1", Mac800KDrive),
+                ("2", Mac800KDrive),
+                ("3", Mac800KDrive),
+            ],
             Self::SeFdhd => &[
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
+                ("1", MacSuperDrive),
+                ("2", MacSuperDrive),
+                ("3", MacSuperDrive),
             ],
-            Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
+            Self::Classic => &[("1", MacSuperDrive), ("2", MacSuperDrive)],
             Self::Portable | Self::Portable15MB => &[
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
+                ("1", MacSuperDrive),
+                ("2", MacSuperDrive),
+                ("3", MacSuperDrive),
             ],
-            Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
+            Self::MacII => &[("1", Mac800KDrive), ("2", Mac800KDrive)],
             Self::MacIIFDHD
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30
             | Self::LC
             | Self::LCII
-            | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
-            Self::LCIII | Self::LC475 | Self::Quadra800 => &[DriveType::SuperDrive],
+            | Self::Quadra700 => &[("1", MacSuperDrive), ("2", MacSuperDrive)],
+            Self::LCIII | Self::LC475 | Self::Quadra800 => &[("1", MacSuperDrive)],
         }
     }
 
@@ -349,6 +354,26 @@ impl MacModel {
     /// slot has without being asked. A description only: no machine needs to exist.
     pub fn buses(self) -> Vec<Bus> {
         let mut buses = vec![];
+        if self.has_swim() {
+            buses.push(Bus {
+                kind: BusKind::Swim,
+                id: bus_id::SWIM.to_string(),
+                title: "Floppy".to_string(),
+                slots: self
+                    .floppy_drives()
+                    .iter()
+                    .map(|(slot, model)| Slot {
+                        id: slot.to_string(),
+                        device: Some(Device {
+                            model: *model,
+                            rom: None,
+                            function: FunctionConfig::Floppy,
+                            name: None,
+                        }),
+                    })
+                    .collect(),
+            });
+        }
         if self.has_scsi() {
             buses.push(Bus::new(
                 BusKind::Scsi,
@@ -358,6 +383,12 @@ impl MacModel {
             ));
         }
         buses
+    }
+
+    /// Whether the machine has the floppy controller of the `SWIM` bus, an IWM or a SWIM.
+    /// Every Mac has one.
+    pub const fn has_swim(self) -> bool {
+        true
     }
 
     pub const fn has_scsi(self) -> bool {

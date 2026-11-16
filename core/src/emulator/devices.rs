@@ -187,11 +187,47 @@ impl Emulator {
         }
     }
 
+    /// Adds the devices the Mac model has in its slots without being asked: its floppy
+    /// drives, or drives of another type in their place. Called when the machine is made.
+    pub(super) fn add_default_devices(&mut self, floppy_drives: Option<DriveType>) -> Result<()> {
+        for bus in self.model.buses() {
+            for slot in bus.slots {
+                let Some(device) = slot.device else {
+                    continue;
+                };
+                let model = match floppy_drives {
+                    Some(drive_type) if bus.id == bus_id::SWIM => {
+                        drive_type.device_model().context("Not a type of drive")?
+                    }
+                    _ => device.model,
+                };
+                let config = DeviceConfig {
+                    bus: bus.id.clone(),
+                    slot: slot.id,
+                    model: Some(model),
+                    rom: device.rom,
+                    function: device.function,
+                };
+                self.add_device_to(&config, true)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Adds a device to the machine, in an empty slot. The device is made by the create
     /// function of its device model, attached, then given its Config with
     /// `configure_device()`. When that part of the Config can't be applied, the device stays and
     /// the error says why.
+    ///
+    /// A device model that is `fixed`, such as a floppy drive, is refused: the machine only
+    /// gets those when it is made.
     pub fn add_device(&mut self, config: &DeviceConfig) -> Result<()> {
+        self.add_device_to(config, false)
+    }
+
+    /// Adds a device to the machine: one that is being made if `new_machine` is set, which
+    /// then takes the device models that are `fixed` too
+    fn add_device_to(&mut self, config: &DeviceConfig, new_machine: bool) -> Result<()> {
         let mac = self.model;
         let buses = mac.buses();
         let kind = buses
@@ -210,6 +246,9 @@ impl Emulator {
         let info = model.info();
         if !models_for(kind, mac).any(|m| m.model == model) {
             bail!("{} doesn't fit this bus", info.name);
+        }
+        if info.fixed && !new_machine {
+            bail!("{} can't be added once the machine is made", info.name);
         }
         let create = info
             .create
@@ -293,10 +332,19 @@ impl Emulator {
 
     /// Removes the device in a slot from the machine
     pub fn remove_device(&mut self, bus: &str, slot: &str) -> Result<()> {
-        self.config
+        let bus = self
+            .config
             .bus_ops(bus)
-            .context("This machine has no such bus")?
-            .detach(slot)
+            .context("This machine has no such bus")?;
+        if let Some(device) = bus.device(slot)
+            && device.info().fixed
+        {
+            bail!(
+                "{} can't be removed once the machine is made",
+                device.info().name
+            );
+        }
+        bus.detach(slot)
     }
 
     // The helpers by SCSI ID: the id of a SCSI slot is the ID, in decimal
@@ -407,6 +455,15 @@ mod tests {
         )
     }
 
+    /// The device in a slot, as the list of buses has it
+    #[cfg(feature = "ethernet")]
+    fn device_in(emu: &mut Emulator, bus: &str, slot: &str) -> Option<Device> {
+        let buses = emu.buses();
+        let bus = buses.iter().find(|b| b.id == bus).unwrap();
+        let slot = bus.slots.iter().find(|s| s.id == slot).unwrap();
+        slot.device.clone()
+    }
+
     fn status(emu: &mut Emulator, slot: &str) -> FunctionStatus {
         emu.function_in(bus_id::SCSI, slot).unwrap().status()
     }
@@ -451,14 +508,17 @@ mod tests {
             .0
     }
 
-    /// The device events sent since the last call: lists of buses, and statuses by slot id
+    /// The device events sent since the last call: lists of buses, and the statuses of the
+    /// SCSI bus by slot id
     fn device_events(emu: &Emulator) -> (usize, Vec<(String, Option<FunctionStatus>)>) {
         let mut lists = 0;
         let mut statuses = vec![];
         for event in emu.event_recv.try_iter() {
             match event {
                 EmulatorEvent::Buses(_) => lists += 1,
-                EmulatorEvent::DeviceStatus(_, slot, status) => statuses.push((slot, status)),
+                EmulatorEvent::DeviceStatus(bus, slot, status) if bus == bus_id::SCSI => {
+                    statuses.push((slot, status));
+                }
                 _ => (),
             }
         }
@@ -477,9 +537,18 @@ mod tests {
                     .bus_ops(&bus.id)
                     .unwrap_or_else(|| panic!("{model} has no {} bus", bus.id));
                 for slot in &bus.slots {
-                    // An empty slot of the bus, not one the bus doesn't know
-                    assert!(ops.device(&slot.id).is_none());
-                    assert!(ops.detach(&slot.id).is_err());
+                    match &slot.device {
+                        // The device the Mac model has there
+                        Some(device) => {
+                            let model = ops.device(&slot.id).unwrap().info().model;
+                            assert_eq!(model, device.model);
+                        }
+                        // An empty slot of the bus, not one the bus doesn't know
+                        None => {
+                            assert!(ops.device(&slot.id).is_none());
+                            assert!(ops.detach(&slot.id).is_err());
+                        }
+                    }
                 }
             }
             assert_eq!(emu.buses(), model.buses());
@@ -487,12 +556,105 @@ mod tests {
         }
     }
 
+    /// The device models of the floppy drives of a machine, in the order of their slots
+    fn floppy_drives(emu: &mut Emulator) -> Vec<DeviceModel> {
+        let buses = emu.buses();
+        let bus = buses.iter().find(|bus| bus.id == bus_id::SWIM).unwrap();
+        bus.slots
+            .iter()
+            .map(|slot| slot.device.as_ref().unwrap().model)
+            .collect()
+    }
+
+    #[test]
+    fn every_mac_model_has_its_floppy_drives() {
+        use DeviceModel::{Mac400KDrive, Mac800KDrive, MacSuperDrive};
+        use strum::IntoEnumIterator;
+
+        for model in MacModel::iter() {
+            // The type and the number of drives of each Mac model, as they were before the
+            // drives became devices
+            let (drive, count) = match model {
+                MacModel::Early128K | MacModel::Early512K => (Mac400KDrive, 2),
+                MacModel::Early512Ke | MacModel::Plus | MacModel::MacII => (Mac800KDrive, 2),
+                MacModel::SE => (Mac800KDrive, 3),
+                MacModel::SeFdhd | MacModel::Portable | MacModel::Portable15MB => {
+                    (MacSuperDrive, 3)
+                }
+                MacModel::Classic
+                | MacModel::MacIIFDHD
+                | MacModel::MacIIx
+                | MacModel::MacIIcx
+                | MacModel::SE30
+                | MacModel::LC
+                | MacModel::LCII
+                | MacModel::Quadra700 => (MacSuperDrive, 2),
+                MacModel::LCIII | MacModel::LC475 | MacModel::Quadra800 => (MacSuperDrive, 1),
+            };
+            let mut emu = machine(model);
+            assert_eq!(floppy_drives(&mut emu), vec![drive; count], "{model}");
+        }
+    }
+
+    #[test]
+    fn drives_of_another_type_take_the_place_of_those_of_the_mac_model() {
+        let (mut emu, _) = Emulator::new_with_extra(
+            &vec![0; 64 * 1024],
+            &[],
+            MacModel::Early128K,
+            None,
+            crate::emulator::MouseMode::default(),
+            None,
+            Some(DriveType::GCR800KPWM),
+            false,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            floppy_drives(&mut emu),
+            vec![DeviceModel::Mac800KPwmDrive; 2]
+        );
+
+        // They are in the list the machine can be made from again
+        let configs = emu.devices();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[1].bus, bus_id::SWIM);
+        assert_eq!(configs[1].slot, "2");
+        assert_eq!(configs[1].model, Some(DeviceModel::Mac800KPwmDrive));
+    }
+
+    #[test]
+    fn a_floppy_drive_is_only_added_when_the_machine_is_made() {
+        let mut emu = machine(MacModel::LCIII);
+        let drive = |slot: &str| DeviceConfig {
+            bus: bus_id::SWIM.into(),
+            slot: slot.into(),
+            model: Some(DeviceModel::MacSuperDrive),
+            rom: None,
+            function: FunctionConfig::Floppy,
+        };
+        // The LC III has one drive, and a second connector
+        let e = emu.add_device(&drive("2")).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "SuperDrive can't be added once the machine is made"
+        );
+        assert!(emu.remove_device(bus_id::SWIM, "1").is_err());
+        assert_eq!(floppy_drives(&mut emu), [DeviceModel::MacSuperDrive]);
+        // The drive that is there takes a device config that changes nothing, and stays
+        assert!(emu.add_device(&drive("1")).is_err());
+        emu.configure_device(&drive("1")).unwrap();
+    }
+
     #[test]
     fn a_status_is_sent_when_it_changes() {
         let dir = TestDir::new("status");
         let image = dir.file("disc.iso", 4096);
         let mut emu = plus();
-        // A new machine sends its list, and no status: its slots are empty
+        // A new machine sends its list, and no status of the SCSI bus: its slots are empty
         assert_eq!(device_events(&emu), (1, vec![]));
 
         // A new device: the list again, then its status
@@ -562,8 +724,8 @@ mod tests {
 
         // The list shows each device in its slot, with its Config as it is now
         let buses = emu.buses();
-        let slot = |id: &str| buses[0].slots.iter().find(|s| s.id == id).unwrap();
-        assert_eq!(buses[0].id, bus_id::SCSI);
+        let bus = buses.iter().find(|bus| bus.id == bus_id::SCSI).unwrap();
+        let slot = |id: &str| bus.slots.iter().find(|s| s.id == id).unwrap();
         assert_eq!(slot("1").device, None);
         let drive = slot("3").device.as_ref().unwrap();
         assert_eq!(drive.model, DeviceModel::ScsiCdrom);
@@ -638,7 +800,7 @@ mod tests {
         assert_eq!((ethernet.mac, ethernet.link), (mac, EthernetLinkType::Down));
         // The adapter has a name for the menus, and its Config has its address and its link
         assert_eq!(
-            emu.buses()[0].slots[4].device,
+            device_in(&mut emu, bus_id::SCSI, "4"),
             Some(Device {
                 model: DeviceModel::DaynaPortScsiLink,
                 rom: None,
@@ -672,7 +834,7 @@ mod tests {
             panic!("An Ethernet adapter has the Ethernet function");
         };
         assert_eq!(random.mac[..3], [0x00, 0x80, 0x19]);
-        let device = emu.buses()[0].slots[6].device.clone().unwrap();
+        let device = device_in(&mut emu, bus_id::SCSI, "6").unwrap();
         let FunctionConfig::Ethernet(config) = device.function else {
             panic!("An Ethernet adapter has an Ethernet Config");
         };
