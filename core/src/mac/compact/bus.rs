@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -720,6 +721,17 @@ impl CompactMacBus {
 
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.via.rtc
+    }
+
+    /// Sets the file the PRAM is kept in. It is loaded if it exists and created otherwise, then
+    /// kept up to date.
+    pub fn persist_pram(&mut self, path: &Path) {
+        self.rtc_mut().load_pram(path);
+    }
+
+    /// Sets the date and time of the clock
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.rtc_mut().set_datetime(dt);
     }
 }
 
