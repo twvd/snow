@@ -7,21 +7,20 @@
 use std::path::Path;
 #[cfg(feature = "printer")]
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use log::*;
 
 use super::Emulator;
+use super::comm::EmulatorEvent;
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
-    CdromConfig, DeviceConfig, DeviceModel, FunctionConfig, FunctionMut, HardDiskConfig, bus_id,
-    models_for,
+    Bus, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FunctionConfig,
+    FunctionInfo, FunctionMut, HardDiskConfig, bus_id, device_configs, models_for,
+    new_ethernet_address,
 };
-#[cfg(feature = "ethernet")]
-use crate::devices::{EthernetConfig, EthernetLinkType, FunctionInfo, new_ethernet_address};
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::DiskImage;
 
 impl Emulator {
@@ -36,12 +35,122 @@ impl Emulator {
         Ok(device.function())
     }
 
+    /// The buses of the machine, their slots and the devices in them, as they are now
+    pub fn buses(&mut self) -> Vec<Bus> {
+        let mut buses = self.model.buses();
+        for bus in &mut buses {
+            let Some(ops) = self.config.bus_ops(&bus.id) else {
+                continue;
+            };
+            for slot in &mut bus.slots {
+                slot.device = ops.device(&slot.id).map(|device| Device {
+                    model: device.info().model,
+                    rom: device.rom().map(Path::to_path_buf),
+                    function: device.config(),
+                    name: device.name(),
+                });
+            }
+        }
+        buses
+    }
+
+    /// The machine, as the list of device configs it can be made from again
+    pub fn devices(&mut self) -> Vec<DeviceConfig> {
+        device_configs(&self.buses(), self.model)
+    }
+
+    /// Sends a new list of buses, and forgets the statuses that were sent: they are those of
+    /// the list before it
+    pub(super) fn send_buses(&mut self, buses: Vec<Bus>) -> Result<()> {
+        self.device_statuses = vec![None; buses.iter().map(|bus| bus.slots.len()).sum()];
+        self.buses = Arc::new(buses);
+        self.event_sender
+            .send(EmulatorEvent::Buses(self.buses.clone()))?;
+        Ok(())
+    }
+
+    /// Sends the list of buses if it changed, then the status of each device whose status
+    /// isn't the one that was sent last. Called at each status update.
+    pub(super) fn devices_update(&mut self) -> Result<()> {
+        let buses = self.buses();
+        if *self.buses != buses {
+            self.send_buses(buses)?;
+        }
+
+        let buses = self.buses.clone();
+        let slots = buses
+            .iter()
+            .flat_map(|bus| bus.slots.iter().map(move |slot| (bus, slot)));
+        for (index, (bus, slot)) in slots.enumerate() {
+            let status = match self.function_in(&bus.id, &slot.id) {
+                Ok(function) => Some(function.status()),
+                Err(_) => None,
+            };
+            if self.device_statuses[index] != status {
+                self.device_statuses[index] = status.clone();
+                self.event_sender.send(EmulatorEvent::DeviceStatus(
+                    bus.id.clone(),
+                    slot.id.clone(),
+                    status,
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// What a message to the user calls a slot (see `Bus::slot_label()`)
+    pub(super) fn slot_label(&self, bus: &str, slot: &str) -> String {
+        match self.buses.iter().find(|b| b.id == bus) {
+            Some(bus) => bus.slot_label(slot),
+            None => format!("{} #{}", bus, slot),
+        }
+    }
+
+    pub(super) fn load_media(&mut self, bus: &str, slot: &str, path: &Path) -> Result<()> {
+        match self.function_in(bus, slot)? {
+            FunctionMut::Cdrom(cdrom) => cdrom.load(path),
+            _ => bail!("This device takes no media"),
+        }
+    }
+
+    pub(super) fn cdrom_set_folder(&mut self, bus: &str, slot: &str, folder: &Path) -> Result<()> {
+        match self.function_in(bus, slot)? {
+            FunctionMut::Cdrom(cdrom) => cdrom.set_folder(folder),
+            _ => bail!("This device isn't a CD-ROM drive"),
+        }
+    }
+
+    pub(super) fn branch_disk(&mut self, bus: &str, slot: &str, path: &Path) -> Result<()> {
+        match self.function_in(bus, slot)? {
+            FunctionMut::HardDisk(disk) => disk.branch(path),
+            _ => bail!("This device isn't a hard disk"),
+        }
+    }
+
+    /// The Ethernet adapter in a slot
+    pub(super) fn ethernet_in(
+        &mut self,
+        bus: &str,
+        slot: &str,
+    ) -> Result<&mut dyn EthernetFunction> {
+        match self.function_in(bus, slot)? {
+            FunctionMut::Ethernet(ethernet) => Ok(ethernet),
+            _ => bail!("This device isn't an Ethernet adapter"),
+        }
+    }
+
     /// Adds a device to the machine, in an empty slot. The device is made by the create
     /// function of its device model, attached, then given its Config with
     /// `configure_device()`. When that part of the Config can't be applied, the device stays and
     /// the error says why.
     pub fn add_device(&mut self, config: &DeviceConfig) -> Result<()> {
         let mac = self.model;
+        let buses = mac.buses();
+        let kind = buses
+            .iter()
+            .find(|bus| bus.id == config.bus)
+            .context("This machine has no such bus")?
+            .kind;
         let bus = self
             .config
             .bus_ops(&config.bus)
@@ -51,12 +160,17 @@ impl Emulator {
         }
         let model = config.model.context("No device model is given")?;
         let info = model.info();
-        if !models_for(info.bus, mac).any(|m| m.model == model) {
-            bail!("{} doesn't fit this machine", info.name);
+        if !models_for(kind, mac).any(|m| m.model == model) {
+            bail!("{} doesn't fit this bus", info.name);
         }
         let create = info
             .create
             .with_context(|| format!("{} can't be added to a machine", info.name))?;
+        let config = &self.with_ethernet_address(config, info.function);
+        let bus = self
+            .config
+            .bus_ops(&config.bus)
+            .context("This machine has no such bus")?;
         bus.attach(&config.slot, create(config)?)?;
 
         // A CD-ROM drive plays audio CDs on the host's sound output
@@ -69,6 +183,31 @@ impl Emulator {
         }
 
         self.configure_device(config)
+    }
+
+    /// The Config to make a device from: an Ethernet adapter whose Config has no address gets a
+    /// random one with its maker's prefix, which no other adapter of the machine has
+    fn with_ethernet_address(
+        &mut self,
+        config: &DeviceConfig,
+        function: FunctionInfo,
+    ) -> DeviceConfig {
+        let mut config = config.clone();
+        if let (FunctionConfig::Ethernet(ethernet), FunctionInfo::Ethernet(info)) =
+            (&mut config.function, function)
+            && ethernet.mac.is_none()
+        {
+            let mut taken = vec![];
+            for bus in self.buses() {
+                for slot in &bus.slots {
+                    if let Ok(FunctionMut::Ethernet(other)) = self.function_in(&bus.id, &slot.id) {
+                        taken.push(other.status().mac);
+                    }
+                }
+            }
+            ethernet.mac = Some(new_ethernet_address(info.oui, &taken));
+        }
+        config
     }
 
     /// Gives the device in a slot what a Config can change on a device that exists: the link
@@ -129,16 +268,6 @@ impl Emulator {
         })
     }
 
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.add_scsi_device(
-            scsi_id,
-            DeviceModel::ScsiHardDisk,
-            FunctionConfig::HardDisk(HardDiskConfig {
-                media: Some(filename.to_path_buf()),
-            }),
-        )
-    }
-
     /// Attaches a hard disk whose image isn't a file: a disk with no image file, which is then
     /// given `image` as its storage
     pub fn attach_disk_image_at(
@@ -167,27 +296,6 @@ impl Emulator {
         Ok(())
     }
 
-    /// Gives a CD-ROM drive a folder of images: the drive at `id`, or a new one if the SCSI ID
-    /// is free
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: &Path) -> Result<()> {
-        let config = DeviceConfig {
-            bus: bus_id::SCSI.into(),
-            slot: id.to_string(),
-            model: Some(DeviceModel::ScsiCdrom),
-            rom: None,
-            function: FunctionConfig::Cdrom(CdromConfig {
-                folder: Some(dir.to_path_buf()),
-            }),
-        };
-        if self.function_in(bus_id::SCSI, &config.slot).is_ok() {
-            self.configure_device(&config)?;
-        } else {
-            self.add_device(&config)?;
-        }
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
     pub fn insert_cdrom_image_at(
         &mut self,
         image: Box<dyn DiskImage>,
@@ -197,33 +305,6 @@ impl Emulator {
             FunctionMut::Cdrom(cdrom) => cdrom.load_image(image),
             _ => bail!("No CD-ROM drive at SCSI ID {}", scsi_id),
         }
-    }
-
-    /// Attaches an Ethernet adapter, with a new Ethernet address
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) -> Result<()> {
-        let mut taken = vec![];
-        for other in 0..ScsiBus::MAX_TARGETS {
-            if let Ok(FunctionMut::Ethernet(ethernet)) =
-                self.function_in(bus_id::SCSI, &other.to_string())
-            {
-                taken.push(ethernet.status().mac);
-            }
-        }
-        let model = DeviceModel::DaynaPortScsiLink;
-        let FunctionInfo::Ethernet(ethernet) = model.info().function else {
-            bail!("{} is not an Ethernet adapter", model.info().name);
-        };
-        self.add_scsi_device(
-            id,
-            model,
-            FunctionConfig::Ethernet(EthernetConfig {
-                mac: Some(new_ethernet_address(ethernet.oui, &taken)),
-                link: EthernetLinkType::default(),
-            }),
-        )?;
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-        Ok(())
     }
 
     #[cfg(feature = "printer")]
@@ -246,6 +327,9 @@ mod tests {
 
     use super::*;
     use crate::devices::{CdromStatus, FunctionStatus};
+    #[cfg(feature = "ethernet")]
+    use crate::devices::{EthernetConfig, EthernetLinkType};
+    use crate::emulator::comm::EmulatorEvent;
     use crate::mac::MacModel;
 
     /// A Macintosh Plus, which has a SCSI bus
@@ -303,6 +387,158 @@ mod tests {
         }
     }
 
+    /// A machine of each Mac model, with the ROMs it asks for
+    fn machine(model: MacModel) -> Emulator {
+        use crate::mac::ExtraROMs;
+
+        let extra_roms: &[ExtraROMs] = match model {
+            MacModel::SE30 => &[ExtraROMs::SE30Video(&[])],
+            MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
+                &[ExtraROMs::MDC12(&[])]
+            }
+            _ => &[],
+        };
+        Emulator::new(&vec![0; 1024 * 1024], extra_roms, model)
+            .unwrap()
+            .0
+    }
+
+    /// The device events sent since the last call: lists of buses, and statuses by slot id
+    fn device_events(emu: &Emulator) -> (usize, Vec<(String, Option<FunctionStatus>)>) {
+        let mut lists = 0;
+        let mut statuses = vec![];
+        for event in emu.event_recv.try_iter() {
+            match event {
+                EmulatorEvent::Buses(_) => lists += 1,
+                EmulatorEvent::DeviceStatus(_, slot, status) => statuses.push((slot, status)),
+                _ => (),
+            }
+        }
+        (lists, statuses)
+    }
+
+    #[test]
+    fn every_bus_of_a_mac_model_is_one_of_its_machine() {
+        use strum::IntoEnumIterator;
+
+        for model in MacModel::iter() {
+            let mut emu = machine(model);
+            for bus in model.buses() {
+                let ops = emu
+                    .config
+                    .bus_ops(&bus.id)
+                    .unwrap_or_else(|| panic!("{model} has no {} bus", bus.id));
+                for slot in &bus.slots {
+                    // An empty slot of the bus, not one the bus doesn't know
+                    assert!(ops.device(&slot.id).is_none());
+                    assert!(ops.detach(&slot.id).is_err());
+                }
+            }
+            assert_eq!(emu.buses(), model.buses());
+            assert_eq!(emu.devices(), vec![]);
+        }
+    }
+
+    #[test]
+    fn a_status_is_sent_when_it_changes() {
+        let dir = TestDir::new("status");
+        let image = dir.file("disc.iso", 4096);
+        let mut emu = plus();
+        // A new machine sends its list, and no status: its slots are empty
+        assert_eq!(device_events(&emu), (1, vec![]));
+
+        // A new device: the list again, then its status
+        emu.add_device(&cdrom("3", None)).unwrap();
+        emu.status_update().unwrap();
+        let empty = CdromStatus {
+            image: None,
+            folder: None,
+        };
+        let sent = |cdrom| {
+            (
+                1,
+                vec![("3".to_string(), Some(FunctionStatus::Cdrom(cdrom)))],
+            )
+        };
+        assert_eq!(device_events(&emu), sent(empty));
+
+        // Nothing changed: nothing is sent
+        emu.status_update().unwrap();
+        assert_eq!(device_events(&emu), (0, vec![]));
+
+        // A disc: its status, once, and no list
+        emu.load_media(bus_id::SCSI, "3", &image).unwrap();
+        emu.status_update().unwrap();
+        emu.status_update().unwrap();
+        let (lists, statuses) = sent(CdromStatus {
+            image: Some(image),
+            folder: None,
+        });
+        assert_eq!(device_events(&emu), (lists - 1, statuses.clone()));
+
+        // Another device: the new list, and every status again
+        emu.add_device(&cdrom("4", None)).unwrap();
+        emu.status_update().unwrap();
+        let (lists, again) = device_events(&emu);
+        assert_eq!(lists, 1);
+        assert_eq!(again.len(), 2);
+        assert_eq!(again[0], statuses[0]);
+
+        // A device removed: the new list, and the status of what is left
+        emu.remove_device(bus_id::SCSI, "3").unwrap();
+        emu.status_update().unwrap();
+        let (lists, left) = device_events(&emu);
+        assert_eq!((lists, left.len()), (1, 1));
+        assert_eq!(left[0].0, "4");
+    }
+
+    #[test]
+    fn the_machine_is_reported_as_the_list_it_is_made_from() {
+        let dir = TestDir::new("report");
+        let image = dir.file("disk.img", 1024 * 1024);
+        dir.file("disc.iso", 4096);
+        // An image can only be in one drive
+        let other = TestDir::new("report_other");
+        other.file("other.iso", 4096);
+        let mut emu = plus();
+        let disk = scsi(
+            "0",
+            Some(DeviceModel::ScsiHardDisk),
+            FunctionConfig::HardDisk(HardDiskConfig { media: Some(image) }),
+        );
+        let configs = vec![disk, cdrom("3", Some(&dir.0)), cdrom("5", None)];
+        for config in &configs {
+            emu.add_device(config).unwrap();
+        }
+        assert_eq!(emu.devices(), configs);
+
+        // The list shows each device in its slot, with its Config as it is now
+        let buses = emu.buses();
+        let slot = |id: &str| buses[0].slots.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(buses[0].id, bus_id::SCSI);
+        assert_eq!(slot("1").device, None);
+        let drive = slot("3").device.as_ref().unwrap();
+        assert_eq!(drive.model, DeviceModel::ScsiCdrom);
+        assert_eq!(drive.function, configs[1].function);
+        assert_eq!(drive.name, None);
+
+        // A change of a Config is a change of the list
+        device_events(&emu);
+        emu.cdrom_set_folder(bus_id::SCSI, "5", &other.0).unwrap();
+        emu.status_update().unwrap();
+        assert_eq!(device_events(&emu).0, 1);
+        assert_eq!(emu.devices()[2], cdrom("5", Some(&other.0)));
+
+        // A second machine made from the report reports the same
+        let report = emu.devices();
+        drop(emu);
+        let mut second = plus();
+        for config in &report {
+            second.add_device(config).unwrap();
+        }
+        assert_eq!(second.devices(), report);
+    }
+
     #[test]
     fn a_hard_disk_and_a_cdrom_drive_are_added_and_removed() {
         let dir = TestDir::new("add");
@@ -352,6 +588,16 @@ mod tests {
             panic!("An Ethernet adapter has the Ethernet function");
         };
         assert_eq!((ethernet.mac, ethernet.link), (mac, EthernetLinkType::Down));
+        // The adapter has a name for the menus, and its Config has its address and its link
+        assert_eq!(
+            emu.buses()[0].slots[4].device,
+            Some(Device {
+                model: DeviceModel::DaynaPortScsiLink,
+                rom: None,
+                function: adapter(EthernetLinkType::Down).function,
+                name: Some("DaynaPORT SCSI/Link".to_string()),
+            })
+        );
 
         // No interface of the host has this index: the adapter stays, with its link down
         assert!(
@@ -363,14 +609,8 @@ mod tests {
         };
         assert_eq!(ethernet.link, EthernetLinkType::Down);
 
-        // Another adapter gets another address
-        emu.attach_ethernet(5).unwrap();
-        let FunctionStatus::Ethernet(other) = status(&mut emu, "5") else {
-            panic!("An Ethernet adapter has the Ethernet function");
-        };
-        assert_ne!(other.mac, mac);
-
-        // One made with no address gets a random one, with the maker's prefix
+        // One made with no address gets a random one, with the maker's prefix, which its
+        // Config then has
         emu.add_device(&scsi(
             "6",
             Some(DeviceModel::DaynaPortScsiLink),
@@ -384,6 +624,11 @@ mod tests {
             panic!("An Ethernet adapter has the Ethernet function");
         };
         assert_eq!(random.mac[..3], [0x00, 0x80, 0x19]);
+        let device = emu.buses()[0].slots[6].device.clone().unwrap();
+        let FunctionConfig::Ethernet(config) = device.function else {
+            panic!("An Ethernet adapter has an Ethernet Config");
+        };
+        assert_eq!(config.mac, Some(random.mac));
     }
 
     #[cfg(feature = "printer")]
@@ -395,6 +640,42 @@ mod tests {
             panic!("A printer has the Printer function");
         };
         assert_eq!(printer.output_dir, PathBuf::from("pages"));
+    }
+
+    #[test]
+    fn a_cdrom_drive_gets_the_sound_output() {
+        use crate::renderer::{AudioProvider, AudioSink, null_audio_sink};
+        use std::sync::Mutex;
+
+        /// Counts the streams it is asked for
+        struct Provider(usize);
+
+        impl AudioProvider for Provider {
+            fn create_stream(&mut self, _: i32, _: u8, _: u16) -> Result<Box<dyn AudioSink>> {
+                self.0 += 1;
+                Ok(null_audio_sink())
+            }
+        }
+
+        // The machine's own sound asks for its streams
+        let provider = Arc::new(Mutex::new(Provider(0)));
+        plus().set_audio_provider(provider.clone()).unwrap();
+        let machine = provider.lock().unwrap().0;
+
+        // A drive that is there when the sound output is set, and one added after
+        let provider = Arc::new(Mutex::new(Provider(0)));
+        let mut emu = plus();
+        emu.add_device(&cdrom("3", None)).unwrap();
+        emu.set_audio_provider(provider.clone()).unwrap();
+        assert_eq!(provider.lock().unwrap().0, machine + 1);
+        emu.add_device(&cdrom("4", None)).unwrap();
+        assert_eq!(provider.lock().unwrap().0, machine + 2);
+    }
+
+    #[test]
+    fn a_message_names_a_scsi_slot_by_its_id() {
+        let emu = plus();
+        assert_eq!(emu.slot_label(bus_id::SCSI, "3"), "SCSI ID #3");
     }
 
     #[test]

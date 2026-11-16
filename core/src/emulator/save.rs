@@ -6,11 +6,9 @@ use anyhow::{Context, Result, bail};
 use binrw::io::NoSeek;
 use binrw::{BinRead, BinWrite, NullString, binrw};
 
-use crate::devices::FunctionMut;
+use crate::devices::{FunctionMut, bus_id};
 use crate::emulator::EmulatorConfig;
-use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::FileDiskImage;
-use crate::mac::scsi::target::ScsiTarget;
 
 #[cfg(not(feature = "mmap"))]
 compile_error!("feature \"savestates\" requires the \"mmap\" feature");
@@ -70,20 +68,38 @@ pub struct SavedImage {
 
 const END_OF_CHUNK: &[u8] = b"EOFC";
 
-/// The bus of the devices whose images are saved
-const SCSI: &str = "SCSI";
-
-/// The image saved for a SCSI target: a hard disk's, or what the target saves of itself, as a
-/// printer its page
-fn scsi_image(target: &mut dyn ScsiTarget) -> Option<&[u8]> {
-    let own = target.savestate_img_len().is_some();
-    if own {
-        target.savestate_img_data()
-    } else if let FunctionMut::HardDisk(disk) = target.function() {
+/// The image saved for the device in slot `slot` of bus `bus`: a hard disk's, whatever its bus,
+/// or what a SCSI target saves of itself, as a printer its page
+fn saved_image<'a>(config: &'a mut EmulatorConfig, bus: &str, slot: &str) -> Option<&'a [u8]> {
+    if bus == bus_id::SCSI {
+        let target = config.scsi_mut().targets[slot.parse::<usize>().ok()?].as_deref_mut()?;
+        let own = target.savestate_img_len().is_some();
+        if own {
+            target.savestate_img_data()
+        } else if let FunctionMut::HardDisk(disk) = target.function() {
+            disk.savestate_image()
+        } else {
+            None
+        }
+    } else if let FunctionMut::HardDisk(disk) = config.bus_ops(bus)?.device(slot)?.function() {
         disk.savestate_image()
     } else {
         None
     }
+}
+
+/// The slots of the machine, as (bus id, slot id), in the order of its list of buses
+fn slots(config: &EmulatorConfig) -> Vec<(String, String)> {
+    config
+        .model()
+        .buses()
+        .into_iter()
+        .flat_map(|bus| {
+            bus.slots
+                .into_iter()
+                .map(move |slot| (bus.id.clone(), slot.id))
+        })
+        .collect()
 }
 
 /// Gives the device in `slot` of `bus` its image from a restored state, in the file `filename`
@@ -93,20 +109,25 @@ fn restore_image(
     slot: &str,
     filename: &Path,
 ) -> Result<()> {
-    let target = slot
-        .parse::<usize>()
-        .ok()
-        .filter(|_| bus == SCSI)
-        .and_then(|id| config.scsi_mut().targets.get_mut(id)?.as_mut())
+    let device = config
+        .bus_ops(bus)
+        .and_then(|ops| ops.device(slot))
         .with_context(|| {
             format!(
                 "The state has an image for {} #{}, which has no device",
                 bus, slot
             )
         })?;
-    if let FunctionMut::HardDisk(disk) = target.function() {
+    if let FunctionMut::HardDisk(disk) = device.function() {
         return disk.load_image(Box::new(FileDiskImage::open(filename, true)?));
     }
+    // What a SCSI target saved of itself
+    let target = slot
+        .parse::<usize>()
+        .ok()
+        .filter(|_| bus == bus_id::SCSI)
+        .and_then(|id| config.scsi_mut().targets[id].as_mut())
+        .context("Only a SCSI target saves an image of its own")?;
     target.after_deserialize(filename)
 }
 
@@ -118,13 +139,14 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
 ) -> Result<()> {
     let compression_level = 0; // library default
 
-    let images = (0..ScsiBus::MAX_TARGETS)
-        .filter_map(|id| {
-            let target = config.scsi_mut().targets[id].as_deref_mut()?;
-            let len = scsi_image(target)?.len();
+    let slots = slots(config);
+    let images = slots
+        .iter()
+        .filter_map(|(bus, slot)| {
+            let len = saved_image(config, bus, slot)?.len();
             Some(SavedImage {
-                bus: SCSI.into(),
-                slot: id.to_string().into(),
+                bus: bus.as_str().into(),
+                slot: slot.as_str().into(),
                 len: len as u64,
             })
         })
@@ -146,15 +168,11 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     let mut compressor = postcard::to_io(config, compressor)?;
     END_OF_CHUNK.write(&mut compressor)?;
 
-    for id in 0..ScsiBus::MAX_TARGETS {
-        let Some(target) = config.scsi_mut().targets[id].as_deref_mut() else {
-            continue;
-        };
-        let Some(image) = scsi_image(target) else {
-            continue;
-        };
-        image.write(&mut compressor)?;
-        END_OF_CHUNK.write(&mut compressor)?;
+    for (bus, slot) in &slots {
+        if let Some(image) = saved_image(config, bus, slot) {
+            image.write(&mut compressor)?;
+            END_OF_CHUNK.write(&mut compressor)?;
+        }
     }
 
     Ok(())

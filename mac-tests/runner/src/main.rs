@@ -27,6 +27,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use snow_core::devices::{DeviceConfig, DeviceModel, FunctionConfig, HardDiskConfig, bus_id};
 use snow_core::emulator::Emulator;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::mac::{ExtraROMs, MacModel};
@@ -140,10 +141,15 @@ fn main() -> Result<()> {
         if id == "0" {
             boot_disk = Some(PathBuf::from(path));
         }
-        cmd.send(EmulatorCommand::ScsiAttachHdd(
-            id.parse()?,
-            PathBuf::from(path),
-        ))?;
+        cmd.send(EmulatorCommand::AddDevice(DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: id.into(),
+            model: Some(DeviceModel::ScsiHardDisk),
+            rom: None,
+            function: FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(PathBuf::from(path)),
+            }),
+        }))?;
     }
     if let Some(path) = env("RUNNER_FLOPPY") {
         cmd.send(EmulatorCommand::InsertFloppy(0, path, true))?;

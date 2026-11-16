@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use crate::debuggable::Debuggable;
 use crate::devices::{
     BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
-    MadeDevice, ModelInfo, PrinterFunction, PrinterStatus,
+    MadeDevice, ModelInfo, PrinterConfig, PrinterFunction, PrinterStatus,
 };
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
 #[cfg(feature = "printer")]
@@ -263,6 +263,16 @@ impl DeviceOps for ScsiTargetPrinter {
         &INFO
     }
 
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Printer(PrinterConfig {
+            output_dir: self.output_dir.clone(),
+        })
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(INFO.name.to_string())
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Printer(self)
     }
@@ -363,10 +373,6 @@ impl ScsiTarget for ScsiTargetPrinter {
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
         self.pending_event.take()
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Printer
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
