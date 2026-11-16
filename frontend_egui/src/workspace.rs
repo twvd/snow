@@ -11,9 +11,9 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
-use snow_core::mac::scsi::ethernet::EthernetLinkType;
+use snow_core::devices::EthernetLinkType;
+use snow_core::mac::MacModel;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 
@@ -194,6 +194,9 @@ impl From<EthernetLinkType> for WorkspaceEthernetLinkType {
             EthernetLinkType::Bridge(i) => Self::Bridge(i),
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             EthernetLinkType::TapBridge(s) => Self::TapBridge(s),
+            // A link this build has no support for
+            #[allow(unreachable_patterns)]
+            _ => Self::Down,
         }
     }
 }

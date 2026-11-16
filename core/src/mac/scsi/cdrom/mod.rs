@@ -33,6 +33,7 @@ use super::{
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
     toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
 };
+use crate::devices::{CdromFunction, CdromStatus, DeviceOps, FunctionMut};
 
 // CD-ROM protocol Documentation:
 //
@@ -1214,7 +1215,7 @@ impl ScsiTargetCdrom {
     }
 
     /// Sets the Toolbox-managed image folder for a folder-backed CD-ROM drive.
-    pub(super) fn set_image_dir(&mut self, dir: Option<PathBuf>) {
+    fn set_image_dir(&mut self, dir: Option<PathBuf>) {
         self.image_dir = dir;
     }
 
@@ -1251,9 +1252,9 @@ impl ScsiTargetCdrom {
     }
 
     /// Mounts the first available image from the Toolbox-managed folder, if any.
-    pub(super) fn mount_first_image(&mut self) -> Result<()> {
+    fn mount_first_image(&mut self) -> Result<()> {
         if let Some(path) = self.folder_images().into_iter().next() {
-            self.load_media(&path)?;
+            self.load(&path)?;
         }
         Ok(())
     }
@@ -1261,16 +1262,28 @@ impl ScsiTargetCdrom {
     /// Switches the mounted disc to `path` and latches a UNIT ATTENTION so the
     /// next TEST UNIT READY tells the guest the medium may have changed.
     fn switch_media(&mut self, path: &Path) -> Result<()> {
-        self.load_media(path)?;
+        self.load(path)?;
         self.pending_unit_attention = true;
         Ok(())
     }
 }
 
-#[typetag::serde]
-impl ScsiTarget for ScsiTargetCdrom {
-    fn common(&mut self) -> &mut ScsiTargetCommon {
-        &mut self.common
+impl DeviceOps for ScsiTargetCdrom {
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Cdrom(self)
+    }
+}
+
+impl CdromFunction for ScsiTargetCdrom {
+    fn status(&self) -> CdromStatus {
+        CdromStatus {
+            image: self
+                .backend
+                .as_ref()
+                .and_then(|backend| backend.image_path())
+                .map(Path::to_path_buf),
+            folder: self.image_dir.clone(),
+        }
     }
 
     /// Try to load a disk image, given the filename of the image.
@@ -1278,7 +1291,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// This locks the file on disk and memory maps the file for use by
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
-    fn load_media(&mut self, path: &Path) -> Result<()> {
+    fn load(&mut self, path: &Path) -> Result<()> {
         if is_physical_cdrom_drive_path(path) {
             self.load_physical_drive(path)
         } else if path
@@ -1298,6 +1311,31 @@ impl ScsiTarget for ScsiTargetCdrom {
         self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
+    }
+
+    fn set_folder(&mut self, folder: &Path) -> Result<()> {
+        // The drive keeps the folder even if it can't be read now
+        self.set_image_dir(Some(folder.to_path_buf()));
+        if !folder.is_dir() {
+            bail!("The folder '{}' can't be read", folder.display());
+        }
+        self.mount_first_image()
+    }
+
+    fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
+        self.audio_sink = Some(provider.create_stream(
+            AUDIO_FRAMES_PER_SEC as i32,
+            2,
+            AUDIO_BUFFER_SAMPLES as u16,
+        )?);
+        Ok(())
+    }
+}
+
+#[typetag::serde]
+impl ScsiTarget for ScsiTargetCdrom {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
     }
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
@@ -1592,16 +1630,6 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
         log::error!("Write command to CD-ROM");
-    }
-
-    fn image_fn(&self) -> Option<&Path> {
-        self.backend
-            .as_ref()
-            .and_then(|backend| backend.image_path())
-    }
-
-    fn cdrom_image_dir(&self) -> Option<&Path> {
-        self.image_dir.as_deref()
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -2027,31 +2055,8 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        self.load_media(imgfn)?;
+        self.load(imgfn)?;
         Ok(())
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("Unsupported on CD-ROM");
-    }
-
-    fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        self.audio_sink = Some(provider.create_stream(
-            AUDIO_FRAMES_PER_SEC as i32,
-            2,
-            AUDIO_BUFFER_SAMPLES as u16,
-        )?);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
     }
 
     fn ticks(&self) -> bool {
@@ -2106,6 +2111,62 @@ mod tests {
     fn write_file(dir: &Path, name: &str, size: usize) {
         let mut f = fs::File::create(dir.join(name)).unwrap();
         f.write_all(&vec![0u8; size]).unwrap();
+    }
+
+    #[test]
+    fn load_and_eject_show_in_the_status() {
+        let dir = temp_dir("load");
+        write_file(&dir, "disc.iso", 4096);
+        let image = dir.join("disc.iso");
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        let FunctionMut::Cdrom(function) = cd.function() else {
+            panic!("A CD-ROM drive has the Cdrom function");
+        };
+        let empty = CdromStatus {
+            image: None,
+            folder: None,
+        };
+        assert_eq!(function.status(), empty);
+        function.load(&image).unwrap();
+        assert_eq!(function.status().image, Some(image));
+
+        // START STOP UNIT with LoEj: the guest ejects the disc
+        cd.cmd(&[0x1B, 0, 0, 0, 0b10, 0], None).unwrap();
+        assert_eq!(CdromFunction::status(&cd), empty);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_folder_loads_its_first_image() {
+        let dir = temp_dir("folder");
+        write_file(&dir, "b.iso", 4096);
+        write_file(&dir, "a.iso", 4096);
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.set_folder(&dir).unwrap();
+        assert_eq!(
+            CdromFunction::status(&cd),
+            CdromStatus {
+                image: Some(dir.join("a.iso")),
+                folder: Some(dir.clone()),
+            }
+        );
+
+        // A folder that can't be read is reported, and the drive keeps it
+        let missing = dir.join("missing");
+        let mut cd = ScsiTargetCdrom::new(None);
+        assert!(cd.set_folder(&missing).is_err());
+        assert_eq!(
+            CdromFunction::status(&cd),
+            CdromStatus {
+                image: None,
+                folder: Some(missing),
+            }
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2550,7 +2611,7 @@ mod tests {
         let dir = temp_dir("image_read");
         write_file(&dir, "disc.iso", 4096);
         let mut cd = ScsiTargetCdrom::new(None);
-        cd.load_media(&dir.join("disc.iso")).unwrap();
+        cd.load(&dir.join("disc.iso")).unwrap();
 
         match read10(&mut cd) {
             ScsiCmdResult::DataIn(d) => assert_eq!(d.len(), 2048),
@@ -2742,7 +2803,7 @@ mod tests {
         let dir = temp_dir("image_toc");
         write_file(&dir, "disc.iso", 4096);
         let mut cd = ScsiTargetCdrom::new(None);
-        cd.load_media(&dir.join("disc.iso")).unwrap();
+        cd.load(&dir.join("disc.iso")).unwrap();
 
         match read_toc_cmd(&mut cd) {
             ScsiCmdResult::DataIn(d) => assert_eq!(d.len(), 4 + 8 + 8),

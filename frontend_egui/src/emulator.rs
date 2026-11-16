@@ -79,6 +79,8 @@ impl From<Option<ScsiTargetStatus>> for ScsiTarget {
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
     pub frame_receiver: FrameReceiver,
+    /// The temporary files of a restored state, to remove when done
+    pub temp_files: Vec<PathBuf>,
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -377,7 +379,7 @@ impl EmulatorState {
                         cdrom_folder: Some(dir),
                         ..
                     } => {
-                        if let Err(e) = emulator.attach_cdrom_folder(id, dir.clone()) {
+                        if let Err(e) = emulator.attach_cdrom_folder(id, dir) {
                             error!(
                                 "SCSI ID #{}: Toolbox managed CD-ROM folder attach failed: {}",
                                 id, e
@@ -442,7 +444,10 @@ impl EmulatorState {
 
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd, false, pause)
+        let temp_files = emulator.temp_files().to_vec();
+        let mut result = self.init_finalize(emulator, frame_recv, cmd, false, pause)?;
+        result.temp_files = temp_files;
+        Ok(result)
     }
 
     fn init_finalize(
@@ -518,6 +523,7 @@ impl EmulatorState {
 
         Ok(EmulatorInitResult {
             frame_receiver: frame_recv,
+            temp_files: vec![],
         })
     }
 
@@ -1553,7 +1559,7 @@ impl EmulatorState {
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn set_eth_link(&self, id: usize, link: snow_core::mac::scsi::ethernet::EthernetLinkType) {
+    pub fn set_eth_link(&self, id: usize, link: snow_core::devices::EthernetLinkType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
