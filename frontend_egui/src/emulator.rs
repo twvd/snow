@@ -20,8 +20,9 @@ use snow_core::debuggable::DebuggableProperties;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
-    Bus, BusKind, CdromConfig, Device, DeviceConfig, FloppyInfo, FloppyStatus, FunctionConfig,
-    FunctionInfo, FunctionStatus, HardDiskConfig, bus_id, device_configs, models_for,
+    Bus, BusKind, CdromConfig, Device, DeviceConfig, FloppyImages, FloppyInfo, FloppyStatus,
+    FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, bus_id, device_configs,
+    models_for,
 };
 #[cfg(feature = "ethernet")]
 use snow_core::devices::{EthernetConfig, EthernetLinkType};
@@ -89,6 +90,13 @@ pub struct FloppySlot {
     /// What its device model accepts and can do
     pub info: FloppyInfo,
     pub status: FloppyStatus,
+}
+
+impl FloppySlot {
+    /// The drive takes the Mac's floppy images, and not image files of another kind
+    pub fn takes_mac_images(&self) -> bool {
+        self.info.images == FloppyImages::Mac
+    }
 }
 
 /// Results of initializing the emulator, includes channels
@@ -219,8 +227,6 @@ pub struct EmulatorState {
     peripheral_debug: DebuggableProperties,
     scc_tx: [VecDeque<u8>; 2],
     mouse_mode: MouseMode,
-    /// The settings of the Apple IIe Card, if the machine has one
-    iie_card: Option<IieCardSettings>,
     /// The list of buses, as the emulator last sent it
     buses: Arc<Vec<Bus>>,
     /// The status last received of the device in each slot, by the ids of its bus and slot
@@ -334,7 +340,7 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
-        self.iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
+        let iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
         let (mut emulator, frame_recv) = Emulator::new_with_extra(
             rom,
@@ -348,7 +354,7 @@ impl EmulatorState {
             args.fpu_enabled,
             args.vram_size,
             shared_dir,
-            self.iie_card,
+            iie_card,
         )?;
 
         let cmd = emulator.create_cmd_sender();
@@ -798,7 +804,8 @@ impl EmulatorState {
         name.unwrap_or_else(|| format!("{} #{}", title, slot))
     }
 
-    /// The floppy drives of the machine, in the order of the list of buses
+    /// The floppy drives of the machine, in the order of the list of buses: the Mac's own,
+    /// then those on a bus that a device adds, such as the drives of the Apple IIe Card
     pub fn floppy_slots(&self) -> Vec<FloppySlot> {
         let mut drives = vec![];
         for bus in self.buses.iter() {
@@ -886,60 +893,12 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// The number of 5.25" drives connected to the Apple IIe Card.
-    pub fn iie_drives_525(&self) -> usize {
-        self.iie_card.map_or(0, |s| s.drives_525())
-    }
-
-    /// Loads an Apple II 5.25" DSK image into one of the IIe card's
-    /// drives (0 or 1).
-    pub fn load_iie_disk(&self, drive: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender
-            .send(EmulatorCommand::InsertIieDisk(drive, path.to_path_buf()))
-            .unwrap();
-    }
-
     /// Sets the joystick and buttons on the Apple IIe card's game port.
     pub fn set_iie_game_port(&self, port: GamePort) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
         sender.send(EmulatorCommand::SetIieGamePort(port)).unwrap();
-    }
-
-    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
-    pub fn eject_iie_disk(&self, drive: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender.send(EmulatorCommand::EjectIieDisk(drive)).unwrap();
-    }
-
-    /// Whether a UniDisk 3.5 is connected to the Apple IIe Card.
-    pub fn iie_has_unidisk(&self) -> bool {
-        self.iie_card.is_some_and(|s| s.has_unidisk())
-    }
-
-    /// Loads an 800K (or 400K) ProDOS-order image into the IIe card's
-    /// UniDisk 3.5.
-    pub fn load_iie_unidisk(&self, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender
-            .send(EmulatorCommand::InsertIieUniDisk(path.to_path_buf()))
-            .unwrap();
-    }
-
-    /// Ejects the IIe card's UniDisk 3.5.
-    pub fn eject_iie_unidisk(&self) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender.send(EmulatorCommand::EjectIieUniDisk).unwrap();
     }
 
     /// Loads the included toolbox floppy.
@@ -950,7 +909,7 @@ impl EmulatorState {
 
         // Find a free floppy drive
         for drive in self.floppy_slots() {
-            if drive.status.ejected {
+            if drive.takes_mac_images() && drive.status.ejected {
                 sender
                     .send(EmulatorCommand::InsertFloppyImage(
                         drive.bus,
