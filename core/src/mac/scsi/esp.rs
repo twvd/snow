@@ -637,7 +637,9 @@ impl Esp {
             Ok(CmdOutcome::DataIn) => self.set_phase(PHASE_DATA_IN),
             Ok(CmdOutcome::DataOut(_)) => self.set_phase(PHASE_DATA_OUT),
             // The target holds the bus until the command completes: no phase
-            // change and no interrupt yet (tick())
+            // change and no interrupt yet (tick()). It does so even when the
+            // initiator's IDENTIFY lets it disconnect (DiscPriv), which is
+            // legal: disconnecting is the target's choice, not modelled yet.
             Ok(CmdOutcome::Busy) => return,
             Err(e) => {
                 error!("SCSI command error: {:#}", e);
@@ -1215,6 +1217,53 @@ mod tests {
         command(&mut esp, 0x98);
         assert_eq!(phase(&mut esp), PHASE_STATUS);
         assert_eq!(image.lock().unwrap()[512], 0);
+    }
+
+    /// IDENTIFY that lets the target disconnect (DiscPriv), as SCSI Manager
+    /// 4.3 sends once it has switched to its disconnect mode
+    const IDENTIFY_DISC_PRIV: u8 = 0xC0;
+
+    /// What SCSI Manager 4.3 does in its disconnect mode, with a command that
+    /// completes at once: it holds whether or not targets may disconnect
+    #[test]
+    fn sim_disconnect_mode_sequence() {
+        let (mut esp, _) = esp_with_disk();
+        // Enable Selection/Reselection, which the SIM reads back
+        command(&mut esp, 0x44);
+        assert_eq!(esp.read(REG_CMD).unwrap(), 0x44);
+        assert!(!esp.get_irq());
+
+        // Select with ATN: IDENTIFY with DiscPriv, then TEST UNIT READY
+        for b in [IDENTIFY_DISC_PRIV, 0x00, 0, 0, 0, 0, 0] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        command(&mut esp, 0x42);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS | INTR_FC);
+        assert_eq!(phase(&mut esp), PHASE_STATUS);
+        command(&mut esp, 0x11);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_FC);
+        command(&mut esp, 0x12);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_DC);
+
+        // The SIM enables reselection again after the bus goes free
+        command(&mut esp, 0x44);
+        assert!(!esp.get_irq());
+    }
+
+    /// The SIM's usual selection: the IDENTIFY with DiscPriv comes as the
+    /// first DMA byte, before the CDB
+    #[test]
+    fn disc_priv_identify_by_dma() {
+        let (mut esp, _) = esp_with_disk();
+        // Select with ATN through DMA: IDENTIFY, then READ(6) of one block
+        set_count(&mut esp, 7);
+        command(&mut esp, 0xC2);
+        for pair in [[IDENTIFY_DISC_PRIV, 0x08], [0, 0], [0, 1], [0, 0xFF]] {
+            esp.dack_write(pair);
+        }
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS | INTR_FC);
+        assert_eq!(phase(&mut esp), PHASE_DATA_IN);
+        assert_eq!(esp.bus().cmdbuf, [0x08, 0, 0, 0, 1, 0]);
     }
 
     #[test]
