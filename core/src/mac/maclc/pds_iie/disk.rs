@@ -30,7 +30,12 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{TwoImg, Woz, WozData};
 
 use super::unidisk::{UniDisk, bus_enabled};
-use crate::devices::{FloppyFunction, FloppyStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, FloppyFunction, FloppyImages, FloppyInfo, FloppyStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
+use crate::mac::swim::device::SwimBusDevice;
+use crate::mac::swim::stream::FloppyStream;
 use crate::tickable::Ticks;
 
 /// Tracks in a sector image.
@@ -158,6 +163,23 @@ impl DskImage {
     fn track_at(&self, quarter: usize) -> Option<&Track> {
         let i = (*self.map.get(quarter)?)?;
         self.tracks.get(i as usize)
+    }
+
+    /// The cells in one turn under quarter-track `quarter`: those of a
+    /// standard track where the disk has none.
+    pub(crate) fn track_len(&self, quarter: usize) -> usize {
+        self.track_at(quarter).map_or(CELLS, |t| t.len)
+    }
+
+    /// The bit at cell `cell` under quarter-track `quarter` (0 where
+    /// the disk has no track).
+    pub(crate) fn bit(&self, quarter: usize, cell: usize) -> bool {
+        self.track_at(quarter).is_some_and(|t| t.bit(cell))
+    }
+
+    /// The rate the drive delivers the bits at, in 125 ns units.
+    pub(crate) fn bit_timing(&self) -> u8 {
+        self.bit_timing
     }
 }
 
@@ -311,19 +333,15 @@ fn encode62(data: &[u8], mut put: impl FnMut(u8)) {
 /// One 5.25" drive: a quarter-track stepper, the 300 RPM spindle and
 /// the bit stream of the inserted image (or nothing).  The phase latch
 /// is shared by both drives on the IWM (it lives in [`DiskII`]).
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Drive5 {
     /// The inserted image (skipped in save states: the host re-inserts
-    /// it from the menu).
-    #[serde(skip, default)]
-    pub image: Option<DskImage>,
+    /// it from the menu), the head position in quarter-tracks
+    /// (0..QUARTERS) and the bit-cell index into the current track.
+    pub(super) stream: FloppyStream,
     /// The name of the image's file, which titles the disk.
     #[serde(skip, default)]
     title: String,
-    /// The head position in quarter-tracks (0..QUARTERS).
-    pos: i16,
-    /// The bit-cell index into the current track.
-    cell: usize,
 }
 
 /// The IWM bit-cell clock per 65C02 cycle in 16.16 fixed point: one
@@ -335,6 +353,9 @@ pub struct Drive5 {
 /// twice as fast in real time.
 const CELL_ADVANCE: Ticks = 0x4000;
 
+/// The 65C02 cycles of a bit cell on the SmartPort bus.
+const CELL_CYCLES: Ticks = 0x10000 / CELL_ADVANCE;
+
 /// The motor-off delay in 65C02 cycles: the IWM timer (mode bit 2
 /// clear) runs 2^23 FCLK periods (MAME `iwm.cpp`), about 1.2 s, which
 /// at 7 FCLK per CPU cycle is 2^23 / 7 cycles.  Loaders rely on it:
@@ -343,7 +364,10 @@ const MOTOR_OFF_DELAY: u32 = (1 << 23) / 7;
 
 impl Drive5 {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            stream: FloppyStream::new_525(),
+            title: String::new(),
+        }
     }
 
     /// The phase latch write: quarter-track stepping (MAME
@@ -362,7 +386,7 @@ impl Drive5 {
             // The two-coil detent states don't move the head.
             _ => return,
         };
-        let cur = self.pos as i32;
+        let cur = self.stream.track as i32;
         // The opposite polarity of the same position: no move.
         if ((cur ^ req) & 7) == 4 {
             return;
@@ -373,41 +397,80 @@ impl Drive5 {
         } else if next > cur + 4 {
             next -= 8;
         }
-        let old_len = self.track_len();
-        self.pos = next.clamp(0, QUARTERS as i32 - 1) as i16;
+        let old_len = self.stream.track_len_525();
+        self.stream.track = next.clamp(0, QUARTERS as i32 - 1) as usize;
         // The disk keeps turning: the head lands at the same angle on a
         // track of another length (the WOZ reference asks for this)
-        let new_len = self.track_len();
+        let new_len = self.stream.track_len_525();
         if new_len != old_len {
-            self.cell = self.cell * new_len / old_len;
+            self.stream.track_position = self.stream.track_position * new_len / old_len;
         }
     }
+}
 
-    /// The track under the head, if any.
-    fn track(&self) -> Option<&Track> {
-        self.image.as_ref()?.track_at(self.pos as usize)
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::Apple525Drive,
+        "Apple 5.25 Drive",
+        BusKind::IieDisk,
+        FunctionInfo::Floppy(FloppyInfo {
+            images: FloppyImages::Files {
+                label: "Apple II 5.25\" disks",
+                extensions: &["dsk", "do", "po", "2mg", "woz"],
+            },
+            blank_formats: &[],
+            guest_ejects: false,
+            rpm_control: false,
+            // The drive never writes to its image
+            writable: false,
+        }),
+    )
+};
+
+impl DeviceOps for Drive5 {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
     }
 
-    /// The cells in one turn under the head.
-    fn track_len(&self) -> usize {
-        self.track().map_or(CELLS, |t| t.len)
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Floppy
     }
 
-    /// Advances the spindle by one bit cell and returns the cell it
-    /// leaves.
-    pub fn next_bit(&mut self) -> bool {
-        let bit = self.head_bit();
-        self.cell += 1;
-        if self.cell >= self.track_len() {
-            self.cell = 0;
-        }
-        bit
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Floppy(self)
+    }
+}
+
+#[typetag::serde]
+impl SwimBusDevice for Drive5 {
+    fn connected(&mut self, _connector: usize, _tick_rate: Ticks) {}
+
+    /// The phase lines move the head.
+    fn set_lines(&mut self, lines: u8) {
+        self.set_phase(lines);
     }
 
-    /// The head bit at the current position (0 with no disk, or no
-    /// track there).
-    pub fn head_bit(&self) -> bool {
-        self.track().is_some_and(|t| t.bit(self.cell))
+    fn strobe(&mut self, _lines: u8) -> bool {
+        false
+    }
+
+    /// The sense line: write-protect OR phase 1.  The model is
+    /// read-only, so an inserted disk is always write-protected.
+    fn sense(&self, lines: u8) -> bool {
+        self.stream.disk_525().is_some() || lines & 0x02 != 0
+    }
+
+    fn tick(&mut self, _ticks: Ticks) {}
+
+    /// The drive has its stream with no disk too: it reads zeroes.
+    fn stream(&mut self) -> Option<&mut FloppyStream> {
+        Some(&mut self.stream)
+    }
+
+    #[cfg(test)]
+    fn as_drive5(&mut self) -> &mut Drive5 {
+        self
     }
 }
 
@@ -443,7 +506,7 @@ impl FloppyFunction for Drive5 {
     fn status(&self) -> FloppyStatus {
         FloppyStatus {
             title: self.title.clone(),
-            ejected: self.image.is_none(),
+            ejected: self.stream.disk_525().is_none(),
             dirty: false,
             writeback_supported: false,
             writeback_enabled: false,
@@ -465,7 +528,7 @@ impl FloppyFunction for Drive5 {
         };
         let image =
             image.map_err(|e| anyhow!("Cannot insert IIe disk '{}': {}", path.display(), e))?;
-        self.image = Some(image);
+        self.stream.set_disk_525(Some(image));
         self.title = file_title(path);
         log::debug!(
             "IIe Card 5.25\" disk inserted ({} bytes, {:?})",
@@ -476,7 +539,7 @@ impl FloppyFunction for Drive5 {
     }
 
     fn eject(&mut self) {
-        self.image = None;
+        self.stream.set_disk_525(None);
         self.title.clear();
         log::debug!("IIe Card 5.25\" disk ejected");
     }
@@ -708,18 +771,21 @@ impl Iwm {
     }
 }
 
-/// The Disk II controller: the two drives, the drive select, the
-/// phase latch and the IWM registers, and the UniDisk 3.5 when one
-/// is connected.
+/// The Disk II controller: the devices on its port, the drive select,
+/// the phase latch and the IWM registers.
 #[derive(Default, Serialize, Deserialize)]
 pub struct DiskII {
-    /// The 5.25" drives, in daisy-chain order; `None` is no drive
-    /// connected (not an empty drive).
-    pub drives: [Option<Drive5>; 2],
-    /// The UniDisk 3.5, first on the external port: the 5.25" drives
-    /// are behind it, and it holds their drive enable off while the
-    /// SmartPort bus is enabled.
-    pub unidisk: Option<UniDisk>,
+    /// The devices on the port, in daisy-chain order.
+    devices: [Option<Box<dyn SwimBusDevice>>; 2],
+    /// The place on the chain of the device that exchanges bytes on
+    /// the SmartPort bus, a UniDisk 3.5, if there is one.  It is first
+    /// on the external port: the 5.25" drives are behind it, and it
+    /// holds their drive enable off while the SmartPort bus is
+    /// enabled.
+    smart: Option<usize>,
+    /// The places on the chain of the 5.25" drives, drive 1 then drive
+    /// 2; `None` is no drive connected (not an empty drive).
+    drives: [Option<usize>; 2],
     /// The selected drive (false = drive 1, true = drive 2).
     pub selected: bool,
     /// The phase latch (4 bits), shared by both drives.
@@ -730,6 +796,10 @@ pub struct DiskII {
     acc: Ticks,
     /// The IWM controller.
     iwm: Iwm,
+    /// The byte the SmartPort device is sending, and how many of its
+    /// bits the IWM is still to get, the high bit first.
+    rx_byte: u8,
+    rx_bits: u8,
 }
 
 impl DiskII {
@@ -737,46 +807,61 @@ impl DiskII {
     /// behind a UniDisk 3.5 if `unidisk` is set.
     pub fn new(count: usize, unidisk: bool) -> Self {
         let mut disk = Self::default();
-        for drive in disk.drives.iter_mut().take(count) {
-            *drive = Some(Drive5::new());
-        }
         if unidisk {
-            disk.unidisk = Some(UniDisk::new());
+            disk.attach(Box::new(UniDisk::new()));
+        }
+        for _ in 0..count {
+            disk.attach(Box::new(Drive5::new()));
         }
         disk
     }
 
-    /// Resets the controller and the drives. The drives keep their
-    /// disks: the host menu inserts them, rebooting the 65C02 must not
-    /// eject.  The UniDisk has its own processor and only restarts on
-    /// a bus reset; it just sees the phase lines go off.
-    pub fn reset(&mut self) {
-        let mut disk = Self::default();
-        for (new, old) in disk.drives.iter_mut().zip(self.drives.iter_mut()) {
-            if let Some(old) = old {
-                *new = Some(Drive5 {
-                    image: old.image.take(),
-                    title: std::mem::take(&mut old.title),
-                    ..Drive5::new()
-                });
-            }
+    /// Puts a device at the end of the chain, if there is room.  A
+    /// device with a stream is a 5.25" drive; one with none exchanges
+    /// bytes on the SmartPort bus.
+    fn attach(&mut self, mut device: Box<dyn SwimBusDevice>) {
+        let Some(place) = self.devices.iter().position(Option::is_none) else {
+            return;
+        };
+        device.connected(place, super::NORMAL_HZ as Ticks);
+        if device.stream().is_none() {
+            self.smart.get_or_insert(place);
+        } else if let Some(drive) = self.drives.iter_mut().find(|drive| drive.is_none()) {
+            *drive = Some(place);
         }
-        disk.unidisk = self.unidisk.take();
-        if let Some(unidisk) = &mut disk.unidisk {
-            unidisk.set_phases(0);
-        }
-        *self = disk;
+        self.devices[place] = Some(device);
     }
 
-    /// Inserts an image into a drive (0 or 1), or ejects it with
-    /// `None`. Returns false if that drive is not connected.
-    pub fn insert(&mut self, drive: usize, img: Option<DskImage>) -> bool {
-        match self.drives.get_mut(drive) {
-            Some(Some(drv)) => {
-                drv.image = img;
-                true
-            }
-            _ => false,
+    /// The device at a place on the chain.
+    fn drive_at(&mut self, place: Option<usize>) -> Option<&mut dyn SwimBusDevice> {
+        let device = self.devices[place?].as_mut()?;
+        Some(&mut **device)
+    }
+
+    /// A 5.25" drive (0 or 1), if that drive is connected.
+    pub(crate) fn drive_525(&mut self, drive: usize) -> Option<&mut dyn SwimBusDevice> {
+        self.drive_at(*self.drives.get(drive)?)
+    }
+
+    /// The UniDisk 3.5, if one is connected.
+    pub(crate) fn unidisk(&mut self) -> Option<&mut dyn SwimBusDevice> {
+        self.drive_at(self.smart)
+    }
+
+    /// Resets the controller. The drives keep their disks, and the
+    /// place of their head: rebooting the 65C02 doesn't reach them.
+    /// The UniDisk has its own processor and only restarts on a bus
+    /// reset; it just sees the phase lines go off.
+    pub fn reset(&mut self) {
+        self.selected = false;
+        self.phase = 0;
+        self.spin_down = 0;
+        self.acc = 0;
+        self.iwm = Iwm::default();
+        self.rx_byte = 0;
+        self.rx_bits = 0;
+        if let Some(unidisk) = self.drive_at(self.smart) {
+            unidisk.set_lines(0);
         }
     }
 
@@ -807,18 +892,28 @@ impl DiskII {
         }
     }
 
+    /// Whether the SmartPort bus is enabled, with a device on it.
+    fn smart_bus(&self) -> bool {
+        self.smart.is_some() && bus_enabled(self.phase)
+    }
+
     /// The bit-cell clock per 65C02 cycle: a 5.25" disk delivers its bits
     /// at its own rate (a WOZ image's optimal bit timing), the UniDisk at
     /// the IWM's.
-    fn cell_advance(&self) -> Ticks {
-        let bus = self.unidisk.is_some() && bus_enabled(self.phase);
-        match &self.drives[self.selected as usize] {
-            Some(Drive5 {
-                image: Some(img), ..
-            }) if !bus => {
-                CELL_ADVANCE * Ticks::from(STANDARD_BIT_TIMING) / Ticks::from(img.bit_timing)
+    fn cell_advance(&mut self) -> Ticks {
+        if self.smart_bus() {
+            return CELL_ADVANCE;
+        }
+        let drive = self.drives[self.selected as usize];
+        let bit_timing = self
+            .drive_at(drive)
+            .and_then(|drive| drive.stream())
+            .and_then(|stream| stream.bit_timing_525());
+        match bit_timing {
+            Some(bit_timing) => {
+                CELL_ADVANCE * Ticks::from(STANDARD_BIT_TIMING) / Ticks::from(bit_timing)
             }
-            _ => CELL_ADVANCE,
+            None => CELL_ADVANCE,
         }
     }
 
@@ -827,19 +922,53 @@ impl DiskII {
     /// SmartPort bus is enabled the UniDisk owns the read data line;
     /// otherwise the selected 5.25" drive does.
     fn cell(&mut self) {
-        let bus = bus_enabled(self.phase);
-        let bit = match &mut self.unidisk {
-            Some(unidisk) if bus => unidisk.next_bit(),
-            _ => match &mut self.drives[self.selected as usize] {
-                Some(drv) => drv.next_bit(),
-                None => false,
-            },
+        let bus = self.smart_bus();
+        let bit = if bus {
+            self.smart_bit()
+        } else {
+            let drive = self.drives[self.selected as usize];
+            self.drive_at(drive)
+                .and_then(|drive| drive.stream())
+                .is_some_and(|stream| stream.next_bit(0))
         };
         let sent = self.iwm.cell(bit);
-        if let (Some(byte), Some(unidisk)) = (sent, &mut self.unidisk)
-            && bus
+        if let (Some(byte), true) = (sent, bus)
+            && let Some(unidisk) = self.drive_at(self.smart)
         {
-            unidisk.receive(byte);
+            unidisk.write_byte(byte);
+        }
+    }
+
+    /// The next bit from the device on the SmartPort bus: its bytes go
+    /// to the IWM one bit per cell, the high bit first, and 0 while it
+    /// sends nothing.  It is asked for its next byte in the cell that
+    /// takes the last bit of a byte, so it knows then when it has
+    /// sent its last.
+    fn smart_bit(&mut self) -> bool {
+        if self.rx_bits == 0 {
+            self.smart_byte(CELL_CYCLES);
+        }
+        if self.rx_bits == 0 {
+            return false;
+        }
+        let bit = self.rx_byte & 0x80 != 0;
+        self.rx_byte <<= 1;
+        self.rx_bits -= 1;
+        if self.rx_bits == 0 {
+            self.smart_byte(8 * CELL_CYCLES);
+        }
+        bit
+    }
+
+    /// Asks the device on the SmartPort bus for its next byte, `cycles`
+    /// after it was last asked.
+    fn smart_byte(&mut self, cycles: Ticks) {
+        if let Some(byte) = self
+            .drive_at(self.smart)
+            .and_then(|unidisk| unidisk.read_byte(cycles))
+        {
+            self.rx_byte = byte;
+            self.rx_bits = 8;
         }
     }
 
@@ -853,11 +982,13 @@ impl DiskII {
     /// `p` (shared by both drives).
     pub fn phase_write(&mut self, p: usize, on: bool) {
         self.phase = self.phase & !(1 << p) | ((on as u8) << p);
-        if let Some(drv) = &mut self.drives[self.selected as usize] {
-            drv.set_phase(self.phase);
+        let phase = self.phase;
+        let drive = self.drives[self.selected as usize];
+        if let Some(drive) = self.drive_at(drive) {
+            drive.set_lines(phase);
         }
-        if let Some(unidisk) = &mut self.unidisk {
-            unidisk.set_phases(self.phase);
+        if let Some(unidisk) = self.drive_at(self.smart) {
+            unidisk.set_lines(phase);
         }
     }
 
@@ -873,19 +1004,37 @@ impl DiskII {
 
     /// An even-address IWM read (`$C0EC`/`$C0EE`), selected by Q6/Q7.
     pub fn iwm_read(&mut self, motor: bool) -> u8 {
-        // The sense line: write-protect OR phase 1.  The model is
-        // read-only, so an inserted disk is always write-protected.
-        // With no drive connected the line reads high, as in MAME's
-        // iwm.cpp (`!m_floppy`); whether the card pulls it up is not
+        // The sense line of the selected 5.25" drive.  With no drive
+        // connected the line reads high, as in MAME's iwm.cpp
+        // (`!m_floppy`); whether the card pulls it up is not
         // documented.
         // While the SmartPort bus is enabled the UniDisk drives it as
         // /ACK.
-        let sense = match (&self.unidisk, &self.drives[self.selected as usize]) {
-            (Some(unidisk), _) if bus_enabled(self.phase) => unidisk.ack(),
-            (_, Some(drv)) => drv.image.is_some() || self.phase & 0x02 != 0,
-            (_, None) => true,
+        let phase = self.phase;
+        let place = if self.smart_bus() {
+            self.smart
+        } else {
+            self.drives[self.selected as usize]
         };
+        let sense = self
+            .drive_at(place)
+            .is_none_or(|device| device.sense(phase));
         self.iwm.read(motor, sense)
+    }
+}
+
+#[cfg(test)]
+impl DiskII {
+    /// A 5.25" drive that is connected, for the tests that look inside
+    /// a drive.
+    pub(super) fn drive(&mut self, drive: usize) -> &mut Drive5 {
+        self.drive_525(drive).unwrap().as_drive5()
+    }
+
+    /// The UniDisk 3.5 that is connected, for the tests that look
+    /// inside it.
+    pub(super) fn smart_unidisk(&mut self) -> &mut UniDisk {
+        self.unidisk().unwrap().as_unidisk()
     }
 }
 
@@ -958,22 +1107,20 @@ pub(super) mod tests {
     fn the_motor_off_delay() {
         let img = vec![0u8; TRACKS * 4096];
         let mut disk = DiskII::new(1, false);
-        disk.insert(0, DskImage::load(&img, DskOrder::Dos));
+        disk.drive(0)
+            .stream
+            .set_disk_525(DskImage::load(&img, DskOrder::Dos));
         disk.tick(100, true);
         disk.tick(500_000, false);
         assert!(disk.active(false));
-        let cell = disk.drives[0].as_ref().unwrap().cell;
+        let cell = disk.drive(0).stream.track_position;
         disk.tick(100, false);
-        assert_ne!(
-            disk.drives[0].as_ref().unwrap().cell,
-            cell,
-            "still spinning"
-        );
+        assert_ne!(disk.drive(0).stream.track_position, cell, "still spinning");
         disk.tick(800_000, false);
         assert!(!disk.active(false));
-        let cell = disk.drives[0].as_ref().unwrap().cell;
+        let cell = disk.drive(0).stream.track_position;
         disk.tick(100, false);
-        assert_eq!(disk.drives[0].as_ref().unwrap().cell, cell, "stopped");
+        assert_eq!(disk.drive(0).stream.track_position, cell, "stopped");
     }
 
     #[test]
@@ -1004,14 +1151,14 @@ pub(super) mod tests {
         let mut img = DskImage::load(&vec![0u8; TRACKS * 4096], DskOrder::Dos).unwrap();
         img.tracks[1].len = CELLS / 2;
         let mut drive = Drive5::new();
-        drive.image = Some(img);
-        drive.cell = CELLS / 2;
+        drive.stream.set_disk_525(Some(img));
+        drive.stream.track_position = CELLS / 2;
         // Coil 1, then coil 2: the head moves to quarter-track 2 (no
         // track there), then 4 (track 1)
         drive.set_phase(0x2);
         drive.set_phase(0x4);
-        assert_eq!(drive.pos, 4);
-        assert_eq!(drive.cell, CELLS / 4);
+        assert_eq!(drive.stream.track, 4);
+        assert_eq!(drive.stream.track_position, CELLS / 4);
     }
 
     /// A 5.25" WOZ image with two tracks, under quarter-tracks 0-1 and 5
@@ -1051,13 +1198,13 @@ pub(super) mod tests {
 
         // The turn is the track's length
         let mut drive = Drive5::new();
-        drive.image = Some(img);
-        let turn: Vec<bool> = (0..20).map(|_| drive.next_bit()).collect();
+        drive.stream.set_disk_525(Some(img));
+        let turn: Vec<bool> = (0..20).map(|_| drive.stream.next_bit(0)).collect();
         assert_eq!(
             &turn[..8],
             &[true, true, false, true, false, true, false, true]
         );
-        assert_eq!(drive.cell, 0);
+        assert_eq!(drive.stream.track_position, 0);
     }
 
     #[test]
@@ -1065,7 +1212,9 @@ pub(super) mod tests {
         let bits = [0xFF; 3];
         let mut disk = DiskII::new(1, false);
         assert_eq!(disk.cell_advance(), CELL_ADVANCE);
-        disk.insert(0, Some(DskImage::from_woz(&woz(&bits, 31)).unwrap()));
+        disk.drive(0)
+            .stream
+            .set_disk_525(Some(DskImage::from_woz(&woz(&bits, 31)).unwrap()));
         assert_eq!(disk.cell_advance(), CELL_ADVANCE * 32 / 31);
     }
 
@@ -1087,7 +1236,9 @@ pub(super) mod tests {
             *b = i as u8;
         }
         let mut disk = DiskII::new(1, false);
-        disk.insert(0, DskImage::load(&img, DskOrder::Dos));
+        disk.drive(0)
+            .stream
+            .set_disk_525(DskImage::load(&img, DskOrder::Dos));
         let mut runs: Vec<(u8, usize)> = Vec::new();
         for _ in 0..(CELLS * 9) / 8 + 16 {
             disk.tick(1, true);
@@ -1164,7 +1315,7 @@ pub(super) mod tests {
 
         disk.selected = true;
         assert_ne!(disk.iwm_read(false) & 0x80, 0, "no drive");
-        assert!(!disk.insert(1, None));
+        assert!(disk.drive_525(1).is_none());
     }
 
     /// A file of its own for a test, removed when the test is done

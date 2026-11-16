@@ -5,7 +5,24 @@ use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 
 use super::WeakBitRng;
+use crate::mac::maclc::pds_iie::disk::{CELLS, DskImage};
 use crate::tickable::Ticks;
+
+/// The disk of a stream
+// A Mac disk image is much the larger of the two. It stays in line: a Box would add a pointer
+// to follow for each bit the Mac's controller reads.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize)]
+enum Disk {
+    /// The disk in a Mac drive. A drive with none has a blank disk here.
+    Mac(FloppyImage),
+    /// The disk in a 5.25" drive of an Apple IIe Card, if it has one. It isn't in save
+    /// states: the frontend inserts it again.
+    Apple525 {
+        #[serde(skip)]
+        image: Option<DskImage>,
+    },
+}
 
 /// The disk under the heads of a floppy drive, which the controller reads and writes bit by bit.
 ///
@@ -18,13 +35,13 @@ use crate::tickable::Ticks;
 #[derive(Serialize, Deserialize)]
 pub struct FloppyStream {
     /// The disk in the drive
-    pub(super) floppy: FloppyImage,
+    disk: Disk,
 
-    /// The track under the heads
-    pub(super) track: usize,
+    /// The track under the heads: a track of a Mac disk, a quarter-track of a 5.25" disk
+    pub(crate) track: usize,
 
     /// The position on the track: a bit of a bitstream track, a transition of a flux track
-    pub(super) track_position: usize,
+    pub(crate) track_position: usize,
 
     /// Amount of ticks a physical bit is under the drive head
     pub(super) ticks_per_bit: Ticks,
@@ -53,10 +70,27 @@ pub struct FloppyStream {
 }
 
 impl FloppyStream {
+    /// The stream of a Mac drive, with a blank disk
     pub(super) fn new(double_sided: bool) -> Self {
+        Self::with_disk(
+            Disk::Mac(FloppyImage::new(FloppyType::Mac400K, "")),
+            4,
+            double_sided,
+        )
+    }
+
+    /// The stream of a 5.25" drive, with no disk. It always says it spins: the Disk II
+    /// controller of the Apple IIe Card runs the motor itself, and doesn't read `spinning`.
+    pub(crate) fn new_525() -> Self {
+        let mut stream = Self::with_disk(Disk::Apple525 { image: None }, 0, false);
+        stream.spinning = true;
+        stream
+    }
+
+    fn with_disk(disk: Disk, track: usize, double_sided: bool) -> Self {
         Self {
-            floppy: FloppyImage::new(FloppyType::Mac400K, ""),
-            track: 4,
+            disk,
+            track,
             track_position: 0,
             ticks_per_bit: Ticks::MAX,
             spinning: false,
@@ -67,6 +101,46 @@ impl FloppyStream {
             head_bit: [false; 2],
             weak_bit_rng: WeakBitRng::default(),
         }
+    }
+
+    /// Gets the disk of a Mac drive
+    pub(super) fn floppy(&self) -> &FloppyImage {
+        match &self.disk {
+            Disk::Mac(floppy) => floppy,
+            Disk::Apple525 { .. } => unreachable!("Not the stream of a Mac drive"),
+        }
+    }
+
+    /// Gets the disk of a Mac drive, to change it
+    pub(super) fn floppy_mut(&mut self) -> &mut FloppyImage {
+        match &mut self.disk {
+            Disk::Mac(floppy) => floppy,
+            Disk::Apple525 { .. } => unreachable!("Not the stream of a Mac drive"),
+        }
+    }
+
+    /// Gets the disk of a 5.25" drive, if it has one
+    pub(crate) fn disk_525(&self) -> Option<&DskImage> {
+        match &self.disk {
+            Disk::Apple525 { image } => image.as_ref(),
+            Disk::Mac(_) => None,
+        }
+    }
+
+    /// Puts a disk in a 5.25" drive, or takes it out with `None`
+    pub(crate) fn set_disk_525(&mut self, disk: Option<DskImage>) {
+        self.disk = Disk::Apple525 { image: disk };
+    }
+
+    /// Gets the amount of cells in one turn of the track under the head of a 5.25" drive
+    pub(crate) fn track_len_525(&self) -> usize {
+        self.disk_525()
+            .map_or(CELLS, |disk| disk.track_len(self.track))
+    }
+
+    /// Gets the time a bit of a 5.25" disk is under the head, in units of 125 ns
+    pub fn bit_timing_525(&self) -> Option<u8> {
+        self.disk_525().map(DskImage::bit_timing)
     }
 
     /// Seeds the noise source, for runs that must repeat. `None` reverts to non-deterministic
@@ -84,7 +158,7 @@ impl FloppyStream {
     /// Gets the head that reads and writes, from the level of the SEL line
     #[inline]
     pub fn head(&self, sel: bool) -> usize {
-        if !self.double_sided || self.floppy.get_side_count() == 1 || !sel {
+        if !self.double_sided || self.floppy().get_side_count() == 1 || !sel {
             0
         } else {
             1
@@ -99,7 +173,10 @@ impl FloppyStream {
     /// Gets the type of the track under a head
     #[inline]
     pub fn track_type(&self, head: usize) -> TrackType {
-        self.floppy.get_track_type(head, self.track)
+        match &self.disk {
+            Disk::Mac(floppy) => floppy.get_track_type(head, self.track),
+            Disk::Apple525 { .. } => TrackType::Bitstream,
+        }
     }
 
     /// Gets a bit of noise, as a head reads when there is nothing to read
@@ -109,17 +186,24 @@ impl FloppyStream {
     }
 
     /// Gets the physical disk bit currently under a head
-    pub(super) fn head_bit(&self, head: usize) -> bool {
-        match self.floppy.get_track_type(head, self.track) {
+    pub(crate) fn head_bit(&self, head: usize) -> bool {
+        let floppy = match &self.disk {
+            Disk::Mac(floppy) => floppy,
+            // No bit with no disk, or no track there
+            Disk::Apple525 { image } => {
+                return image
+                    .as_ref()
+                    .is_some_and(|disk| disk.bit(self.track, self.track_position));
+            }
+        };
+        match floppy.get_track_type(head, self.track) {
             TrackType::Bitstream => {
-                let TrackLength::Bits(tracklen) = self.floppy.get_track_length(head, self.track)
-                else {
+                let TrackLength::Bits(tracklen) = floppy.get_track_length(head, self.track) else {
                     unreachable!()
                 };
                 // Extra modulus here because RDDATAx can be read while the controller is currently
                 // has the other side selected or we just changed tracks.
-                self.floppy
-                    .get_track_bit(head, self.track, self.track_position % tracklen)
+                floppy.get_track_bit(head, self.track, self.track_position % tracklen)
             }
             TrackType::Flux => self.head_bit[head],
         }
@@ -128,7 +212,19 @@ impl FloppyStream {
     /// Advances to the next bit on the track (bitstream tracks)
     #[inline]
     pub fn next_bit(&mut self, head: usize) -> bool {
-        let TrackLength::Bits(tracklen) = self.floppy.get_track_length(head, self.track) else {
+        let floppy = match &self.disk {
+            Disk::Mac(floppy) => floppy,
+            // A 5.25" drive gives the bit the head leaves
+            Disk::Apple525 { .. } => {
+                let bit = self.head_bit(head);
+                self.track_position += 1;
+                if self.track_position >= self.track_len_525() {
+                    self.track_position = 0;
+                }
+                return bit;
+            }
+        };
+        let TrackLength::Bits(tracklen) = floppy.get_track_length(head, self.track) else {
             unreachable!()
         };
         self.track_position = (self.track_position + 1) % tracklen;
@@ -140,11 +236,12 @@ impl FloppyStream {
         self.head_bit(head)
     }
 
-    /// Writes a bit to the current track position
+    /// Writes a bit to the current track position. A 5.25" drive doesn't write.
     #[inline]
     pub fn write_bit(&mut self, head: usize, bit: bool) {
-        self.floppy
-            .set_track_bit(head, self.track, self.track_position, bit);
+        if let Disk::Mac(floppy) = &mut self.disk {
+            floppy.set_track_bit(head, self.track, self.track_position, bit);
+        }
     }
 
     /// Gets the amount of ticks to the next flux transition, which is at least one tick away
@@ -181,13 +278,13 @@ impl FloppyStream {
 
     /// Advances to the next flux transition on the track (flux tracks)
     pub fn next_transition(&mut self, head: usize) {
-        let TrackLength::Transitions(tlen) = self.floppy.get_track_length(head, self.track) else {
+        let floppy = self.floppy();
+        let TrackLength::Transitions(tlen) = floppy.get_track_length(head, self.track) else {
             unreachable!()
         };
-        self.track_position = (self.track_position + 1) % tlen;
-        self.flux_ticks = self
-            .floppy
-            .get_track_transition(head, self.track, self.track_position);
+        let position = (self.track_position + 1) % tlen;
+        self.flux_ticks = floppy.get_track_transition(head, self.track, position);
+        self.track_position = position;
         self.flux_ticks_left = self.flux_ticks;
     }
 }
