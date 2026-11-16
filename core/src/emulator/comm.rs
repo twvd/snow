@@ -31,18 +31,8 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
-    /// Inserts a 16-sector DSK image into one of the Apple IIe card's
-    /// 5.25" drives (0 or 1).
-    InsertIieDisk(usize, PathBuf),
-    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
-    EjectIieDisk(usize),
     /// Sets the joystick and buttons on the Apple IIe card's game port.
     SetIieGamePort(GamePort),
-    /// Inserts a 400K or 800K ProDOS-order image (raw or 2IMG) into
-    /// the Apple IIe card's UniDisk 3.5.
-    InsertIieUniDisk(PathBuf),
-    /// Ejects the Apple IIe card's UniDisk 3.5.
-    EjectIieUniDisk,
     // The commands below name a slot by the id of its bus and the id of the slot
     /// Adds a device to the machine: see `Emulator::add_device()`
     AddDevice(DeviceConfig),

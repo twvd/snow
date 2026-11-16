@@ -342,6 +342,8 @@ pub struct Drive5 {
     /// The name of the image's file, which titles the disk.
     #[serde(skip, default)]
     title: String,
+    /// The place of the drive on the chain of the disk port, from 0
+    connector: usize,
 }
 
 /// The IWM bit-cell clock per 65C02 cycle in 16.16 fixed point: one
@@ -367,6 +369,7 @@ impl Drive5 {
         Self {
             stream: FloppyStream::new_525(),
             title: String::new(),
+            connector: 0,
         }
     }
 
@@ -442,6 +445,10 @@ impl DeviceOps for Drive5 {
         FunctionConfig::Floppy
     }
 
+    fn name(&self) -> Option<String> {
+        Some(format!("Apple IIe 5.25\" drive {}", self.connector + 1))
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Floppy(self)
     }
@@ -449,7 +456,9 @@ impl DeviceOps for Drive5 {
 
 #[typetag::serde]
 impl SwimBusDevice for Drive5 {
-    fn connected(&mut self, _connector: usize, _tick_rate: Ticks) {}
+    fn connected(&mut self, connector: usize, _tick_rate: Ticks) {
+        self.connector = connector;
+    }
 
     /// The phase lines move the head.
     fn set_lines(&mut self, lines: u8) {

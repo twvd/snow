@@ -606,6 +606,10 @@ impl DeviceOps for UniDisk {
         FunctionConfig::Floppy
     }
 
+    fn name(&self) -> Option<String> {
+        Some("Apple IIe UniDisk 3.5".to_string())
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Floppy(self)
     }
