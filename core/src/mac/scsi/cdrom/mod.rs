@@ -30,12 +30,12 @@ use super::{
     ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, CC_KEY_UNIT_ATTENTION,
     STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
     disk_image::{DiskImage, FileDiskImage},
-    target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
+    target::{ScsiTarget, ScsiTargetEvent},
     toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
 };
 use crate::devices::{
-    BusKind, CdromFunction, CdromStatus, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig,
-    FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
+    BusKind, CdromConfig, CdromFunction, CdromStatus, DeviceConfig, DeviceModel, DeviceOps,
+    FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
 
 // CD-ROM protocol Documentation:
@@ -1291,6 +1291,12 @@ impl DeviceOps for ScsiTargetCdrom {
         &INFO
     }
 
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Cdrom(CdromConfig {
+            folder: self.image_dir.clone(),
+        })
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Cdrom(self)
     }
@@ -1378,10 +1384,6 @@ impl ScsiTarget for ScsiTargetCdrom {
         } else {
             None
         }
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Cdrom
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {

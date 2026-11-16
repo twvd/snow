@@ -259,7 +259,7 @@ impl CompactMacBus {
             .unwrap_or_else(|_| null_audio_sink());
         self.audio.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Pushes a sample of the sound buffer, the same on both sides

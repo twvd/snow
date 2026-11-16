@@ -10,14 +10,13 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-use crate::devices::{BusOps, DeviceOps, FunctionInfo, FunctionMut, MadeDevice};
+use crate::devices::{BusOps, DeviceOps, FunctionInfo, MadeDevice};
 use crate::emulator::EmuContext;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::{
     ASC_LOGICAL_UNIT_NOT_SUPPORTED, CC_KEY_ILLEGAL_REQUEST, STATUS_CHECK_CONDITION, ScsiCmdResult,
 };
-use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
 /// What phase the target wants after a command was executed
@@ -90,6 +89,9 @@ pub struct ScsiBus {
 impl ScsiBus {
     pub const MAX_TARGETS: usize = 7;
 
+    /// The ids of the slots of the bus: the SCSI IDs, in decimal
+    pub const SLOT_IDS: [&str; Self::MAX_TARGETS] = ["0", "1", "2", "3", "4", "5", "6"];
+
     pub fn new() -> Self {
         let scsi_trace_cdb = std::env::var("SNOW_SCSI_TRACE_CDB")
             .map(|v| v != "0" && !v.is_empty())
@@ -131,16 +133,6 @@ impl ScsiBus {
 
     pub fn set_shared_dir(&mut self, path: Option<PathBuf>) {
         self.toolbox = BlueSCSI::new(path);
-    }
-
-    pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        for target in self.targets.iter_mut().flatten() {
-            if let FunctionMut::Cdrom(cdrom) = target.function() {
-                cdrom.set_audio_provider(provider)?;
-            }
-        }
-
-        Ok(())
     }
 
     /// Ticks the attached targets which use ticks
@@ -361,9 +353,9 @@ impl Default for ScsiBus {
     }
 }
 
-/// The SCSI ID of a slot: the id of the slot is the ID, in decimal
+/// The SCSI ID of a slot
 fn slot_number(slot: &str) -> Option<usize> {
-    (0..ScsiBus::MAX_TARGETS).find(|id| id.to_string() == slot)
+    ScsiBus::SLOT_IDS.iter().position(|&id| id == slot)
 }
 
 impl BusOps for ScsiBus {

@@ -441,7 +441,7 @@ impl Quadra800Bus {
             .unwrap_or_else(|_| null_audio_sink());
         self.sound.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Wraps a device read result in a mapped region: logs a warning and falls
