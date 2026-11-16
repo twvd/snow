@@ -134,6 +134,7 @@ impl Toby {
     }
 }
 
+#[typetag::serde]
 impl NubusSlot for Toby {
     // The card decodes 20 address bits and mirrors the rest. The framebuffer is
     // memory and answers every size; it's stored inverted, like everything on
@@ -233,6 +234,10 @@ impl NubusSlot for Toby {
 
     fn get_irq(&self) -> bool {
         self.vblank_irq
+    }
+
+    fn video(&mut self) -> Option<&mut dyn VideoOutput> {
+        Some(self)
     }
 }
 
