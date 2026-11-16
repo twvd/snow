@@ -1912,7 +1912,9 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
-                        self.config.swim_mut().seed_weak_bits(seed);
+                        for drive in &mut self.config.swim_mut().drives {
+                            drive.seed_weak_bits(seed);
+                        }
                     }
                     EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
                         if let Some(floppy) = self.config.swim_mut().drives.get_mut(drive)

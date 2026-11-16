@@ -42,6 +42,9 @@ pub trait FloppyFunction {
     /// Makes the disk turn faster or slower, by `rpm` turns per minute. Called when the user
     /// changes the speed adjustment.
     fn set_rpm_adjustment(&mut self, rpm: i32) -> Result<()>;
+    /// Seeds the random bits of the drive, for runs that must repeat. None: random again.
+    /// Called on every floppy drive when the frontend sets the seed.
+    fn seed_weak_bits(&mut self, seed: Option<u64>);
 }
 
 pub trait HardDiskFunction {
