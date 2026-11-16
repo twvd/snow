@@ -35,7 +35,6 @@ use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
     Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr,
 )]
 pub enum DriveType {
-    None,
     GCR400K,
     GCR800K,
     /// PWM-controlled 800K drive for use in the 128K/512K
@@ -46,7 +45,6 @@ pub enum DriveType {
 impl DriveType {
     pub const fn io_superdrive(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
@@ -54,7 +52,6 @@ impl DriveType {
 
     pub const fn io_present(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K => false,
             Self::GCR800K | Self::GCR800KPWM => true,
             Self::SuperDrive => unreachable!(),
@@ -63,7 +60,6 @@ impl DriveType {
 
     pub const fn io_mfm(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
@@ -71,7 +67,6 @@ impl DriveType {
 
     pub const fn io_rddata1(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
@@ -79,14 +74,12 @@ impl DriveType {
 
     pub const fn io_ready(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => false,
         }
     }
 
     pub const fn is_doublesided(self) -> bool {
         match self {
-            Self::None => true,
             Self::GCR400K => false,
             Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => true,
         }
@@ -94,7 +87,6 @@ impl DriveType {
 
     pub const fn has_pwm_control(self) -> bool {
         match self {
-            Self::None => false,
             Self::GCR400K => true,
             Self::GCR800KPWM => true,
             Self::GCR800K | Self::SuperDrive => false,
@@ -102,13 +94,12 @@ impl DriveType {
     }
 
     /// The device model of a drive of this type
-    pub const fn device_model(self) -> Option<DeviceModel> {
+    pub const fn device_model(self) -> DeviceModel {
         match self {
-            Self::None => None,
-            Self::GCR400K => Some(DeviceModel::Mac400KDrive),
-            Self::GCR800K => Some(DeviceModel::Mac800KDrive),
-            Self::GCR800KPWM => Some(DeviceModel::Mac800KPwmDrive),
-            Self::SuperDrive => Some(DeviceModel::MacSuperDrive),
+            Self::GCR400K => DeviceModel::Mac400KDrive,
+            Self::GCR800K => DeviceModel::Mac800KDrive,
+            Self::GCR800KPWM => DeviceModel::Mac800KPwmDrive,
+            Self::SuperDrive => DeviceModel::MacSuperDrive,
         }
     }
 
@@ -125,7 +116,6 @@ impl DriveType {
 
     pub const fn compatible_floppies(self) -> &'static [FloppyType] {
         match self {
-            Self::None => &[],
             Self::GCR400K => &[FloppyType::Mac400K],
             Self::GCR800K => &[FloppyType::Mac400K, FloppyType::Mac800K],
             Self::GCR800KPWM => &[FloppyType::Mac400K, FloppyType::Mac800K],
@@ -894,7 +884,6 @@ impl FloppyFunction for FloppyDrive {
 impl DeviceOps for FloppyDrive {
     fn info(&self) -> &'static ModelInfo {
         match self.drive_type {
-            DriveType::None => unreachable!(),
             DriveType::GCR400K => &INFO_400K,
             DriveType::GCR800K => &INFO_800K,
             DriveType::GCR800KPWM => &INFO_800K_PWM,

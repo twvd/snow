@@ -9,6 +9,7 @@ use clap::Parser;
 use itertools::Itertools;
 use log::*;
 
+use snow_core::devices::bus_id;
 use snow_core::emulator::Emulator;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::mac::{ExtraROMs, MacModel};
@@ -82,13 +83,27 @@ fn main() -> Result<()> {
             secondary_fn.extension().unwrap().to_string_lossy()
         ));
 
-        cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn, false))?;
-        if secondary_fn.exists() {
-            cmd.send(EmulatorCommand::InsertFloppy(
-                1,
-                secondary_fn.to_string_lossy().to_string(),
+        // The first two floppy drives of the Mac model, by the ids of their slots
+        let buses = model.buses();
+        let mut drives = buses
+            .iter()
+            .filter(|bus| bus.id == bus_id::SWIM)
+            .flat_map(|bus| bus.slots.iter().map(|slot| slot.id.clone()));
+        let mut insert = |image: PathBuf| -> Result<()> {
+            let Some(slot) = drives.next() else {
+                bail!("No floppy drive for '{}'", image.display());
+            };
+            cmd.send(EmulatorCommand::LoadMedia(
+                bus_id::SWIM.to_string(),
+                slot,
+                image,
                 false,
             ))?;
+            Ok(())
+        };
+        insert(PathBuf::from(&floppy_fn))?;
+        if secondary_fn.exists() {
+            insert(secondary_fn)?;
         }
 
         // See if there's a replay file
