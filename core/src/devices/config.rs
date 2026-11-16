@@ -1,6 +1,6 @@
 //! How a device is described, to make one
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,23 @@ pub struct DeviceConfig {
     pub rom: Option<PathBuf>,
     /// The Config of its function
     pub function: FunctionConfig,
+}
+
+impl DeviceConfig {
+    /// Replaces each path of this device config, its ROM file and those in the Config of its
+    /// function, by what `convert` returns for it. A frontend that saves device configs uses
+    /// it to make their paths relative to its file, and absolute again.
+    pub fn convert_paths(&mut self, convert: impl Fn(&Path) -> PathBuf) {
+        let in_function = match &mut self.function {
+            FunctionConfig::HardDisk(disk) => disk.media.as_mut(),
+            FunctionConfig::Cdrom(cdrom) => cdrom.folder.as_mut(),
+            FunctionConfig::Ethernet(_) => None,
+            FunctionConfig::Printer(printer) => printer.output_dir.as_mut(),
+        };
+        for path in [self.rom.as_mut(), in_function].into_iter().flatten() {
+            *path = convert(path);
+        }
+    }
 }
 
 /// A new address for an Ethernet adapter, with the maker's prefix `oui` (from the
@@ -82,6 +99,39 @@ mod tests {
         let json = r#"{"bus":"SCSI","slot":"3","function":{"Cdrom":{}}}"#;
         assert_eq!(serde_json::to_string(&cdrom).unwrap(), json);
         assert_eq!(serde_json::from_str::<DeviceConfig>(json).unwrap(), cdrom);
+    }
+
+    #[test]
+    fn every_path_of_a_device_config_is_converted() {
+        let mut disk = DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: "0".into(),
+            model: Some(DeviceModel::ScsiHardDisk),
+            rom: Some("disk.rom".into()),
+            function: FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some("a.img".into()),
+            }),
+        };
+        disk.convert_paths(|path| Path::new("/there").join(path));
+        assert_eq!(disk.rom, Some("/there/disk.rom".into()));
+        assert_eq!(
+            disk.function,
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some("/there/a.img".into()),
+            })
+        );
+
+        // A path that isn't there stays so
+        let mut cdrom = DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: "3".into(),
+            model: Some(DeviceModel::ScsiCdrom),
+            rom: None,
+            function: FunctionConfig::Cdrom(CdromConfig::default()),
+        };
+        let before = cdrom.clone();
+        cdrom.convert_paths(|_| panic!("No path to convert"));
+        assert_eq!(cdrom, before);
     }
 
     #[test]
