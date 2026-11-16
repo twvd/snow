@@ -29,7 +29,7 @@ use crate::mac::{
     AbsoluteMouse, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind, WARM_START_SIGNATURE,
 };
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -109,8 +109,7 @@ const MAP: [[Region; 256]; 2] = {
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct MacIIBus<TRenderer: Renderer> {
+pub struct MacIIBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -156,20 +155,17 @@ pub struct MacIIBus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 
     /// NuBus cards (base address: $9)
-    nubus: Nubus<TRenderer>,
+    nubus: Nubus,
 
     /// The SE/30's video, which answers in slot $E like a card but is
     /// hard-wired
-    se30_video: Option<SE30Video<TRenderer>>,
+    se30_video: Option<SE30Video>,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl MacIIBus {
     /// RAM configuration properties
     const RAM_CONFIG: [RamConfig; 8] = [
         RamConfig {
@@ -226,7 +222,6 @@ where
         rom: &[u8],
         nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
@@ -243,22 +238,15 @@ where
                 model
             );
             log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            // Only video cards take a renderer
-            let mut renderer = || {
-                renderers
-                    .pop()
-                    .expect("not enough renderers for the video cards")
-            };
             match cfg.kind {
-                NubusDeviceKind::Mdc12 => cards.insert(
-                    cfg.slot,
-                    NubusCard::MDC12(Mdc12::new(cfg.rom, renderer(), monitor)),
-                ),
+                NubusDeviceKind::Mdc12 => {
+                    cards.insert(cfg.slot, NubusCard::MDC12(Mdc12::new(cfg.rom, monitor)));
+                }
                 NubusDeviceKind::Toby => {
-                    cards.insert(cfg.slot, NubusCard::Toby(Toby::new(cfg.rom, renderer())));
+                    cards.insert(cfg.slot, NubusCard::Toby(Toby::new(cfg.rom)));
                 }
                 NubusDeviceKind::SE30Video => {
-                    se30_video = Some(SE30Video::new(cfg.rom, renderer()));
+                    se30_video = Some(SE30Video::new(cfg.rom));
                 }
             }
         }
@@ -326,17 +314,11 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple video cards
-        let video = match self.se30_video.as_mut() {
-            Some(video) => video as &mut dyn VideoOutput<TRenderer>,
-            None => self
-                .nubus
-                .cards_mut()
-                .find_map(|card| card.video())
-                .expect("no video card"),
-        };
-        video.set_renderer(renderer).unwrap();
+    pub fn after_deserialize(&mut self) {
+        // Make sure we have at least the last frame available. A card does so by itself.
+        if let Some(video) = self.se30_video.as_mut() {
+            video.render().unwrap();
+        }
 
         self.asc.after_deserialize();
     }
@@ -789,6 +771,20 @@ where
         Ok(())
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&mut self) -> FrameReceiver {
+        // TODO multiple video cards
+        let video = match self.se30_video.as_mut() {
+            Some(video) => video as &mut dyn VideoOutput,
+            None => self
+                .nubus
+                .cards_mut()
+                .find_map(|card| card.video())
+                .expect("no video card"),
+        };
+        video.frames()
+    }
+
     /// Dispatches a key event to the keyboard
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.via1.adb.event(&AdbEvent::Key(ke));
@@ -804,10 +800,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for MacIIBus {
     type Cpu = Bus68020;
 
     fn get_mask(&self) -> Address {
@@ -925,10 +918,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for MacIIBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -1056,10 +1046,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for MacIIBus {
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
@@ -1078,10 +1065,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for MacIIBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1120,10 +1104,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for MacIIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for MacIIBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;

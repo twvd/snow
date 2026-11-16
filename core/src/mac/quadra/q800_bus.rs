@@ -33,9 +33,9 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -195,8 +195,7 @@ const MAP: [[Region; 256]; 2] = {
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Quadra800Bus<TRenderer: Renderer> {
+pub struct Quadra800Bus {
     /// Interrupt level, until a tick of the bus or an access to the I/O area
     #[serde(skip)]
     irq: Option<Option<u8>>,
@@ -264,16 +263,13 @@ pub struct Quadra800Bus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 
     /// Built-in video
-    pub(crate) dafb: Dafb<TRenderer>,
+    pub(crate) dafb: Dafb,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -287,7 +283,6 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        renderer: TRenderer,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
@@ -332,7 +327,6 @@ where
             progkey_pressed: LatchingEvent::default(),
 
             dafb: Dafb::new(
-                renderer,
                 monitor,
                 DafbKind::MemcJr,
                 vram_size.unwrap_or(VRAM_SIZES[1]),
@@ -421,8 +415,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.dafb.render().unwrap();
 
         self.sound.after_deserialize();
@@ -920,6 +913,11 @@ where
         self.dafb.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.dafb.frames()
+    }
+
     /// Dispatches a key event to the keyboard
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.via1.adb.event(&AdbEvent::Key(ke));
@@ -935,10 +933,7 @@ where
     }
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// djMEMC): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
@@ -984,10 +979,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for Quadra800Bus {
     type Cpu = Bus68040;
 
     fn get_mask(&self) -> Address {
@@ -1082,10 +1074,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for Quadra800Bus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.irq = None;
         struct BusEmuContext {
@@ -1199,10 +1188,7 @@ where
     }
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
     fn compute_irq(&mut self) -> Option<u8> {
         // The Quadra 700 has a second set of interrupt levels for A/UX, selected
         // by VIA 1 PB6 (its Developer Note, table 2-7). IOSB has only PB0-PB5
@@ -1227,10 +1213,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for Quadra800Bus {
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
@@ -1241,10 +1224,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for Quadra800Bus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1290,10 +1270,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Quadra800Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_group, dbgprop_nest};
@@ -1321,13 +1298,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
-    fn bus(ram_size: usize) -> Quadra800Bus<NullRenderer> {
+    fn bus(ram_size: usize) -> Quadra800Bus {
         Quadra800Bus::new(
             MacModel::Quadra800,
             &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
             MacMonitor::default(),
             MouseMode::Disabled,
             Some(ram_size),
@@ -1339,7 +1314,7 @@ mod tests {
 
     #[test]
     fn ram_bank_sizes() {
-        let sizes = |ram| Quadra800Bus::<NullRenderer>::ram_bank_sizes(ram * MB);
+        let sizes = |ram| Quadra800Bus::ram_bank_sizes(ram * MB);
         assert_eq!(sizes(8), [4 * MB, 4 * MB, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(sizes(16)[2..5], [4 * MB, 4 * MB, 0]);
         assert_eq!(sizes(24)[2..4], [16 * MB, 0]);

@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
 use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex};
 
 /// Audio frame buffer
 pub type AudioBuffer = Box<[f32]>;
@@ -96,6 +97,9 @@ impl AudioSink for NullAudioSink {
 pub fn null_audio_sink() -> Box<dyn AudioSink> {
     Box::new(NullAudioSink())
 }
+
+/// Where a frontend picks up the frames of a display: the last finished frame, until it is taken
+pub type FrameReceiver = Arc<Mutex<Option<DisplayBuffer>>>;
 
 /// Display buffer for a single frame
 /// Always 24-bit color, RRGGBBAA
@@ -198,45 +202,5 @@ pub fn render_packed<const N: usize>(fb: &[u8], out: &mut [u8], lut: &[[u8; 4]; 
     let rest = chunks.into_remainder();
     if !rest.is_empty() {
         expand(rest, fb[fb.len() - 1]);
-    }
-}
-
-pub trait Renderer {
-    /// Creates a new renderer with a screen of the given size
-    fn new(width: u16, height: u16) -> Result<Self>
-    where
-        Self: Renderer + Sized;
-
-    /// Renders changes to screen
-    fn update(&mut self) -> Result<()>;
-
-    /// Gets a reference to the back buffer
-    fn buffer_mut(&mut self) -> &mut DisplayBuffer;
-
-    /// False while the last frame has not been picked up yet, so that
-    /// rendering a new one can be skipped
-    fn frame_wanted(&self) -> bool {
-        true
-    }
-}
-
-pub struct NullRenderer {
-    buffer: DisplayBuffer,
-}
-
-impl Renderer for NullRenderer {
-    fn new(width: u16, height: u16) -> Result<Self> {
-        Ok(Self {
-            buffer: DisplayBuffer::new(width, height),
-        })
-    }
-
-    fn update(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn buffer_mut(&mut self) -> &mut DisplayBuffer {
-        &mut self.buffer
     }
 }

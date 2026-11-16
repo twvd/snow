@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::mac::MacMonitor;
-use crate::renderer::{DisplayBuffer, Renderer, render_packed};
+use crate::mac::{MacMonitor, VideoOutput};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Field32;
 
@@ -100,10 +101,9 @@ impl Geometry {
 
 /// Apple DAFB video controller
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Dafb<TRenderer: Renderer> {
+pub struct Dafb {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
 
     monitor: MacMonitor,
 
@@ -163,10 +163,7 @@ pub struct Dafb<TRenderer: Renderer> {
     vblank_ticks: Ticks,
 }
 
-impl<TRenderer> Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Dafb {
     pub const VRAM_SIZE: usize = 0x20_0000;
 
     /// Value of the version field of the test register
@@ -215,9 +212,9 @@ where
     /// Sense register after reset: no sense line driven
     const SENSE_UNDRIVEN: u32 = 0b111;
 
-    pub fn new(renderer: TRenderer, monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
+    pub fn new(monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer: ChannelRenderer::default(),
             monitor,
             kind,
             vram: vec![0; vram_size],
@@ -485,18 +482,12 @@ where
         }
     }
 
-    pub fn blank(&mut self) -> Result<()> {
-        self.vram.fill(0);
-        self.render()?;
-        Ok(())
-    }
-
     pub fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut());
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
         Ok(())
     }
 
@@ -545,10 +536,19 @@ where
     }
 }
 
-impl<TRenderer> BusMember<Address> for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl VideoOutput for Dafb {
+    fn blank(&mut self) -> Result<()> {
+        self.vram.fill(0);
+        self.render()?;
+        Ok(())
+    }
+
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
+    }
+}
+
+impl BusMember<Address> for Dafb {
     #[allow(clippy::match_overlapping_arm)]
     fn read(&mut self, addr: Address) -> Option<u8> {
         match addr {
@@ -801,16 +801,13 @@ where
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for Dafb {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
             self.vblank_ticks -= ctx.bus_frequency() / 60;
 
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.frame_wanted() {
                 self.render()?;
             }
 
@@ -827,10 +824,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Dafb {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_byte_bin, dbgprop_enum, dbgprop_group, dbgprop_long};
@@ -880,10 +874,7 @@ where
     }
 }
 
-impl<TRenderer> Display for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for Dafb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DAFB video controller")
     }
@@ -892,16 +883,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
     const PAL_ADDRESS: Address = 0x80_0203;
     const PAL_DATA: Address = 0x80_0213;
     const PBCTRL: Address = 0x80_0223;
     const SENSE: Address = 0x80_001F;
 
-    fn dafb(kind: DafbKind) -> Dafb<NullRenderer> {
-        let renderer = NullRenderer::new(0, 0).unwrap();
-        Dafb::new(renderer, MacMonitor::RGB12, kind, 512 * 1024)
+    fn dafb(kind: DafbKind) -> Dafb {
+        Dafb::new(MacMonitor::RGB12, kind, 512 * 1024)
     }
 
     #[test]
@@ -936,10 +925,7 @@ mod tests {
         for _ in 0..3 {
             dafb.read(PAL_DATA).unwrap();
         }
-        assert_eq!(
-            dafb.read(PBCTRL),
-            Some(0xA0 | Dafb::<NullRenderer>::ANTELOPE_VERSION)
-        );
+        assert_eq!(dafb.read(PBCTRL), Some(0xA0 | Dafb::ANTELOPE_VERSION));
     }
 
     /// The ROM reads the sense lines before it writes the register. With none
@@ -947,8 +933,7 @@ mod tests {
     /// register returns inverted.
     #[test]
     fn sense_lines_undriven_after_reset() {
-        let renderer = NullRenderer::new(0, 0).unwrap();
-        let mut dafb = Dafb::new(renderer, MacMonitor::RGB16, DafbKind::Dafb, 512 * 1024);
+        let mut dafb = Dafb::new(MacMonitor::RGB16, DafbKind::Dafb, 512 * 1024);
         assert_eq!(dafb.read(SENSE), Some(0));
         dafb.write(SENSE, 0).unwrap();
         dafb.reset();
@@ -959,7 +944,7 @@ mod tests {
     /// first from the base, the others from the screen 512 bytes after it
     #[test]
     fn twelve_inch_1bpp_top_line() {
-        type D = Dafb<NullRenderer>;
+        type D = Dafb;
         for kind in [DafbKind::Dafb, DafbKind::MemcJr] {
             let mut dafb = dafb(kind);
             dafb.base_hi = Field32(0xE00 >> 9);
