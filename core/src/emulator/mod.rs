@@ -56,7 +56,6 @@ use std::fmt;
 
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
-use crate::mac::rtc::Rtc;
 use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
@@ -380,7 +379,8 @@ dispatch! {
         fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
         fn video_frames(&mut self) -> FrameReceiver { bus.video_frames() }
 
-        fn rtc_mut(&mut self) -> &mut Rtc { bus.rtc_mut() }
+        fn persist_pram(&mut self, path: &Path) -> () { bus.persist_pram(path) }
+        fn set_datetime(&mut self, dt: chrono::NaiveDateTime) -> () { bus.set_datetime(dt) }
     }
 }
 
@@ -813,13 +813,13 @@ impl Emulator {
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
     /// file is created. The PRAM file is continuously updated.
     pub fn persist_pram(&mut self, pram_path: &Path) {
-        self.config.rtc_mut().load_pram(pram_path);
+        self.config.persist_pram(pram_path);
     }
 
     /// Sets the RTC to a specific date/time.
     /// This can be used to test date-dependent software behavior (e.g., easter eggs).
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
-        self.config.rtc_mut().set_datetime(dt);
+        self.config.set_datetime(dt);
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {
