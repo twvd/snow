@@ -64,6 +64,11 @@ pub struct ScsiBus {
     // TODO: investigate whether several SCSI devices can have commands in
     // flight at once (a target disconnecting from the bus during a long
     // command, then reselecting the initiator), and how to support it.
+    // TODO: guest time keeps running while a target holds the bus. This is a
+    // risk while running in fast-forward: guest time then runs faster than a
+    // physical drive, so a slow command (such as a spin-up) can exceed the
+    // guest's SCSI timeout, which aborts it with a bus reset. Consider slowing
+    // guest time while a command is pending.
     pending: bool,
 
     /// Attached targets
