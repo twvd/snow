@@ -63,10 +63,6 @@ pub const MONITORS: &[MacMonitor] = &[
 pub const VRAM_SIZES: &[usize] = &[VRAM_SOLDERED, 768 * 1024];
 const VRAM_SOLDERED: usize = 512 * 1024;
 
-/// Start of the PDS slot $E window in 32-bit address space (the
-/// standard NuBus-style slot space alias — LC III developer note)
-pub(super) const PDS_BASE: Address = 0xFE00_0000;
-
 /// Finds what an address selects
 pub(super) fn decode(addr: Address) -> Option<Region> {
     match addr {
@@ -83,8 +79,8 @@ pub(super) fn decode(addr: Address) -> Option<Region> {
         0x5FFF_FFFC..=0x5FFF_FFFF => Some(Region::CpuId(addr as usize & 3)),
         0x6000_0000..=0x6FFF_FFFF => Some(Region::Vram(addr as usize & 0x0F_FFFF)),
         // The super slot space and the standard slot space of slot $E
-        0xE000_0000..=0xEFFF_FFFF => Some(Region::IieCard(addr & 0x00FF_FFFF)),
-        0xFE00_0000..=0xFEFF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
+        0xE000_0000..=0xEFFF_FFFF => Some(Region::Pds),
+        0xFE00_0000..=0xFEFF_FFFF => Some(Region::Pds),
         _ => None,
     }
 }

@@ -23,6 +23,7 @@ pub mod machine_bus;
 pub mod macii;
 pub mod maclc;
 pub mod nubus;
+pub mod pds;
 pub mod pluskbd;
 pub mod portable;
 pub mod quadra;
