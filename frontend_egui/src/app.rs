@@ -21,7 +21,7 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
-use snow_core::devices::{DeviceConfig, FunctionStatus, bus_id};
+use snow_core::devices::{DeviceConfig, FloppyImages, FunctionStatus, bus_id};
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -222,7 +222,13 @@ pub struct SnowGui {
     cdrom_files_dialog: SnowFileDialog,
     cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
-    iie_disk_dialog: SnowFileDialog,
+    /// The image pickers of the drives whose images aren't the Mac's, one per kind of image,
+    /// by the label of its files. Each is made the first time a drive's menu asks for it, and
+    /// kept, so that it opens in the folder it was last in.
+    drive_dialogs: HashMap<&'static str, SnowFileDialog>,
+    /// The drive the open picker loads into, by the ids of its bus and slot, whether the
+    /// image is mounted write-protected, and the label of the picker
+    drive_dialog_target: (String, String, bool, &'static str),
     /// The Apple IIe Card's joystick input (None without the card)
     iie_joystick: Option<Joystick>,
     /// The Apple IIe joystick mapping window is open
@@ -230,13 +236,6 @@ pub struct SnowGui {
     /// The binding being assigned in the mapping window: the next key or
     /// controller button pressed goes there
     joy_capture: Option<(JoyInput, usize)>,
-    /// The IIe 5.25" drive the image picker loads into.
-    iie_disk_dialog_drive: usize,
-    /// The last-loaded IIe 5.25" image paths (for the menu labels).
-    iie_disk_image: [Option<String>; 2],
-    iie_unidisk_dialog: SnowFileDialog,
-    /// The last-loaded IIe UniDisk 3.5 image path (for the menu label).
-    iie_unidisk_image: Option<String>,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -481,22 +480,11 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_floppy.clone()),
-            iie_disk_image: [None, None],
+            drive_dialogs: HashMap::new(),
+            drive_dialog_target: Default::default(),
             iie_joystick: None,
             joy_mapping_open: false,
             joy_capture: None,
-            iie_disk_dialog_drive: 0,
-            iie_disk_dialog: SnowFileDialog::new()
-                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg", "woz"])
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy.clone()),
-            iie_unidisk_image: None,
-            iie_unidisk_dialog: SnowFileDialog::new()
-                .add_filter("Apple II 3.5\" disks", &["po", "2mg"])
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy.clone()),
             record_dialog: SnowFileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
@@ -1007,68 +995,6 @@ impl SnowGui {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
-                    if self.emu.iie_has_unidisk() || self.emu.iie_drives_525() > 0 {
-                        ui.separator();
-                    }
-                    if self.emu.iie_has_unidisk() {
-                        ui.menu_button(
-                            format!(
-                                "Apple IIe UniDisk 3.5: {}",
-                                self.iie_unidisk_image
-                                    .as_deref()
-                                    .and_then(|p| std::path::Path::new(p).file_name())
-                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
-                            ),
-                            |ui| {
-                                ui.set_min_width(Self::SUBMENU_WIDTH);
-                                if ui.button("Load image...").clicked() {
-                                    self.iie_unidisk_dialog
-                                        .pick_file(self.settings.native_file_dialogs);
-                                }
-                                if ui
-                                    .add_enabled(
-                                        self.iie_unidisk_image.is_some(),
-                                        egui::Button::new("Eject"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.emu.eject_iie_unidisk();
-                                    self.iie_unidisk_image = None;
-                                }
-                            },
-                        );
-                    }
-                    for drive in 0..self.emu.iie_drives_525() {
-                        ui.menu_button(
-                            format!(
-                                "Apple IIe 5.25\" drive {}: {}",
-                                drive + 1,
-                                self.iie_disk_image[drive]
-                                    .as_deref()
-                                    .and_then(|p| std::path::Path::new(p).file_name())
-                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
-                            ),
-                            |ui| {
-                                ui.set_min_width(Self::SUBMENU_WIDTH);
-                                if ui.button("Load image...").clicked() {
-                                    self.iie_disk_dialog_drive = drive;
-                                    self.iie_disk_dialog
-                                        .pick_file(self.settings.native_file_dialogs);
-                                }
-                                if ui
-                                    .add_enabled(
-                                        self.iie_disk_image[drive].is_some(),
-                                        egui::Button::new("Eject"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.emu.eject_iie_disk(drive);
-                                    self.iie_disk_image[drive] = None;
-                                }
-                            },
-                        );
-                    }
-
                     if let Some(slots) = self.emu.scsi_slots() {
                         ui.separator();
                         for slot in &slots {
@@ -2311,9 +2237,14 @@ impl SnowGui {
     }
 
     fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
-        for drive in self.emu.floppy_slots() {
+        let drives = self.emu.floppy_slots();
+        for (i, drive) in drives.iter().enumerate() {
             let (bus, slot, d) = (drive.bus.as_str(), drive.slot.as_str(), &drive.status);
             let last_image = self.emu.last_image(bus, slot);
+            // The drives of another bus, such as those of the Apple IIe Card, are apart
+            if i > 0 && drives[i - 1].bus != drive.bus {
+                ui.separator();
+            }
             ui.menu_button(
                 format!(
                     "{} {}: {}",
@@ -2331,60 +2262,97 @@ impl SnowGui {
                 ),
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
-                    if ui
-                        .add_enabled(
-                            drive.info.blank_formats.contains(&FloppyType::Mac800K),
-                            egui::Button::new("Insert blank 400/800K floppy"),
-                        )
-                        .clicked()
-                    {
-                        self.emu.insert_blank_floppy(bus, slot, FloppyType::Mac800K);
-                    }
-                    if ui
-                        .add_enabled(
-                            drive.info.blank_formats.contains(&FloppyType::Mfm144M),
-                            egui::Button::new("Insert blank 1.44MB floppy"),
-                        )
-                        .clicked()
-                    {
-                        self.emu.insert_blank_floppy(bus, slot, FloppyType::Mfm144M);
-                    }
-                    ui.separator();
-                    if ui.button("Load image...").clicked() {
-                        self.floppy_dialog_target =
-                            FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
-                        self.floppy_dialog_wp = self.floppy_wp_default;
-                        self.floppy_dialog
-                            .pick_file(self.settings.native_file_dialogs);
-                    }
-                    ui.menu_button("Load recent image", |ui| {
-                        ui.set_min_width(Self::SUBMENU_WIDTH);
-                        for (idx, path, display_name) in
-                            self.settings.get_recent_floppy_images_for_display()
+                    // What a drive can't do now is greyed; what it can never do isn't drawn
+                    let mac_images = drive.takes_mac_images();
+                    if !drive.info.blank_formats.is_empty() {
+                        if ui
+                            .add_enabled(
+                                drive.info.blank_formats.contains(&FloppyType::Mac800K),
+                                egui::Button::new("Insert blank 400/800K floppy"),
+                            )
+                            .clicked()
                         {
-                            if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                                self.request_load_floppy(bus, slot, &path, self.floppy_wp_default);
+                            self.emu.insert_blank_floppy(bus, slot, FloppyType::Mac800K);
+                        }
+                        if ui
+                            .add_enabled(
+                                drive.info.blank_formats.contains(&FloppyType::Mfm144M),
+                                egui::Button::new("Insert blank 1.44MB floppy"),
+                            )
+                            .clicked()
+                        {
+                            self.emu.insert_blank_floppy(bus, slot, FloppyType::Mfm144M);
+                        }
+                        ui.separator();
+                    }
+                    if ui.button("Load image...").clicked() {
+                        match drive.info.images {
+                            FloppyImages::Mac => {
+                                self.floppy_dialog_target =
+                                    FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
+                                self.floppy_dialog_wp = self.floppy_wp_default;
+                                self.floppy_dialog
+                                    .pick_file(self.settings.native_file_dialogs);
+                            }
+                            FloppyImages::Files { label, extensions } => {
+                                // A drive that never writes always mounts write-protected
+                                let wp = self.floppy_wp_default || !drive.info.writable;
+                                self.drive_dialog_target =
+                                    (bus.to_string(), slot.to_string(), wp, label);
+                                let storage = &self.settings.fd_floppy;
+                                self.drive_dialogs
+                                    .entry(label)
+                                    .or_insert_with(|| {
+                                        SnowFileDialog::new()
+                                            .add_filter(label, extensions)
+                                            .opening_mode(
+                                                egui_file_dialog::OpeningMode::LastVisitedDir,
+                                            )
+                                            .initial_directory(Self::default_dir())
+                                            .storage(storage.clone())
+                                    })
+                                    .pick_file(self.settings.native_file_dialogs);
                             }
                         }
-                        if self.settings.recent_floppy_images.is_empty() {
-                            ui.weak("No recent images");
-                        }
-                    });
-                    if ui
-                        .add_enabled(
-                            last_image.is_some(),
-                            egui::Button::new("Re-insert last ejected floppy"),
-                        )
-                        .clicked()
-                    {
-                        self.emu.reload_floppy(bus, slot);
                     }
-                    ui.checkbox(&mut self.floppy_wp_default, "Mount write-protected")
-                        .on_hover_text(
-                            "Floppy images are mounted write-protected. The file \
-                             dialog starts with write-protect checked.",
-                        );
-                    {
+                    // The recent images, the last ejected disk and write-back are the Mac's
+                    if mac_images {
+                        ui.menu_button("Load recent image", |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            for (idx, path, display_name) in
+                                self.settings.get_recent_floppy_images_for_display()
+                            {
+                                if ui.button(format!("{}: {}", idx, display_name)).clicked() {
+                                    self.request_load_floppy(
+                                        bus,
+                                        slot,
+                                        &path,
+                                        self.floppy_wp_default,
+                                    );
+                                }
+                            }
+                            if self.settings.recent_floppy_images.is_empty() {
+                                ui.weak("No recent images");
+                            }
+                        });
+                        if ui
+                            .add_enabled(
+                                last_image.is_some(),
+                                egui::Button::new("Re-insert last ejected floppy"),
+                            )
+                            .clicked()
+                        {
+                            self.emu.reload_floppy(bus, slot);
+                        }
+                    }
+                    if drive.info.writable {
+                        ui.checkbox(&mut self.floppy_wp_default, "Mount write-protected")
+                            .on_hover_text(
+                                "Floppy images are mounted write-protected. The file \
+                                 dialog starts with write-protect checked.",
+                            );
+                    }
+                    if mac_images {
                         let mut wb = d.writeback_enabled;
                         let resp = ui.add_enabled(
                             d.writeback_supported,
@@ -2400,28 +2368,28 @@ impl SnowGui {
                         if wb != d.writeback_enabled {
                             self.emu.set_floppy_writeback(bus, slot, wb);
                         }
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
-                        .clicked()
-                    {
-                        self.floppy_dialog_target =
-                            FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
-                        self.floppy_dialog
-                            .save_file(self.settings.native_file_dialogs);
-                    }
-                    if ui
-                        .add_enabled(
-                            last_image.is_some(),
-                            egui::Button::new("Save last ejected image..."),
-                        )
-                        .clicked()
-                        && let Some(img) = last_image
-                    {
-                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                        self.floppy_dialog
-                            .save_file(self.settings.native_file_dialogs);
+                        ui.separator();
+                        if ui
+                            .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
+                            .clicked()
+                        {
+                            self.floppy_dialog_target =
+                                FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
+                            self.floppy_dialog
+                                .save_file(self.settings.native_file_dialogs);
+                        }
+                        if ui
+                            .add_enabled(
+                                last_image.is_some(),
+                                egui::Button::new("Save last ejected image..."),
+                            )
+                            .clicked()
+                            && let Some(img) = last_image
+                        {
+                            self.floppy_dialog_target = FloppyDialogTarget::Image(img);
+                            self.floppy_dialog
+                                .save_file(self.settings.native_file_dialogs);
+                        }
                     }
                     ui.separator();
 
@@ -2898,7 +2866,7 @@ impl SnowGui {
     /// gated on a confirmation dialog.
     pub fn request_load_floppy_firstfree(&mut self, path: &Path, wp: bool) -> bool {
         for drive in self.emu.floppy_slots() {
-            if drive.status.ejected {
+            if drive.takes_mac_images() && drive.status.ejected {
                 self.request_load_floppy(&drive.bus, &drive.slot, path, wp);
                 return true;
             }
@@ -4305,22 +4273,15 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
-        // Apple IIe 5.25" disk image picker
-        self.iie_disk_dialog.update(ctx, frame);
-        if let Some(path) = self.iie_disk_dialog.take_picked() {
-            let drive = self.iie_disk_dialog_drive;
-            self.iie_disk_image[drive] = Some(path.to_string_lossy().to_string());
-            self.emu.load_iie_disk(drive, &path);
+        // Image picker of a drive whose images aren't the Mac's
+        let (bus, slot, wp, label) = &self.drive_dialog_target;
+        if let Some(dialog) = self.drive_dialogs.get_mut(label) {
+            dialog.update(ctx, frame);
+            if let Some(path) = dialog.take_picked() {
+                self.emu.load_floppy(bus, slot, &path, *wp);
+            }
+            self.ui_active &= *dialog.state() != egui_file_dialog::DialogState::Open;
         }
-        self.ui_active &= *self.iie_disk_dialog.state() != egui_file_dialog::DialogState::Open;
-
-        // Apple IIe UniDisk 3.5 image picker
-        self.iie_unidisk_dialog.update(ctx, frame);
-        if let Some(path) = self.iie_unidisk_dialog.take_picked() {
-            self.iie_unidisk_image = Some(path.to_string_lossy().to_string());
-            self.emu.load_iie_unidisk(&path);
-        }
-        self.ui_active &= *self.iie_unidisk_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);
