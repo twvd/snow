@@ -5,9 +5,10 @@ use log::*;
 use num::clamp;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-use snow_floppy::{TrackLength, TrackType};
+use snow_floppy::TrackType;
 
-use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimMode};
+use super::stream::FloppyStream;
+use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimChip, SwimMode};
 use crate::bus::Address;
 use crate::tickable::Ticks;
 use crate::types::Byte;
@@ -123,11 +124,11 @@ impl Swim {
                 }
             }
             8 => {
-                if self.enable && !self.iwm_mode.onesec() {
+                if self.enable && !self.chip.iwm_mode.onesec() {
                     // The IWM patent (US 4,742,448) gives "one-half
                     // millisecond" for the timer when the LATCH mode bit is
                     // set.
-                    let hold = if self.iwm_mode.latch() {
+                    let hold = if self.chip.iwm_mode.latch() {
                         self.drives[0].base_frequency / 2000
                     } else {
                         MOTOR_TIMER
@@ -163,7 +164,7 @@ impl Swim {
                 if !self.iwm_drive_enabled() {
                     0xFF
                 } else {
-                    std::mem::replace(&mut self.datareg, 0)
+                    std::mem::replace(&mut self.chip.datareg, 0)
                 }
             }
             (true, false) => {
@@ -171,22 +172,25 @@ impl Swim {
                 let sense = self
                     .get_selected_drive()
                     .read_sense(self.get_selected_drive_reg_u8());
-                self.iwm_status.set_sense(sense);
-                self.iwm_status.set_mode_low(self.iwm_mode.mode_low());
-                self.iwm_status.set_enable(self.iwm_drive_enabled());
+                self.chip.iwm_status.set_sense(sense);
+                self.chip
+                    .iwm_status
+                    .set_mode_low(self.chip.iwm_mode.mode_low());
+                self.chip.iwm_status.set_enable(self.iwm_drive_enabled());
 
                 // Reading status clears the shifter
                 // (used in copy protections)
-                self.shdata = 0;
+                self.chip.shdata = 0;
 
-                self.iwm_status.0
+                self.chip.iwm_status.0
             }
             (false, true) => {
                 // Read handshake register
                 let mut result = IwmHandshake::default();
 
-                result.set_underrun(!(self.write_pos == 0 && self.write_buffer.is_none()));
-                result.set_ready(self.write_buffer.is_none());
+                result
+                    .set_underrun(!(self.chip.write_pos == 0 && self.chip.write_buffer.is_none()));
+                result.set_ready(self.chip.write_buffer.is_none());
                 result.0
             }
             _ => {
@@ -207,27 +211,27 @@ impl Swim {
         match (self.q6, self.q7, self.iwm_drive_enabled()) {
             (true, true, false) => {
                 // Write MODE
-                if self.ism_available && ISM_SWITCH_PATTERN[self.ism_switch_ctr] == value {
-                    self.ism_switch_ctr += 1;
+                if self.ism_available && ISM_SWITCH_PATTERN[self.chip.ism_switch_ctr] == value {
+                    self.chip.ism_switch_ctr += 1;
                 } else {
-                    self.ism_switch_ctr = 0;
+                    self.chip.ism_switch_ctr = 0;
                 }
-                if self.ism_switch_ctr == ISM_SWITCH_PATTERN.len() {
+                if self.chip.ism_switch_ctr == ISM_SWITCH_PATTERN.len() {
                     self.mode = SwimMode::Ism;
-                    self.ism_mode.set_ism(true);
-                    self.ism_switch_ctr = 0;
+                    self.chip.ism_mode.set_ism(true);
+                    self.chip.ism_switch_ctr = 0;
                     return;
                 }
                 if ![0x17, 0x1F, 0x57].contains(&value) {
                     warn!("Non-standard IWM mode: {:02X}", value);
                 }
-                self.iwm_mode.set_mode(value);
+                self.chip.iwm_mode.set_mode(value);
             }
             (true, true, true) => {
-                if self.write_buffer.is_some() {
+                if self.chip.write_buffer.is_some() {
                     warn!("Disk write while write buffer not empty");
                 }
-                self.write_buffer = Some(value);
+                self.chip.write_buffer = Some(value);
             }
             _ => (),
         }
@@ -263,9 +267,11 @@ impl Swim {
         }
         Ok(())
     }
+}
 
+impl SwimChip {
     /// Shifts a bit into the read data shift register
-    fn iwm_shift_bit(&mut self, bit: bool) {
+    fn iwm_shift_bit(&mut self, stream: &FloppyStream, bit: bool) {
         self.shdata <<= 1;
         if bit {
             // 1 coming off the disk
@@ -282,7 +288,7 @@ impl Swim {
             // This is sometimes called 'weak bits'. Some copy protection schemes rely on
             // this phenomenon.
             self.iwm_zeroes += 1;
-            if self.iwm_zeroes > 4 && self.weak_bit_rng.random_bool() {
+            if self.iwm_zeroes > 4 && stream.weak_bit() {
                 self.shdata |= 1;
             }
         }
@@ -296,33 +302,29 @@ impl Swim {
         }
     }
 
-    fn iwm_tick_flux(&mut self, ticks: Ticks) -> Result<()> {
-        let side = self.get_active_head();
-        let track = self.get_selected_drive().get_active_track();
-
+    fn iwm_tick_flux(
+        &mut self,
+        stream: &mut FloppyStream,
+        head: usize,
+        ticks: Ticks,
+        cycles: Ticks,
+    ) -> Result<()> {
         // Run up to each flux transition within the ticks in turn
         let mut left = ticks;
         while left > 0 {
-            // A transition is at least one tick away
-            let to_flux = self.get_selected_drive().flux_ticks_left.max(1) as Ticks;
-            let step = left.min(to_flux);
+            let step = left.min(stream.ticks_to_transition());
             left -= step;
-            self.get_selected_drive_mut().flux_ticks_left -= step as i16;
-
-            // Not sure how long this should be?
-            if self.get_selected_drive().flux_ticks_left < self.get_selected_drive().flux_ticks - 20
-            {
-                self.get_selected_drive_mut().head_bit[side] = false;
-            }
-
-            if self.get_selected_drive().flux_ticks_left <= 0 {
-                self.iwm_flux_transition(side, track, self.cycles - left);
+            if stream.advance_flux(head, step) {
+                self.iwm_flux_transition(stream, head, cycles - left);
             }
         }
 
         if self.write_pos == 0 && self.write_buffer.is_some() {
             // Write idle and new data in write FIFO
-            error!("Writing to track {} (flux track) is unsupported!", track);
+            error!(
+                "Writing to track {} (flux track) is unsupported!",
+                stream.track()
+            );
             self.write_buffer = None;
         }
 
@@ -330,7 +332,7 @@ impl Swim {
     }
 
     /// Handles a flux transition passing under the head at `cycles`
-    fn iwm_flux_transition(&mut self, side: usize, track: usize, cycles: Ticks) {
+    fn iwm_flux_transition(&mut self, stream: &mut FloppyStream, head: usize, cycles: Ticks) {
         // Introduce some pseudo-random jitter on the timing to emulate
         // the minor differences introduced by motor RPM instability and
         // physical movement of the disk donut.
@@ -339,49 +341,42 @@ impl Swim {
         // Check bit cell window
         // TODO incorporate actual drive speed from PWM on 128K/512K?
         if let Some(time) = FluxTransitionTime::from_ticks_ex(
-            self.get_selected_drive().flux_ticks + jitter,
+            stream.transition_ticks() + jitter,
             self.iwm_mode.fast(),
             self.iwm_mode.speed(),
         ) {
             // Transition occured within the window, shift bits into the
             // IWM shift register.
             for _ in 0..(time.get_zeroes()) {
-                self.iwm_shift_bit(false);
+                self.iwm_shift_bit(stream, false);
             }
-            self.iwm_shift_bit(true);
-            self.get_selected_drive_mut().head_bit[side] = true;
+            self.iwm_shift_bit(stream, true);
+            stream.transition_read(head);
         }
 
         // Advance image to the next transition
-        let TrackLength::Transitions(tlen) = self.get_selected_drive().get_track_len(side, track)
-        else {
-            unreachable!()
-        };
-        self.get_selected_drive_mut().track_position =
-            (self.get_selected_drive().track_position + 1) % tlen;
-        self.get_selected_drive_mut().flux_ticks = self
-            .get_selected_drive()
-            .floppy
-            .get_track_transition(side, track, self.get_selected_drive().track_position);
-        self.get_selected_drive_mut().flux_ticks_left = self.get_selected_drive().flux_ticks;
+        stream.next_transition(head);
     }
 
-    fn iwm_tick_bitstream(&mut self, ticks: Ticks) -> Result<()> {
+    fn iwm_tick_bitstream(
+        &mut self,
+        stream: &mut FloppyStream,
+        head: usize,
+        ticks: Ticks,
+    ) -> Result<()> {
         self.bit_cycles += ticks;
-        while self.bit_cycles >= self.get_selected_drive().get_ticks_per_bit() {
-            self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
-            self.iwm_tick_bit()?;
+        while self.bit_cycles >= stream.ticks_per_bit() {
+            self.bit_cycles -= stream.ticks_per_bit();
+            self.iwm_tick_bit(stream, head)?;
         }
         Ok(())
     }
 
     /// Moves the head over one bit cell
-    fn iwm_tick_bit(&mut self) -> Result<()> {
-        let head = self.get_active_head();
-
+    fn iwm_tick_bit(&mut self, stream: &mut FloppyStream, head: usize) -> Result<()> {
         // Progress the head over the track
-        let bit = self.get_selected_drive_mut().next_bit(head);
-        self.iwm_shift_bit(bit);
+        let bit = stream.next_bit(head);
+        self.iwm_shift_bit(stream, bit);
 
         if self.write_pos == 0 && self.write_buffer.is_some() {
             // Write idle and new data in write FIFO, start writing 8 new bits
@@ -395,22 +390,26 @@ impl Swim {
         if self.write_pos > 0 {
             // Write in progress - write one bit to current head location
             let bit = self.write_shift & 0x80 != 0;
-            let head = self.get_active_head();
             self.write_shift <<= 1;
             self.write_pos -= 1;
-            self.get_selected_drive_mut().write_bit(head, bit);
+            stream.write_bit(head, bit);
         }
 
         Ok(())
     }
 
-    pub(super) fn iwm_tick(&mut self, ticks: Ticks) -> Result<()> {
-        match self.get_selected_drive().floppy.get_track_type(
-            self.get_active_head(),
-            self.get_selected_drive().get_active_track(),
-        ) {
-            TrackType::Bitstream => self.iwm_tick_bitstream(ticks),
-            TrackType::Flux => self.iwm_tick_flux(ticks),
+    /// Advances the read/write operation on the disk under the head, by `ticks` up to the
+    /// time `cycles`
+    pub(super) fn iwm_tick(
+        &mut self,
+        stream: &mut FloppyStream,
+        head: usize,
+        ticks: Ticks,
+        cycles: Ticks,
+    ) -> Result<()> {
+        match stream.track_type(head) {
+            TrackType::Bitstream => self.iwm_tick_bitstream(stream, head, ticks),
+            TrackType::Flux => self.iwm_tick_flux(stream, head, ticks, cycles),
         }
     }
 }
@@ -460,7 +459,7 @@ mod tests {
     fn lstrb_writes_on_rising_edge_only() {
         let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
         swim.read(ENABLE);
-        let start = swim.drives[0].track;
+        let start = swim.drives[0].stream.track;
 
         // TRACKUP (all lines low), then TRACKSTEP (CA0 high) with LSTRBH accessed
         // five times: one rising edge, one step
@@ -472,12 +471,12 @@ mod tests {
             swim.read(LSTRBH);
         }
         swim.read(LSTRBL);
-        assert_eq!(swim.drives[0].track, start + 1);
+        assert_eq!(swim.drives[0].stream.track, start + 1);
 
         // A new pulse steps again
         swim.read(LSTRBH);
         swim.read(LSTRBL);
-        assert_eq!(swim.drives[0].track, start + 2);
+        assert_eq!(swim.drives[0].stream.track, start + 2);
     }
 
     #[test]

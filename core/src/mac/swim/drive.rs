@@ -5,12 +5,11 @@ use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
-use snow_floppy::flux::FluxTicks;
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
-use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
+use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use strum::Display;
 
-use super::WeakBitRng;
+use super::stream::FloppyStream;
 use crate::debuggable::Debuggable;
 use crate::devices::{FloppyFunction, FloppyStatus};
 use crate::tickable::Ticks;
@@ -222,14 +221,14 @@ pub(crate) struct FloppyDrive {
     pub(super) cycles: Ticks,
 
     pub(super) floppy_inserted: bool,
-    pub(super) track: usize,
     stepdir: HeadStepDirection,
     pub(super) motor: bool,
-    pub(super) floppy: FloppyImage,
+
+    /// The disk in the drive, the track under the heads and the position on it
+    pub(super) stream: FloppyStream,
 
     /// Copy of last ejected floppy image
     floppy_ejected: Option<Box<FloppyImage>>,
-    pub(super) track_position: usize,
 
     /// True if disk was switched without eject
     switched: bool,
@@ -243,26 +242,12 @@ pub(crate) struct FloppyDrive {
     // (e.g. stepping, spindle motor changing speed)
     pub(super) not_ready: Ticks,
 
-    /// Amount of flux ticks for current transition (for flux tracks)
-    pub(super) flux_ticks: FluxTicks,
-
-    /// Amount of flux ticks left for current transition (for flux tracks)
-    pub(super) flux_ticks_left: FluxTicks,
-
-    pub(super) head_bit: [bool; 2],
-
     pub(super) pwm_avg_sum: i64,
     pub(super) pwm_avg_count: usize,
     pub(super) pwm_dutycycle: Ticks,
 
     /// RPM adjustment for PWM-controlled drives
     rpm_adjustment: i32,
-
-    /// Cached ticks-per-bit
-    ticks_per_bit: Ticks,
-
-    /// Noise source for garbage read while the drive is not ready
-    pub(super) weak_bit_rng: WeakBitRng,
 
     /// Source file path of the currently inserted image, if it was loaded
     /// from a writeback-capable file. Cleared on eject.
@@ -300,10 +285,8 @@ impl FloppyDrive {
             cycles: 0,
             floppy_inserted: false,
             floppy_ejected: None,
-            track: 4,
             stepdir: HeadStepDirection::Up,
-            floppy: FloppyImage::new(FloppyType::Mac400K, ""),
-            track_position: 0,
+            stream: FloppyStream::new(drive_type.is_doublesided()),
             motor: false,
             mfm: drive_type.io_mfm(),
             switched: false,
@@ -311,17 +294,10 @@ impl FloppyDrive {
             stepping: 0,
             not_ready: 0,
 
-            flux_ticks: 0,
-            flux_ticks_left: 0,
-
-            head_bit: [false; 2],
-
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
             rpm_adjustment: 0,
-            ticks_per_bit: Ticks::MAX,
-            weak_bit_rng: WeakBitRng::default(),
 
             image_path: None,
             writeback_enabled: false,
@@ -348,7 +324,7 @@ impl FloppyDrive {
         // Disk spins at 300rpm, 200000 bits, index pulse ~2ms
         // 300 / 60 = 5 revs/sec * 200000 bits = 1.000.000 bits/sec
         // = ~2000 bits pulse length
-        self.is_running() && (0..2000).contains(&self.track_position)
+        self.is_running() && (0..2000).contains(&self.stream.track_position)
     }
 
     /// Reads from the currently selected drive register
@@ -365,7 +341,7 @@ impl FloppyDrive {
             DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
             DriveReg::PRESENTHD => {
                 if self.drive_type == DriveType::SuperDrive {
-                    !(self.floppy.get_type() == FloppyType::Mfm144M && self.floppy_inserted)
+                    !(self.stream.floppy.get_type() == FloppyType::Mfm144M && self.floppy_inserted)
                 } else {
                     self.drive_type.io_present()
                 }
@@ -373,7 +349,7 @@ impl FloppyDrive {
             DriveReg::INSTALLED => !self.is_present(),
             DriveReg::READY if !self.motor => self.drive_type.io_ready(),
             DriveReg::READY => !(self.not_ready < self.cycles),
-            DriveReg::TKO => self.track != 0,
+            DriveReg::TKO => self.stream.track != 0,
             DriveReg::STEP => !self.motor || self.stepping < self.cycles,
             DriveReg::TACH => self.get_tacho(),
             DriveReg::RDDATA0 | DriveReg::RDDATA1 if self.mfm && self.motor => !self.at_index(),
@@ -382,7 +358,7 @@ impl FloppyDrive {
             DriveReg::RDDATA1 => self.drive_type.io_rddata1(),
             DriveReg::MFM => self.mfm,
             DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
-            DriveReg::WRTPRT => !self.floppy.get_write_protect(),
+            DriveReg::WRTPRT => !self.stream.floppy.get_write_protect(),
             DriveReg::SWITCHED => self.switched,
             _ => {
                 warn!(
@@ -410,25 +386,25 @@ impl FloppyDrive {
 
         match self.stepdir {
             HeadStepDirection::Up => {
-                if (self.track + 1) >= Self::DISK_TRACKS {
+                if (self.stream.track + 1) >= Self::DISK_TRACKS {
                     error!("Drive {}: head moving further than track 79!", self.idx);
                 } else {
-                    self.track += 1;
+                    self.stream.track += 1;
                 }
             }
             HeadStepDirection::Down => {
-                if self.track == 0 {
+                if self.stream.track == 0 {
                     // The Sony driver recalibrates some drives with 80 steps,
                     // without looking at the track 0 signal
                     trace!("Drive {}: head moving lower than track 0", self.idx);
                 } else {
-                    self.track -= 1;
+                    self.stream.track -= 1;
                 }
             }
         }
 
-        self.flux_ticks = 0;
-        self.flux_ticks_left = 0;
+        self.stream.flux_ticks = 0;
+        self.stream.flux_ticks_left = 0;
 
         // * The Mac ROM runs a 434 cycle wait loop with a limit of 80,
         //   meaning we have 34720 cycles, around 4.34ms (on Mac Plus).
@@ -469,7 +445,7 @@ impl FloppyDrive {
 
         match reg {
             DriveWriteReg::MOTORON => {
-                self.track_position = 0;
+                self.stream.track_position = 0;
                 self.motor = true;
 
                 // 400K drive datasheet 2.3.3 'Motor start time' is 400ms.
@@ -477,7 +453,10 @@ impl FloppyDrive {
             }
             DriveWriteReg::MOTOROFF => {
                 self.motor = false;
-                if self.writeback_enabled && self.image_path.is_some() && self.floppy.is_dirty() {
+                if self.writeback_enabled
+                    && self.image_path.is_some()
+                    && self.stream.floppy.is_dirty()
+                {
                     self.pending_writeback = true;
                 }
             }
@@ -528,10 +507,10 @@ impl FloppyDrive {
             image.get_track_count() * image.get_side_count(),
             image.get_title()
         );
-        self.floppy = image;
+        self.stream.floppy = image;
         self.floppy_inserted = true;
         self.switched = true;
-        self.track_position = 0;
+        self.stream.track_position = 0;
         if self.motor {
             // "the disk motor is turned on if a disk is in the drive" (400K
             // drive spec 699-0285-A, 3.2.7): the new disk spins up
@@ -573,7 +552,7 @@ impl FloppyDrive {
             // Automatic spindle motor speed control
             //
             // Apple 3.5" single-sided drive specifications, appendix B, speed 1.
-            match self.track {
+            match self.stream.track {
                 0..=15 => 394,
                 16..=31 => 429,
                 32..=47 => 472,
@@ -586,16 +565,28 @@ impl FloppyDrive {
 
     /// Gets the amount of ticks a physical bit is under the drive head
     pub fn get_ticks_per_bit(&self) -> Ticks {
-        self.ticks_per_bit
+        self.stream.ticks_per_bit()
+    }
+
+    /// Gets the disk under the heads, for the controller to read and write while it spins
+    #[inline]
+    pub(super) fn stream(&mut self) -> &mut FloppyStream {
+        self.stream.spinning = self.is_running();
+        self.stream.not_ready = self.not_ready > self.cycles;
+        &mut self.stream
     }
 
     pub(super) fn update_ticks_per_bit(&mut self) {
-        self.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
+        self.stream.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
             Ticks::MAX
         } else {
             ((self.base_frequency * 60)
                 / self.get_track_rpm()
-                / self.floppy.get_type().get_approx_track_length(self.track) as u64)
+                / self
+                    .stream
+                    .floppy
+                    .get_type()
+                    .get_approx_track_length(self.stream.track) as u64)
                 + 1
         }
     }
@@ -615,53 +606,13 @@ impl FloppyDrive {
         !(self.cycles / ticks_per_edge).is_multiple_of(2)
     }
 
-    /// Gets the active selected track offset
-    pub(super) fn get_active_track(&self) -> usize {
-        self.track
-    }
-
-    /// Gets the length of a track on the loaded floppy
-    pub(super) fn get_track_len(&self, side: usize, track: usize) -> TrackLength {
-        self.floppy.get_track_length(side, track)
-    }
-
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
-        let track = self.get_active_track();
-
         // Garbage if drive is not yet ready
         if self.not_ready > self.cycles {
-            return self.weak_bit_rng.random_bool();
+            return self.stream.weak_bit();
         }
-
-        match self.floppy.get_track_type(head, track) {
-            TrackType::Bitstream => {
-                let TrackLength::Bits(tracklen) = self.get_track_len(head, track) else {
-                    unreachable!()
-                };
-                // Extra modulus here because RDDATAx can be read while the controller is currently
-                // has the other side selected or we just changed tracks.
-                self.floppy
-                    .get_track_bit(head, track, self.track_position % tracklen)
-            }
-            TrackType::Flux => self.head_bit[head],
-        }
-    }
-
-    /// Advances to the next bit on the track (bitstream tracks)
-    pub(super) fn next_bit(&mut self, head: usize) -> bool {
-        let TrackLength::Bits(tracklen) = self.get_track_len(head, self.get_active_track()) else {
-            unreachable!()
-        };
-        self.track_position = (self.track_position + 1) % tracklen;
-
-        self.get_head_bit(head)
-    }
-
-    /// Writes a bit to the current track position
-    pub(super) fn write_bit(&mut self, head: usize, bit: bool) {
-        self.floppy
-            .set_track_bit(head, self.track, self.track_position, bit);
+        self.stream.head_bit(head)
     }
 
     /// Saves the disk that was ejected with unsaved writes to the file it
@@ -688,7 +639,9 @@ impl FloppyDrive {
     /// Saves the disk in the drive to the file it came from, if writeback is
     /// armed and a save is due. Clears the dirty flag on success.
     fn write_back_inserted(&mut self, force: bool) -> Result<()> {
-        if !self.writeback_enabled || !(force || self.pending_writeback) || !self.floppy.is_dirty()
+        if !self.writeback_enabled
+            || !(force || self.pending_writeback)
+            || !self.stream.floppy.is_dirty()
         {
             return Ok(());
         }
@@ -698,9 +651,9 @@ impl FloppyDrive {
         self.pending_writeback = false;
 
         let name = file_name(&path);
-        write_image(&path, &self.floppy)
+        write_image(&path, &self.stream.floppy)
             .with_context(|| format!("writeback to '{}' failed", name))?;
-        self.floppy.clear_dirty();
+        self.stream.floppy.clear_dirty();
         info!("Floppy #{}: writeback auto-saved '{}'", self.idx + 1, name);
         Ok(())
     }
@@ -722,10 +675,11 @@ fn file_name(path: &Path) -> String {
 impl FloppyFunction for FloppyDrive {
     fn status(&self) -> FloppyStatus {
         FloppyStatus {
-            title: self.floppy.get_title().to_owned(),
+            title: self.stream.floppy.get_title().to_owned(),
             ejected: !self.floppy_inserted,
-            dirty: self.floppy.is_dirty(),
-            writeback_supported: self.image_path.is_some() && self.floppy.supports_writeback(),
+            dirty: self.stream.floppy.is_dirty(),
+            writeback_supported: self.image_path.is_some()
+                && self.stream.floppy.supports_writeback(),
             writeback_enabled: self.writeback_enabled,
         }
     }
@@ -750,11 +704,11 @@ impl FloppyFunction for FloppyDrive {
         self.floppy_inserted = false;
         self.mfm = self.drive_type.io_mfm();
 
-        self.floppy_ejected = Some(Box::new(self.floppy.clone()));
+        self.floppy_ejected = Some(Box::new(self.stream.floppy.clone()));
 
         // The writes since the last save must not be lost with the disk,
         // whoever ejects it
-        self.eject_writeback = if self.writeback_enabled && self.floppy.is_dirty() {
+        self.eject_writeback = if self.writeback_enabled && self.stream.floppy.is_dirty() {
             self.image_path.clone()
         } else {
             None
@@ -772,11 +726,11 @@ impl FloppyFunction for FloppyDrive {
     }
 
     fn save(&mut self, path: &Path) -> Result<()> {
-        Moof::save_file(&self.floppy, &path.to_string_lossy())
+        Moof::save_file(&self.stream.floppy, &path.to_string_lossy())
     }
 
     fn set_writeback(&mut self, enabled: bool) -> Result<()> {
-        if enabled && (self.image_path.is_none() || !self.floppy.supports_writeback()) {
+        if enabled && (self.image_path.is_none() || !self.stream.floppy.supports_writeback()) {
             bail!("Writeback unavailable: image was not loaded from a writeback-capable file");
         }
         self.writeback_enabled = enabled;
@@ -792,6 +746,11 @@ impl FloppyFunction for FloppyDrive {
 
     fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
         self.floppy_ejected.take()
+    }
+
+    fn seed_weak_bits(&mut self, seed: Option<u64>) {
+        self.stream
+            .seed_weak_bits(seed.map(|s| s.wrapping_add(self.idx as u64 + 1)));
     }
 
     fn set_rpm_adjustment(&mut self, rpm: i32) -> Result<()> {
@@ -823,13 +782,13 @@ impl Debuggable for FloppyDrive {
                 "Not-ready timer",
                 self.not_ready.saturating_sub(self.cycles)
             ),
-            dbgprop_udec!("Track", self.track),
-            dbgprop_udec!("Track position", self.track_position),
+            dbgprop_udec!("Track", self.stream.track),
+            dbgprop_udec!("Track position", self.stream.track_position),
             dbgprop_bool!("Index signal", self.mfm && self.at_index()),
             dbgprop_udec!("Track RPM", self.get_track_rpm()),
             dbgprop_udec!("Ticks per bit", self.get_ticks_per_bit()),
-            dbgprop_sdec!("Flux transition len", self.flux_ticks.into()),
-            dbgprop_sdec!("Flux transition left", self.flux_ticks_left.into()),
+            dbgprop_sdec!("Flux transition len", self.stream.flux_ticks.into()),
+            dbgprop_sdec!("Flux transition left", self.stream.flux_ticks_left.into()),
             dbgprop_udec!("PWM dutycycle", self.pwm_dutycycle),
         ]
     }
@@ -852,7 +811,7 @@ mod tests {
         let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
         drv.floppy_inserted = true;
         drv.motor = true;
-        drv.track = 0;
+        drv.stream.track = 0;
 
         let mut last = false;
         let mut result = 0;
@@ -873,7 +832,7 @@ mod tests {
         let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
         drv.floppy_inserted = true;
         drv.motor = true;
-        drv.track = 79;
+        drv.stream.track = 79;
 
         let mut last = false;
         let mut result = 0;
@@ -923,7 +882,7 @@ mod tests {
             .unwrap();
         drv.image_path = Some(PathBuf::from("disk.img"));
         drv.writeback_enabled = true;
-        drv.write_bit(0, true);
+        drv.stream.write_bit(0, true);
         drv.eject();
         assert_eq!(drv.eject_writeback, Some(PathBuf::from("disk.img")));
         assert!(drv.floppy_ejected.is_some());
@@ -967,8 +926,8 @@ mod tests {
     /// Writes the bit under the head of a drive that was just made, changing its value, and
     /// returns the new value. A blank disk is filled with noise.
     fn flip_bit(drv: &mut FloppyDrive) -> bool {
-        let bit = !drv.floppy.get_track_bit(0, 4, 0);
-        drv.write_bit(0, bit);
+        let bit = !drv.stream.floppy.get_track_bit(0, 4, 0);
+        drv.stream.write_bit(0, bit);
         bit
     }
 
@@ -986,10 +945,10 @@ mod tests {
         assert!(!status.dirty);
         assert!(status.writeback_supported);
         assert!(!status.writeback_enabled);
-        assert!(!drv.floppy.get_write_protect());
+        assert!(!drv.stream.floppy.get_write_protect());
 
         drv.load(&dir.moof(), true).unwrap();
-        assert!(drv.floppy.get_write_protect());
+        assert!(drv.stream.floppy.get_write_protect());
     }
 
     #[test]
@@ -1026,7 +985,7 @@ mod tests {
         let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
         let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
         drv.insert_image(image, true).unwrap();
-        assert!(drv.floppy.get_write_protect());
+        assert!(drv.stream.floppy.get_write_protect());
         assert!(!drv.status().writeback_supported);
         assert!(drv.set_writeback(true).is_err());
         assert!(!drv.status().writeback_enabled);
