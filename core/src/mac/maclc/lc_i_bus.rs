@@ -27,9 +27,9 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -69,8 +69,7 @@ pub(super) enum Region {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct LcIBus<TRenderer: Renderer> {
+pub struct LcIBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -99,7 +98,7 @@ pub struct LcIBus<TRenderer: Renderer> {
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
     pseudovia: PseudoVia,
-    video: Video<TRenderer>,
+    video: Video,
     sound: V8Sound,
     sound_clock: Ticks,
 
@@ -131,10 +130,7 @@ pub struct LcIBus<TRenderer: Renderer> {
     mouse_ready: bool,
 }
 
-impl<TRenderer> LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl LcIBus {
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
 
@@ -142,7 +138,6 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         monitor: Option<MacMonitor>,
@@ -170,7 +165,7 @@ where
         let vram_size = vram_size
             .filter(|s| video::vram_sizes(model).contains(s))
             .unwrap_or_else(|| video::vram_size_default(model));
-        let video = Video::new(renderer, monitor, vram_size);
+        let video = Video::new(monitor, vram_size);
         let swim = Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -217,8 +212,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.video.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.sound.after_deserialize();
     }
 
@@ -757,6 +751,11 @@ where
         self.video.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.video.frames()
+    }
+
     /// Dispatches a key event to the keyboard
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.egret.adb_event(&AdbEvent::Key(ke));
@@ -772,10 +771,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for LcIBus {
     type Cpu = Bus68020;
 
     /// The address is decoded once per bus cycle. Every device is as wide
@@ -880,10 +876,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for LcIBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -977,7 +970,7 @@ where
             self.bus_frequency(),
             v8::frame_period(monitor),
         ) {
-            if self.video.renderer.as_ref().unwrap().frame_wanted() {
+            if self.video.frame_wanted() {
                 let mode = v8::video_mode(monitor, self.pseudovia.exp(), self.pseudovia.monp());
                 self.video.render(&mode)?;
             }
@@ -1011,10 +1004,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for LcIBus {
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
@@ -1032,10 +1022,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for LcIBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         match self.decode(addr)? {
             Region::Ram(_) if self.overlay => self.read_rom(addr),
@@ -1073,10 +1060,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for LcIBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for LcIBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_group;
         use crate::dbgprop_nest;
@@ -1101,7 +1085,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
     /// Seconds counted by the Egret, which is clocked like the VIA, while the
     /// bus runs for a second less `less` cycles
@@ -1109,7 +1092,6 @@ mod tests {
         let mut bus = LcIBus::new(
             MacModel::LC,
             &vec![0; 512 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
             MouseMode::Disabled,
             None,
             None,
@@ -1144,7 +1126,6 @@ mod tests {
         let mut bus = LcIBus::new(
             MacModel::LC,
             &vec![0; 512 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
             MouseMode::Disabled,
             None,
             None,

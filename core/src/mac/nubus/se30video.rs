@@ -7,16 +7,16 @@ use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::VideoOutput;
-use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
 /// SE/30 video controller
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct SE30Video<TRenderer: Renderer> {
+pub struct SE30Video {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
 
     rom: Vec<u8>,
     vblank_irq: bool,
@@ -27,10 +27,7 @@ pub struct SE30Video<TRenderer: Renderer> {
     pub render: LatchingEvent,
 }
 
-impl<TRenderer> SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl SE30Video {
     /// Visible dots in one scanline
     const H_VISIBLE_DOTS: usize = 512;
 
@@ -43,9 +40,9 @@ where
     /// Amount of VRAM present
     const VRAM_SIZE: usize = 0x10000;
 
-    pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(rom: &[u8]) -> Self {
         Self {
-            renderer: Some(renderer),
+            renderer: ChannelRenderer::default(),
             rom: rom.to_owned(),
             vblank_irq: false,
             vblank_enable: false,
@@ -76,10 +73,7 @@ where
     }
 }
 
-impl<TRenderer> SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl SE30Video {
     /// The VRAM bytes at `offset`, if they're all VRAM
     fn vram_bytes(&mut self, offset: Address, size: u32) -> Option<&mut [u8]> {
         let range = offset & 0xFF_0000;
@@ -94,10 +88,7 @@ where
 /// The video answers in the space of NuBus slot $E, $FExx_xxxx, though it isn't on a NuBus:
 /// the CPU reaches it directly. `offset` is in that space. VRAM, at $00_0000 and again at
 /// $E0_0000, and the ROM at the top are memory: they answer any access within a word at once.
-impl<TRenderer> SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl SE30Video {
     /// A read of `size` bytes at `offset`, right-justified
     pub fn read(&mut self, offset: Address, size: u32) -> u32 {
         if let Some(bytes) = self.vram_bytes(offset, size) {
@@ -131,48 +122,38 @@ where
     }
 }
 
-impl<TRenderer> SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl SE30Video {
     /// Prepares the image and sends it to the frontend
-    fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut());
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
         Ok(())
     }
 }
 
-impl<TRenderer> VideoOutput<TRenderer> for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl VideoOutput for SE30Video {
     fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
         Ok(())
     }
 
-    fn set_renderer(&mut self, renderer: TRenderer) -> Result<()> {
-        self.renderer = Some(renderer);
-        self.render()
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for SE30Video {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if !self.vblank_enable {
             self.vblank_irq = false;
         }
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.frame_wanted() {
                 self.render()?;
             }
 
@@ -185,10 +166,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for SE30Video {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_bool;
         use crate::debuggable::*;
@@ -201,10 +179,7 @@ where
     }
 }
 
-impl<TRenderer> Display for SE30Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for SE30Video {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SE/30 video controller")
     }

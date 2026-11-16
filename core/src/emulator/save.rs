@@ -11,7 +11,7 @@ use crate::mac::scsi::bus::ScsiBus;
 #[cfg(not(feature = "mmap"))]
 compile_error!("feature \"savestates\" requires the \"mmap\" feature");
 
-const HEADER_VERSION: u16 = 1;
+const HEADER_VERSION: u16 = 2;
 
 #[binrw]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

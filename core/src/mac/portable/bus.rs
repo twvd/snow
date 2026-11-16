@@ -21,9 +21,9 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, VideoOutput, WARM_START_SIGNATURE};
 use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
@@ -80,8 +80,7 @@ enum Region {
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct MacPortableBus<TRenderer: Renderer> {
+pub struct MacPortableBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -97,7 +96,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) scc: Scc,
     /// Native time the SCC can be accessed again
     scc_ready: Ticks,
-    pub(crate) video: Video<TRenderer>,
+    pub(crate) video: Video,
     pub(crate) asc: Asc,
     asc_clock: Ticks,
     mouse_ready: bool,
@@ -131,10 +130,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl MacPortableBus {
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -143,7 +139,6 @@ where
         model: MacModel,
         rom: &[u8],
         extension_rom: Option<&[u8]>,
-        renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
@@ -181,7 +176,7 @@ where
             ram: vec![0; ram_size],
             via: Via::new(),
             pmgr_clock: NativeClock::new(BUS_FREQUENCY),
-            video: Video::new(renderer),
+            video: Video::default(),
             scc: Scc::new(RTXC_FREQUENCY),
             scc_ready: 0,
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
@@ -211,9 +206,8 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self) {
         self.map = build_map(self.model);
-        self.video.renderer = Some(renderer);
         self.asc.after_deserialize();
     }
 
@@ -613,6 +607,11 @@ where
         self.video.blank()
     }
 
+    /// Where the frontend picks up the frames of the machine's video
+    pub fn video_frames(&self) -> FrameReceiver {
+        self.video.frames()
+    }
+
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.pmgr.adb_event(&AdbEvent::Key(ke));
     }
@@ -626,10 +625,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Bus<Address, Byte> for MacPortableBus {
     type Cpu = Bus68000;
 
     fn get_mask(&self) -> Address {
@@ -734,10 +730,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for MacPortableBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -813,10 +806,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for MacPortableBus {
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(4);
@@ -831,10 +821,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for MacPortableBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         if addr >= 0x00F0_0000 {
             return None;
@@ -907,10 +894,7 @@ fn empty_map() -> AddressMap {
     [[Region::None; MAP_BLOCKS]; 2]
 }
 
-impl<TRenderer> Debuggable for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for MacPortableBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;

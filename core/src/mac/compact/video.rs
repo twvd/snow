@@ -56,7 +56,9 @@
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
-use crate::renderer::{Renderer, render_packed};
+use crate::mac::VideoOutput;
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -101,10 +103,9 @@ pub const FRAMEBUFFER_ALT_OFFSET: Address = 0x5900;
 
 /// CRT/video circuitry state
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Video<T: Renderer> {
+pub struct Video {
     #[serde(skip)]
-    pub renderer: Option<T>,
+    renderer: ChannelRenderer,
 
     /// Absolute beam position
     dots: Ticks,
@@ -127,10 +128,7 @@ pub struct Video<T: Renderer> {
     pub debug_framebuffers: bool,
 }
 
-impl<T> Video<T>
-where
-    T: Renderer,
-{
+impl Video {
     /// Tests if currently in any blanking period.
     pub fn in_blanking_period(&self) -> bool {
         self.in_hblank() || self.in_vblank()
@@ -182,18 +180,6 @@ where
         }
     }
 
-    pub fn new(renderer: T) -> Self {
-        Self {
-            renderer: Some(renderer),
-            dots: 0,
-            event_vblank: LatchingEvent::default(),
-            event_hblank: LatchingEvent::default(),
-            framebuffers: [vec![0xFF; FRAMEBUFFER_SIZE], vec![0xFF; FRAMEBUFFER_SIZE]],
-            framebuffer_select: false,
-            debug_framebuffers: false,
-        }
-    }
-
     /// Reads and clears 'entered vblank' latch
     pub fn get_clr_vblank(&mut self) -> bool {
         self.event_vblank.get_clear()
@@ -235,7 +221,7 @@ where
         const DIM: u8 = 0x99;
         const BLACK: u8 = 0x22;
 
-        let renderer = self.renderer.as_mut().unwrap();
+        let renderer = &mut self.renderer;
         let buf = renderer.buffer_mut();
 
         if self.debug_framebuffers {
@@ -267,18 +253,35 @@ where
 
         Ok(())
     }
+}
 
-    /// Blanks the display and sends an update to the renderer.
-    pub fn blank(&mut self) -> Result<()> {
-        self.framebuffers.iter_mut().for_each(|b| b.fill(0xFF));
-        self.render()
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            renderer: ChannelRenderer::default(),
+            dots: 0,
+            event_vblank: LatchingEvent::default(),
+            event_hblank: LatchingEvent::default(),
+            framebuffers: [vec![0xFF; FRAMEBUFFER_SIZE], vec![0xFF; FRAMEBUFFER_SIZE]],
+            framebuffer_select: false,
+            debug_framebuffers: false,
+        }
     }
 }
 
-impl<T> Tickable for Video<T>
-where
-    T: Renderer,
-{
+impl VideoOutput for Video {
+    /// Blanks the display and sends an update to the renderer.
+    fn blank(&mut self) -> Result<()> {
+        self.framebuffers.iter_mut().for_each(|b| b.fill(0xFF));
+        self.render()
+    }
+
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
+    }
+}
+
+impl Tickable for Video {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         // Advance up to the next blanking edge at a time so none is missed
         let mut left = ticks;
@@ -301,8 +304,7 @@ where
                 self.event_hblank.set();
             }
 
-            if before_vblank && !self.in_vblank() && self.renderer.as_ref().unwrap().frame_wanted()
-            {
+            if before_vblank && !self.in_vblank() && self.renderer.frame_wanted() {
                 // Just left VBlank
                 self.render()?;
             }
@@ -312,10 +314,7 @@ where
     }
 }
 
-impl<T> Debuggable for Video<T>
-where
-    T: Renderer,
-{
+impl Debuggable for Video {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_header, dbgprop_str, dbgprop_udec};
@@ -340,17 +339,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::renderer::NullRenderer;
-
     use super::*;
-
-    fn video() -> Video<NullRenderer> {
-        Video::new(NullRenderer::new(0, 0).unwrap())
-    }
 
     #[test]
     fn vblank_period() {
-        let mut v = video();
+        let mut v = Video::default();
 
         // Scanline 0 - 27 is VBlank
         assert_eq!(v.get_scanline(), 0);
@@ -383,7 +376,7 @@ mod tests {
 
     #[test]
     fn hblank_period() {
-        let mut v = video();
+        let mut v = Video::default();
 
         for _ in 0..370 {
             assert!(!v.in_hblank());
@@ -391,5 +384,21 @@ mod tests {
             assert!(v.in_hblank());
             v.tick(192, ()).unwrap();
         }
+    }
+
+    #[test]
+    fn restored_video_has_a_renderer() {
+        let saved = serde_json::to_string(&Video::default()).unwrap();
+        let mut video: Video = serde_json::from_str(&saved).unwrap();
+        let frames = video.frames();
+        assert!(frames.lock().unwrap().is_none());
+
+        // The machine draws the last frame again once a state is loaded
+        video.render().unwrap();
+        let frame = frames.lock().unwrap().take().unwrap();
+        assert_eq!(
+            (usize::from(frame.width()), usize::from(frame.height())),
+            (H_VISIBLE_DOTS, V_VISIBLE_LINES)
+        );
     }
 }
