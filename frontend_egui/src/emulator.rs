@@ -396,14 +396,18 @@ impl EmulatorState {
                         target_type: Some(ScsiTargetType::Cdrom),
                         ..
                     } => {
-                        emulator.attach_cdrom(id);
+                        if let Err(e) = emulator.attach_cdrom(id) {
+                            error!("SCSI ID #{}: CD-ROM drive attach failed: {}", id, e);
+                        }
                     }
                     #[cfg(feature = "ethernet")]
                     ScsiTarget {
                         target_type: Some(ScsiTargetType::Ethernet),
                         ..
                     } => {
-                        emulator.attach_ethernet(id);
+                        if let Err(e) = emulator.attach_ethernet(id) {
+                            error!("SCSI ID #{}: Ethernet controller attach failed: {}", id, e);
+                        }
                     }
                     #[cfg(feature = "printer")]
                     ScsiTarget {
@@ -413,7 +417,9 @@ impl EmulatorState {
                         let output_dir = dirs::desktop_dir()
                             .or_else(|| std::env::current_dir().ok())
                             .unwrap_or_default();
-                        emulator.attach_printer(id, output_dir);
+                        if let Err(e) = emulator.attach_printer(id, output_dir) {
+                            error!("SCSI ID #{}: printer attach failed: {}", id, e);
+                        }
                     }
                     ScsiTarget {
                         target_type: None, ..

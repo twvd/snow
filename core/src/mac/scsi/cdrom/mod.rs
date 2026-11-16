@@ -34,8 +34,8 @@ use super::{
     toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
 };
 use crate::devices::{
-    BusKind, CdromFunction, CdromStatus, DeviceModel, DeviceOps, FunctionInfo, FunctionMut,
-    ModelInfo,
+    BusKind, CdromFunction, CdromStatus, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig,
+    FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
 };
 
 // CD-ROM protocol Documentation:
@@ -489,11 +489,9 @@ struct ReadRange {
     padded_length: usize,
 }
 
-impl ScsiTargetCdrom {
-    const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
-
-    pub fn new(audio_provider: Option<&mut (dyn AudioProvider + '_)>) -> Self {
-        let mut self_ = Self {
+impl Default for ScsiTargetCdrom {
+    fn default() -> Self {
+        Self {
             common: Default::default(),
             backend: None,
             image_dir: None,
@@ -527,14 +525,12 @@ impl ScsiTargetCdrom {
             pending: None,
             audio_read: None,
             load_error: None,
-        };
-        if let Some(audio_provider) = audio_provider
-            && let Err(e) = self_.set_audio_provider(audio_provider)
-        {
-            log::error!("Failed setting CD audio provider: {}", e);
         }
-        self_
     }
+}
+
+impl ScsiTargetCdrom {
+    const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
     fn msf_to_address_field(&self, msf: Msf, msf_format: bool) -> [u8; 4] {
         if msf_format {
@@ -1271,12 +1267,24 @@ impl ScsiTargetCdrom {
     }
 }
 
-pub const INFO: ModelInfo = ModelInfo::base(
-    DeviceModel::ScsiCdrom,
-    "CD-ROM drive",
-    BusKind::Scsi,
-    FunctionInfo::Cdrom,
-);
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::ScsiCdrom,
+        "CD-ROM drive",
+        BusKind::Scsi,
+        FunctionInfo::Cdrom,
+    )
+};
+
+/// Makes an empty drive. The emulator gives it its folder, if the config has one, once the
+/// drive is in its slot: a folder that can't be used doesn't cost the drive.
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::Cdrom(_) = &config.function else {
+        bail!("A CD-ROM drive needs a CD-ROM drive's config");
+    };
+    Ok(MadeDevice::Scsi(Box::new(ScsiTargetCdrom::default())))
+}
 
 impl DeviceOps for ScsiTargetCdrom {
     fn info(&self) -> &'static ModelInfo {
@@ -2133,7 +2141,7 @@ mod tests {
         write_file(&dir, "disc.iso", 4096);
         let image = dir.join("disc.iso");
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         let FunctionMut::Cdrom(function) = cd.function() else {
             panic!("A CD-ROM drive has the Cdrom function");
         };
@@ -2158,7 +2166,7 @@ mod tests {
         write_file(&dir, "b.iso", 4096);
         write_file(&dir, "a.iso", 4096);
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.set_folder(&dir).unwrap();
         assert_eq!(
             CdromFunction::status(&cd),
@@ -2170,7 +2178,7 @@ mod tests {
 
         // A folder that can't be read is reported, and the drive keeps it
         let missing = dir.join("missing");
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         assert!(cd.set_folder(&missing).is_err());
         assert_eq!(
             CdromFunction::status(&cd),
@@ -2195,7 +2203,7 @@ mod tests {
         write_file(&dir, "notes.txt", 5);
         write_file(&dir, ".hidden.iso", 5);
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.set_image_dir(Some(dir.clone()));
 
         let names: Vec<String> = cd
@@ -2214,7 +2222,7 @@ mod tests {
         write_file(&dir, "a.iso", 0x11);
         write_file(&dir, "b.iso", 0x2233);
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.set_image_dir(Some(dir.clone()));
 
         // COUNT_CDS (0xDA) -> a single byte with the image count.
@@ -2251,7 +2259,7 @@ mod tests {
         let dir = temp_dir("range");
         write_file(&dir, "only.iso", 8);
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.set_image_dir(Some(dir.clone()));
 
         // Index 5 does not exist (only one image): expect CHECK CONDITION and no
@@ -2287,7 +2295,7 @@ mod tests {
         write_file(&dir, "Beta.toast", 200);
         write_file(&dir, "Gamma.cue", 300);
 
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.set_image_dir(Some(dir.clone()));
 
         // Step 1: COUNT_CDS -> single byte.
@@ -2336,7 +2344,7 @@ mod tests {
                 write_file(&dir, &format!("cd{:04}.iso", i), 1);
             }
 
-            let mut cd = ScsiTargetCdrom::new(None);
+            let mut cd = ScsiTargetCdrom::default();
             cd.set_image_dir(Some(dir.clone()));
 
             let count = cd
@@ -2385,7 +2393,7 @@ mod tests {
     fn mode_select_without_block_descriptor() {
         // Vendor specific data after a header with no block descriptor, as the
         // Apple CD-ROM driver sends it
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         let data = [0, 0, 0, 0, 0x31, 0x02, 0xFF, 0];
         assert_eq!(mode_select(&mut cd, &data), STATUS_GOOD);
         assert_eq!(cd.blocksize(), Some(2048));
@@ -2393,7 +2401,7 @@ mod tests {
 
     #[test]
     fn mode_select_block_descriptor_sets_block_size() {
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         let data = [0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0x02, 0x00];
         assert_eq!(mode_select(&mut cd, &data), STATUS_GOOD);
         assert_eq!(cd.blocksize(), Some(512));
@@ -2401,7 +2409,7 @@ mod tests {
 
     #[test]
     fn mode_select_truncated_block_descriptor() {
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         let data = [0, 0, 0, 8, 0, 0, 0, 0];
         assert_eq!(mode_select(&mut cd, &data), STATUS_CHECK_CONDITION);
         let sense = (CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
@@ -2491,27 +2499,29 @@ mod tests {
         let read = ReadSender::default();
         let check = CheckState::default();
         let cdda = CddaSender::default();
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(GatedBackend {
-            read: read.clone(),
-            check: check.clone(),
-            cdda: cdda.clone(),
-            disc_info: DiscInfo {
-                capacity: 4096,
-                sessions: vec![SessionInfo {
-                    number: 1,
-                    disc_type: 0,
-                    start: 0,
-                    leadout: LBA_START_SECTOR + 2,
-                }],
-                tracks: vec![TrackInfo {
-                    tno: 1,
-                    session: 1,
-                    control: DATA_TRACK,
-                    sector: LBA_START_SECTOR,
-                }],
-            },
-        }));
+        let cd = ScsiTargetCdrom {
+            backend: Some(Box::new(GatedBackend {
+                read: read.clone(),
+                check: check.clone(),
+                cdda: cdda.clone(),
+                disc_info: DiscInfo {
+                    capacity: 4096,
+                    sessions: vec![SessionInfo {
+                        number: 1,
+                        disc_type: 0,
+                        start: 0,
+                        leadout: LBA_START_SECTOR + 2,
+                    }],
+                    tracks: vec![TrackInfo {
+                        tno: 1,
+                        session: 1,
+                        control: DATA_TRACK,
+                        sector: LBA_START_SECTOR,
+                    }],
+                },
+            })),
+            ..Default::default()
+        };
         (cd, read, check, cdda)
     }
 
@@ -2624,7 +2634,7 @@ mod tests {
     fn image_read_finishes_at_once() {
         let dir = temp_dir("image_read");
         write_file(&dir, "disc.iso", 4096);
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.load(&dir.join("disc.iso")).unwrap();
 
         match read10(&mut cd) {
@@ -2753,7 +2763,7 @@ mod tests {
 
     #[test]
     fn unit_ready_without_a_disc_answers_at_once() {
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         assert!(matches!(
             test_unit_ready(&mut cd),
             ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -2816,7 +2826,7 @@ mod tests {
     fn read_toc_of_an_image_answers_at_once() {
         let dir = temp_dir("image_toc");
         write_file(&dir, "disc.iso", 4096);
-        let mut cd = ScsiTargetCdrom::new(None);
+        let mut cd = ScsiTargetCdrom::default();
         cd.load(&dir.join("disc.iso")).unwrap();
 
         match read_toc_cmd(&mut cd) {
@@ -3048,8 +3058,10 @@ mod tests {
 
     #[test]
     fn read_capacity_while_loading_is_becoming_ready() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: true })),
+            ..Default::default()
+        };
         let (result, key, asc) = cmd_with_sense(&mut cd, &READ_CAPACITY);
         assert!(matches!(
             result,
@@ -3061,8 +3073,10 @@ mod tests {
 
     #[test]
     fn read_capacity_without_a_disc_is_medium_not_present() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: false })),
+            ..Default::default()
+        };
         let (result, key, asc) = cmd_with_sense(&mut cd, &READ_CAPACITY);
         assert!(matches!(
             result,
@@ -3086,8 +3100,10 @@ mod tests {
 
     #[test]
     fn read10_while_loading_is_becoming_ready() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: true })),
+            ..Default::default()
+        };
         let (result, key, asc) = cmd_with_sense(&mut cd, &READ10_BLOCK0);
         assert!(matches!(
             result,
@@ -3099,8 +3115,10 @@ mod tests {
 
     #[test]
     fn read6_without_a_disc_is_medium_not_present() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: false })),
+            ..Default::default()
+        };
         let (result, key, asc) = cmd_with_sense(&mut cd, &[0x08, 0, 0, 0, 1, 0]);
         assert!(matches!(
             result,
@@ -3112,8 +3130,10 @@ mod tests {
 
     #[test]
     fn read10_past_block_0_without_a_disc_is_medium_not_present() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: false })),
+            ..Default::default()
+        };
         // No blocks, so block 5 is past the end of nothing
         let (result, key, asc) = cmd_with_sense(&mut cd, &[0x28, 0, 0, 0, 0, 5, 0, 0, 1, 0]);
         assert!(matches!(
@@ -3126,8 +3146,10 @@ mod tests {
 
     #[test]
     fn play_audio_while_loading_is_becoming_ready() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: true })),
+            ..Default::default()
+        };
         // PLAY AUDIO MSF from 00:02:00 to 00:03:00
         let (result, key, asc) = cmd_with_sense(&mut cd, &[0x47, 0, 0, 0, 2, 0, 0, 3, 0, 0]);
         assert!(matches!(
@@ -3140,8 +3162,10 @@ mod tests {
 
     #[test]
     fn audio_scan_while_loading_is_becoming_ready() {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let mut cd = ScsiTargetCdrom {
+            backend: Some(Box::new(LoadingBackend { loading: true })),
+            ..Default::default()
+        };
         let (result, key, asc) = cmd_with_sense(&mut cd, &[0xCD, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert!(matches!(
             result,
@@ -3165,9 +3189,10 @@ mod tests {
     }
 
     fn cdrom_with_failed_load() -> ScsiTargetCdrom {
-        let mut cd = ScsiTargetCdrom::new(None);
-        cd.backend = Some(Box::new(FailedLoadBackend(Some(anyhow!("no drive")))));
-        cd
+        ScsiTargetCdrom {
+            backend: Some(Box::new(FailedLoadBackend(Some(anyhow!("no drive"))))),
+            ..Default::default()
+        }
     }
 
     #[test]

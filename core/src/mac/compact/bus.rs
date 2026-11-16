@@ -10,6 +10,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
+use crate::devices::{BusOps, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -663,6 +664,14 @@ impl CompactMacBus {
     /// Where the frontend picks up the frames of the machine's video
     pub fn video_frames(&self) -> FrameReceiver {
         self.video.frames()
+    }
+
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI if self.model.has_scsi() => Some(self.scsi.bus_mut()),
+            _ => None,
+        }
     }
 
     fn plusmouse_tick(&mut self) {

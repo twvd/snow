@@ -3,22 +3,15 @@
 //! This models a SCSI bus independently from a controller.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-use crate::devices::{CdromFunction, FunctionInfo, FunctionMut};
+use crate::devices::{BusOps, DeviceOps, FunctionInfo, FunctionMut, MadeDevice};
 use crate::emulator::EmuContext;
-use crate::mac::scsi::cdrom::ScsiTargetCdrom;
-use crate::mac::scsi::disk::ScsiTargetDisk;
-use crate::mac::scsi::disk_image::DiskImage;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::ScsiTargetEthernet;
-#[cfg(feature = "printer")]
-use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::{
@@ -138,103 +131,6 @@ impl ScsiBus {
 
     pub fn set_shared_dir(&mut self, path: Option<PathBuf>) {
         self.toolbox = BlueSCSI::new(path);
-    }
-
-    /// Loads a disk image (filename) and attaches a hard drive at the given SCSI ID
-    pub fn attach_hdd_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        if !Path::new(filename).exists() {
-            bail!("File {} does not exist", filename.to_string_lossy());
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
-        self.ticking = None;
-        Ok(())
-    }
-
-    /// Attaches a disk backed by a custom disk image at the given SCSI ID.
-    pub(crate) fn attach_disk_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
-        self.ticking = None;
-        Ok(())
-    }
-
-    /// Attaches a CD-ROM drive at the given SCSI ID
-    pub fn attach_cdrom_at(
-        &mut self,
-        scsi_id: usize,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
-        self.ticking = None;
-    }
-
-    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
-    /// SCSI ID. The folder's images are exposed to the guest through the BlueSCSI
-    /// Toolbox CD commands (LIST_CDS / SET_NEXT_CD / COUNT_CDS) and the first
-    /// image found is mounted automatically.
-    pub fn attach_cdrom_folder_at(
-        &mut self,
-        scsi_id: usize,
-        dir: &Path,
-        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        let mut cdrom = ScsiTargetCdrom::new(audio_provider);
-        if let Err(e) = cdrom.set_folder(dir) {
-            log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
-        }
-        self.targets[scsi_id] = Some(Box::new(cdrom));
-        self.ticking = None;
-        Ok(())
-    }
-
-    /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.
-    pub fn insert_cdrom_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        if scsi_id >= Self::MAX_TARGETS {
-            bail!("SCSI ID out of range: {}", scsi_id);
-        }
-        let Some(target) = self.targets[scsi_id].as_mut() else {
-            bail!("No target attached at SCSI ID {}", scsi_id);
-        };
-        let FunctionMut::Cdrom(cdrom) = target.function() else {
-            bail!("No CD-ROM drive at SCSI ID {}", scsi_id);
-        };
-        cdrom.load_image(image)
-    }
-
-    /// Attaches an Ethernet adapter at the given SCSI ID
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
-        self.ticking = None;
-    }
-
-    /// Attaches a LaserWriter IISC printer at the given SCSI ID
-    #[cfg(feature = "printer")]
-    pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
-        self.ticking = None;
-    }
-
-    /// Detaches a target from the given SCSI ID
-    pub fn detach_target(&mut self, scsi_id: usize) {
-        self.targets[scsi_id] = None;
-        self.ticking = None;
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
@@ -465,6 +361,39 @@ impl Default for ScsiBus {
     }
 }
 
+/// The SCSI ID of a slot: the id of the slot is the ID, in decimal
+fn slot_number(slot: &str) -> Option<usize> {
+    (0..ScsiBus::MAX_TARGETS).find(|id| id.to_string() == slot)
+}
+
+impl BusOps for ScsiBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        let target = self.targets[slot_number(slot)?].as_mut()?;
+        // A SCSI target is a DeviceOps too
+        Some(&mut **target)
+    }
+
+    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
+        let id = slot_number(slot).context("No such SCSI ID")?;
+        let MadeDevice::Scsi(target) = device;
+        if self.targets[id].is_some() {
+            bail!("SCSI ID {} already has a device", id);
+        }
+        self.targets[id] = Some(target);
+        self.ticking = None;
+        Ok(())
+    }
+
+    fn detach(&mut self, slot: &str) -> Result<()> {
+        let id = slot_number(slot).context("No such SCSI ID")?;
+        if self.targets[id].take().is_none() {
+            bail!("SCSI ID {} has no device", id);
+        }
+        self.ticking = None;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,7 +469,8 @@ mod tests {
     #[test]
     fn command_that_does_not_pend_completes_at_once() {
         let mut bus = ScsiBus::new();
-        bus.attach_cdrom_at(0, None);
+        let cdrom = Box::new(crate::mac::scsi::cdrom::ScsiTargetCdrom::default());
+        bus.attach("0", MadeDevice::Scsi(cdrom)).unwrap();
         bus.sel_id = 0;
         // INQUIRY of 36 bytes
         bus.cmdbuf = vec![0x12, 0, 0, 0, 36, 0];
@@ -552,7 +482,8 @@ mod tests {
     /// A bus with a CD-ROM at ID 0, selected with this command
     fn bus_with_command(cmd: &[u8], lun: Option<u8>) -> ScsiBus {
         let mut bus = ScsiBus::new();
-        bus.attach_cdrom_at(0, None);
+        let cdrom = Box::new(crate::mac::scsi::cdrom::ScsiTargetCdrom::default());
+        bus.attach("0", MadeDevice::Scsi(cdrom)).unwrap();
         bus.sel_id = 0;
         bus.sel_lun = lun;
         bus.cmdbuf = cmd.to_vec();
