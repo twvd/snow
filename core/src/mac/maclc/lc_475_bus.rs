@@ -20,7 +20,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, bus_id};
+use crate::devices::{BusOps, DeviceOps, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -1015,7 +1015,14 @@ impl Lc475Bus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
-            _ => None,
+            // A bus that the card in the slot adds
+            _ => self
+                .iie_card
+                .as_mut()?
+                .extra_buses()
+                .into_iter()
+                .find(|(added, _)| added.id == bus)
+                .map(|(_, ops)| ops),
         }
     }
 

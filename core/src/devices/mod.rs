@@ -277,6 +277,14 @@ pub(crate) trait DeviceOps {
     fn debug_properties(&self) -> DebuggableProperties {
         vec![]
     }
+
+    /// The buses this device adds to the machine, as the Apple IIe Card adds its disk port:
+    /// each with its description, its slots empty, and the object that implements it. Called
+    /// to reach a bus whose id isn't one of the Mac model's, and when the list of buses is
+    /// built. None by default.
+    fn extra_buses(&mut self) -> Vec<(Bus, &mut dyn BusOps)> {
+        vec![]
+    }
 }
 
 #[cfg(test)]
