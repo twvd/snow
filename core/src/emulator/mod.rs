@@ -5,7 +5,6 @@ mod devices;
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::loaders::TwoImg;
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -35,7 +34,6 @@ use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
@@ -51,7 +49,7 @@ use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use log::*;
 use std::fmt;
 
@@ -1373,60 +1371,26 @@ impl Tickable for Emulator {
                         return Ok(0);
                     }
                     EmulatorCommand::InsertIieDisk(drive, path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header names the sector order, else
-                                // the extension does
-                                let (bytes, order) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
-                                            (img.data, DskOrder::Prodos)
-                                        }
-                                        Ok(img) => (img.data, DskOrder::Dos),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else if path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-                                {
-                                    (&bytes[..], DskOrder::Prodos)
-                                } else {
-                                    (&bytes[..], DskOrder::Dos)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
-                                            self.user_error(&format!(
-                                                "Cannot insert IIe disk '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
+                        let card = match &mut self.config {
+                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
+                            _ => None,
+                        };
+                        let result = match card {
+                            Some(card) => match card.drive_525(drive) {
+                                Some(floppy) => floppy.load(&path, true),
+                                None => Err(anyhow!(
+                                    "Cannot insert IIe disk '{}': 5.25\" drive {} is not connected",
                                     path.display(),
-                                    e
-                                ));
-                            }
+                                    drive + 1
+                                )),
+                            },
+                            None => Err(anyhow!("No Apple IIe Card installed")),
+                        };
+                        if let Err(e) = result {
+                            self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
@@ -1450,57 +1414,30 @@ impl Tickable for Emulator {
                             EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                             _ => None,
                         };
-                        if let Some(card) = card {
-                            card.eject_disk(drive);
+                        if let Some(floppy) = card.and_then(|card| card.drive_525(drive)) {
+                            floppy.eject();
                         }
                     }
                     EmulatorCommand::InsertIieUniDisk(path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header carries the lock flag; a
-                                // raw image is the blocks alone
-                                let (data, locked) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) => (img.data.to_vec(), img.locked),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    (bytes, false)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_unidisk(data, locked) {
-                                            self.user_error(&format!(
-                                                "Cannot insert UniDisk 3.5 image '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
+                        let card = match &mut self.config {
+                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
+                            _ => None,
+                        };
+                        let result = match card {
+                            Some(card) => match card.unidisk() {
+                                Some(floppy) => floppy.load(&path, false),
+                                None => Err(anyhow!(
+                                    "Cannot insert UniDisk 3.5 image '{}': no UniDisk 3.5 is connected",
+                                    path.display()
+                                )),
+                            },
+                            None => Err(anyhow!("No Apple IIe Card installed")),
+                        };
+                        if let Err(e) = result {
+                            self.user_error(&format!("{:#}", e));
                         }
                         self.status_update()?;
                     }
@@ -1512,8 +1449,8 @@ impl Tickable for Emulator {
                             EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
                             _ => None,
                         };
-                        if let Some(card) = card {
-                            card.eject_unidisk();
+                        if let Some(floppy) = card.and_then(|card| card.unidisk()) {
+                            floppy.eject();
                         }
                     }
                     EmulatorCommand::InsertFloppyImage(bus, slot, img, wp) => {
