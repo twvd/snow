@@ -1,16 +1,18 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
+use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
 
 use super::WeakBitRng;
 use crate::debuggable::Debuggable;
+use crate::devices::{FloppyFunction, FloppyStatus};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 
@@ -219,14 +221,14 @@ pub(crate) struct FloppyDrive {
     pub(crate) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
-    pub(crate) floppy_inserted: bool,
-    pub(crate) track: usize,
+    pub(super) floppy_inserted: bool,
+    pub(super) track: usize,
     stepdir: HeadStepDirection,
-    pub(crate) motor: bool,
-    pub(crate) floppy: FloppyImage,
+    pub(super) motor: bool,
+    pub(super) floppy: FloppyImage,
 
     /// Copy of last ejected floppy image
-    pub(crate) floppy_ejected: Option<Box<FloppyImage>>,
+    floppy_ejected: Option<Box<FloppyImage>>,
     pub(super) track_position: usize,
 
     /// True if disk was switched without eject
@@ -254,7 +256,7 @@ pub(crate) struct FloppyDrive {
     pub(super) pwm_dutycycle: Ticks,
 
     /// RPM adjustment for PWM-controlled drives
-    pub(crate) rpm_adjustment: i32,
+    rpm_adjustment: i32,
 
     /// Cached ticks-per-bit
     ticks_per_bit: Ticks,
@@ -265,22 +267,22 @@ pub(crate) struct FloppyDrive {
     /// Source file path of the currently inserted image, if it was loaded
     /// from a writeback-capable file. Cleared on eject.
     #[serde(skip)]
-    pub(crate) image_path: Option<PathBuf>,
+    image_path: Option<PathBuf>,
 
     /// Per-drive writeback opt-in. Only meaningful when [`Self::image_path`]
     /// is set and `floppy.supports_writeback()`.
     #[serde(skip)]
-    pub(crate) writeback_enabled: bool,
+    writeback_enabled: bool,
 
     /// Set by [`DriveWriteReg::MOTOROFF`] when a writeback save is due. The
-    /// emulator polls this and clears it after attempting the save.
+    /// next [`FloppyFunction::write_back`] does the save and clears it.
     #[serde(skip)]
-    pub(crate) pending_writeback: bool,
+    pending_writeback: bool,
 
     /// Path to save [`Self::floppy_ejected`] to: set when a disk with unsaved
     /// writes and writeback armed is ejected
     #[serde(skip)]
-    pub(crate) eject_writeback: Option<PathBuf>,
+    eject_writeback: Option<PathBuf>,
 }
 
 impl FloppyDrive {
@@ -516,7 +518,10 @@ impl FloppyDrive {
     }
 
     /// Inserts a disk into the disk drive
-    pub fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
+    pub(super) fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
+        if !self.is_present() {
+            bail!("Cannot insert disk: Drive {} not present", self.idx);
+        }
         info!(
             "Drive {}: disk inserted, {} tracks, title: '{}'",
             self.idx,
@@ -584,7 +589,7 @@ impl FloppyDrive {
         self.ticks_per_bit
     }
 
-    pub(crate) fn update_ticks_per_bit(&mut self) {
+    pub(super) fn update_ticks_per_bit(&mut self) {
         self.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
             Ticks::MAX
         } else {
@@ -659,8 +664,87 @@ impl FloppyDrive {
             .set_track_bit(head, self.track, self.track_position, bit);
     }
 
-    /// Ejects the disk
-    pub fn eject(&mut self) {
+    /// Saves the disk that was ejected with unsaved writes to the file it
+    /// came from, if the eject armed it
+    fn write_back_ejected(&mut self) -> Result<()> {
+        let Some(path) = self.eject_writeback.take() else {
+            return Ok(());
+        };
+        let Some(image) = self.floppy_ejected.as_deref() else {
+            return Ok(());
+        };
+
+        let name = file_name(&path);
+        write_image(&path, image)
+            .with_context(|| format!("writeback of ejected disk to '{}' failed", name))?;
+        info!(
+            "Floppy #{}: writeback saved ejected disk '{}'",
+            self.idx + 1,
+            name
+        );
+        Ok(())
+    }
+
+    /// Saves the disk in the drive to the file it came from, if writeback is
+    /// armed and a save is due. Clears the dirty flag on success.
+    fn write_back_inserted(&mut self, force: bool) -> Result<()> {
+        if !self.writeback_enabled || !(force || self.pending_writeback) || !self.floppy.is_dirty()
+        {
+            return Ok(());
+        }
+        let Some(path) = self.image_path.clone() else {
+            return Ok(());
+        };
+        self.pending_writeback = false;
+
+        let name = file_name(&path);
+        write_image(&path, &self.floppy)
+            .with_context(|| format!("writeback to '{}' failed", name))?;
+        self.floppy.clear_dirty();
+        info!("Floppy #{}: writeback auto-saved '{}'", self.idx + 1, name);
+        Ok(())
+    }
+}
+
+/// Writes a disk image to a file, in the format it was loaded from
+fn write_image(path: &Path, image: &FloppyImage) -> Result<()> {
+    crate::util::atomic_write(path, |f| snow_floppy::loaders::save_image(image, f))
+}
+
+/// The name of an image file, for messages
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+impl FloppyFunction for FloppyDrive {
+    fn status(&self) -> FloppyStatus {
+        FloppyStatus {
+            title: self.floppy.get_title().to_owned(),
+            ejected: !self.floppy_inserted,
+            dirty: self.floppy.is_dirty(),
+            writeback_supported: self.image_path.is_some() && self.floppy.supports_writeback(),
+            writeback_enabled: self.writeback_enabled,
+        }
+    }
+
+    fn load(&mut self, path: &Path, read_only: bool) -> Result<()> {
+        let mut image = Autodetect::load_file(&path.to_string_lossy())
+            .map_err(|e| anyhow!("Cannot load image '{}': {:?}", path.display(), e))?;
+        if read_only {
+            image.set_force_wp();
+        }
+        let writeback_path = image.supports_writeback().then(|| path.to_path_buf());
+        self.disk_insert(image)?;
+        self.image_path = writeback_path;
+        self.writeback_enabled = false;
+        self.pending_writeback = false;
+        Ok(())
+    }
+
+    fn eject(&mut self) {
         info!("Drive {}: disk ejected", self.idx);
         self.switched = true;
         self.floppy_inserted = false;
@@ -680,8 +764,43 @@ impl FloppyDrive {
         self.pending_writeback = false;
     }
 
-    pub(crate) fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
+    fn insert_image(&mut self, mut image: Box<FloppyImage>, read_only: bool) -> Result<()> {
+        if read_only {
+            image.set_force_wp();
+        }
+        self.disk_insert(*image)
+    }
+
+    fn save(&mut self, path: &Path) -> Result<()> {
+        Moof::save_file(&self.floppy, &path.to_string_lossy())
+    }
+
+    fn set_writeback(&mut self, enabled: bool) -> Result<()> {
+        if enabled && (self.image_path.is_none() || !self.floppy.supports_writeback()) {
+            bail!("Writeback unavailable: image was not loaded from a writeback-capable file");
+        }
+        self.writeback_enabled = enabled;
+        self.pending_writeback = false;
+        Ok(())
+    }
+
+    fn write_back(&mut self, force: bool) -> Result<()> {
+        let ejected = self.write_back_ejected();
+        let inserted = self.write_back_inserted(force);
+        ejected.and(inserted)
+    }
+
+    fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
         self.floppy_ejected.take()
+    }
+
+    fn set_rpm_adjustment(&mut self, rpm: i32) -> Result<()> {
+        if !self.drive_type.has_pwm_control() {
+            bail!("The speed of this drive can't be adjusted");
+        }
+        self.rpm_adjustment = rpm;
+        self.update_ticks_per_bit();
+        Ok(())
     }
 }
 
@@ -808,5 +927,212 @@ mod tests {
         drv.eject();
         assert_eq!(drv.eject_writeback, Some(PathBuf::from("disk.img")));
         assert!(drv.floppy_ejected.is_some());
+    }
+
+    /// A folder of its own for a test, removed when the test is done
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("snow_drive_{}_{}", name, std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        /// A blank 800K disk in a MOOF file, a format that can be written back
+        fn moof(&self) -> PathBuf {
+            let path = self.0.join("disk.moof");
+            Moof::save_file(
+                &FloppyImage::new(FloppyType::Mac800K, "disk"),
+                &path.to_string_lossy(),
+            )
+            .unwrap();
+            path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The bit under the head of a drive that was just made, as an image file has it
+    fn file_bit(path: &Path) -> bool {
+        let image = Autodetect::load_file(&path.to_string_lossy()).unwrap();
+        image.get_track_bit(0, 4, 0)
+    }
+
+    /// Writes the bit under the head of a drive that was just made, changing its value, and
+    /// returns the new value. A blank disk is filled with noise.
+    fn flip_bit(drv: &mut FloppyDrive) -> bool {
+        let bit = !drv.floppy.get_track_bit(0, 4, 0);
+        drv.write_bit(0, bit);
+        bit
+    }
+
+    const MOTOROFF: u8 = 0b1100;
+
+    #[test]
+    fn load_puts_the_disk_of_a_file_in_the_drive() {
+        let dir = TestDir::new("load");
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        assert!(drv.status().ejected);
+
+        drv.load(&dir.moof(), false).unwrap();
+        let status = drv.status();
+        assert!(!status.ejected);
+        assert!(!status.dirty);
+        assert!(status.writeback_supported);
+        assert!(!status.writeback_enabled);
+        assert!(!drv.floppy.get_write_protect());
+
+        drv.load(&dir.moof(), true).unwrap();
+        assert!(drv.floppy.get_write_protect());
+    }
+
+    #[test]
+    fn load_refuses_a_missing_file_and_a_missing_drive() {
+        let dir = TestDir::new("refuse");
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let e = drv.load(&dir.0.join("none.moof"), false).unwrap_err();
+        assert!(e.to_string().starts_with("Cannot load image"));
+        assert!(drv.status().ejected);
+
+        let mut none = FloppyDrive::new(1, DriveType::None, BASE_FREQUENCY);
+        let e = none.load(&dir.moof(), false).unwrap_err();
+        assert_eq!(e.to_string(), "Cannot insert disk: Drive 1 not present");
+        let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
+        assert!(none.insert_image(image, false).is_err());
+    }
+
+    #[test]
+    fn eject_hands_over_the_image_once() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let image = Box::new(FloppyImage::new(FloppyType::Mac800K, "blank"));
+        drv.insert_image(image, false).unwrap();
+        assert_eq!(drv.status().title, "blank");
+        assert!(drv.take_ejected_image().is_none());
+
+        drv.eject();
+        assert!(drv.status().ejected);
+        assert_eq!(drv.take_ejected_image().unwrap().get_title(), "blank");
+        assert!(drv.take_ejected_image().is_none());
+    }
+
+    #[test]
+    fn insert_image_has_no_file_to_write_back_to() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
+        drv.insert_image(image, true).unwrap();
+        assert!(drv.floppy.get_write_protect());
+        assert!(!drv.status().writeback_supported);
+        assert!(drv.set_writeback(true).is_err());
+        assert!(!drv.status().writeback_enabled);
+        // Turning it off is never refused
+        drv.set_writeback(false).unwrap();
+    }
+
+    #[test]
+    fn save_writes_an_image_file() {
+        let dir = TestDir::new("save");
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        let image = Box::new(FloppyImage::new(FloppyType::Mac800K, ""));
+        drv.insert_image(image, false).unwrap();
+        let bit = flip_bit(&mut drv);
+
+        let path = dir.0.join("saved.moof");
+        drv.save(&path).unwrap();
+        assert_eq!(file_bit(&path), bit);
+    }
+
+    #[test]
+    fn writeback_saves_when_the_motor_stops() {
+        let dir = TestDir::new("motor");
+        let path = dir.moof();
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.load(&path, false).unwrap();
+        drv.set_writeback(true).unwrap();
+        assert!(drv.status().writeback_enabled);
+
+        // The disk still turns: nothing is saved yet
+        let bit = flip_bit(&mut drv);
+        drv.write_back(false).unwrap();
+        assert!(drv.status().dirty);
+        assert_eq!(file_bit(&path), !bit);
+
+        drv.write_drive_reg(MOTOROFF);
+        drv.write_back(false).unwrap();
+        assert!(!drv.status().dirty);
+        assert_eq!(file_bit(&path), bit);
+    }
+
+    #[test]
+    fn writeback_saves_a_turning_disk_when_forced() {
+        let dir = TestDir::new("force");
+        let path = dir.moof();
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.load(&path, false).unwrap();
+
+        // Without writeback, nothing is saved
+        let bit = flip_bit(&mut drv);
+        drv.write_back(true).unwrap();
+        assert!(drv.status().dirty);
+        assert_eq!(file_bit(&path), !bit);
+
+        drv.set_writeback(true).unwrap();
+        drv.write_back(true).unwrap();
+        assert!(!drv.status().dirty);
+        assert_eq!(file_bit(&path), bit);
+    }
+
+    #[test]
+    fn writeback_saves_an_ejected_disk() {
+        let dir = TestDir::new("ejected");
+        let path = dir.moof();
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.load(&path, false).unwrap();
+        drv.set_writeback(true).unwrap();
+        let bit = flip_bit(&mut drv);
+
+        drv.eject();
+        assert_eq!(file_bit(&path), !bit);
+        drv.write_back(false).unwrap();
+        assert_eq!(file_bit(&path), bit);
+        // The ejected disk took its file and its writeback with it
+        assert!(!drv.status().writeback_enabled);
+        assert!(!drv.status().writeback_supported);
+    }
+
+    #[test]
+    fn writeback_reports_a_failed_save() {
+        let dir = TestDir::new("failed");
+        let path = dir.moof();
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.load(&path, false).unwrap();
+        drv.set_writeback(true).unwrap();
+        flip_bit(&mut drv);
+        drv.write_drive_reg(MOTOROFF);
+
+        // The folder of the file is gone
+        std::fs::remove_dir_all(&dir.0).unwrap();
+        let e = drv.write_back(false).unwrap_err();
+        assert_eq!(e.to_string(), "writeback to 'disk.moof' failed");
+        assert!(drv.status().dirty);
+        // It is tried again at the next stop of the motor, not before
+        drv.write_back(false).unwrap();
+    }
+
+    #[test]
+    fn rpm_adjustment_only_on_a_drive_with_speed_control() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR400K, BASE_FREQUENCY);
+        drv.pwm_dutycycle = 50;
+        let rpm = drv.get_track_rpm();
+        drv.set_rpm_adjustment(10).unwrap();
+        assert_eq!(drv.get_track_rpm(), rpm + 10);
+
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        assert!(drv.set_rpm_adjustment(10).is_err());
     }
 }

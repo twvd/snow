@@ -10,15 +10,15 @@ pub mod iwm;
 use std::cell::Cell;
 use std::collections::VecDeque;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use ism::{IsmError, IsmSetup, IsmStatus};
 use rand::Rng;
 
 use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
 use serde::{Deserialize, Serialize};
+use snow_floppy::Floppy;
 use snow_floppy::flux::FluxTicks;
-use snow_floppy::{Floppy, FloppyImage};
 
 use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
 use crate::bus::{Address, BusMember};
@@ -368,25 +368,12 @@ impl Swim {
         }
     }
 
-    pub fn is_writing(&self) -> bool {
-        self.write_buffer.is_some()
-    }
-
     fn get_selected_drive(&self) -> &FloppyDrive {
         &self.drives[self.get_selected_drive_idx()]
     }
 
     fn get_selected_drive_mut(&mut self) -> &mut FloppyDrive {
         &mut self.drives[self.get_selected_drive_idx()]
-    }
-
-    /// Inserts a disk into the disk drive
-    pub fn disk_insert(&mut self, drive: usize, image: FloppyImage) -> Result<()> {
-        if !self.drives[drive].is_present() {
-            bail!("Drive {} not present", drive);
-        }
-
-        self.drives[drive].disk_insert(image)
     }
 
     /// Gets the active (selected) drive head
@@ -418,10 +405,6 @@ impl Swim {
             v |= 0b0001;
         };
         v
-    }
-
-    pub fn get_active_image(&self, drive: usize) -> &FloppyImage {
-        &self.drives[drive].floppy
     }
 }
 
