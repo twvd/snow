@@ -20,17 +20,6 @@ use crate::tickable::Ticks;
 //
 // [SPC-3]: <https://13thmonkey.org/documentation/SCSI/spc3r23.pdf>
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-/// Enumeration of supported emulated SCSI target types (devices)
-pub enum ScsiTargetType {
-    Disk,
-    Cdrom,
-    #[cfg(feature = "ethernet")]
-    Ethernet,
-    #[cfg(feature = "printer")]
-    Printer,
-}
-
 /// Some events that may occur to feed to the UI through EmulatorEvent
 pub enum ScsiTargetEvent {
     MediaEjected,
@@ -94,7 +83,6 @@ pub(crate) trait ScsiTarget: Send + Debuggable + DeviceOps {
     fn set_blocksize(&mut self, blocksize: usize) -> bool;
     fn take_event(&mut self) -> Option<ScsiTargetEvent>;
 
-    fn target_type(&self) -> ScsiTargetType;
     fn unit_ready(&mut self) -> Result<ScsiCmdResult>;
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult>;
     fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>>;
@@ -327,10 +315,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable + DeviceOps {
             0x1A => {
                 // MODE SENSE(6)
                 let Some(blocksize) = self.blocksize() else {
-                    log::error!(
-                        "MODE SENSE on non-block device type {:?}",
-                        self.target_type()
-                    );
+                    log::error!("MODE SENSE on non-block device type {}", self.info().name);
                     self.common().set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
@@ -495,10 +480,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable + DeviceOps {
             0x5A => {
                 // MODE SENSE(10)
                 let Some(blocksize) = self.blocksize() else {
-                    log::error!(
-                        "MODE SENSE on non-block device type {:?}",
-                        self.target_type()
-                    );
+                    log::error!("MODE SENSE on non-block device type {}", self.info().name);
                     self.common().set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };

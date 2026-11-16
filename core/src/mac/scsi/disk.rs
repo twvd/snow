@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::debuggable::Debuggable;
 use crate::devices::{
     BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
-    HardDiskFunction, HardDiskStatus, MadeDevice, ModelInfo,
+    HardDiskConfig, HardDiskFunction, HardDiskStatus, MadeDevice, ModelInfo,
 };
 use crate::mac::scsi::ASC_INVALID_COMMAND;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
@@ -17,7 +17,6 @@ use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
-use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon};
 
 pub const DISK_BLOCKSIZE: usize = 512;
@@ -95,6 +94,12 @@ impl DeviceOps for ScsiTargetDisk {
         &INFO
     }
 
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::HardDisk(HardDiskConfig {
+            media: self.status().media,
+        })
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::HardDisk(self)
     }
@@ -140,10 +145,6 @@ impl ScsiTarget for ScsiTargetDisk {
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
         None
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Disk
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
@@ -410,10 +411,13 @@ mod tests {
             }
         );
 
+        // The Config follows the image file
         function(&mut disk).branch(Path::new("branch.img")).unwrap();
+        let branch = Some(PathBuf::from("branch.img"));
+        assert_eq!(function(&mut disk).status().media, branch);
         assert_eq!(
-            function(&mut disk).status().media,
-            Some(PathBuf::from("branch.img"))
+            disk.config(),
+            FunctionConfig::HardDisk(HardDiskConfig { media: branch })
         );
     }
 

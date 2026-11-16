@@ -2,17 +2,17 @@
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    BusKind, DeviceConfig, DeviceModel, DeviceOps, EthernetFunction, EthernetInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, EthernetConfig, EthernetFunction, EthernetInfo,
     EthernetLinkType, EthernetStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice,
-    ModelInfo, new_ethernet_address,
+    ModelInfo,
 };
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent};
 use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use binrw::{BinWrite, binrw};
 #[cfg(any(
     feature = "ethernet_raw",
@@ -717,10 +717,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         None
     }
 
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Ethernet
-    }
-
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
         Ok(ScsiCmdResult::Status(STATUS_GOOD))
     }
@@ -966,21 +962,33 @@ const ETHERNET: EthernetInfo = EthernetInfo {
 };
 
 /// Makes an adapter with its link down. The emulator sets the link of the config once the
-/// adapter is in its slot: a link that can't start doesn't cost the adapter. An adapter with no
-/// address in its config gets a random one.
+/// adapter is in its slot: a link that can't start doesn't cost the adapter. The emulator gives
+/// an address to a config that has none.
 fn create(config: &DeviceConfig) -> Result<MadeDevice> {
     let FunctionConfig::Ethernet(ethernet) = &config.function else {
         anyhow::bail!("An Ethernet adapter needs an Ethernet adapter's config");
     };
     let mac = ethernet
         .mac
-        .unwrap_or_else(|| new_ethernet_address(ETHERNET.oui, &[]));
+        .context("An Ethernet adapter needs an Ethernet address")?;
     Ok(MadeDevice::Scsi(Box::new(ScsiTargetEthernet::new(mac))))
 }
 
 impl DeviceOps for ScsiTargetEthernet {
     fn info(&self) -> &'static ModelInfo {
         &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        // The address it was made with, or the random one it got
+        FunctionConfig::Ethernet(EthernetConfig {
+            mac: Some(self.macaddress),
+            link: self.link.clone(),
+        })
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(INFO.name.to_string())
     }
 
     fn function(&mut self) -> FunctionMut<'_> {

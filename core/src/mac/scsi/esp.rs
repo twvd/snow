@@ -983,10 +983,7 @@ impl Debuggable for Esp {
         let mut targets = vec![];
         for (id, o_t) in self.bus.targets.iter().enumerate() {
             if let Some(t) = o_t {
-                targets.push(dbgprop_nest!(
-                    format!("ID #{} - {:?}", id, t.target_type()),
-                    t
-                ));
+                targets.push(dbgprop_nest!(format!("ID #{} - {}", id, t.info().name), t));
             } else {
                 targets.push(dbgprop_group!(format!("ID #{} - (no device)", id), vec![]));
             }

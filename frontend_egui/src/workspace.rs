@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::emulator::{EmulatorInitArgs, ScsiTarget};
+use crate::emulator::EmulatorInitArgs;
 use crate::joystick::JoyBindings;
 use crate::shader_pipeline::ShaderConfig;
 use crate::util::relativepath::RelativePath;
@@ -11,10 +11,14 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+#[cfg(feature = "printer")]
+use snow_core::devices::PrinterConfig;
+use snow_core::devices::{
+    CdromConfig, DeviceConfig, DeviceModel, FunctionConfig, HardDiskConfig, bus_id,
+};
 #[cfg(feature = "ethernet")]
-use snow_core::devices::EthernetLinkType;
+use snow_core::devices::{EthernetConfig, EthernetLinkType};
 use snow_core::mac::MacModel;
-use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
@@ -60,90 +64,6 @@ pub enum WorkspaceScsiTarget {
     // workspaces on builds without the ethernet feature
     Ethernet,
     Printer,
-}
-
-impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
-    type Error = ();
-
-    fn try_from(value: ScsiTarget) -> std::result::Result<Self, Self::Error> {
-        Ok(match value.target_type.ok_or(())? {
-            ScsiTargetType::Disk => {
-                Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
-            }
-            ScsiTargetType::Cdrom => match value.cdrom_folder {
-                Some(dir) => Self::CdromFolder(RelativePath::from_absolute(&dir)),
-                None => Self::Cdrom,
-            },
-            #[cfg(feature = "ethernet")]
-            ScsiTargetType::Ethernet => Self::Ethernet,
-            #[cfg(feature = "printer")]
-            ScsiTargetType::Printer => Self::Printer,
-        })
-    }
-}
-
-impl TryFrom<Option<ScsiTarget>> for WorkspaceScsiTarget {
-    type Error = ();
-
-    fn try_from(value: Option<ScsiTarget>) -> std::result::Result<Self, Self::Error> {
-        match value {
-            None => Ok(Self::None),
-            Some(v) => Self::try_from(v),
-        }
-    }
-}
-
-// The opposite is not infallible
-#[allow(clippy::from_over_into)]
-impl Into<ScsiTarget> for WorkspaceScsiTarget {
-    fn into(self) -> ScsiTarget {
-        match self {
-            Self::None => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::Cdrom => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::CdromFolder(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: Some(p.get_absolute()),
-            },
-            Self::Disk(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Disk),
-                image_path: Some(p.get_absolute()),
-                cdrom_folder: None,
-            },
-            #[cfg(feature = "ethernet")]
-            Self::Ethernet => ScsiTarget {
-                target_type: Some(ScsiTargetType::Ethernet),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(not(feature = "ethernet"))]
-            Self::Ethernet => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(feature = "printer")]
-            Self::Printer => ScsiTarget {
-                target_type: Some(ScsiTargetType::Printer),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(not(feature = "printer"))]
-            Self::Printer => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-        }
-    }
 }
 
 /// Workspace variant of link mode for ethernet device
@@ -549,12 +469,87 @@ impl Workspace {
         Ok(serde_json::to_writer_pretty(file, self)?)
     }
 
-    pub fn scsi_targets(&self) -> [ScsiTarget; 7] {
-        core::array::from_fn(|i| self.scsi_targets[i].clone().into())
+    /// The SCSI devices of the workspace, as device configs. The id of a SCSI slot is the
+    /// SCSI ID, in decimal.
+    pub fn scsi_devices(&self) -> Vec<DeviceConfig> {
+        let mut devices = vec![];
+        for (id, target) in self.scsi_targets.iter().enumerate() {
+            let (model, function) = match target {
+                WorkspaceScsiTarget::None => continue,
+                WorkspaceScsiTarget::Disk(p) => (
+                    DeviceModel::ScsiHardDisk,
+                    FunctionConfig::HardDisk(HardDiskConfig {
+                        media: Some(p.get_absolute()),
+                    }),
+                ),
+                WorkspaceScsiTarget::Cdrom => (
+                    DeviceModel::ScsiCdrom,
+                    FunctionConfig::Cdrom(CdromConfig::default()),
+                ),
+                WorkspaceScsiTarget::CdromFolder(p) => (
+                    DeviceModel::ScsiCdrom,
+                    FunctionConfig::Cdrom(CdromConfig {
+                        folder: Some(p.get_absolute()),
+                    }),
+                ),
+                #[cfg(feature = "ethernet")]
+                // The workspace keeps no address: the adapter gets a random one
+                WorkspaceScsiTarget::Ethernet => (
+                    DeviceModel::DaynaPortScsiLink,
+                    FunctionConfig::Ethernet(EthernetConfig {
+                        mac: None,
+                        link: self.get_ethernet_link_type(),
+                    }),
+                ),
+                #[cfg(not(feature = "ethernet"))]
+                WorkspaceScsiTarget::Ethernet => continue,
+                #[cfg(feature = "printer")]
+                WorkspaceScsiTarget::Printer => (
+                    DeviceModel::LaserWriterIISC,
+                    FunctionConfig::Printer(PrinterConfig {
+                        output_dir: Some(crate::emulator::default_print_dir()),
+                    }),
+                ),
+                #[cfg(not(feature = "printer"))]
+                WorkspaceScsiTarget::Printer => continue,
+            };
+            devices.push(DeviceConfig {
+                bus: bus_id::SCSI.into(),
+                slot: id.to_string(),
+                model: Some(model),
+                rom: None,
+                function,
+            });
+        }
+        devices
     }
 
-    pub fn set_scsi_target(&mut self, id: usize, target: impl Into<ScsiTarget>) {
-        self.scsi_targets[id] = target.into().try_into().unwrap_or_default();
+    /// Takes the SCSI devices of a machine, from its device configs
+    pub fn set_scsi_devices(&mut self, devices: &[DeviceConfig]) {
+        self.scsi_targets = Default::default();
+        for config in devices.iter().filter(|c| c.bus == bus_id::SCSI) {
+            let target = match &config.function {
+                FunctionConfig::HardDisk(HardDiskConfig { media: Some(p) }) => {
+                    WorkspaceScsiTarget::Disk(RelativePath::from_absolute(p))
+                }
+                // A disk whose image isn't a file can't be saved
+                FunctionConfig::HardDisk(_) => WorkspaceScsiTarget::None,
+                FunctionConfig::Cdrom(CdromConfig { folder: Some(p) }) => {
+                    WorkspaceScsiTarget::CdromFolder(RelativePath::from_absolute(p))
+                }
+                FunctionConfig::Cdrom(_) => WorkspaceScsiTarget::Cdrom,
+                FunctionConfig::Ethernet(_) => WorkspaceScsiTarget::Ethernet,
+                FunctionConfig::Printer(_) => WorkspaceScsiTarget::Printer,
+            };
+            if let Some(slot) = config
+                .slot
+                .parse::<usize>()
+                .ok()
+                .and_then(|id| self.scsi_targets.get_mut(id))
+            {
+                *slot = target;
+            }
+        }
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {

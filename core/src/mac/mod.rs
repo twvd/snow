@@ -7,9 +7,11 @@ use swim::drive::DriveType;
 
 use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
+use crate::devices::{Bus, BusKind, bus_id};
 use crate::keymap::Keymap;
 use crate::renderer::FrameReceiver;
 use crate::tickable::Ticks;
+use scsi::bus::ScsiBus;
 
 pub mod adb;
 pub mod compact;
@@ -341,6 +343,21 @@ impl MacModel {
             | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
             Self::LCIII | Self::LC475 | Self::Quadra800 => &[DriveType::SuperDrive],
         }
+    }
+
+    /// The buses this Mac model has before any optional device is added, with the device each
+    /// slot has without being asked. A description only: no machine needs to exist.
+    pub fn buses(self) -> Vec<Bus> {
+        let mut buses = vec![];
+        if self.has_scsi() {
+            buses.push(Bus::new(
+                BusKind::Scsi,
+                bus_id::SCSI,
+                "SCSI",
+                &ScsiBus::SLOT_IDS,
+            ));
+        }
+        buses
     }
 
     pub const fn has_scsi(self) -> bool {

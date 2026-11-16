@@ -235,7 +235,7 @@ impl LcIIIBus {
             .unwrap_or_else(|_| null_audio_sink());
         self.sound.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Finds what an address selects
