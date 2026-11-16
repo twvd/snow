@@ -13,16 +13,28 @@ use anyhow::{Context, Result, bail};
 use log::*;
 
 use super::Emulator;
-use super::comm::{EmulatorEvent, FddStatus};
+use super::comm::EmulatorEvent;
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
     Bus, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FloppyFunction,
-    FunctionConfig, FunctionInfo, FunctionMut, FunctionStatus, HardDiskConfig, bus_id,
-    device_configs, models_for, new_ethernet_address,
+    FunctionConfig, FunctionInfo, FunctionMut, HardDiskConfig, Slot, bus_id, device_configs,
+    models_for, new_ethernet_address,
 };
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::drive::DriveType;
+
+/// The slots of a list of buses that hold a floppy drive
+fn floppy_slots(buses: &[Bus]) -> impl Iterator<Item = (&Bus, &Slot)> {
+    buses
+        .iter()
+        .flat_map(|bus| bus.slots.iter().map(move |slot| (bus, slot)))
+        .filter(|(_, slot)| {
+            slot.device
+                .as_ref()
+                .is_some_and(|d| matches!(d.model.info().function, FunctionInfo::Floppy(_)))
+        })
+}
 
 impl Emulator {
     /// The device in a slot, seen through its function
@@ -107,8 +119,15 @@ impl Emulator {
         }
     }
 
-    pub(super) fn load_media(&mut self, bus: &str, slot: &str, path: &Path) -> Result<()> {
+    pub(super) fn load_media(
+        &mut self,
+        bus: &str,
+        slot: &str,
+        path: &Path,
+        read_only: bool,
+    ) -> Result<()> {
         match self.function_in(bus, slot)? {
+            FunctionMut::Floppy(floppy) => floppy.load(path, read_only),
             FunctionMut::Cdrom(cdrom) => cdrom.load(path),
             _ => bail!("This device takes no media"),
         }
@@ -128,50 +147,71 @@ impl Emulator {
         }
     }
 
-    /// The floppy drive on a connector of the floppy controller, by its number
-    pub(super) fn floppy(&mut self, drive: usize) -> Result<&mut dyn FloppyFunction> {
-        let device = self
-            .config
-            .swim_mut()
-            .drive_at(drive)
-            .with_context(|| format!("Cannot insert disk: Drive {} not present", drive))?;
-        match device.function() {
+    /// The floppy drive in a slot
+    pub(super) fn floppy_in(&mut self, bus: &str, slot: &str) -> Result<&mut dyn FloppyFunction> {
+        match self.function_in(bus, slot)? {
             FunctionMut::Floppy(floppy) => Ok(floppy),
-            _ => bail!("Not a floppy drive"),
+            _ => bail!("This device isn't a floppy drive"),
         }
     }
 
-    /// The state of the floppy drive on a connector, for `EmulatorStatus`
-    pub(super) fn fdd_status(&mut self, drive: usize) -> FddStatus {
-        let Some(device) = self.config.swim_mut().drive_at(drive) else {
-            return FddStatus {
-                present: false,
-                ejected: true,
-                image_title: String::new(),
-                dirty: false,
-                drive_type: DriveType::None,
-                writeback_supported: false,
-                writeback_enabled: false,
-            };
-        };
-        let drive_type = match device.info().model {
-            DeviceModel::Mac400KDrive => DriveType::GCR400K,
-            DeviceModel::Mac800KDrive => DriveType::GCR800K,
-            DeviceModel::Mac800KPwmDrive => DriveType::GCR800KPWM,
-            DeviceModel::MacSuperDrive => DriveType::SuperDrive,
-            _ => DriveType::None,
-        };
-        let FunctionStatus::Floppy(status) = device.function().status() else {
-            unreachable!()
-        };
-        FddStatus {
-            present: true,
-            ejected: status.ejected,
-            image_title: status.title,
-            dirty: status.dirty,
-            drive_type,
-            writeback_supported: status.writeback_supported,
-            writeback_enabled: status.writeback_enabled,
+    /// Writes the disk of a floppy drive back to the file it came from, if a save is due or
+    /// `force` is set, and reports a failed save to the user
+    pub(super) fn floppy_write_back(&mut self, bus: &str, slot: &str, force: bool) {
+        if let Ok(floppy) = self.floppy_in(bus, slot)
+            && let Err(e) = floppy.write_back(force)
+        {
+            self.user_error(&format!("{}: {:#}", self.slot_label(bus, slot), e));
+        }
+    }
+
+    /// Runs the writeback saves that are due on every floppy drive. With `force`, saves any
+    /// dirty disk that has writeback armed.
+    pub(super) fn flush_pending_writebacks(&mut self, force: bool) {
+        let buses = self.buses.clone();
+        for (bus, slot) in floppy_slots(&buses) {
+            self.floppy_write_back(&bus.id, &slot.id, force);
+        }
+    }
+
+    /// Sends the frontend the image of each disk that was ejected since the last call
+    pub(super) fn send_ejected_floppies(&mut self) -> Result<()> {
+        // An ejected disk is written back before its image is handed over
+        self.flush_pending_writebacks(false);
+        let buses = self.buses.clone();
+        for (bus, slot) in floppy_slots(&buses) {
+            if let Ok(floppy) = self.floppy_in(&bus.id, &slot.id)
+                && let Some(image) = floppy.take_ejected_image()
+            {
+                self.event_sender.send(EmulatorEvent::FloppyEjected(
+                    bus.id.clone(),
+                    slot.id.clone(),
+                    image,
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Seeds the random bits of every floppy drive
+    pub(super) fn seed_weak_bits(&mut self, seed: Option<u64>) {
+        let buses = self.buses.clone();
+        for (bus, slot) in floppy_slots(&buses) {
+            if let Ok(floppy) = self.floppy_in(&bus.id, &slot.id) {
+                floppy.seed_weak_bits(seed);
+            }
+        }
+    }
+
+    pub(super) fn eject_media(&mut self, bus: &str, slot: &str) -> Result<()> {
+        // The writes since the last save go with the disk
+        self.floppy_write_back(bus, slot, true);
+        match self.function_in(bus, slot)? {
+            FunctionMut::Floppy(floppy) => {
+                floppy.eject();
+                Ok(())
+            }
+            _ => bail!("This device has no disk to eject"),
         }
     }
 
@@ -196,9 +236,7 @@ impl Emulator {
                     continue;
                 };
                 let model = match floppy_drives {
-                    Some(drive_type) if bus.id == bus_id::SWIM => {
-                        drive_type.device_model().context("Not a type of drive")?
-                    }
+                    Some(drive_type) if bus.id == bus_id::SWIM => drive_type.device_model(),
                     _ => device.model,
                 };
                 let config = DeviceConfig {
@@ -627,6 +665,45 @@ mod tests {
     }
 
     #[test]
+    fn a_floppy_is_loaded_and_ejected_by_slot() {
+        use snow_floppy::loaders::{FloppyImageSaver, Moof};
+        use snow_floppy::{Floppy, FloppyImage, FloppyType};
+
+        let dir = TestDir::new("floppy");
+        let path = dir.0.join("disk.moof");
+        let blank = FloppyImage::new(FloppyType::Mac800K, "disk");
+        Moof::save_file(&blank, &path.to_string_lossy()).unwrap();
+        let mut emu = plus();
+        assert_eq!(emu.slot_label(bus_id::SWIM, "1"), "Floppy #1");
+        assert_eq!(emu.slot_label(bus_id::SCSI, "3"), "SCSI ID #3");
+
+        emu.load_media(bus_id::SWIM, "1", &path, true).unwrap();
+        let floppy = emu.floppy_in(bus_id::SWIM, "1").unwrap();
+        assert!(!floppy.status().ejected);
+        assert_eq!(floppy.status().title, "disk");
+        // A Plus has no drive on its third connector
+        assert!(emu.load_media(bus_id::SWIM, "3", &path, true).is_err());
+        assert!(emu.floppy_in(bus_id::SCSI, "0").is_err());
+
+        // The frontend gets the image of the ejected disk, with the ids of its slot
+        emu.status_update().unwrap();
+        emu.event_recv.try_iter().count();
+        emu.eject_media(bus_id::SWIM, "1").unwrap();
+        emu.status_update().unwrap();
+        let mut ejected = vec![];
+        for event in emu.event_recv.try_iter() {
+            if let EmulatorEvent::FloppyEjected(bus, slot, image) = event {
+                ejected.push((bus, slot, image.get_title().to_string()));
+            }
+        }
+        assert_eq!(
+            ejected,
+            [("SWIM".to_string(), "1".to_string(), "disk".to_string())]
+        );
+        assert!(emu.floppy_in(bus_id::SWIM, "1").unwrap().status().ejected);
+    }
+
+    #[test]
     fn a_floppy_drive_is_only_added_when_the_machine_is_made() {
         let mut emu = machine(MacModel::LCIII);
         let drive = |slot: &str| DeviceConfig {
@@ -677,7 +754,7 @@ mod tests {
         assert_eq!(device_events(&emu), (0, vec![]));
 
         // A disc: its status, once, and no list
-        emu.load_media(bus_id::SCSI, "3", &image).unwrap();
+        emu.load_media(bus_id::SCSI, "3", &image, false).unwrap();
         emu.status_update().unwrap();
         emu.status_update().unwrap();
         let (lists, statuses) = sent(CdromStatus {

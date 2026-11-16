@@ -31,15 +31,6 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
-    /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
-    InsertFloppy(usize, String, bool),
-    /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
-    #[serde(skip)]
-    InsertFloppyImage(usize, Box<FloppyImage>, bool),
-    SaveFloppy(usize, PathBuf),
-    EjectFloppy(usize),
     /// Inserts a 16-sector DSK image into one of the Apple IIe card's
     /// 5.25" drives (0 or 1).
     InsertIieDisk(usize, PathBuf),
@@ -52,9 +43,6 @@ pub enum EmulatorCommand {
     InsertIieUniDisk(PathBuf),
     /// Ejects the Apple IIe card's UniDisk 3.5.
     EjectIieUniDisk,
-    /// Toggle automatic writeback for a floppy drive.
-    /// Parameters: drive id, enabled
-    SetFloppyWriteback(usize, bool),
     // The commands below name a slot by the id of its bus and the id of the slot
     /// Adds a device to the machine: see `Emulator::add_device()`
     AddDevice(DeviceConfig),
@@ -63,6 +51,19 @@ pub enum EmulatorCommand {
     /// Loads the image in a file in the drive in a slot. The last argument asks for the image
     /// to be write-protected, for a drive that can write.
     LoadMedia(String, String, PathBuf, bool),
+    /// Ejects the disk of the drive in a slot
+    EjectMedia(String, String),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: bus id, slot id, image, write-protect
+    #[serde(skip)]
+    InsertFloppyImage(String, String, Box<FloppyImage>, bool),
+    /// Saves the disk of the floppy drive in a slot to this file
+    SaveFloppy(String, String, PathBuf),
+    /// Toggle automatic writeback for a floppy drive.
+    /// Parameters: bus id, slot id, enabled
+    SetFloppyWriteback(String, String, bool),
+    /// Makes the disk of the floppy drive in a slot turn faster or slower, by this many RPM
+    SetFloppyRpmAdjustment(String, String, i32),
     /// Makes the hard disk in a slot carry on from a copy of its image, in this file
     BranchDisk(String, String, PathBuf),
     /// Gives the CD-ROM drive in a slot a folder of disc images
@@ -136,7 +137,6 @@ pub enum EmulatorCommand {
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
-    SetFloppyRpmAdjustment(usize, i32),
     /// Seeds the floppy noise (weak bits) RNG for deterministic behaviour.
     /// `None` reverts to non-deterministic randomness.
     SetFloppyWeakBitsSeed(Option<u64>),
@@ -171,7 +171,6 @@ pub struct EmulatorStatus {
     pub breakpoints: Vec<Breakpoint>,
     pub cycles: Ticks,
 
-    pub fdd: [FddStatus; 3],
     pub model: MacModel,
     pub has_pmmu: bool,
     pub speed: EmulatorSpeed,
@@ -186,20 +185,6 @@ pub struct EthernetCaptureStatus {
     pub filename: Option<PathBuf>,
     pub packet_count: usize,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FddStatus {
-    pub present: bool,
-    pub ejected: bool,
-    pub image_title: String,
-    pub dirty: bool,
-    pub drive_type: crate::mac::swim::drive::DriveType,
-    /// True if the loaded image's source format supports writeback and was
-    /// loaded from a file on disk (i.e. writeback is possible).
-    pub writeback_supported: bool,
-    /// True if writeback is currently armed for this drive.
-    pub writeback_enabled: bool,
 }
 
 /// A friendly message ready for display to a user
@@ -227,7 +212,8 @@ pub struct MemoryNotifierRange {
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     UserMessage(UserMessageType, String),
-    FloppyEjected(usize, Box<FloppyImage>),
+    /// The guest or the user ejected the disk of the floppy drive in a slot: its image
+    FloppyEjected(String, String, Box<FloppyImage>),
     /// The buses of the machine, their slots and the devices in them. Sent when the machine is
     /// made, and again when a device is added, removed or gets another Config. The statuses
     /// received before it are those of the list before it.
