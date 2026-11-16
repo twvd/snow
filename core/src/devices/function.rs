@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::{FloppyImage, FloppyType};
 
 use crate::emulator::comm::EthernetCaptureStatus;
+use crate::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::renderer::AudioProvider;
 
@@ -115,6 +116,15 @@ pub trait PrinterFunction {
     fn status(&self) -> PrinterStatus;
 }
 
+/// What only the Apple IIe Card has
+pub trait AppleIIeCardFunction {
+    /// Whether the Apple IIe has the screen and the keyboard, as the event `IieInFront` reports
+    /// it. Called by the emulator after each batch of instructions.
+    fn in_front(&self) -> bool;
+    /// Gives the card the state of the joystick. Called when the frontend sends it.
+    fn set_game_port(&mut self, port: GamePort);
+}
+
 /// The function of a device model, with what a device of that function supports, for the
 /// frontend to offer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +134,7 @@ pub enum FunctionInfo {
     Cdrom,
     Ethernet(EthernetInfo),
     Printer,
+    AppleIIeCard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +151,7 @@ pub enum FunctionConfig {
     Cdrom(CdromConfig),
     Ethernet(EthernetConfig),
     Printer(PrinterConfig),
+    AppleIIeCard(IieCardSettings),
 }
 
 /// A device, seen through its function
@@ -149,6 +161,7 @@ pub enum FunctionMut<'a> {
     Cdrom(&'a mut dyn CdromFunction),
     Ethernet(&'a mut dyn EthernetFunction),
     Printer(&'a mut dyn PrinterFunction),
+    AppleIIeCard(&'a mut dyn AppleIIeCardFunction),
 }
 
 /// The live state of a device, for the frontend to show
@@ -159,6 +172,7 @@ pub enum FunctionStatus {
     Cdrom(CdromStatus),
     Ethernet(EthernetStatus),
     Printer(PrinterStatus),
+    AppleIIeCard,
 }
 
 impl FunctionMut<'_> {
@@ -169,6 +183,7 @@ impl FunctionMut<'_> {
             Self::Cdrom(cdrom) => FunctionStatus::Cdrom(cdrom.status()),
             Self::Ethernet(ethernet) => FunctionStatus::Ethernet(ethernet.status()),
             Self::Printer(printer) => FunctionStatus::Printer(printer.status()),
+            Self::AppleIIeCard(_) => FunctionStatus::AppleIIeCard,
         }
     }
 }
