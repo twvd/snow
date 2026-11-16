@@ -10,14 +10,12 @@ use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
-#[cfg(feature = "ethernet")]
-use crate::devices::EthernetLinkType;
+use crate::devices::{Bus, DeviceConfig, EthernetLinkType, FunctionStatus};
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie::GamePort;
 use crate::mac::scc::SccCh;
-use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::tickable::Ticks;
 
@@ -57,24 +55,21 @@ pub enum EmulatorCommand {
     /// Toggle automatic writeback for a floppy drive.
     /// Parameters: drive id, enabled
     SetFloppyWriteback(usize, bool),
-    ScsiAttachHdd(usize, PathBuf),
-    ScsiBranchHdd(usize, PathBuf),
-    ScsiAttachCdrom(usize),
-    /// Attach a folder-backed ("Toolbox managed") CD-ROM drive whose images are
-    /// swappable by the guest via the BlueSCSI Toolbox CD commands.
-    ScsiAttachCdromFolder(usize, PathBuf),
-    ScsiLoadMedia(usize, PathBuf),
-    #[cfg(feature = "ethernet")]
-    ScsiAttachEthernet(usize),
-    #[cfg(feature = "printer")]
-    ScsiAttachPrinter(usize, std::path::PathBuf),
-    #[cfg(feature = "ethernet")]
-    EthernetSetLink(usize, EthernetLinkType),
-    #[cfg(feature = "ethernet")]
-    EthernetStartCapture(usize, PathBuf),
-    #[cfg(feature = "ethernet")]
-    EthernetStopCapture(usize),
-    DetachScsiTarget(usize),
+    // The commands below name a slot by the id of its bus and the id of the slot
+    /// Adds a device to the machine: see `Emulator::add_device()`
+    AddDevice(DeviceConfig),
+    /// Removes the device in a slot
+    RemoveDevice(String, String),
+    /// Loads the image in a file in the drive in a slot. The last argument asks for the image
+    /// to be write-protected, for a drive that can write.
+    LoadMedia(String, String, PathBuf, bool),
+    /// Makes the hard disk in a slot carry on from a copy of its image, in this file
+    BranchDisk(String, String, PathBuf),
+    /// Gives the CD-ROM drive in a slot a folder of disc images
+    CdromSetFolder(String, String, PathBuf),
+    EthernetSetLink(String, String, EthernetLinkType),
+    EthernetStartCapture(String, String, PathBuf),
+    EthernetStopCapture(String, String),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
@@ -183,7 +178,6 @@ pub struct EmulatorStatus {
     /// Size of the RAM
     pub ram_size: usize,
     pub effective_speed: f64,
-    pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -192,19 +186,6 @@ pub struct EthernetCaptureStatus {
     pub filename: Option<PathBuf>,
     pub packet_count: usize,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScsiTargetStatus {
-    pub target_type: ScsiTargetType,
-    pub image: Option<PathBuf>,
-    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
-    pub cdrom_folder: Option<PathBuf>,
-    pub capacity: Option<usize>,
-    #[cfg(feature = "ethernet")]
-    pub link_type: Option<EthernetLinkType>,
-    #[cfg(feature = "ethernet")]
-    pub capture_status: Option<EthernetCaptureStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,7 +231,13 @@ pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
-    ScsiMediaEjected(usize),
+    /// The buses of the machine, their slots and the devices in them. Sent when the machine is
+    /// made, and again when a device is added, removed or gets another Config. The statuses
+    /// received before it are those of the list before it.
+    Buses(Arc<Vec<Bus>>),
+    /// The status of the device in a slot, by the ids of its bus and of the slot, when it
+    /// differs from the last one sent
+    DeviceStatus(String, String, Option<FunctionStatus>),
     /// What a notifier's range holds, when it has changed. None for what can't
     /// be read.
     MemoryNotify {

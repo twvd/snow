@@ -8,6 +8,8 @@ mod function;
 pub use config::*;
 pub use function::*;
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -20,6 +22,101 @@ use crate::mac::scsi::target::ScsiTarget;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusKind {
     Scsi,
+}
+
+/// A bus of a machine: a list of slots
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bus {
+    pub kind: BusKind,
+    /// Names this bus: "SCSI". In the workspace files: must not change.
+    pub id: String,
+    /// In the menus: free to change
+    pub title: String,
+    pub slots: Vec<Slot>,
+}
+
+/// A place on a bus, which may hold a device
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+    /// The slot's id: unique on its bus, and the only way to identify the slot outside its
+    /// bus. It may read like a number ("3"), but nothing outside the bus treats it as one. In
+    /// the workspace files: must not change.
+    pub id: String,
+    pub device: Option<Device>,
+}
+
+/// The device in a slot, as it is now
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub model: DeviceModel,
+    /// Its ROM file, if it has one
+    pub rom: Option<PathBuf>,
+    /// The Config of its function, as it is now
+    pub function: FunctionConfig,
+    /// In the menus, if the device gives one
+    pub name: Option<String>,
+}
+
+impl Bus {
+    /// A bus with empty slots
+    pub fn new(kind: BusKind, id: &str, title: &str, slots: &[&str]) -> Self {
+        Self {
+            kind,
+            id: id.to_string(),
+            title: title.to_string(),
+            slots: slots
+                .iter()
+                .map(|id| Slot {
+                    id: id.to_string(),
+                    device: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// What a message to the user calls a slot of this bus: "SCSI ID #3" on a SCSI bus, as
+    /// Snow always said, and the title of the bus and the id of the slot on the others
+    pub fn slot_label(&self, slot: &str) -> String {
+        if matches!(self.kind, BusKind::Scsi) {
+            format!("SCSI ID #{}", slot)
+        } else {
+            format!("{} #{}", self.title, slot)
+        }
+    }
+}
+
+/// The machine that has these buses, as the list of device configs it can be made from again.
+/// It leaves out a device that the Mac model has in its slot without being asked.
+pub fn device_configs(buses: &[Bus], mac: MacModel) -> Vec<DeviceConfig> {
+    let defaults = mac.buses();
+    let default_device = |bus: &Bus, slot: &Slot| {
+        let bus = defaults.iter().find(|b| b.id == bus.id)?;
+        bus.slots.iter().find(|s| s.id == slot.id)?.device.clone()
+    };
+    let mut configs = vec![];
+    for bus in buses {
+        for slot in &bus.slots {
+            let Some(device) = &slot.device else {
+                continue;
+            };
+            // A device only gives its name once it exists
+            let unnamed = Device {
+                name: None,
+                ..device.clone()
+            };
+            if default_device(bus, slot) == Some(unnamed) {
+                continue;
+            }
+            configs.push(DeviceConfig {
+                bus: bus.id.clone(),
+                slot: slot.id.clone(),
+                model: Some(device.model),
+                rom: device.rom.clone(),
+                function: device.function.clone(),
+            });
+        }
+    }
+    configs
 }
 
 /// One kind of device. It fits one type of bus and provides one function.
@@ -111,9 +208,7 @@ impl ModelInfo {
 
 /// What a slot on this type of bus can take, on this Mac model
 pub fn models_for(bus: BusKind, mac: MacModel) -> impl Iterator<Item = &'static ModelInfo> {
-    let has_bus = match bus {
-        BusKind::Scsi => mac.has_scsi(),
-    };
+    let has_bus = mac.buses().iter().any(|b| b.kind == bus);
     DeviceModel::iter()
         .map(DeviceModel::info)
         .filter(move |info| has_bus && info.bus == bus && (info.fits)(mac))
@@ -133,6 +228,20 @@ pub(crate) trait BusOps {
 pub(crate) trait DeviceOps {
     /// Which device model it is
     fn info(&self) -> &'static ModelInfo;
+
+    /// Its ROM file. Called when the list of buses is built.
+    fn rom(&self) -> Option<&Path> {
+        None
+    }
+
+    /// The Config of its function, as it is now: the one the device was made with, with the
+    /// changes the user asked for since. Called when the list of buses is built.
+    fn config(&self) -> FunctionConfig;
+
+    /// Its name for the user, if it has one. Called when the list of buses is built.
+    fn name(&self) -> Option<String> {
+        None
+    }
 
     /// The device, seen through its function. Called by the emulator to run a command of the
     /// frontend on the device, or to read its status.

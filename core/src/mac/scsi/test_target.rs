@@ -9,10 +9,10 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
-use crate::devices::{DeviceOps, FunctionMut, ModelInfo};
+use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, ModelInfo};
 use crate::emulator::EmuContext;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon};
 use crate::mac::scsi::{STATUS_GOOD, ScsiCmdResult};
 use crate::tickable::Ticks;
 
@@ -57,6 +57,10 @@ impl DeviceOps for SlowTarget {
         &crate::mac::scsi::disk::INFO
     }
 
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::HardDisk(Default::default())
+    }
+
     fn function(&mut self) -> FunctionMut<'_> {
         unreachable!()
     }
@@ -79,10 +83,6 @@ impl ScsiTarget for SlowTarget {
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
         None
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Disk
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {

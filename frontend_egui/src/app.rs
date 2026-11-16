@@ -3,7 +3,7 @@ use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
-use crate::emulator::{EmulatorInitArgs, ScsiTargets};
+use crate::emulator::{EmulatorInitArgs, ScsiSlot};
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -21,12 +21,12 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
+use snow_core::devices::{DeviceConfig, FunctionStatus, bus_id};
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::scc::SccCh;
-use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 use snow_core::mac::{MacModel, PdsCardKind};
 use snow_core::tickable::Ticks;
@@ -603,7 +603,7 @@ impl SnowGui {
                     path,
                     None,
                     None,
-                    None,
+                    vec![],
                     None,
                     &EmulatorInitArgs::default(),
                     None,
@@ -1061,17 +1061,15 @@ impl SnowGui {
                         );
                     }
 
-                    // Needs cloning for the later borrow to call create_disk_dialog.open()
-                    let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
-                    if let Some(targets) = targets {
+                    if let Some(slots) = self.emu.scsi_slots() {
                         ui.separator();
-                        for (i, target) in targets.iter().enumerate() {
-                            self.draw_scsi_target_menu(ui, i, target.as_ref(), true);
+                        for slot in &slots {
+                            self.draw_scsi_target_menu(ui, slot, true);
                         }
                         ui.separator();
                         if ui.button("Detach all SCSI targets").clicked() {
-                            for (id, _) in targets.iter().enumerate().filter(|(_, t)| t.is_some()) {
-                                self.emu.scsi_detach_target(id);
+                            for slot in slots.iter().filter(|slot| slot.device.is_some()) {
+                                self.emu.scsi_detach_target(slot.id);
                             }
                         }
                     }
@@ -1707,29 +1705,23 @@ impl SnowGui {
         });
     }
 
-    fn draw_scsi_target_menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: usize,
-        target: Option<&snow_core::emulator::comm::ScsiTargetStatus>,
-        show_detach: bool,
-    ) {
-        if let Some(target) = target {
-            match target.target_type {
-                ScsiTargetType::Disk => {
+    fn draw_scsi_target_menu(&mut self, ui: &mut egui::Ui, slot: &ScsiSlot, show_detach: bool) {
+        let id = slot.id;
+        // One piece of menu per function
+        if let Some(status) = &slot.status {
+            match status {
+                FunctionStatus::HardDisk(disk) => {
                     ui.menu_button(
                         format!(
                             "{} SCSI #{}: HDD {} ({:0.2}MB)",
                             egui_material_icons::icons::ICON_HARD_DRIVE_2,
                             id,
-                            target
-                                .image
-                                .as_ref()
-                                .unwrap()
-                                .file_name()
+                            disk.media
+                                .as_deref()
+                                .and_then(Path::file_name)
                                 .unwrap_or_default()
                                 .to_string_lossy(),
-                            target.capacity.unwrap() / 1024 / 1024
+                            disk.capacity / 1024 / 1024
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1744,7 +1736,7 @@ impl SnowGui {
                         },
                     );
                 }
-                ScsiTargetType::Cdrom => {
+                FunctionStatus::Cdrom(target) => {
                     if let Some(image) = target.image.as_ref() {
                         // CD inserted
                         ui.menu_button(
@@ -1756,7 +1748,7 @@ impl SnowGui {
                             ),
                             |ui| {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                                if let Some(folder) = target.cdrom_folder.as_ref() {
+                                if let Some(folder) = target.folder.as_ref() {
                                     ui.weak(format!(
                                         "Toolbox managed folder:\n{}",
                                         folder.display()
@@ -1783,7 +1775,7 @@ impl SnowGui {
                             ),
                             |ui| {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                                if let Some(folder) = target.cdrom_folder.as_ref() {
+                                if let Some(folder) = target.folder.as_ref() {
                                     ui.weak(format!(
                                         "Toolbox managed folder:\n{}",
                                         folder.display()
@@ -1852,12 +1844,13 @@ impl SnowGui {
                     }
                 }
                 #[cfg(feature = "ethernet")]
-                ScsiTargetType::Ethernet => {
+                FunctionStatus::Ethernet(target) => {
                     ui.menu_button(
                         format!(
-                            "{} SCSI #{}: Ethernet",
+                            "{} SCSI #{}: {}",
                             egui_material_icons::icons::ICON_SETTINGS_ETHERNET,
                             id,
+                            slot.name(),
                         ),
                         |ui| {
                             use snow_core::devices::EthernetLinkType;
@@ -1865,7 +1858,7 @@ impl SnowGui {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
                             ui.strong("Link type");
 
-                            let link_type = target.link_type.clone().unwrap();
+                            let link_type = target.link.clone();
                             let mut new_link_type = link_type.clone();
                             ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
                             #[cfg(feature = "ethernet_nat")]
@@ -1923,15 +1916,12 @@ impl SnowGui {
                             ui.separator();
                             ui.strong("Packet capture");
 
-                            let capture_active = target
-                                .capture_status
-                                .as_ref()
-                                .map(|s| s.active)
-                                .unwrap_or(false);
+                            let capture_active =
+                                target.capture.as_ref().map(|s| s.active).unwrap_or(false);
 
                             if capture_active {
                                 // Show capture information
-                                if let Some(capture) = &target.capture_status {
+                                if let Some(capture) = &target.capture {
                                     ui.label(format!(
                                         "Capturing to: {}",
                                         capture
@@ -1970,12 +1960,13 @@ impl SnowGui {
                     );
                 }
                 #[cfg(feature = "printer")]
-                ScsiTargetType::Printer => {
+                FunctionStatus::Printer(_) => {
                     ui.menu_button(
                         format!(
-                            "{} SCSI #{}: LaserWriter IISC",
+                            "{} SCSI #{}: {}",
                             egui_material_icons::icons::ICON_PRINT,
                             id,
+                            slot.name(),
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1987,6 +1978,11 @@ impl SnowGui {
                         },
                     );
                 }
+                // The functions of the devices this build doesn't have
+                #[cfg(not(feature = "ethernet"))]
+                FunctionStatus::Ethernet(_) => (),
+                #[cfg(not(feature = "printer"))]
+                FunctionStatus::Printer(_) => (),
             }
         } else {
             ui.menu_button(
@@ -2030,15 +2026,11 @@ impl SnowGui {
                         ui.separator();
                         if ui
                             .add_enabled(
-                                !self
-                                    .emu
-                                    .get_scsi_targets()
-                                    .map(|t| {
-                                        t.iter().any(|i| {
-                                            matches!(i.target_type, Some(ScsiTargetType::Ethernet))
-                                        })
+                                !self.emu.scsi_slots().is_some_and(|slots| {
+                                    slots.iter().any(|slot| {
+                                        matches!(slot.status, Some(FunctionStatus::Ethernet(_)))
                                     })
-                                    .unwrap_or(false),
+                                }),
                                 egui::Button::new("Attach Ethernet controller"),
                             )
                             .clicked()
@@ -2050,15 +2042,11 @@ impl SnowGui {
                     {
                         if ui
                             .add_enabled(
-                                !self
-                                    .emu
-                                    .get_scsi_targets()
-                                    .map(|t| {
-                                        t.iter().any(|i| {
-                                            matches!(i.target_type, Some(ScsiTargetType::Printer))
-                                        })
+                                !self.emu.scsi_slots().is_some_and(|slots| {
+                                    slots.iter().any(|slot| {
+                                        matches!(slot.status, Some(FunctionStatus::Printer(_)))
                                     })
-                                    .unwrap_or(false),
+                                }),
                                 egui::Button::new("Attach LaserWriter IISC printer"),
                             )
                             .clicked()
@@ -3033,7 +3021,7 @@ impl SnowGui {
         path: &Path,
         display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        scsi_targets: Option<ScsiTargets>,
+        devices: Vec<DeviceConfig>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -3056,7 +3044,7 @@ impl SnowGui {
             path,
             display_rom_path,
             extension_rom_path,
-            scsi_targets,
+            devices,
             pram_path,
             args,
             model,
@@ -3172,7 +3160,7 @@ impl SnowGui {
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
-            let scsi_targets = self.workspace.scsi_targets();
+            let devices = self.workspace.scsi_devices();
             let pram_path = self.workspace.get_pram_path();
             let init_args = self.workspace.init_args.clone();
             let model = self.workspace.model;
@@ -3181,7 +3169,7 @@ impl SnowGui {
                 &rompath,
                 display_rom_path.as_deref(),
                 extension_rom_path.as_deref(),
-                Some(scsi_targets),
+                devices,
                 pram_path.as_deref(),
                 &init_args,
                 model,
@@ -3195,17 +3183,6 @@ impl SnowGui {
                     "Cannot load floppy image: no free drive for {:?}",
                     floppy_path
                 ));
-            }
-
-            #[cfg(feature = "ethernet")]
-            if let Some(scsi) = self.emu.get_scsi_targets()
-                && let Some((id, _)) = scsi
-                    .iter()
-                    .enumerate()
-                    .find(|(_, t)| t.target_type == Some(ScsiTargetType::Ethernet))
-            {
-                self.emu
-                    .set_eth_link(id, self.workspace.get_ethernet_link_type());
             }
         } else {
             self.emu.deinit();
@@ -3227,10 +3204,8 @@ impl SnowGui {
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
         self.workspace.shader_configs = self.framebuffer.export_config();
-        if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
-            for (i, d) in targets.iter().enumerate() {
-                self.workspace.set_scsi_target(i, d.clone());
-            }
+        if self.emu.scsi_slots().is_some() {
+            self.workspace.set_scsi_devices(&self.emu.devices());
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
@@ -3551,7 +3526,12 @@ impl SnowGui {
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             result.extension_rom_path.as_deref(),
-            self.emu.get_scsi_targets(),
+            // The SCSI devices of the machine go to the new one
+            self.emu
+                .devices()
+                .into_iter()
+                .filter(|config| config.bus == bus_id::SCSI)
+                .collect(),
             result.pram_path.as_deref(),
             &result.init_args,
             Some(result.model),
@@ -3774,7 +3754,7 @@ impl SnowGui {
                     path,
                     None,
                     None,
-                    None,
+                    vec![],
                     None,
                     &EmulatorInitArgs::default(),
                     None,
@@ -4639,15 +4619,9 @@ impl eframe::App for SnowGui {
                         }
                         ui.separator();
                         self.draw_menu_floppies(ui);
-                        let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
-                        if let Some(targets) = targets {
-                            for (id, target) in targets
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
-                                .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
-                            {
-                                self.draw_scsi_target_menu(ui, id, Some(target), false);
+                        for slot in self.emu.scsi_slots().unwrap_or_default() {
+                            if matches!(slot.status, Some(FunctionStatus::Cdrom(_))) {
+                                self.draw_scsi_target_menu(ui, &slot, false);
                             }
                         }
                         ui.separator();
