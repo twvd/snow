@@ -218,7 +218,9 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
-                if blocknum + blockcnt > blocks {
+                // Without blocks, read() reports why: no medium, or one still
+                // loading
+                if blocks > 0 && blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
                     self.common().set_cc(
                         CC_KEY_ILLEGAL_REQUEST,
@@ -470,7 +472,9 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
-                if blocknum + blockcnt > blocks {
+                // Without blocks, read() reports why: no medium, or one still
+                // loading
+                if blocks > 0 && blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
                     self.common().set_cc(
                         CC_KEY_ILLEGAL_REQUEST,

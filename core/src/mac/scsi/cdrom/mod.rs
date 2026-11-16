@@ -1176,6 +1176,27 @@ impl ScsiTargetCdrom {
     }
 }
 
+/// The backend, if it's ready for a command that needs the disc. Otherwise,
+/// why not: NOT READY with MEDIUM NOT PRESENT without a backend, or with
+/// LOGICAL UNIT BECOMING READY while it loads its disc.
+fn ready_backend(
+    backend: Option<&dyn CdromBackend>,
+) -> Result<&dyn CdromBackend, ScsiCheckCondition> {
+    let Some(backend) = backend else {
+        return Err(ScsiCheckCondition {
+            key: CC_KEY_NOT_READY,
+            asc: ASC_MEDIUM_NOT_PRESENT,
+        });
+    };
+    if backend.is_loading() {
+        return Err(ScsiCheckCondition {
+            key: CC_KEY_NOT_READY,
+            asc: ASC_LOGICAL_UNIT_BECOMING_READY,
+        });
+    }
+    Ok(backend)
+}
+
 fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> {
     tracks
         .iter()
@@ -1483,13 +1504,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn read_capacity(&mut self) -> Result<usize, ScsiCheckCondition> {
-        if self.backend.as_ref().is_some_and(|b| b.is_loading()) {
-            // As TEST UNIT READY answers meanwhile
-            return Err(ScsiCheckCondition {
-                key: CC_KEY_NOT_READY,
-                asc: ASC_LOGICAL_UNIT_BECOMING_READY,
-            });
-        }
+        ready_backend(self.backend.as_deref())?;
         match self.blocks() {
             Some(blocks) if blocks > 0 => Ok(blocks),
             _ => Err(ScsiCheckCondition {
@@ -1500,16 +1515,21 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
-        // If blocks() returns None this will never be called by
-        // ScsiTarget::cmd
+        let backend = match ready_backend(self.backend.as_deref()) {
+            Ok(backend) => backend,
+            Err(cc) => {
+                self.common.set_cc(cc.key, cc.asc);
+                return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+            }
+        };
         let blocksize = self.blocksize;
-        let backend = self.backend.as_ref().expect("read() but no media inserted");
         let start_offset = block_offset * blocksize;
         let image_end_offset =
             std::cmp::min((block_offset + block_count) * blocksize, backend.byte_len());
         let read = ReadRange {
             offset: start_offset,
-            length: image_end_offset - start_offset,
+            // Nothing to read past the end, as without a disc
+            length: image_end_offset.saturating_sub(start_offset),
             padded_length: block_count * blocksize,
         };
 
@@ -1766,9 +1786,12 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 log::debug!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
-                let Some(backend) = &self.backend else {
-                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                let backend = match ready_backend(self.backend.as_deref()) {
+                    Ok(backend) => backend,
+                    Err(cc) => {
+                        self.common.set_cc(cc.key, cc.asc);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
                 };
 
                 let Some(sessions) = backend.sessions() else {
@@ -1855,9 +1878,12 @@ impl ScsiTarget for ScsiTargetCdrom {
             0xCD => {
                 // Also known as fast-forward or rewind.
 
-                let Some(backend) = &self.backend else {
-                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                let backend = match ready_backend(self.backend.as_deref()) {
+                    Ok(backend) => backend,
+                    Err(cc) => {
+                        self.common.set_cc(cc.key, cc.asc);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
                 };
 
                 let Some(tracks) = backend.tracks() else {
@@ -2941,10 +2967,9 @@ mod tests {
 
     const READ_CAPACITY: [u8; 10] = [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-    /// READ CAPACITY(10), then the sense key and ASC/ASCQ that REQUEST SENSE
-    /// reports
-    fn read_capacity_with_sense(cd: &mut ScsiTargetCdrom) -> (ScsiCmdResult, u8, u16) {
-        let result = cd.cmd(&READ_CAPACITY, None).unwrap();
+    /// A command, then the sense key and ASC/ASCQ that REQUEST SENSE reports
+    fn cmd_with_sense(cd: &mut ScsiTargetCdrom, cdb: &[u8]) -> (ScsiCmdResult, u8, u16) {
+        let result = cd.cmd(cdb, None).unwrap();
         let ScsiCmdResult::DataIn(sense) = cd.cmd(&[0x03, 0, 0, 0, 18, 0], None).unwrap() else {
             panic!("REQUEST SENSE returns data");
         };
@@ -2959,7 +2984,7 @@ mod tests {
     fn read_capacity_while_loading_is_becoming_ready() {
         let mut cd = ScsiTargetCdrom::new(None);
         cd.backend = Some(Box::new(LoadingBackend { loading: true }));
-        let (result, key, asc) = read_capacity_with_sense(&mut cd);
+        let (result, key, asc) = cmd_with_sense(&mut cd, &READ_CAPACITY);
         assert!(matches!(
             result,
             ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -2972,7 +2997,7 @@ mod tests {
     fn read_capacity_without_a_disc_is_medium_not_present() {
         let mut cd = ScsiTargetCdrom::new(None);
         cd.backend = Some(Box::new(LoadingBackend { loading: false }));
-        let (result, key, asc) = read_capacity_with_sense(&mut cd);
+        let (result, key, asc) = cmd_with_sense(&mut cd, &READ_CAPACITY);
         assert!(matches!(
             result,
             ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -2989,6 +3014,88 @@ mod tests {
         };
         // 4096 bytes in blocks of 2048: the last block is 1
         assert_eq!(data, [0, 0, 0, 1, 0, 0, 0x08, 0]);
+    }
+
+    const READ10_BLOCK0: [u8; 10] = [0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0];
+
+    #[test]
+    fn read10_while_loading_is_becoming_ready() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let (result, key, asc) = cmd_with_sense(&mut cd, &READ10_BLOCK0);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_LOGICAL_UNIT_BECOMING_READY);
+    }
+
+    #[test]
+    fn read6_without_a_disc_is_medium_not_present() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        let (result, key, asc) = cmd_with_sense(&mut cd, &[0x08, 0, 0, 0, 1, 0]);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_MEDIUM_NOT_PRESENT);
+    }
+
+    #[test]
+    fn read10_past_block_0_without_a_disc_is_medium_not_present() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: false }));
+        // No blocks, so block 5 is past the end of nothing
+        let (result, key, asc) = cmd_with_sense(&mut cd, &[0x28, 0, 0, 0, 0, 5, 0, 0, 1, 0]);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_MEDIUM_NOT_PRESENT);
+    }
+
+    #[test]
+    fn play_audio_while_loading_is_becoming_ready() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        // PLAY AUDIO MSF from 00:02:00 to 00:03:00
+        let (result, key, asc) = cmd_with_sense(&mut cd, &[0x47, 0, 0, 0, 2, 0, 0, 3, 0, 0]);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_LOGICAL_UNIT_BECOMING_READY);
+    }
+
+    #[test]
+    fn audio_scan_while_loading_is_becoming_ready() {
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.backend = Some(Box::new(LoadingBackend { loading: true }));
+        let (result, key, asc) = cmd_with_sense(&mut cd, &[0xCD, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_NOT_READY);
+        assert_eq!(asc, ASC_LOGICAL_UNIT_BECOMING_READY);
+    }
+
+    #[test]
+    fn read10_past_the_end_is_still_out_of_range() {
+        // Two blocks: block 5 is past the end
+        let (mut cd, _, _) = gated_cdrom();
+        let (result, key, asc) = cmd_with_sense(&mut cd, &[0x28, 0, 0, 0, 0, 5, 0, 0, 1, 0]);
+        assert!(matches!(
+            result,
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        assert_eq!(key, CC_KEY_ILLEGAL_REQUEST);
+        assert_eq!(asc, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE);
     }
 
     fn cdrom_with_failed_load() -> ScsiTargetCdrom {
