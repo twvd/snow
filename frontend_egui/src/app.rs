@@ -2,8 +2,8 @@ use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
-use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
-use crate::emulator::{EmulatorInitArgs, PdsCardKind, ScsiSlot};
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
+use crate::emulator::{EmulatorInitArgs, ScsiSlot};
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -21,7 +21,7 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
-use snow_core::devices::{DeviceConfig, FloppyImages, FunctionStatus, bus_id};
+use snow_core::devices::{DeviceConfig, FloppyImages, FunctionConfig, FunctionStatus, bus_id};
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -599,7 +599,6 @@ impl SnowGui {
             {
                 app.load_rom_and_report(
                     path,
-                    None,
                     None,
                     vec![],
                     None,
@@ -3102,10 +3101,10 @@ impl SnowGui {
             self.model_dialog.prefill(
                 self.workspace.model,
                 self.workspace.get_rom_path().as_deref(),
-                self.workspace.get_display_card_rom_path().as_deref(),
                 self.workspace.get_pram_path().as_deref(),
                 self.workspace.get_extension_rom_path().as_deref(),
                 &self.workspace.init_args,
+                &self.workspace.devices(),
             );
         }
     }
@@ -3117,7 +3116,6 @@ impl SnowGui {
     fn load_rom_from_path(
         &mut self,
         path: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
         devices: Vec<DeviceConfig>,
         pram_path: Option<&Path>,
@@ -3140,7 +3138,6 @@ impl SnowGui {
 
         let refused = match self.emu.init_from_rom(
             path,
-            display_rom_path,
             extension_rom_path,
             devices,
             pram_path,
@@ -3162,7 +3159,12 @@ impl SnowGui {
             }
         };
 
-        self.iie_joystick = (args.pds_card == PdsCardKind::AppleIIe).then(|| {
+        // The devices of the machine as it was made
+        let devices = self.emu.devices();
+        let iie_card = devices
+            .iter()
+            .any(|config| matches!(config.function, FunctionConfig::AppleIIeCard(_)));
+        self.iie_joystick = iie_card.then(|| {
             let mut joy = Joystick::new(args.iie_joystick_emulation);
             joy.set_bindings(self.joy_bindings());
             joy
@@ -3175,14 +3177,14 @@ impl SnowGui {
         // Save to last used ROMs
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
-            if let Some(dr_path) = display_rom_path {
-                self.settings
-                    .set_last_card_rom(video_rom_card(model, args.video_card), dr_path);
+            for config in &devices {
+                if let (Some(device), Some(rom)) = (config.model, &config.rom) {
+                    self.settings.set_last_card_rom(device, rom);
+                }
             }
         }
 
         self.workspace.set_rom_path(path);
-        self.workspace.set_display_card_rom_path(display_rom_path);
         self.workspace.set_extension_rom_path(extension_rom_path);
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
@@ -3205,22 +3207,14 @@ impl SnowGui {
     fn load_rom_and_report(
         &mut self,
         path: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
         devices: Vec<DeviceConfig>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
     ) {
-        let refused = self.load_rom_from_path(
-            path,
-            display_rom_path,
-            extension_rom_path,
-            devices,
-            pram_path,
-            args,
-            model,
-        );
+        let refused =
+            self.load_rom_from_path(path, extension_rom_path, devices, pram_path, args, model);
         if let Some(refused) = refused
             && !refused.is_empty()
         {
@@ -3306,7 +3300,6 @@ impl SnowGui {
         self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         self.framebuffer.shader_enabled = self.workspace.shader_enabled;
         if let Some(rompath) = self.workspace.get_rom_path() {
-            let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
             let devices = self.workspace.devices();
             let pram_path = self.workspace.get_pram_path();
@@ -3315,7 +3308,6 @@ impl SnowGui {
 
             let refused = self.load_rom_from_path(
                 &rompath,
-                display_rom_path.as_deref(),
                 extension_rom_path.as_deref(),
                 devices,
                 pram_path.as_deref(),
@@ -3676,16 +3668,15 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
+        // The devices that the dialog describes, and the SCSI devices of the machine, which
+        // go to the new one
+        let mut devices = result.devices.clone();
+        let scsi = self.emu.devices().into_iter();
+        devices.extend(scsi.filter(|config| config.bus == bus_id::SCSI));
         self.load_rom_and_report(
             &result.main_rom_path,
-            result.display_rom_path.as_deref(),
             result.extension_rom_path.as_deref(),
-            // The SCSI devices of the machine go to the new one
-            self.emu
-                .devices()
-                .into_iter()
-                .filter(|config| config.bus == bus_id::SCSI)
-                .collect(),
+            devices,
             result.pram_path.as_deref(),
             &result.init_args,
             Some(result.model),
@@ -3907,7 +3898,6 @@ impl SnowGui {
             "rom" => {
                 self.load_rom_and_report(
                     path,
-                    None,
                     None,
                     vec![],
                     None,

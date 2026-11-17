@@ -36,7 +36,8 @@ pub enum DafbKind {
     MemcJr,
 }
 
-/// Sizes of the video RAM with MEMCjr
+/// Sizes of the video RAM with MEMCjr: 512 KB on the board and sockets for another 512 KB
+/// (Developer Note)
 pub const VRAM_SIZES_MEMCJR: &[usize] = &[512 * 1024, 1024 * 1024];
 
 /// Monitors which the DAFB of the Quadra 700 supports

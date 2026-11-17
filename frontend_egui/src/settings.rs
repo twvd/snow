@@ -4,6 +4,7 @@ use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
+use snow_core::devices::DeviceModel;
 use snow_core::mac::MacModel;
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
@@ -77,6 +78,24 @@ fn bool_true() -> bool {
     true
 }
 
+/// A device model with a ROM file, as the settings name it
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RomDevice {
+    Model(DeviceModel),
+    /// Older settings name a card by its kind
+    Card(NubusDeviceKind),
+}
+
+impl RomDevice {
+    fn model(self) -> DeviceModel {
+        match self {
+            Self::Model(model) => model,
+            Self::Card(card) => card.device_model(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AppSettings {
@@ -88,8 +107,9 @@ pub struct AppSettings {
     // Deprecated; now roms_by_card
     #[serde(skip_serializing)]
     pub last_display_roms: Vec<(MacModel, PathBuf)>,
+    /// The ROM file last used for each device model that needs one
     #[serde(deserialize_with = "deserialize_vec_lenient")]
-    pub roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
+    pub roms_by_card: Vec<(RomDevice, PathBuf)>,
 
     pub fd_hdd: FileDialogStorage,
     pub fd_cdrom: FileDialogStorage,
@@ -293,24 +313,33 @@ impl AppSettings {
         self.last_roms.clone()
     }
 
-    pub fn get_last_card_roms(&self) -> Vec<(NubusDeviceKind, PathBuf)> {
-        let mut out: Vec<(NubusDeviceKind, PathBuf)> = Vec::new();
+    pub fn get_last_card_roms(&self) -> Vec<(DeviceModel, PathBuf)> {
+        let mut out: Vec<(DeviceModel, PathBuf)> = Vec::new();
 
         // Migrate deprecated last_display_roms
         if let Some((_, p)) = self.last_display_roms.last() {
-            out.push((NubusDeviceKind::Mdc12, p.clone()));
+            out.push((DeviceModel::DisplayCard824, p.clone()));
         }
 
-        for (c, p) in &self.roms_by_card {
-            out.retain(|(oc, _)| oc != c);
-            out.push((*c, p.clone()));
+        for (device, p) in &self.roms_by_card {
+            let model = device.model();
+            out.retain(|(m, _)| *m != model);
+            out.push((model, p.clone()));
         }
         out
     }
 
-    pub fn set_last_card_rom(&mut self, card: NubusDeviceKind, path: &Path) {
-        self.roms_by_card.retain(|(c, _)| *c != card);
-        self.roms_by_card.push((card, path.to_path_buf()));
+    pub fn set_last_card_rom(&mut self, model: DeviceModel, path: &Path) {
+        if self
+            .get_last_card_roms()
+            .contains(&(model, path.to_path_buf()))
+        {
+            return;
+        }
+        self.roms_by_card
+            .retain(|(device, _)| device.model() != model);
+        self.roms_by_card
+            .push((RomDevice::Model(model), path.to_path_buf()));
         self.save();
     }
 
@@ -353,7 +382,8 @@ mod tests {
     fn unknown_models_and_cards_are_skipped() {
         let json = r#"{
             "last_roms": [["Plus", "/a.rom"], ["FutureMac", "/b.rom"], ["SE30", "/c.rom"]],
-            "roms_by_card": [["Toby", "/d.rom"], ["FutureCard", "/e.rom"]],
+            "roms_by_card": [["Toby", "/d.rom"], ["FutureCard", "/e.rom"],
+                             ["DisplayCard824", "/f.rom"], ["Mdc12", "/g.rom"]],
             "hide_mode_toasts": true
         }"#;
         let settings: AppSettings = serde_json::from_str(json).unwrap();
@@ -364,9 +394,14 @@ mod tests {
                 (MacModel::SE30, PathBuf::from("/c.rom"))
             ]
         );
+        // A card is named by its device model, or by its kind in older settings. The last
+        // ROM of a device model is the one that is used.
         assert_eq!(
-            settings.roms_by_card,
-            vec![(NubusDeviceKind::Toby, PathBuf::from("/d.rom"))]
+            settings.get_last_card_roms(),
+            vec![
+                (DeviceModel::MacIIVideoCard, PathBuf::from("/d.rom")),
+                (DeviceModel::DisplayCard824, PathBuf::from("/g.rom"))
+            ]
         );
         assert!(settings.hide_mode_toasts);
     }
