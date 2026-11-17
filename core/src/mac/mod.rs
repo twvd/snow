@@ -554,6 +554,7 @@ impl MacModel {
         match self {
             Self::MacII | Self::MacIIFDHD | Self::MacIIx => &["9", "A", "B", "C", "D", "E"],
             Self::MacIIcx => &["9", "A", "B"],
+            Self::Quadra700 => &["D", "E"],
             _ => &[],
         }
     }
