@@ -41,6 +41,8 @@ pub enum BusKind {
     Se30Pds,
     /// The disk port of an Apple IIe Card
     IieDisk,
+    /// The HD20s chained on the external floppy port
+    Hd20,
     /// The devices on the logic board
     BuiltIn,
 }

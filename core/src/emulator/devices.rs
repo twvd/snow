@@ -943,7 +943,7 @@ mod tests {
         // One group per bus, by its title, in the order of the list of buses
         let buses = entries(&devices);
         let titles: Vec<_> = buses.iter().map(|(title, _)| *title).collect();
-        assert_eq!(titles, ["Floppy", "SCSI", "Built-in"]);
+        assert_eq!(titles, ["Floppy", "SCSI", "HD20", "Built-in"]);
 
         // One entry per slot, empty or with its device
         let scsi = entries(buses[1].1);
@@ -968,7 +968,7 @@ mod tests {
                 "Type"
             ]
         );
-        let video = entries(buses[2].1);
+        let video = entries(buses[3].1);
         assert_eq!(video[0].0, "#video - Built-in video");
     }
 

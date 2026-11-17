@@ -631,6 +631,7 @@ impl MacPortableBus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::HD20 => Some(self.swim.chain()),
             bus_id::BUILT_IN => Some(self),
             _ => None,
         }
