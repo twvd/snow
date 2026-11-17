@@ -28,6 +28,8 @@ pub mod bus_id {
 pub mod built_in {
     /// The machine's own video
     pub const VIDEO: &str = "video";
+    /// The machine's own Ethernet controller
+    pub const ETHERNET: &str = "ethernet";
 }
 
 /// One device, as described in a list of devices: where it is, which device it is, and what

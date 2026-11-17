@@ -762,6 +762,11 @@ mod tests {
                     None,
                 )]
             }
+            // An address for its built-in Ethernet, which would otherwise get a random one
+            #[cfg(feature = "ethernet")]
+            MacModel::Quadra700 | MacModel::Quadra800 => {
+                vec![crate::mac::ethernet::built_in::test_config()]
+            }
             _ => vec![],
         }
     }
@@ -809,7 +814,8 @@ mod tests {
                     model: config.model.unwrap(),
                     rom: config.rom.clone(),
                     function: config.function.clone(),
-                    name: None,
+                    // The built-in Ethernet has a name for the menus
+                    name: (config.slot == built_in::ETHERNET).then(|| "Built-in Ethernet".into()),
                 });
             }
             for bus in &buses {
@@ -895,11 +901,10 @@ mod tests {
         for (mac, model, vram_size) in cases {
             let monitor = Some(MacMonitor::RGB12);
             let mut emu = machine_with_video(mac, monitor, Some(vram_size)).unwrap();
-            assert_eq!(
-                emu.devices(),
-                [video(model, monitor, Some(vram_size))],
-                "{mac}"
-            );
+            let mut devices = emu.devices();
+            // The built-in Ethernet of a Quadra is reported too, with the random address it got
+            devices.retain(|c| c.slot != built_in::ETHERNET);
+            assert_eq!(devices, [video(model, monitor, Some(vram_size))], "{mac}");
             let status = emu
                 .device_function(bus_id::BUILT_IN, built_in::VIDEO)
                 .unwrap()
@@ -913,10 +918,9 @@ mod tests {
         // The Quadra 700 has one size of VRAM
         let monitor = Some(MacMonitor::RGB16);
         let mut emu = machine_with_video(MacModel::Quadra700, monitor, None).unwrap();
-        assert_eq!(
-            emu.devices(),
-            [video(DeviceModel::DafbVideo, monitor, None)]
-        );
+        let mut devices = emu.devices();
+        devices.retain(|c| c.slot != built_in::ETHERNET);
+        assert_eq!(devices, [video(DeviceModel::DafbVideo, monitor, None)]);
 
         // With nothing chosen, the video is the one the Mac model has: it isn't reported
         let mut emu = machine_with_video(MacModel::LC, None, None).unwrap();
@@ -1762,6 +1766,64 @@ mod tests {
             panic!("An Ethernet adapter has an Ethernet Config");
         };
         assert_eq!(config.mac, Some(random.mac));
+    }
+
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn the_quadra_700_and_800_have_built_in_ethernet() {
+        use crate::devices::built_in;
+
+        fn ethernet(emu: &mut Emulator) -> crate::devices::EthernetStatus {
+            let function = emu.device_function(bus_id::BUILT_IN, built_in::ETHERNET);
+            match function.unwrap().status() {
+                FunctionStatus::Ethernet(ethernet) => ethernet,
+                _ => panic!("The built-in Ethernet has the Ethernet function"),
+            }
+        }
+
+        for model in [MacModel::Quadra700, MacModel::Quadra800] {
+            // With no device config, it has a random address with Apple's prefix and its link down
+            let mut emu = make(model, vec![]).unwrap();
+            let status = ethernet(&mut emu);
+            assert_eq!(status.mac[..3], [0x08, 0x00, 0x07]);
+            assert_eq!(status.link, EthernetLinkType::Down);
+            // It has a name for the menus
+            let device = device_in(&mut emu, bus_id::BUILT_IN, built_in::ETHERNET).unwrap();
+            assert_eq!(device.name.as_deref(), Some("Built-in Ethernet"));
+
+            // It has the address of its device config, which is reported with its device model
+            let mac = new_ethernet_address([0x08, 0x00, 0x07], &[]);
+            let config = |link| DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::ETHERNET.into(),
+                model: None,
+                rom: None,
+                function: FunctionConfig::Ethernet(EthernetConfig {
+                    mac: Some(mac),
+                    link,
+                }),
+            };
+            let mut emu = make(model, vec![config(EthernetLinkType::Down)]).unwrap();
+            assert_eq!(ethernet(&mut emu).mac, mac);
+            let reported = DeviceConfig {
+                model: Some(DeviceModel::BuiltInSonic),
+                ..config(EthernetLinkType::Down)
+            };
+            assert_eq!(emu.devices(), [reported]);
+
+            // No interface of the host has this index. The machine is made all the same, with
+            // the link of its Ethernet down, and the failure is reported.
+            let rom = vec![0; 1024 * 1024];
+            let machine = MachineConfig::new(&rom, model);
+            let devices = vec![config(EthernetLinkType::Bridge(u32::MAX))];
+            let (mut emu, _, refused) = Emulator::new(&machine, devices).unwrap();
+            assert_eq!(refused.len(), 1);
+            assert_eq!(refused[0].config.slot, built_in::ETHERNET);
+            assert_eq!(
+                (ethernet(&mut emu).mac, ethernet(&mut emu).link),
+                (mac, EthernetLinkType::Down)
+            );
+        }
     }
 
     #[cfg(feature = "printer")]

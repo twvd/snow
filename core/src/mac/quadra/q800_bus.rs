@@ -7,9 +7,9 @@
 //! is on VIA 1 port B, as on the Quadra 700 (schematic sheets 15 and 19).
 //! djMEMC holds the memory timing and the video, which is DAFB compatible.
 //!
-//! The NuBus controller, Kiwi, has three slots, $C, $D and $E. The PDS and the Ethernet
-//! controller are not there yet. An access to the Ethernet controller is a bus
-//! error, which the ROM takes for a machine without the Ethernet option.
+//! The NuBus controller, Kiwi, has three slots, $C, $D and $E. The PDS is not there yet.
+//! The Ethernet controller is a SONIC. In a build without Ethernet, an access to it is a
+//! bus error, which the ROM takes for a machine without the Ethernet option.
 
 use std::path::Path;
 use std::thread;
@@ -29,6 +29,8 @@ use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::built_in::BuiltInSonic;
 use crate::mac::macii::via2::Via2;
 use crate::mac::nubus::Nubus;
 use crate::mac::quadra::dafb::Dafb;
@@ -321,9 +323,13 @@ pub struct Quadra800Bus {
     /// Built-in video
     pub(crate) dafb: Dafb,
 
+    /// Built-in Ethernet controller
+    #[cfg(feature = "ethernet")]
+    ethernet: BuiltInSonic,
+
     /// The cards in the NuBus slots $C to $E
     nubus: Nubus,
-    /// Writes to the RAM by a card that masters the bus, counted for the views of the memory
+    /// Writes to the RAM by a device that masters the bus, counted for the views of the memory
     dma_writes: u32,
 
     /// Mouse mode
@@ -332,7 +338,11 @@ pub struct Quadra800Bus {
 
 impl Quadra800Bus {
     /// The devices on the logic board, by the id of their slot on the `Built-in` bus
-    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::DjMemcVideo)];
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[
+        (built_in::VIDEO, DeviceModel::DjMemcVideo),
+        #[cfg(feature = "ethernet")]
+        (built_in::ETHERNET, DeviceModel::BuiltInSonic),
+    ];
 
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
@@ -394,6 +404,8 @@ impl Quadra800Bus {
             progkey_pressed: LatchingEvent::default(),
 
             dafb: Dafb::with_config(DeviceModel::DjMemcVideo, &built_in_display(devices)),
+            #[cfg(feature = "ethernet")]
+            ethernet: BuiltInSonic::new(devices)?,
             nubus: Nubus::new(BUS_FREQUENCY, model.nubus_slots()),
             dma_writes: 0,
             mouse_mode,
@@ -608,6 +620,9 @@ impl Quadra800Bus {
             0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
             // VIA 2
             0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
+            // Ethernet address PROM
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_8007 => Some(self.ethernet.prom_byte(addr & Self::IO_MASK)),
             // SCC
             0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
             // djMEMC
@@ -635,6 +650,9 @@ impl Quadra800Bus {
             }
             // VIA 2
             0x0000_2000..=0x0000_3FFF => Self::dev_write(addr, val, self.via2.write(addr, val)),
+            // Ethernet address PROM
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_8007 => Some(()),
             // SCC
             0x0000_C000..=0x0000_DFFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
             // djMEMC
@@ -709,6 +727,12 @@ impl Quadra800Bus {
             // its reads take the same time at any spacing.
             0x0000_0000..=0x0000_1FFF => self.via_cycle(acc),
             0x0000_2000..=0x0000_3FFF => self.io_bus_cycle(acc, 0, Recovery::None),
+            // Ethernet address PROM ($5000 8000) and SONIC ($5000 A000): Developer Note,
+            // figure 2-4
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_9FFF => self.io_bus_cycle(acc, 0, Recovery::None),
+            #[cfg(feature = "ethernet")]
+            0x0000_A000..=0x0000_BFFF => self.sonic_cycle(acc),
             // SCC
             0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, Recovery::Scc),
             // 53C96 pseudo-DMA
@@ -729,6 +753,29 @@ impl Quadra800Bus {
                 }
             },
         }
+    }
+
+    /// An access to the SONIC's registers, 16 bits wide, one per long word, on D15-D0. Its
+    /// data lines are on the CPU bus (Developer Note, figure 2-1), but IOSB decodes it and its
+    /// timing isn't known: it is given that of the devices of the I/O bus.
+    #[cfg(feature = "ethernet")]
+    fn sonic_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let w = self.native_clock.scale_dev_waits(w, IO_BUS_WAITS);
+        bus_access_long(acc, w, self, Self::sonic_read, Self::sonic_write)
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.ethernet.read(addr & Self::IO_MASK, len)
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.ethernet.write(addr & Self::IO_MASK, len, val)
     }
 
     /// The VIAs are clocked at C16M / 20, 783.36 kHz, and their accesses are
@@ -1083,6 +1130,8 @@ impl BusOps for Quadra800Bus {
     fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
         match slot {
             built_in::VIDEO => Some(&mut self.dafb),
+            #[cfg(feature = "ethernet")]
+            built_in::ETHERNET => Some(&mut self.ethernet),
             _ => None,
         }
     }
@@ -1169,6 +1218,8 @@ impl Bus<Address, Byte> for Quadra800Bus {
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         self.dafb.reset();
+        #[cfg(feature = "ethernet")]
+        self.ethernet.sonic.reset();
         self.nubus.reset();
         self.sound.reset();
         self.scsi.reset();
@@ -1281,25 +1332,40 @@ impl Tickable for Quadra800Bus {
         let video_irq = self.dafb.get_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
 
-        // The interrupts of slots $C to $E are on PA3 to PA5, as MAME has them
         let mut dma = Dma {
             ram: &mut self.ram,
             ram_map: &self.ram_map,
             overlay: self.overlay,
             writes: &mut self.dma_writes,
         };
+
+        // Built-in Ethernet. It reaches the RAM as a bus master of its own, not through a
+        // slot. Its interrupt, ENET_IRQ, goes to IOSB (schematic sheet 15), which has it on
+        // PA0 of VIA 2 with those of the slots, as MAME does and as on the Quadra 700 in its
+        // Macintosh interrupt scheme (Macintosh Quadra 700 Developer Note, table 2-6).
+        #[cfg(feature = "ethernet")]
+        let ethernet_irq = {
+            self.ethernet
+                .sonic
+                .tick(native_ticks, ctx.bus_frequency, &mut dma);
+            self.ethernet.sonic.irq()
+        };
+        #[cfg(not(feature = "ethernet"))]
+        let ethernet_irq = false;
+
+        // The interrupts of slots $C to $E are on PA3 to PA5, as MAME has them
         let mut nubus_dma = NubusDma {
             dma: &mut dma,
             nubus_waits: NUBUS_WAITS,
         };
         self.nubus.tick(native_ticks, ctx, &mut nubus_dma)?;
-        let slot_irqs = self.nubus.irqs();
+        let slot_irqs = self.nubus.irqs() | u8::from(ethernet_irq);
         self.via2.a_in.set_v2irqs(!slot_irqs);
 
         self.scsi.tick(native_ticks, ctx)?;
 
-        // The flags of the slots and of the 53C96 latch the falling edge of
-        // their active low line, as on the LC 475
+        // The flags of the slots, Ethernet included, and of the 53C96 latch the falling edge
+        // of their active low line, as on the LC 475
         self.via2
             .set_line(ViaLine::CA1, (!(video_irq || slot_irqs != 0)).into());
         self.via2
@@ -1429,7 +1495,12 @@ mod tests {
             mouse_mode: MouseMode::Disabled,
             ..MachineConfig::new(&rom, MacModel::Quadra800)
         };
-        Quadra800Bus::new(&machine, &[]).unwrap()
+        // The SONIC needs the device config that the emulator gives it
+        #[cfg(feature = "ethernet")]
+        let devices = [crate::mac::ethernet::built_in::test_config()];
+        #[cfg(not(feature = "ethernet"))]
+        let devices = [];
+        Quadra800Bus::new(&machine, &devices).unwrap()
     }
 
     const MB: usize = 1024 * 1024;
@@ -1486,6 +1557,29 @@ mod tests {
         assert_eq!(bus.cpu_id_read(CPU_ID_ADDR, 4), Some(0xA55A_2BAD));
         // VIA 1 ID pins PA6, PA4, PA2, PA1: the Quadra 800
         assert_eq!(bus.io_read_byte(0x5000_1E00).unwrap() & 0x56, 0x12);
+    }
+
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn the_built_in_ethernet_answers_on_the_io_bus() {
+        use crate::mac::ethernet::built_in::SONIC_REVISION;
+
+        let mut bus = bus(8 * MB);
+        // The PROM has the bytes of the address with their bits reversed
+        let prom: Vec<_> = (0..6)
+            .map(|i| bus.io_read_byte(0x50F0_8000 + i).unwrap())
+            .collect();
+        assert_eq!(prom, [0x10, 0x00, 0xE0, 0x48, 0x2C, 0x6A]);
+
+        // A register is the low word of its long: the silicon revision, register $28
+        let resp = bus
+            .access(BusAccess::<Bus68040>::read(0x50F0_A000 + 4 * 0x28, 4, 0))
+            .unwrap();
+        assert!(!matches!(resp, BusResponse::BusError));
+        assert_eq!(
+            bus.sonic_read(0x50F0_A000 + 4 * 0x28, 4),
+            Some(u32::from(SONIC_REVISION))
+        );
     }
 
     #[test]
