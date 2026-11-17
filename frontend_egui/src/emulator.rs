@@ -20,9 +20,9 @@ use snow_core::debuggable::DebuggableProperties;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
-    Bus, BusKind, CdromConfig, Device, DeviceConfig, DeviceModel, DisplayConfig, DisplayHandle,
-    FloppyImages, FloppyInfo, FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus,
-    HardDiskConfig, built_in, bus_id, device_configs, models_for,
+    Bus, BusKind, CdromConfig, Device, DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, bus_id,
+    device_configs, models_for,
 };
 #[cfg(feature = "ethernet")]
 use snow_core::devices::{EthernetConfig, EthernetLinkType};
@@ -34,11 +34,10 @@ use snow_core::emulator::comm::{
 };
 use snow_core::emulator::{Emulator, MachineConfig, MouseMode};
 use snow_core::keymap::Scancode;
-use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
+use snow_core::mac::MacModel;
+use snow_core::mac::maclc::pds_iie::GamePort;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
-use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{MacModel, MacMonitor};
 use snow_core::renderer::FrameReceiver;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
@@ -120,92 +119,12 @@ pub struct EmulatorInitResult {
     pub refused: Vec<String>,
 }
 
-/// A type of card that can occupy a NuBus slot.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    PartialEq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::EnumIter,
-    strum::IntoStaticStr,
-)]
-pub enum NubusDeviceKind {
-    /// Macintosh Display Card 8-24 (MDC12, ROM 341-0868)
-    // The default here is the fallback for workspace files that existed before
-    // NuBus device list was passed to the emulator core and should always remain
-    // on Mdc12.
-    #[default]
-    Mdc12,
-    /// Macintosh II Video Card ("Toby", ROM 342-0008)
-    Toby,
-    /// Macintosh SE/30 onboard video
-    SE30Video,
-}
-
-impl std::fmt::Display for NubusDeviceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Mdc12 => "Macintosh Display Card 8-24",
-                Self::Toby => "Macintosh II Video Card (Toby)",
-                Self::SE30Video => "Macintosh SE/30 onboard video",
-            }
-        )
-    }
-}
-
-/// Card in the PDS slot of the Macintosh LC family
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    Eq,
-    PartialEq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::EnumIter,
-    strum::IntoStaticStr,
-)]
-pub enum PdsCardKind {
-    /// Empty slot
-    #[default]
-    None,
-    /// Apple IIe Card
-    AppleIIe,
-}
-
-impl std::fmt::Display for PdsCardKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::None => "None",
-                Self::AppleIIe => "Apple IIe Card",
-            }
-        )
-    }
-}
-
 /// Initialization arguments for the emulator, minus filenames
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct EmulatorInitArgs {
     /// Disable audio, synchronize to video
     pub audio_disabled: bool,
-
-    /// Deprecated; now the monitor of a video in the workspace's devices
-    #[serde(skip_serializing)]
-    pub monitor: Option<MacMonitor>,
 
     #[serde(skip_serializing)]
     /// Deprecated; now mouse_mode
@@ -220,35 +139,15 @@ pub struct EmulatorInitArgs {
     /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
 
-    /// Deprecated; now the floppy drives in the workspace's devices
-    #[serde(skip_serializing)]
-    pub override_fdd_type: Option<DriveType>,
-
     /// Enable PMMU (Macintosh II only)
     pub pmmu_enabled: bool,
 
     /// Enable FPU (Macintosh LC only)
     pub fpu_enabled: bool,
 
-    /// Deprecated; now the VRAM size of a video in the workspace's devices
-    #[serde(skip_serializing)]
-    pub vram_size: Option<usize>,
-
-    /// Deprecated; now the card of the PDS slot in the workspace's devices
-    #[serde(skip_serializing)]
-    pub pds_card: PdsCardKind,
-
-    /// Deprecated; now the Config of the Apple IIe Card in the workspace's devices
-    #[serde(skip_serializing)]
-    pub iie_card_settings: IieCardSettings,
-
     /// Apple IIe Card controller emulation: host keys can drive the
     /// joystick (used if it is in the PDS slot; on by default)
     pub iie_joystick_emulation: bool,
-
-    /// Deprecated; now the video card in the workspace's devices
-    #[serde(skip_serializing)]
-    pub video_card: NubusDeviceKind,
 
     /// Overclock
     pub overclock: Option<u64>,
@@ -264,104 +163,17 @@ impl Default for EmulatorInitArgs {
     fn default() -> Self {
         Self {
             audio_disabled: Default::default(),
-            monitor: Default::default(),
             mouse_disabled: Default::default(),
             mouse_mode: Default::default(),
             start_fastforward: Default::default(),
             ram_size: Default::default(),
-            override_fdd_type: Default::default(),
             pmmu_enabled: Default::default(),
             fpu_enabled: Default::default(),
-            vram_size: Default::default(),
-            pds_card: Default::default(),
-            iie_card_settings: Default::default(),
             iie_joystick_emulation: true,
-            video_card: Default::default(),
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
             vm_pflush_workaround: Default::default(),
         }
-    }
-}
-
-impl NubusDeviceKind {
-    /// The device model of this kind of card
-    pub const fn device_model(self) -> DeviceModel {
-        match self {
-            Self::Mdc12 => DeviceModel::DisplayCard824,
-            Self::Toby => DeviceModel::MacIIVideoCard,
-            Self::SE30Video => DeviceModel::SE30Video,
-        }
-    }
-}
-
-impl EmulatorInitArgs {
-    /// The devices that the deprecated fields of an older workspace describe, as device
-    /// configs: the video card of a Macintosh II, the ROM of the video of an SE/30, what was
-    /// chosen for a built-in video, the card of the processor-direct slot, and floppy drives
-    /// of another type than the Mac model's. `display_rom` is the workspace's ROM file of the
-    /// video card, or of the video of an SE/30. A workspace saved since has none of this, and
-    /// gets no device config.
-    pub fn device_configs(&self, model: MacModel, display_rom: Option<&Path>) -> Vec<DeviceConfig> {
-        let buses = model.buses();
-        let bus = |id: &str| buses.iter().find(|bus| bus.id == id);
-        let mut configs = vec![];
-
-        if let Some(nubus) = bus(bus_id::NUBUS) {
-            // The video card, in the first slot
-            if let Some(rom) = display_rom {
-                configs.push(DeviceConfig {
-                    bus: nubus.id.clone(),
-                    slot: nubus.slots[0].id.clone(),
-                    model: Some(self.video_card.device_model()),
-                    rom: Some(rom.to_path_buf()),
-                    function: FunctionConfig::Display(DisplayConfig {
-                        monitor: self.monitor,
-                        vram_size: None,
-                    }),
-                });
-            }
-        } else if bus(bus_id::BUILT_IN).is_some()
-            && (display_rom.is_some() || self.monitor.is_some() || self.vram_size.is_some())
-        {
-            configs.push(DeviceConfig {
-                bus: bus_id::BUILT_IN.into(),
-                slot: built_in::VIDEO.into(),
-                model: None,
-                rom: display_rom.map(Path::to_path_buf),
-                function: FunctionConfig::Display(DisplayConfig {
-                    monitor: self.monitor,
-                    vram_size: self.vram_size,
-                }),
-            });
-        }
-
-        if self.pds_card == PdsCardKind::AppleIIe
-            && let Some(pds) = bus(bus_id::PDS_LC)
-        {
-            configs.push(DeviceConfig {
-                bus: pds.id.clone(),
-                slot: pds.slots[0].id.clone(),
-                model: Some(DeviceModel::AppleIIePdsCard),
-                rom: None,
-                function: FunctionConfig::AppleIIeCard(self.iie_card_settings),
-            });
-        }
-
-        if let Some(drive_type) = self.override_fdd_type
-            && let Some(swim) = bus(bus_id::SWIM)
-        {
-            for slot in &swim.slots {
-                configs.push(DeviceConfig {
-                    bus: swim.id.clone(),
-                    slot: slot.id.clone(),
-                    model: Some(drive_type.device_model()),
-                    rom: None,
-                    function: FunctionConfig::Floppy,
-                });
-            }
-        }
-        configs
     }
 }
 
@@ -1883,76 +1695,5 @@ impl EmulatorState {
             .as_ref()
             .map(|p| p.lock().unwrap().is_underrun())
             .unwrap_or(false)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deprecated_init_args_describe_devices() {
-        let args = EmulatorInitArgs {
-            monitor: Some(MacMonitor::RGB12),
-            vram_size: Some(512 * 1024),
-            pds_card: PdsCardKind::AppleIIe,
-            video_card: NubusDeviceKind::Toby,
-            override_fdd_type: Some(DriveType::GCR800KPWM),
-            ..Default::default()
-        };
-        let places = |model, rom| -> Vec<(String, String, Option<DeviceModel>)> {
-            args.device_configs(model, rom)
-                .into_iter()
-                .map(|config| (config.bus, config.slot, config.model))
-                .collect()
-        };
-        let place = |bus: &str, slot: &str, model| (bus.to_string(), slot.to_string(), model);
-        let drive = Some(DeviceModel::Mac800KPwmDrive);
-
-        // An LC: its video, the card of its slot, its two drives
-        let configs = args.device_configs(MacModel::LC, None);
-        assert_eq!(
-            configs[0].function,
-            FunctionConfig::Display(DisplayConfig {
-                monitor: Some(MacMonitor::RGB12),
-                vram_size: Some(512 * 1024),
-            })
-        );
-        assert_eq!(
-            places(MacModel::LC, None),
-            [
-                place(bus_id::BUILT_IN, built_in::VIDEO, None),
-                place(bus_id::PDS_LC, "0", Some(DeviceModel::AppleIIePdsCard)),
-                place(bus_id::SWIM, "1", drive),
-                place(bus_id::SWIM, "2", drive),
-            ]
-        );
-
-        // A Macintosh II: the card that was chosen, with its ROM file and the monitor
-        let rom = Path::new("card.rom");
-        let configs = args.device_configs(MacModel::MacII, Some(rom));
-        assert_eq!(configs[0].rom.as_deref(), Some(rom));
-        assert_eq!(
-            configs[0].function,
-            FunctionConfig::Display(DisplayConfig {
-                monitor: Some(MacMonitor::RGB12),
-                vram_size: None,
-            })
-        );
-        assert_eq!(
-            places(MacModel::MacII, Some(rom))[0],
-            place(bus_id::NUBUS, "9", Some(DeviceModel::MacIIVideoCard))
-        );
-
-        // An SE/30: the ROM file is that of its video
-        let configs = args.device_configs(MacModel::SE30, Some(rom));
-        assert_eq!(configs[0].bus, bus_id::BUILT_IN);
-        assert_eq!(configs[0].rom.as_deref(), Some(rom));
-
-        // A workspace saved since has none of these fields, and nothing is made from them
-        let args = EmulatorInitArgs::default();
-        for model in [MacModel::LC, MacModel::MacII, MacModel::SE30] {
-            assert_eq!(args.device_configs(model, None), []);
-        }
     }
 }

@@ -1,5 +1,5 @@
-use crate::emulator::NubusDeviceKind;
 use crate::joystick::{JoyBindings, default_bindings};
+use crate::workspace::NubusDeviceKind;
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
