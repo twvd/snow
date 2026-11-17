@@ -162,6 +162,7 @@ pub const INFO: ModelInfo = ModelInfo {
         label: "Toby video card ROM (342-0008)",
         digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
         optional: false,
+        varying_bits: 0,
     }),
     create: Some(create),
     ..ModelInfo::base(

@@ -380,6 +380,9 @@ pub struct RomInfo {
     pub digests: &'static [&'static str],
     /// The device works without the file
     pub optional: bool,
+    /// The bits of each byte that differ from one unit to the next, such as those of a serial
+    /// number. The digests are those of the file with these bits cleared.
+    pub varying_bits: u8,
 }
 
 impl ModelInfo {
