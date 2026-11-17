@@ -377,6 +377,10 @@ impl Swim {
         std::mem::swap(&mut fresh.drives, &mut self.drives);
         std::mem::swap(&mut fresh.chain, &mut self.chain);
         fresh.chain.rewind();
+        // HD20s aren't on the chip's reset, so the disks stay. A real one wouldn't notice: back
+        // to idle, so one in the middle of a transfer doesn't keep waiting for the rest of it.
+        std::mem::swap(&mut fresh.dcds, &mut self.dcds);
+        fresh.dcds.iter_mut().for_each(DcdDevice::reset);
         fresh.pending_ticks = self.pending_ticks;
         fresh.lines_sent = self.lines_sent;
         fresh.cycles = self.cycles;
@@ -615,10 +619,15 @@ impl Swim {
         Ok(self.dcds.remove(idx))
     }
 
+    /// !ENBL2 is active: the external drive is selected and the IWM holds the drive enable.
+    fn dcd_port_enabled(&self) -> bool {
+        self.extdrive && self.iwm_drive_enabled()
+    }
+
     /// The DCD answering on the drive port right now, if any: DCDs only answer on the
     /// external enable, the one at the current chain position.
     fn selected_dcd(&self) -> Option<&DcdDevice> {
-        if self.mode == SwimMode::Iwm && self.extdrive && self.enable {
+        if self.mode == SwimMode::Iwm && self.dcd_port_enabled() {
             self.dcds.get(self.dcd_chain_pos)
         } else {
             None
@@ -626,7 +635,7 @@ impl Swim {
     }
 
     fn selected_dcd_mut(&mut self) -> Option<&mut DcdDevice> {
-        if self.mode == SwimMode::Iwm && self.extdrive && self.enable {
+        if self.mode == SwimMode::Iwm && self.dcd_port_enabled() {
             self.dcds.get_mut(self.dcd_chain_pos)
         } else {
             None
@@ -730,6 +739,11 @@ impl Tickable for Swim {
             // connector, with no access
             self.update_lines();
         }
+        // The IWM's timer can end !ENBL2 without an access
+        if !self.dcd_port_enabled() {
+            self.dcd_chain_pos = 0;
+        }
+
         if self.dcd_selected() {
             self.dcd_tick(ticks);
             return Ok(ticks);
