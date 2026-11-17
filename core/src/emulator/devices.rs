@@ -1495,7 +1495,7 @@ mod tests {
                 | MacModel::Quadra700 => (MacSuperDrive, 2),
                 MacModel::LCIII | MacModel::LC475 | MacModel::Quadra800 => (MacSuperDrive, 1),
                 // No `SWIM` bus: its floppy controller is its own
-                MacModel::Lisa25 | MacModel::Lisa210 => continue,
+                MacModel::Lisa1 | MacModel::Lisa25 | MacModel::Lisa210 => continue,
             };
             let mut emu = machine(model);
             assert_eq!(floppy_drives(&mut emu), vec![drive; count], "{model}");
@@ -2139,5 +2139,27 @@ mod tests {
         let (mut emu, _, refused) = Emulator::new(&machine, vec![]).unwrap();
         assert!(refused.is_empty(), "{:?}", refused);
         assert!(emu.devices().is_empty());
+    }
+    #[test]
+    fn a_lisa_1_has_two_twiggy_drives() {
+        let dir = TestDir::new("lisa_1");
+        let mut emu = machine(MacModel::Lisa1);
+        let twiggy = dir.file("twiggy.image", 1702 * 512);
+        emu.load_media(bus_id::LISA_FDC, "2", &twiggy, true)
+            .unwrap();
+        let status = emu.device_function(bus_id::LISA_FDC, "2").unwrap().status();
+        assert!(matches!(status, FunctionStatus::Floppy(f) if f.title == "twiggy.image"));
+        // A Sony disk doesn't fit
+        let sony = dir.file("sony.image", 800 * 512);
+        assert!(emu.load_media(bus_id::LISA_FDC, "1", &sony, true).is_err());
+        let buses = emu.buses();
+        let fdc = buses.iter().find(|b| b.id == bus_id::LISA_FDC).unwrap();
+        assert_eq!(fdc.slots.len(), 2);
+        for slot in &fdc.slots {
+            assert_eq!(
+                slot.device.as_ref().unwrap().model,
+                DeviceModel::LisaTwiggyDrive
+            );
+        }
     }
 }

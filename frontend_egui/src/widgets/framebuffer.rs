@@ -313,6 +313,7 @@ impl FramebufferWidget {
             | MacModel::SeFdhd
             | MacModel::Classic
             | MacModel::SE30
+            | MacModel::Lisa1
             | MacModel::Lisa25
             | MacModel::Lisa210 => {
                 vec![

@@ -27,6 +27,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::fdc_sim::{FDC_CLOCK, PARAMETER_MEMORY_SIZE};
+use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
 pub const EEPROM_SIZE: usize = 256;
@@ -299,6 +300,11 @@ impl Pfg {
         file.write_all(&bytes)?;
         Ok(())
     }
+}
+
+/// Whether a PFG fits the machine: MacWorks Plus II runs on a Lisa 2
+pub fn fits(mac: MacModel) -> bool {
+    matches!(mac, MacModel::Lisa25 | MacModel::Lisa210)
 }
 
 impl Default for Pfg {

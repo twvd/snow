@@ -1,11 +1,12 @@
-//! Simulation of the Lisa's floppy controller: the 6504 with its ROM, and a drive
+//! Simulation of the Lisa's floppy controller: the 6504 with its ROM, and its drives
 //!
 //! It is seen through its shared RAM and two lines only, so that a 6504 running the ROM can
-//! replace it.
+//! replace it. The Lisa 1's ROM ($40) drives two Twiggy drives and keeps some of its state
+//! elsewhere in the RAM than the later ROMs, which drive one Sony.
 //!
-//! The controller is the `LisaFDC` bus of the device model, and its drive a device on it. The
+//! The controller is the `LisaFDC` bus of the device model, and its drives devices on it. The
 //! simulation works on whole sectors, so the bus has no slot trait: the controller reads and
-//! writes the disk of its drive directly.
+//! writes the disks of its drives directly.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -56,11 +57,40 @@ const CONSTANT_ROM_ID: usize = 8;
 /// ROM id of the 2/5. The ROM of the 2/10 only differs by this.
 pub const ROM_ID_2_5: u8 = 0xA8;
 pub const ROM_ID_2_10: u8 = 0x88;
+/// The Lisa 1's ROM, known as $40, puts $52 there: bit 7 clear says Lisa 1 to the boot ROM
+pub const ROM_ID_LISA_1: u8 = 0x52;
 
 /// Default constants, from the ROM of the 2/5. The one at $18 is the ROM id.
 const CONSTANTS_2_5: [u8; 13] = [
     0xD5, 0xC0, 0xA7, 0x89, 0x64, 0x1E, 0x04, 0x09, 0xA8, 0x64, 0x02, 0x82, 0x4F,
 ];
+
+/// What the Lisa 1's ROM copies to $10 at a cold start, from $1111
+const CONSTANTS_LISA_1: [u8; 14] = [
+    0x00, 0x04, 0x00, 0xA0, 0x50, 0x1E, 0x02, 0x08, 0x52, 0x64, 0x01, 0x09, 0x48, 0x5A,
+];
+/// Where the Lisa 1's ROM keeps what the later ROMs keep elsewhere
+const CLAMPED_LISA_1: [usize; 2] = [0x25, 0x27];
+const IMALIVE_LISA_1: usize = 0x2E;
+/// IST & IMSK, which raises FDIR while nonzero, instead of OKTOGO
+const FDIR_LISA_1: usize = 0x43;
+const IMSK_LISA_1: usize = 0x44;
+/// The Lisa 1's ROM clears the RAM up to here at a cold start
+const CLEARED_LISA_1: usize = 0xA1;
+
+/// What the Lisa 1's ROM checks before a command, at $1100: bits for the drive, side,
+/// sector, track, mask, format confirmation and write protect, checked in that order
+const CHECK_DRIVE: u8 = 0x01;
+const CHECK_SIDE: u8 = 0x02;
+const CHECK_SECTOR: u8 = 0x04;
+const CHECK_TRACK: u8 = 0x08;
+const CHECK_MASK: u8 = 0x10;
+const CHECK_CONFIRM: u8 = 0x20;
+const CHECK_WRITE_PROTECT: u8 = 0x40;
+/// For each RWTS command
+const CHECKS_LISA_1: [u8; 10] = [0x0F, 0x4F, 0x01, 0x6B, 0x0B, 0x6B, 0x0B, 0x0F, 0x4F, 0x00];
+const CHECKS_SEEK_LISA_1: u8 = 0x0B;
+const CHECKS_SET_MASK_LISA_1: u8 = 0x10;
 
 const DRIVE_UPPER: u8 = 0x00;
 const DRIVE_LOWER: u8 = 0x80;
@@ -92,6 +122,7 @@ const ERR_BAD_DRIVE: u8 = 0x02;
 const ERR_BAD_SIDE: u8 = 0x03;
 const ERR_BAD_SECTOR: u8 = 0x04;
 const ERR_BAD_TRACK: u8 = 0x05;
+const ERR_BAD_MASK: u8 = 0x06;
 const ERR_NO_DISK: u8 = 0x07;
 const ERR_NOT_ENABLED: u8 = 0x08;
 const ERR_INTERRUPT_PENDING: u8 = 0x09;
@@ -101,6 +132,7 @@ const ERR_READ: u8 = 0x17;
 
 /// Interrupt status bits of the lower drive, and of the upper one 4 below
 const IST_INSERTED: u8 = 0x10;
+const IST_BUTTON: u8 = 0x20;
 const IST_DONE: u8 = 0x40;
 const IST_ANY: u8 = 0x80;
 const MASK_LOWER: u8 = 0x80;
@@ -139,6 +171,8 @@ const DC42_DATA_SIZE: usize = 0x40;
 const DC42_TAG_SIZE: usize = 0x44;
 const DC42_DATA_CHECKSUM: usize = 0x48;
 const DC42_TAG_CHECKSUM: usize = 0x4C;
+/// $0100 in a DiskCopy 4.2 header
+const DC42_MAGIC: usize = 0x52;
 /// DiskCopy leaves the tags of the first sector out of its checksum
 const DC42_TAG_CHECKSUM_FROM: usize = 12;
 
@@ -152,6 +186,34 @@ fn sectors_before_track(track: u8) -> usize {
     (0..track).map(|t| usize::from(sectors_on_track(t))).sum()
 }
 
+const TWIGGY_TRACKS: u8 = 46;
+/// The first track of each zone and its sectors, from the Lisa 1's ROM at $114E and $1129
+const TWIGGY_ZONES: [(u8, u8); 8] = [
+    (0, 22),
+    (4, 21),
+    (11, 20),
+    (17, 19),
+    (23, 18),
+    (29, 17),
+    (35, 16),
+    (42, 15),
+];
+
+/// Sectors on a track of a Twiggy disk. Past the last track, those of the last zone.
+fn twiggy_sectors_on_track(track: u8) -> u8 {
+    TWIGGY_ZONES
+        .iter()
+        .rev()
+        .find(|(first, _)| track >= *first)
+        .map_or(0, |(_, sectors)| *sectors)
+}
+
+fn twiggy_sectors_before_track(track: u8) -> usize {
+    (0..track)
+        .map(|t| usize::from(twiggy_sectors_on_track(t)))
+        .sum()
+}
+
 /// A floppy image: 512-byte sectors, and a 12-byte tag for each
 #[derive(Serialize, Deserialize)]
 pub struct LisaDisk {
@@ -159,8 +221,12 @@ pub struct LisaDisk {
     tags: Vec<u8>,
     write_protect: bool,
     sides: u8,
+    /// A Lisa 1 disk
+    twiggy: bool,
     /// DiskCopy 4.2 header, none for a raw image
     dc42_header: Option<Vec<u8>>,
+    /// Bytes after the tags, kept for writing back: BLU pads its images with $1A
+    trailer: Vec<u8>,
     /// Written since the image was loaded
     dirty: bool,
     /// Name to show
@@ -188,15 +254,20 @@ impl LisaDisk {
                 .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
         };
         let mut dc42_header = None;
+        let mut trailer = &image[..0];
+        let padded = image.get(DC42_MAGIC..DC42_MAGIC + 2) == Some(&[0x01, 0x00]);
         let (data, tags) = match (be32(DC42_DATA_SIZE), be32(DC42_TAG_SIZE)) {
             (Some(data_size), Some(tag_size))
                 if data_size > 0
                     && data_size % SECTOR_SIZE == 0
-                    && DC42_HEADER_SIZE + data_size + tag_size == image.len() =>
+                    && (DC42_HEADER_SIZE + data_size + tag_size == image.len()
+                        || (padded && DC42_HEADER_SIZE + data_size + tag_size < image.len())) =>
             {
                 dc42_header = Some(image[..DC42_HEADER_SIZE].to_vec());
                 let tags_at = DC42_HEADER_SIZE + data_size;
-                (&image[DC42_HEADER_SIZE..tags_at], &image[tags_at..])
+                let end = tags_at + tag_size;
+                trailer = &image[end..];
+                (&image[DC42_HEADER_SIZE..tags_at], &image[tags_at..end])
             }
             _ if !image.is_empty() && image.len().is_multiple_of(SECTOR_SIZE) => {
                 (image, &image[..0])
@@ -204,13 +275,15 @@ impl LisaDisk {
             _ => bail!("Not a DiskCopy 4.2 or raw image"),
         };
         let sectors = data.len() / SECTOR_SIZE;
-        let sides = if sectors == sectors_before_track(TRACKS) {
-            1
+        let (sides, twiggy) = if sectors == sectors_before_track(TRACKS) {
+            (1, false)
         } else if sectors == 2 * sectors_before_track(TRACKS) {
-            2
+            (2, false)
+        } else if sectors == 2 * twiggy_sectors_before_track(TWIGGY_TRACKS) {
+            (2, true)
         } else {
             bail!(
-                "A Lisa disk has 800 or 1600 sectors, this image has {}",
+                "A Lisa disk has 800, 1600 or 1702 sectors, this image has {}",
                 sectors
             );
         };
@@ -221,7 +294,9 @@ impl LisaDisk {
             tags,
             write_protect,
             sides,
+            twiggy,
             dc42_header,
+            trailer: trailer.to_vec(),
             dirty: false,
             title: title.to_owned(),
             media: None,
@@ -233,8 +308,29 @@ impl LisaDisk {
         self.sides
     }
 
-    /// The first sector of a track and side. Side 1 of a track follows side 0.
+    pub fn twiggy(&self) -> bool {
+        self.twiggy
+    }
+
+    fn tracks(&self) -> u8 {
+        if self.twiggy { TWIGGY_TRACKS } else { TRACKS }
+    }
+
+    fn sectors_on(&self, track: u8) -> u8 {
+        if self.twiggy {
+            twiggy_sectors_on_track(track)
+        } else {
+            sectors_on_track(track)
+        }
+    }
+
+    /// The first sector of a track and side. On a Sony disk, side 1 of a track follows
+    /// side 0. On a Twiggy disk, side 1's tracks follow all of side 0's.
     fn first_sector(&self, track: u8, side: u8) -> usize {
+        if self.twiggy {
+            return usize::from(side) * twiggy_sectors_before_track(TWIGGY_TRACKS)
+                + twiggy_sectors_before_track(track);
+        }
         sectors_before_track(track) * usize::from(self.sides)
             + usize::from(side) * usize::from(sectors_on_track(track))
     }
@@ -264,6 +360,7 @@ impl LisaDisk {
             .copy_from_slice(&tag_checksum.to_be_bytes());
         image.extend_from_slice(&self.data);
         image.extend_from_slice(tags);
+        image.extend_from_slice(&self.trailer);
         image
     }
 
@@ -290,6 +387,27 @@ struct Operation {
     error: u8,
 }
 
+/// A drive on the controller. It takes and gives back disks by itself, and the controller
+/// notices.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Drive {
+    /// A Twiggy drive, else a Sony one
+    twiggy: bool,
+    /// A Sony drive that takes 800K disks
+    double_sided: bool,
+    disk: Option<LisaDisk>,
+    /// Sony: a disk went in, and the controller hasn't seen it yet
+    inserted: bool,
+    /// Disks out of the drive, for the emulator to write back
+    ejected: Vec<LisaDisk>,
+    /// Where the head is, for the time a seek takes
+    head: u8,
+    /// Lisa 1: "inserted" was raised for the disk in the drive
+    insert_signalled: bool,
+    /// Lisa 1: the eject button was pressed, and the controller hasn't looked yet
+    button: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct FdcSim {
     rom_id: u8,
@@ -306,28 +424,14 @@ pub struct FdcSim {
     timing_loop_done_at: Option<Ticks>,
     /// The clock a PFG gives the 6504, instead of its own
     clock: Option<Ticks>,
-    /// The lower drive, once the machine has it
-    drive: Option<Box<Drive>>,
+    /// The lower drive, and on a Lisa 1 the upper drive first, once the machine has them
+    drives: Vec<Option<Box<Drive>>>,
     /// File the parameter memory is kept in. A save state doesn't bring it back, like
     /// the PRAM file of the Macs.
     #[serde(skip)]
     parameter_memory_path: Option<PathBuf>,
     #[serde(skip)]
     parameter_memory_changed: bool,
-}
-
-/// A drive of the controller, with its disk
-#[derive(Default, Serialize, Deserialize)]
-pub struct Drive {
-    disk: Option<LisaDisk>,
-    /// A disk went in, and the controller hasn't seen it yet
-    inserted: bool,
-    /// The user took the disk out, and the controller hasn't seen it yet
-    removed: bool,
-    /// Out of the drive, to write back
-    ejected: Option<LisaDisk>,
-    /// An 800K drive instead of a 400K one
-    double_sided: bool,
 }
 
 impl FdcSim {
@@ -344,7 +448,9 @@ impl FdcSim {
             parked: false,
             timing_loop_done_at: None,
             clock: None,
-            drive: None,
+            drives: (0..if rom_id == ROM_ID_LISA_1 { 2 } else { 1 })
+                .map(|_| None)
+                .collect(),
             parameter_memory_path: None,
             parameter_memory_changed: false,
         };
@@ -354,6 +460,17 @@ impl FdcSim {
 
     /// Cold start of the controller. Only parameter memory stays.
     pub fn reset(&mut self) {
+        if self.lisa_1() {
+            self.ram[..=CLEARED_LISA_1].fill(0);
+            self.ram[CONSTANTS..CONSTANTS + CONSTANTS_LISA_1.len()]
+                .copy_from_slice(&CONSTANTS_LISA_1);
+            // It clamps the disks in place again once it runs
+            for drive in self.drives.iter_mut().flatten() {
+                drive.insert_signalled = false;
+            }
+            self.restart();
+            return;
+        }
         let range = PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE;
         let parameter_memory = self.ram[range.clone()].to_vec();
         self.ram.fill(0);
@@ -363,11 +480,95 @@ impl FdcSim {
         self.set_drive_type();
         self.ram[DRVCONN] = 0xFF;
         self.ram[DISKID] = 0x02;
-        self.ram[CLAMPED] = if self.disk().is_some() { 0xFF } else { 0 };
+        self.ram[CLAMPED] = if self.disk(0).is_some() { 0xFF } else { 0 };
+        self.restart();
+    }
+
+    /// What the Lisa 2's controller says of its drive: one side or two
+    fn set_drive_type(&mut self) {
+        if self.lisa_1() {
+            return;
+        }
+        let double_sided = self.double_sided();
+        self.ram[NOSIDES] = if double_sided { 2 } else { 1 };
+        self.ram[FMTTYPE] = if double_sided {
+            FMTTYPE_SIDE_BIT | 0x02
+        } else {
+            0x02
+        };
+    }
+
+    fn drive(&self, index: usize) -> Option<&Drive> {
+        self.drives.get(index)?.as_deref()
+    }
+
+    fn drive_mut(&mut self, index: usize) -> Option<&mut Drive> {
+        self.drives.get_mut(index)?.as_deref_mut()
+    }
+
+    /// The disk in one of `drives`
+    fn disk(&self, index: usize) -> Option<&LisaDisk> {
+        self.drive(index)?.disk.as_ref()
+    }
+
+    fn restart(&mut self) {
         self.ready_at = self.now + START_TICKS;
         self.command_at = None;
         self.operation = None;
         self.parked = false;
+    }
+
+    /// The Lisa 1's controller, with two Twiggy drives
+    pub fn lisa_1(&self) -> bool {
+        self.rom_id == ROM_ID_LISA_1
+    }
+
+    fn imsk(&self) -> usize {
+        if self.lisa_1() { IMSK_LISA_1 } else { IMSK }
+    }
+
+    fn imalive(&self) -> usize {
+        if self.lisa_1() {
+            IMALIVE_LISA_1
+        } else {
+            IMALIVE
+        }
+    }
+
+    /// Which of `drives` a DRIVE byte names
+    fn drive_index(&self, drive: u8) -> Option<usize> {
+        match (self.lisa_1(), drive) {
+            (true, DRIVE_UPPER) => Some(0),
+            (true, DRIVE_LOWER) => Some(1),
+            (false, DRIVE_LOWER) => Some(0),
+            _ => None,
+        }
+    }
+
+    /// The DRIVE byte of one of `drives`
+    fn drive_byte(&self, index: usize) -> u8 {
+        if self.lisa_1() && index == 0 {
+            DRIVE_UPPER
+        } else {
+            DRIVE_LOWER
+        }
+    }
+
+    fn clamped_at(&self, index: usize) -> usize {
+        if self.lisa_1() {
+            CLAMPED_LISA_1[index]
+        } else {
+            CLAMPED
+        }
+    }
+
+    fn enabled(&self, drive: u8) -> bool {
+        let mask = if drive == DRIVE_LOWER {
+            MASK_LOWER
+        } else {
+            MASK_UPPER
+        };
+        self.ram[self.imsk()] & mask != 0
     }
 
     /// Keeps parameter memory in a file from now on. A file that doesn't exist or is
@@ -436,7 +637,7 @@ impl FdcSim {
     /// FDIR
     pub fn fdir(&self) -> bool {
         let ist = self.ram[IST];
-        let mask = self.ram[IMSK];
+        let mask = self.ram[self.imsk()];
         (mask & MASK_LOWER != 0 && ist & 0xF0 != 0) || (mask & MASK_UPPER != 0 && ist & 0x0F != 0)
     }
 
@@ -445,58 +646,103 @@ impl FdcSim {
         self.now >= self.ready_at
     }
 
-    /// What the controller says of its drive: one side or two
-    fn set_drive_type(&mut self) {
-        let double_sided = self.double_sided();
-        self.ram[NOSIDES] = if double_sided { 2 } else { 1 };
-        self.ram[FMTTYPE] = if double_sided {
-            FMTTYPE_SIDE_BIT | 0x02
-        } else {
-            0x02
-        };
-    }
-
     /// The clock of a PFG, or None for the 6504's own
     pub fn set_clock(&mut self, clock: Option<Ticks>) {
         self.clock = clock;
     }
 
-    /// An 800K drive instead of a 400K one
+    /// The Lisa 2's drive takes 800K disks
     fn double_sided(&self) -> bool {
-        self.drive.as_ref().is_some_and(|drive| drive.double_sided)
+        self.drive(0).is_some_and(|drive| drive.double_sided)
     }
 
-    /// The disk in the drive
-    fn disk(&self) -> Option<&LisaDisk> {
-        self.drive.as_ref()?.disk.as_ref()
-    }
-
-    /// Sees what the user did to the drive: a disk put in, or taken out
-    fn look_at_drive(&mut self) {
-        let Some(drive) = &mut self.drive else {
+    /// The Lisa 2's controller clamps a disk put in its Sony drive at once, and lets go of one
+    /// taken out. The Lisa 1's looks at its drives between commands.
+    fn notice_drives(&mut self) {
+        if self.lisa_1() {
+            return;
+        }
+        let Some(drive) = self.drives[0].as_deref_mut() else {
             return;
         };
-        if std::mem::take(&mut drive.removed) {
+        if drive.disk.is_none() {
+            drive.inserted = false;
             self.ram[CLAMPED] = 0;
-        }
-        if std::mem::take(&mut drive.inserted) {
+        } else if std::mem::take(&mut drive.inserted) {
             self.ram[CLAMPED] = 0xFF;
-            self.set_ist(IST_INSERTED);
+            self.signal(DRIVE_LOWER, IST_INSERTED);
         }
     }
 
-    fn set_ist(&mut self, bits: u8) {
-        self.ram[IST] |= bits | IST_ANY;
+    fn take_out(&mut self, index: usize) {
+        let clamped = self.clamped_at(index);
+        self.ram[clamped] = 0;
+        if let Some(drive) = self.drive_mut(index) {
+            drive.take_out();
+        }
+    }
+
+    /// Raises interrupt status bits, given as the lower drive's, for a drive
+    fn signal(&mut self, drive: u8, bits: u8) {
+        let bits = bits | IST_ANY;
+        self.ram[IST] |= if drive == DRIVE_LOWER {
+            bits
+        } else {
+            bits >> 4
+        };
         self.update_fdir();
     }
 
     fn update_fdir(&mut self) {
-        self.ram[OKTOGO] = if self.fdir() { 0xFF } else { 0 };
+        if self.lisa_1() {
+            self.ram[FDIR_LISA_1] = self.ram[IST] & self.ram[IMSK_LISA_1];
+        } else {
+            self.ram[OKTOGO] = if self.fdir() { 0xFF } else { 0 };
+        }
+    }
+
+    /// What the Lisa 1's ROM does with each drive between commands, from $137E: clamps a
+    /// disk put in a drive that isn't enabled, or raises "inserted" if it is; on the eject
+    /// button, raises "button" if the drive is enabled, or else ejects.
+    fn look_at_drives(&mut self) {
+        for index in 0..self.drives.len() {
+            let drive = self.drive_byte(index);
+            let enabled = self.enabled(drive);
+            let clamped = self.clamped_at(index);
+            let clamped_now = self.ram[clamped] != 0;
+            let Some(state) = self.drive_mut(index) else {
+                continue;
+            };
+            if state.disk.is_none() {
+                state.insert_signalled = false;
+                state.button = false;
+                self.ram[clamped] = 0;
+                continue;
+            }
+            let signal_inserted = !clamped_now && enabled && !state.insert_signalled;
+            if signal_inserted {
+                state.insert_signalled = true;
+            }
+            let button = std::mem::take(&mut state.button);
+            if !clamped_now && !enabled {
+                self.ram[clamped] = 0xFF;
+            }
+            if signal_inserted {
+                self.signal(drive, IST_INSERTED);
+            }
+            if button {
+                if enabled {
+                    self.signal(drive, IST_BUTTON);
+                } else {
+                    self.take_out(index);
+                }
+            }
+        }
     }
 
     pub fn tick(&mut self, ticks: Ticks) {
+        self.notice_drives();
         self.now += ticks;
-        self.look_at_drive();
         if self.now < self.ready_at {
             return;
         }
@@ -506,7 +752,8 @@ impl FdcSim {
         }
         if self.command_at.is_some_and(|t| self.now >= t) {
             self.command_at = None;
-            self.ram[IMALIVE] = self.ram[IMALIVE].wrapping_add(1);
+            let imalive = self.imalive();
+            self.ram[imalive] = self.ram[imalive].wrapping_add(1);
             self.command();
         }
         if let Some(op) = self.operation
@@ -515,17 +762,10 @@ impl FdcSim {
             self.operation = None;
             self.ram[ERRSTAT] = op.error;
             log::trace!("Floppy operation done, status {:02X}", op.error);
-            let bits = if op.drive == DRIVE_LOWER {
-                IST_DONE
-            } else {
-                (IST_DONE | IST_ANY) >> 4
-            };
-            if op.drive == DRIVE_LOWER {
-                self.set_ist(bits);
-            } else {
-                self.ram[IST] |= bits;
-                self.update_fdir();
-            }
+            self.signal(op.drive, IST_DONE);
+        }
+        if self.lisa_1() && !self.parked && self.command_at.is_none() && self.operation.is_none() {
+            self.look_at_drives();
         }
     }
 
@@ -542,10 +782,33 @@ impl FdcSim {
             self.ram[TRACK],
             self.now
         );
+        // The Lisa 1's ROM checks some of these too
+        let checks = match go {
+            GO_SEEK => CHECKS_SEEK_LISA_1,
+            GO_SET_MASK | GO_CLEAR_MASK => CHECKS_SET_MASK_LISA_1,
+            _ => 0,
+        };
+        if self.lisa_1() && checks != 0 {
+            let error = self.validate_lisa_1(checks);
+            if error != ERR_OK {
+                self.ram[ERRSTAT] = error;
+                self.ram[GOBYTE] = 0;
+                return;
+            }
+        }
         match go {
             GO_NULL => (),
             GO_RWTS => self.rwts(),
-            GO_SEEK => self.ram[CURTRACK] = self.ram[TRACK],
+            GO_SEEK => {
+                let index = self.drive_index(self.ram[DRIVE]).unwrap_or(0);
+                let track = self.ram[TRACK];
+                if let Some(drive) = self.drive_mut(index) {
+                    drive.head = track;
+                }
+                if !self.lisa_1() {
+                    self.ram[CURTRACK] = self.ram[TRACK];
+                }
+            }
             GO_CALL => {
                 let target = u16::from_be_bytes([self.ram[ADRH], self.ram[COMMAND]]);
                 if target == 0x1FFB {
@@ -568,9 +831,8 @@ impl FdcSim {
                         == WRITE_PROTECT_SENSE_CODE
                 {
                     let protected = self
-                        .drive
-                        .as_ref()
-                        .and_then(|drive| drive.disk.as_ref())
+                        .drive_index(DRIVE_LOWER)
+                        .and_then(|i| self.disk(i))
                         .is_some_and(|d| d.write_protect);
                     self.ram[0x08] = if protected { 0xFF } else { 0 };
                     self.ram[0x06] = 0;
@@ -594,11 +856,13 @@ impl FdcSim {
                 self.update_fdir();
             }
             GO_SET_MASK => {
-                self.ram[IMSK] |= mask & (MASK_LOWER | MASK_UPPER);
+                let imsk = self.imsk();
+                self.ram[imsk] |= mask & (MASK_LOWER | MASK_UPPER);
                 self.update_fdir();
             }
             GO_CLEAR_MASK => {
-                self.ram[IMSK] &= !mask;
+                let imsk = self.imsk();
+                self.ram[imsk] &= !mask;
                 self.update_fdir();
             }
             GO_WAIT_IN_ROM | GO_AWAY => self.parked = true,
@@ -608,6 +872,12 @@ impl FdcSim {
     }
 
     fn validate(&self, op: u8) -> u8 {
+        if self.lisa_1() {
+            return match CHECKS_LISA_1.get(usize::from(op)) {
+                Some(&checks) => self.validate_lisa_1(checks),
+                None => ERR_BAD_GOBYTE,
+            };
+        }
         let drive = self.ram[DRIVE];
         if drive != DRIVE_LOWER && drive != DRIVE_UPPER {
             return ERR_BAD_DRIVE;
@@ -621,7 +891,7 @@ impl FdcSim {
             return ERR_NOT_ENABLED;
         }
         // One drive, the lower one
-        let Some(disk) = self.disk().filter(|_| drive == DRIVE_LOWER) else {
+        let Some(disk) = self.disk(0).filter(|_| drive == DRIVE_LOWER) else {
             return ERR_NO_DISK;
         };
         if matches!(
@@ -655,6 +925,47 @@ impl FdcSim {
         ERR_OK
     }
 
+    /// The checks of the Lisa 1's ROM, from $14E9, in its order. A disk not clamped is no
+    /// disk, and the sector is checked against the track's zone before the track itself.
+    fn validate_lisa_1(&self, checks: u8) -> u8 {
+        let drive = self.ram[DRIVE];
+        let index = self.drive_index(drive);
+        if checks & CHECK_DRIVE != 0 {
+            let Some(index) = index else {
+                return ERR_BAD_DRIVE;
+            };
+            if self.ram[self.clamped_at(index)] == 0 {
+                return ERR_NO_DISK;
+            }
+            if !self.enabled(drive) {
+                return ERR_NOT_ENABLED;
+            }
+        }
+        let track = self.ram[TRACK];
+        if checks & CHECK_SIDE != 0 && self.ram[SIDE] > 1 {
+            return ERR_BAD_SIDE;
+        }
+        if checks & CHECK_SECTOR != 0 && self.ram[SECTOR] >= twiggy_sectors_on_track(track) {
+            return ERR_BAD_SECTOR;
+        }
+        if checks & CHECK_TRACK != 0 && track >= TWIGGY_TRACKS {
+            return ERR_BAD_TRACK;
+        }
+        if checks & CHECK_MASK != 0 && self.ram[COMMAND] & !(MASK_LOWER | MASK_UPPER) != 0 {
+            return ERR_BAD_MASK;
+        }
+        if checks & CHECK_CONFIRM != 0 && self.ram[CONFIRM] != 0xFF {
+            return ERR_BAD_FORMAT;
+        }
+        let protected = index
+            .and_then(|i| self.disk(i))
+            .is_some_and(|d| d.write_protect);
+        if checks & CHECK_WRITE_PROTECT != 0 && protected {
+            return ERR_WRITE_PROTECT;
+        }
+        ERR_OK
+    }
+
     fn rwts(&mut self) {
         let op = self.ram[COMMAND];
         let drive = self.ram[DRIVE];
@@ -662,11 +973,13 @@ impl FdcSim {
         let error = if self.fdir() {
             ERR_INTERRUPT_PENDING
         } else {
-            let error = self.validate(op);
+            let mut error = self.validate(op);
             if error == ERR_OK {
+                let index = self.drive_index(drive).unwrap_or(self.drives.len() - 1);
                 let track = self.ram[TRACK];
-                seek = u64::from(self.ram[CURTRACK].abs_diff(track)) * STEP_TICKS;
-                self.perform(op);
+                let head = self.drive(index).map_or(0, |drive| drive.head);
+                seek = u64::from(head.abs_diff(track)) * STEP_TICKS;
+                error = self.perform(op);
             }
             error
         };
@@ -677,21 +990,55 @@ impl FdcSim {
         });
     }
 
-    fn perform(&mut self, op: u8) {
+    /// Returns the error status: only clamp can fail once the command is valid
+    fn perform(&mut self, op: u8) -> u8 {
+        // The Lisa 1's ROM takes any DRIVE byte other than the upper drive's as the lower
+        // drive for clamp, which it doesn't check
+        let drive = self
+            .drive_index(self.ram[DRIVE])
+            .unwrap_or(self.drives.len() - 1);
+        let lisa_1 = self.lisa_1();
+        match op {
+            RWTS_UNCLAMP => {
+                self.take_out(drive);
+                if !lisa_1 {
+                    self.ram[MTRON] = 0xFF;
+                }
+                return ERR_OK;
+            }
+            RWTS_CLAMP if lisa_1 => {
+                let clamped = self.clamped_at(drive);
+                if self.ram[clamped] == 0 {
+                    if self.disk(drive).is_none() {
+                        return ERR_NO_DISK;
+                    }
+                    self.ram[clamped] = 0xFF;
+                }
+                return ERR_OK;
+            }
+            _ => (),
+        }
         let track = self.ram[TRACK];
         let sector = usize::from(self.ram[SECTOR]);
         let side = self.ram[SIDE].min(1);
-        let Some(drive) = &mut self.drive else {
-            return;
+        let Some(state) = self.drives[drive].as_deref_mut() else {
+            return ERR_OK;
         };
-        let Some(disk) = &mut drive.disk else {
-            return;
+        let Some(tracks) = state.disk.as_ref().map(LisaDisk::tracks) else {
+            return ERR_OK;
         };
-        let index = disk.first_sector(track.min(TRACKS - 1), side) + sector;
-        if matches!(
-            op,
-            RWTS_READ | RWTS_READ_BRUTE | RWTS_WRITE | RWTS_WRITE_BRUTE
-        ) {
+        state.head = track.min(tracks - 1);
+        let Some(disk) = state.disk.as_mut() else {
+            return ERR_OK;
+        };
+        let index = disk.first_sector(track.min(tracks - 1), side) + sector;
+        if !lisa_1
+            && matches!(
+                op,
+                RWTS_READ | RWTS_READ_BRUTE | RWTS_WRITE | RWTS_WRITE_BRUTE
+            )
+        {
+            self.ram[CURTRACK] = track;
             // The ROM copies the format byte of every sector header it reads to DISKID,
             // for writes too ($12C4 in ROM $88). An image doesn't hold it: this is the
             // one the ROM writes when formatting, FMTTYPE for the sides of the disk.
@@ -703,23 +1050,17 @@ impl FdcSim {
         }
         match op {
             RWTS_READ | RWTS_READ_BRUTE => {
-                self.ram[CURTRACK] = track;
                 self.ram[DATA..DATA + SECTOR_SIZE]
                     .copy_from_slice(&disk.data[index * SECTOR_SIZE..(index + 1) * SECTOR_SIZE]);
                 self.ram[TAG..TAG + TAG_SIZE]
                     .copy_from_slice(&disk.tags[index * TAG_SIZE..(index + 1) * TAG_SIZE]);
             }
             RWTS_WRITE | RWTS_WRITE_BRUTE => {
-                self.ram[CURTRACK] = track;
                 disk.data[index * SECTOR_SIZE..(index + 1) * SECTOR_SIZE]
                     .copy_from_slice(&self.ram[DATA..DATA + SECTOR_SIZE]);
                 disk.tags[index * TAG_SIZE..(index + 1) * TAG_SIZE]
                     .copy_from_slice(&self.ram[TAG..TAG + TAG_SIZE]);
                 disk.dirty = true;
-            }
-            RWTS_UNCLAMP => {
-                self.ram[CLAMPED] = 0;
-                drive.ejected = drive.disk.take();
             }
             RWTS_FORMAT => {
                 disk.data.fill(0);
@@ -727,8 +1068,9 @@ impl FdcSim {
                 disk.dirty = true;
             }
             RWTS_FORMAT_TRACK => {
-                let count = usize::from(sectors_on_track(track.min(TRACKS - 1)));
-                let first = disk.first_sector(track.min(TRACKS - 1), side);
+                let track = track.min(tracks - 1);
+                let count = usize::from(disk.sectors_on(track));
+                let first = disk.first_sector(track, side);
                 disk.data[first * SECTOR_SIZE..(first + count) * SECTOR_SIZE].fill(0);
                 disk.tags[first * TAG_SIZE..(first + count) * TAG_SIZE].fill(0);
                 disk.dirty = true;
@@ -736,7 +1078,42 @@ impl FdcSim {
             RWTS_VERIFY | RWTS_VERIFY_TRACK | RWTS_CLAMP => (),
             _ => log::warn!("Unknown floppy controller RWTS command {:02X}", op),
         }
-        self.ram[MTRON] = 0xFF;
+        if !lisa_1 {
+            self.ram[MTRON] = 0xFF;
+        }
+        ERR_OK
+    }
+}
+
+impl Drive {
+    /// Whether the drive takes a disk
+    fn fits(&self, disk: &LisaDisk) -> bool {
+        if self.twiggy {
+            return disk.twiggy;
+        }
+        !disk.twiggy && (self.double_sided || disk.sides < 2)
+    }
+
+    /// A Sony drive clamps the disk, which the controller sees
+    fn insert(&mut self, disk: LisaDisk) {
+        self.disk = Some(disk);
+        self.inserted = !self.twiggy;
+    }
+
+    /// As the user does: on a Twiggy drive by pressing its button
+    fn eject(&mut self) {
+        if self.twiggy {
+            self.button = true;
+        } else {
+            self.take_out();
+        }
+    }
+
+    fn take_out(&mut self) {
+        self.insert_signalled = false;
+        if let Some(disk) = self.disk.take() {
+            self.ejected.push(disk);
+        }
     }
 }
 
@@ -762,6 +1139,9 @@ impl FloppyFunction for Drive {
             .unwrap_or_default();
         let mut disk = LisaDisk::from_image(&image, &title, read_only)?;
         if !self.fits(&disk) {
+            if self.twiggy || disk.twiggy {
+                bail!("'{}' is not a disk for this machine's drives", title);
+            }
             bail!("'{}' is an 800K disk and this drive is 400K", title);
         }
         disk.media = Some(media.to_path_buf());
@@ -769,10 +1149,8 @@ impl FloppyFunction for Drive {
         Ok(())
     }
 
-    /// Takes the disk out, as the user does
     fn eject(&mut self) {
-        self.ejected = self.disk.take();
-        self.removed = true;
+        Self::eject(self);
     }
 
     fn set_writeback(&mut self, enabled: bool) -> Result<()> {
@@ -783,11 +1161,11 @@ impl FloppyFunction for Drive {
         Ok(())
     }
 
-    /// A disk that left the drive, and with `force` the disk in the drive, each if it was
+    /// The disks that left the drive, and with `force` the disk in the drive, each if it was
     /// written since it was loaded or last written back
     fn write_back(&mut self, force: bool) -> Result<()> {
         let wanted = |disk: &LisaDisk| disk.writeback && disk.dirty;
-        if let Some(mut disk) = self.ejected.take().filter(wanted) {
+        for mut disk in self.ejected.drain(..).filter(wanted) {
             disk.write_back()?;
         }
         if force && let Some(disk) = self.disk.as_mut().filter(|d| wanted(d)) {
@@ -797,21 +1175,11 @@ impl FloppyFunction for Drive {
     }
 }
 
-impl Drive {
-    /// Whether the drive can take a disk
-    pub fn fits(&self, disk: &LisaDisk) -> bool {
-        self.double_sided || disk.sides < 2
-    }
-
-    fn insert(&mut self, disk: LisaDisk) {
-        self.disk = Some(disk);
-        self.inserted = true;
-    }
-}
-
 impl DeviceOps for Drive {
     fn info(&self) -> &'static ModelInfo {
-        if self.double_sided {
+        if self.twiggy {
+            &INFO_TWIGGY
+        } else if self.double_sided {
             &INFO_800K
         } else {
             &INFO_400K
@@ -827,8 +1195,8 @@ impl DeviceOps for Drive {
     }
 }
 
-/// The ids of the slots of the controller: its drives
-pub(crate) const SLOT_IDS: [&str; 1] = ["1"];
+/// The ids of the slots of the controller: its drives, the upper drive first on a Lisa 1
+pub(crate) const SLOT_IDS: [&str; 2] = ["1", "2"];
 
 /// The drive of a slot id. Slot numbers stay inside the bus: this function is private to this
 /// file, and must stay so.
@@ -836,44 +1204,58 @@ fn slot_number(id: &str) -> Option<usize> {
     SLOT_IDS.iter().position(|slot| *slot == id)
 }
 
-/// The controller holds the drive
+/// The controller holds the drives
 impl BusOps for FdcSim {
     fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
-        slot_number(slot)?;
-        let drive = self.drive.as_mut()?;
-        Some(&mut **drive)
+        let drive = self.drive_mut(slot_number(slot)?)?;
+        Some(drive)
     }
 
     fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()> {
-        slot_number(slot).context("The floppy controller has no such drive")?;
+        let place = slot_number(slot)
+            .and_then(|index| self.drives.get_mut(index))
+            .context("The floppy controller has no such drive")?;
         let MadeDevice::LisaFloppy(drive) = device else {
             bail!("This device isn't a drive for the Lisa's floppy controller");
         };
-        if self.drive.is_some() {
+        if place.is_some() {
             bail!("The floppy controller has a drive there already");
         }
-        self.drive = Some(drive);
+        *place = Some(drive);
         self.set_drive_type();
         Ok(())
     }
 }
 
 fn create_400k(config: &DeviceConfig) -> Result<MadeDevice> {
-    create(config, false)
+    create(config, Drive::default())
 }
 
 fn create_800k(config: &DeviceConfig) -> Result<MadeDevice> {
-    create(config, true)
+    create(
+        config,
+        Drive {
+            double_sided: true,
+            ..Drive::default()
+        },
+    )
 }
 
-fn create(config: &DeviceConfig, double_sided: bool) -> Result<MadeDevice> {
+fn create_twiggy(config: &DeviceConfig) -> Result<MadeDevice> {
+    create(
+        config,
+        Drive {
+            twiggy: true,
+            ..Drive::default()
+        },
+    )
+}
+
+fn create(config: &DeviceConfig, drive: Drive) -> Result<MadeDevice> {
     let FunctionConfig::Floppy = &config.function else {
         bail!("A floppy drive needs a floppy drive's config");
     };
-    Ok(MadeDevice::LisaFloppy(Box::new(Drive {
-        double_sided,
-        ..Drive::default()
-    })))
+    Ok(MadeDevice::LisaFloppy(Box::new(drive)))
 }
 
 const LISA_FLOPPY: FloppyInfo = FloppyInfo {
@@ -887,8 +1269,13 @@ const LISA_FLOPPY: FloppyInfo = FloppyInfo {
     writable: true,
 };
 
+/// The Lisa 2's
+fn fits_400k(mac: MacModel) -> bool {
+    matches!(mac, MacModel::Lisa25 | MacModel::Lisa210)
+}
+
 pub const INFO_400K: ModelInfo = ModelInfo {
-    fits: MacModel::is_lisa,
+    fits: fits_400k,
     fixed: true,
     create: Some(create_400k),
     ..ModelInfo::base(
@@ -896,6 +1283,26 @@ pub const INFO_400K: ModelInfo = ModelInfo {
         "400K drive",
         BusKind::LisaFdc,
         FunctionInfo::Floppy(LISA_FLOPPY),
+    )
+};
+
+fn fits_twiggy(mac: MacModel) -> bool {
+    mac == MacModel::Lisa1
+}
+
+pub const INFO_TWIGGY: ModelInfo = ModelInfo {
+    fits: fits_twiggy,
+    fixed: true,
+    create: Some(create_twiggy),
+    ..ModelInfo::base(
+        DeviceModel::LisaTwiggyDrive,
+        "Twiggy drive",
+        BusKind::LisaFdc,
+        FunctionInfo::Floppy(FloppyInfo {
+            // The Lisa 1's drives have an eject button, which the guest answers
+            guest_ejects: false,
+            ..LISA_FLOPPY
+        }),
     )
 };
 
@@ -919,6 +1326,43 @@ pub const INFO_800K: ModelInfo = ModelInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A controller with the drives of its machine: two Twiggy drives for the Lisa 1's ROM, else
+    /// one Sony drive
+    fn controller(rom_id: u8, double_sided: bool) -> FdcSim {
+        let mut fdc = FdcSim::new(rom_id);
+        for slot in &SLOT_IDS[..fdc.drives.len()] {
+            let drive = Drive {
+                twiggy: rom_id == ROM_ID_LISA_1,
+                double_sided,
+                ..Drive::default()
+            };
+            fdc.attach(slot, MadeDevice::LisaFloppy(Box::new(drive)))
+                .unwrap();
+        }
+        fdc
+    }
+
+    impl FdcSim {
+        /// Puts a disk in a drive, as the user does, and looks at the drives
+        fn insert(&mut self, index: usize, disk: LisaDisk) {
+            self.drive_mut(index).unwrap().insert(disk);
+            self.notice_drives();
+        }
+
+        /// Takes the disk out, as the user does, and looks at the drives
+        fn eject(&mut self, index: usize) {
+            self.drive_mut(index).unwrap().eject();
+            self.notice_drives();
+        }
+
+        fn take_ejected(&mut self) -> Option<LisaDisk> {
+            self.drives
+                .iter_mut()
+                .flatten()
+                .find_map(|d| d.ejected.pop())
+        }
+    }
 
     fn disk() -> LisaDisk {
         let sectors = 800;
@@ -978,17 +1422,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A controller with its drive, listening
     fn ready() -> FdcSim {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
-        fdc.drive = Some(Box::default());
+        let mut fdc = controller(ROM_ID_2_5, false);
         fdc.tick(START_TICKS);
         fdc
-    }
-
-    /// Puts a disk in the drive, as the user does
-    fn insert(fdc: &mut FdcSim, disk: LisaDisk) {
-        fdc.drive.as_mut().unwrap().insert(disk);
     }
 
     fn go(fdc: &mut FdcSim, gobyte: u8, command: u8) {
@@ -1000,10 +1437,10 @@ mod tests {
 
     #[test]
     fn not_listening_at_first() {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
+        let mut fdc = controller(ROM_ID_2_5, false);
         assert!(!fdc.diag());
         assert_eq!(fdc.ram_read(0x18), 0xA8);
-        assert_eq!(FdcSim::new(ROM_ID_2_10).ram_read(0x18), 0x88);
+        assert_eq!(controller(ROM_ID_2_10, false).ram_read(0x18), 0x88);
         fdc.tick(START_TICKS);
         assert!(fdc.diag());
     }
@@ -1019,7 +1456,7 @@ mod tests {
     #[test]
     fn read_sector() {
         let mut fdc = ready();
-        insert(&mut fdc, disk());
+        fdc.insert(0, disk());
         go(&mut fdc, GO_SET_MASK, MASK_LOWER);
         // The insertion pends
         assert!(fdc.fdir());
@@ -1042,7 +1479,7 @@ mod tests {
     #[test]
     fn pending_interrupt_refuses() {
         let mut fdc = ready();
-        insert(&mut fdc, disk());
+        fdc.insert(0, disk());
         go(&mut fdc, GO_SET_MASK, MASK_LOWER);
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         go(&mut fdc, GO_RWTS, RWTS_READ);
@@ -1067,7 +1504,7 @@ mod tests {
 
     #[test]
     fn parameter_memory_survives() {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
+        let mut fdc = controller(ROM_ID_2_5, false);
         fdc.ram_write(0xC5, 0x12);
         fdc.ram_write(0x30, 0x34);
         fdc.reset();
@@ -1088,19 +1525,20 @@ mod tests {
     #[test]
     fn write_comes_back_in_the_image() {
         let mut fdc = ready();
-        insert(&mut fdc, disk());
+        fdc.insert(0, disk());
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(TRACK, 1);
         fdc.ram_write(SECTOR, 0);
         fdc.ram_write(DATA, 0x77);
         fdc.ram_write(TAG, 0x88);
-        assert!(!fdc.disk().unwrap().dirty());
+        assert!(!fdc.drive_mut(0).unwrap().disk.as_ref().unwrap().dirty());
         fdc.perform(RWTS_WRITE);
         fdc.perform(RWTS_UNCLAMP);
-        assert!(fdc.disk().is_none());
+        assert!(fdc.drive_mut(0).unwrap().disk.is_none());
 
-        let ejected = fdc.drive.as_mut().unwrap().ejected.take().unwrap();
+        let ejected = fdc.take_ejected().unwrap();
         assert!(ejected.dirty());
+        assert!(fdc.take_ejected().is_none());
         let again = LisaDisk::from_image(&ejected.to_image(), "again", false).unwrap();
         assert_eq!(again.data[12 * SECTOR_SIZE], 0x77);
         assert_eq!(again.tags[12 * TAG_SIZE], 0x88);
@@ -1109,32 +1547,46 @@ mod tests {
 
     #[test]
     fn a_written_disk_is_written_back_once() {
-        let path = std::env::temp_dir().join(format!("snow-lisa-wb-{}", std::process::id()));
-        let written_size = || std::fs::metadata(&path).map(|m| m.len()).ok();
         let mut fdc = ready();
         let mut written = disk();
+        let path = std::env::temp_dir().join(format!("snow-lisa-wb-{}", std::process::id()));
+        let written_size = || std::fs::metadata(&path).map(|m| m.len()).ok();
         written.media = Some(path.clone());
         written.writeback = true;
-        insert(&mut fdc, written);
+        fdc.insert(0, written);
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(TRACK, 1);
         fdc.ram_write(SECTOR, 0);
-        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        fdc.drive_mut(0).unwrap().write_back(true).unwrap();
         assert_eq!(written_size(), None);
         fdc.perform(RWTS_WRITE);
         // Only on quit or eject while it is in the drive
-        fdc.drive.as_mut().unwrap().write_back(false).unwrap();
+        fdc.drive_mut(0).unwrap().write_back(false).unwrap();
         assert_eq!(written_size(), None);
-        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        fdc.drive_mut(0).unwrap().write_back(true).unwrap();
         assert!(written_size().is_some());
         std::fs::remove_file(&path).unwrap();
-        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        fdc.drive_mut(0).unwrap().write_back(true).unwrap();
         assert_eq!(written_size(), None);
         fdc.perform(RWTS_WRITE);
         fdc.perform(RWTS_UNCLAMP);
-        fdc.drive.as_mut().unwrap().write_back(false).unwrap();
+        fdc.drive_mut(0).unwrap().write_back(false).unwrap();
         assert!(written_size().is_some());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn the_controller_notices_a_disk_put_in_its_drive() {
+        let mut fdc = ready();
+        fdc.drive_mut(0).unwrap().insert(disk());
+        assert_eq!(fdc.ram_read(CLAMPED), 0);
+        fdc.tick(1);
+        assert_eq!(fdc.ram_read(CLAMPED), 0xFF);
+        assert!(fdc.fdir() || fdc.ram_read(IST) != 0);
+        fdc.drive_mut(0).unwrap().eject();
+        fdc.tick(1);
+        assert_eq!(fdc.ram_read(CLAMPED), 0);
+        assert!(fdc.take_ejected().is_some());
     }
 
     #[test]
@@ -1147,8 +1599,8 @@ mod tests {
     #[test]
     fn write_protected_disk_refuses_writes() {
         let mut fdc = ready();
-        insert(
-            &mut fdc,
+        fdc.insert(
+            0,
             LisaDisk::from_image(&vec![0; 800 * SECTOR_SIZE], "wp", true).unwrap(),
         );
         fdc.ram_write(DRIVE, DRIVE_LOWER);
@@ -1157,24 +1609,13 @@ mod tests {
         assert_eq!(fdc.validate(RWTS_WRITE), 20);
     }
 
-    /// A controller of a 2/10 with a drive of one side or two
-    fn with_drive(double_sided: bool) -> FdcSim {
-        let mut fdc = FdcSim::new(ROM_ID_2_10);
-        let drive = Drive {
-            double_sided,
-            ..Drive::default()
-        };
-        fdc.attach(SLOT_IDS[0], MadeDevice::LisaFloppy(Box::new(drive)))
-            .unwrap();
-        fdc
-    }
-
     #[test]
     fn macworks_reads_the_write_protect() {
         for protect in [false, true] {
-            let mut fdc = ready();
-            insert(
-                &mut fdc,
+            let mut fdc = controller(ROM_ID_2_10, false);
+            fdc.tick(START_TICKS);
+            fdc.insert(
+                0,
                 LisaDisk::from_image(&vec![0; 800 * SECTOR_SIZE], "wp", protect).unwrap(),
             );
             fdc.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + WRITE_PROTECT_SENSE_CODE.len()]
@@ -1197,10 +1638,10 @@ mod tests {
 
     #[test]
     fn side_1_of_an_800k_disk() {
-        let mut fdc = with_drive(true);
+        let mut fdc = controller(ROM_ID_2_10, true);
         assert_eq!(fdc.ram_read(NOSIDES), 2);
         assert_eq!(fdc.ram_read(FMTTYPE), 0x22);
-        insert(&mut fdc, double_sided_disk());
+        fdc.insert(0, double_sided_disk());
         fdc.ram[IMSK] |= MASK_LOWER;
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(TRACK, 1);
@@ -1217,17 +1658,17 @@ mod tests {
 
     #[test]
     fn drive_and_disk_sides() {
-        let mut fdc = with_drive(false);
-        assert!(!fdc.drive.as_ref().unwrap().fits(&double_sided_disk()));
-        insert(&mut fdc, disk());
+        let mut fdc = controller(ROM_ID_2_10, false);
+        assert!(!fdc.drive_mut(0).unwrap().fits(&double_sided_disk()));
+        fdc.insert(0, disk());
         fdc.ram[IMSK] |= MASK_LOWER;
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(SIDE, 1);
         assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_SIDE);
 
-        let mut fdc = with_drive(true);
-        assert!(fdc.drive.as_ref().unwrap().fits(&double_sided_disk()));
-        insert(&mut fdc, disk());
+        let mut fdc = controller(ROM_ID_2_10, true);
+        assert!(fdc.drive_mut(0).unwrap().fits(&double_sided_disk()));
+        fdc.insert(0, disk());
         fdc.ram[IMSK] |= MASK_LOWER;
         fdc.ram_write(DRIVE, DRIVE_LOWER);
         fdc.ram_write(SIDE, 1);
@@ -1236,5 +1677,173 @@ mod tests {
         fdc.ram[DISKID] = 0;
         fdc.perform(RWTS_WRITE);
         assert_eq!(fdc.ram_read(DISKID), 0x02);
+    }
+
+    /// A Lisa 1 disk, padded as BLU pads them, with a mark in the first sector of
+    /// track 4 on side 1
+    fn twiggy_image() -> Vec<u8> {
+        let sectors = 1702;
+        let mut data = vec![0; sectors * SECTOR_SIZE];
+        data[(851 + 4 * 22) * SECTOR_SIZE] = 0x41;
+        let tags = vec![0; sectors * TAG_SIZE];
+        let mut image = vec![0; DC42_HEADER_SIZE];
+        image[DC42_DATA_SIZE..DC42_DATA_SIZE + 4]
+            .copy_from_slice(&((sectors * SECTOR_SIZE) as u32).to_be_bytes());
+        image[DC42_TAG_SIZE..DC42_TAG_SIZE + 4]
+            .copy_from_slice(&((sectors * TAG_SIZE) as u32).to_be_bytes());
+        image[DC42_MAGIC] = 0x01;
+        image.extend(data);
+        image.extend(tags);
+        image.extend([0x1A; 996]);
+        image
+    }
+
+    fn lisa_1() -> FdcSim {
+        let mut fdc = controller(ROM_ID_LISA_1, false);
+        fdc.tick(START_TICKS);
+        fdc
+    }
+
+    #[test]
+    fn twiggy_geometry() {
+        assert_eq!(twiggy_sectors_before_track(TWIGGY_TRACKS), 851);
+        assert_eq!(twiggy_sectors_on_track(3), 22);
+        assert_eq!(twiggy_sectors_on_track(4), 21);
+        assert_eq!(twiggy_sectors_on_track(45), 15);
+    }
+
+    #[test]
+    fn twiggy_image_keeps_its_padding() {
+        let image = twiggy_image();
+        let disk = LisaDisk::from_image(&image, "twiggy", false).unwrap();
+        assert!(disk.twiggy());
+        assert_eq!(
+            disk.to_image()[DC42_HEADER_SIZE..],
+            image[DC42_HEADER_SIZE..]
+        );
+        assert!(
+            !controller(ROM_ID_2_10, true)
+                .drive_mut(0)
+                .unwrap()
+                .fits(&disk)
+        );
+        assert!(lisa_1().drive_mut(0).unwrap().fits(&disk));
+        assert!(!lisa_1().drive_mut(0).unwrap().fits(&disk_with_sides(1)));
+    }
+
+    fn disk_with_sides(sides: usize) -> LisaDisk {
+        LisaDisk::from_image(&vec![0; 800 * sides * SECTOR_SIZE], "sony", false).unwrap()
+    }
+
+    #[test]
+    fn lisa_1_constants() {
+        let fdc = lisa_1();
+        assert_eq!(fdc.ram_read(0x18), ROM_ID_LISA_1);
+        assert_eq!(fdc.ram_read(0x15), 0x1E);
+    }
+
+    #[test]
+    fn lisa_1_clamps_a_disk_in_a_drive_not_enabled() {
+        let mut fdc = lisa_1();
+        fdc.insert(
+            0,
+            LisaDisk::from_image(&twiggy_image(), "t", false).unwrap(),
+        );
+        fdc.tick(1);
+        assert_eq!(fdc.ram_read(CLAMPED_LISA_1[0]), 0xFF);
+        assert!(!fdc.fdir());
+
+        go(&mut fdc, GO_SET_MASK, MASK_UPPER);
+        assert_eq!(fdc.ram_read(IMSK_LISA_1), MASK_UPPER);
+        fdc.ram_write(DRIVE, DRIVE_UPPER);
+        fdc.ram_write(SIDE, 1);
+        fdc.ram_write(TRACK, 4);
+        fdc.ram_write(SECTOR, 0);
+        go(&mut fdc, GO_RWTS, RWTS_READ);
+        fdc.tick(OPERATION_TICKS + 4 * STEP_TICKS);
+        assert_eq!(fdc.ram_read(ERRSTAT), ERR_OK);
+        assert_eq!(fdc.ram_read(DATA), 0x41);
+        // Done, for drive 1
+        assert_eq!(fdc.ram_read(IST), 0x0C);
+        assert!(fdc.fdir());
+        assert_eq!(fdc.ram_read(FDIR_LISA_1), 0x08);
+    }
+
+    #[test]
+    fn lisa_1_waits_for_clamp_in_an_enabled_drive() {
+        let mut fdc = lisa_1();
+        go(&mut fdc, GO_SET_MASK, MASK_LOWER);
+        fdc.insert(
+            1,
+            LisaDisk::from_image(&twiggy_image(), "t", false).unwrap(),
+        );
+        fdc.tick(1);
+        assert_eq!(fdc.ram_read(CLAMPED_LISA_1[1]), 0);
+        assert_eq!(fdc.ram_read(IST), IST_INSERTED | IST_ANY);
+        go(&mut fdc, GO_CLEAR_IST, 0xFF);
+        fdc.tick(1);
+        // Once only
+        assert_eq!(fdc.ram_read(IST), 0);
+
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_NO_DISK);
+        go(&mut fdc, GO_RWTS, RWTS_CLAMP);
+        fdc.tick(OPERATION_TICKS);
+        assert_eq!(fdc.ram_read(ERRSTAT), ERR_OK);
+        assert_eq!(fdc.ram_read(CLAMPED_LISA_1[1]), 0xFF);
+    }
+
+    #[test]
+    fn lisa_1_eject_button() {
+        let mut fdc = lisa_1();
+        fdc.insert(
+            0,
+            LisaDisk::from_image(&twiggy_image(), "t", false).unwrap(),
+        );
+        fdc.tick(1);
+        go(&mut fdc, GO_SET_MASK, MASK_UPPER);
+        fdc.eject(0);
+        fdc.tick(1);
+        // Enabled: the host decides
+        assert_eq!(fdc.ram_read(IST), (IST_BUTTON | IST_ANY) >> 4);
+        assert!(fdc.drive_mut(0).unwrap().disk.is_some());
+        go(&mut fdc, GO_CLEAR_IST, 0xFF);
+        go(&mut fdc, GO_CLEAR_MASK, MASK_UPPER);
+        // Not enabled: out it comes
+        fdc.eject(0);
+        fdc.tick(1);
+        assert!(fdc.drive_mut(0).unwrap().disk.is_none());
+        assert_eq!(fdc.ram_read(CLAMPED_LISA_1[0]), 0);
+        assert!(fdc.take_ejected().is_some());
+    }
+
+    #[test]
+    fn lisa_1_checks_in_its_order() {
+        let mut fdc = lisa_1();
+        fdc.ram_write(DRIVE, 0x40);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_DRIVE);
+        fdc.ram_write(DRIVE, DRIVE_UPPER);
+        // No disk before not enabled
+        assert_eq!(fdc.validate(RWTS_READ), ERR_NO_DISK);
+        fdc.insert(0, LisaDisk::from_image(&twiggy_image(), "t", true).unwrap());
+        fdc.tick(1);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_NOT_ENABLED);
+        go(&mut fdc, GO_SET_MASK, MASK_UPPER);
+        fdc.ram_write(SIDE, 2);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_SIDE);
+        fdc.ram_write(SIDE, 1);
+        // The sector of the track's zone before the track
+        fdc.ram_write(TRACK, 46);
+        fdc.ram_write(SECTOR, 15);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_SECTOR);
+        fdc.ram_write(SECTOR, 14);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_TRACK);
+        fdc.ram_write(TRACK, 0);
+        fdc.ram_write(SECTOR, 21);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_OK);
+        assert_eq!(fdc.validate(RWTS_WRITE), ERR_WRITE_PROTECT);
+        // A mask with other bits than the drives'
+        go(&mut fdc, GO_SET_MASK, 0x01);
+        assert_eq!(fdc.ram_read(ERRSTAT), ERR_BAD_MASK);
     }
 }
