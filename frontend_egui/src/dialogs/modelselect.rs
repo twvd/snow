@@ -11,9 +11,10 @@ use sha2::{Digest, Sha256};
 use snow_core::cpu_m68k::M68040;
 use snow_core::devices::{
     Bus, BusKind, Device, DeviceConfig, DeviceModel, DisplayInfo, FunctionConfig, FunctionInfo,
-    ModelInfo, RomInfo, bus_id, device_configs, models_for,
+    ModelInfo, RomInfo, built_in, bus_id, device_configs, models_for,
 };
 use snow_core::emulator::MouseMode;
+use snow_core::lisa::video::{DEFAULT_SERIAL, parse_serial};
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
@@ -376,6 +377,48 @@ impl ModelSelectionDialog {
     }
 
     /// Where the device config of a slot is in the list, if the slot has a device
+    /// The serial number of the Lisa, in the PROM built in
+    fn lisa_serial_group(&mut self, ui: &mut egui::Ui) {
+        let error = self.lisa_serial_error();
+        // A PROM file has its own, and the Screen Kit's PROM none
+        let video = self
+            .config_index(bus_id::BUILT_IN, built_in::VIDEO)
+            .map(|index| &self.devices[index]);
+        let screen_kit = video.is_some_and(|config| {
+            matches!(&config.function, FunctionConfig::Display(display)
+                if display.monitor == Some(MacMonitor::LisaScreenKit))
+        });
+        let enabled = !screen_kit && video.is_none_or(|config| config.rom.is_none());
+        let mut serial = self.init_args.serial_number.clone().unwrap_or_default();
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Serial number:");
+                ui.add_enabled(
+                    enabled,
+                    egui::TextEdit::singleline(&mut serial).hint_text(DEFAULT_SERIAL),
+                )
+                .on_hover_text(
+                    "20 digits. Software installed on a disk only runs with the number it was \
+                     installed under. Not used with a PROM file, which has its own, or the \
+                     Screen Kit, which has none.",
+                );
+                if let Some(error) = error {
+                    ui.label(
+                        egui::RichText::new(egui_material_icons::icons::ICON_ERROR)
+                            .color(egui::Color32::DARK_RED),
+                    )
+                    .on_hover_text(error);
+                }
+            });
+        });
+        self.init_args.serial_number = Some(serial).filter(|serial| !serial.is_empty());
+    }
+
+    fn lisa_serial_error(&self) -> Option<String> {
+        let serial = self.init_args.serial_number.as_ref()?;
+        parse_serial(serial).err().map(|e| e.to_string())
+    }
+
     fn config_index(&self, bus: &str, slot: &str) -> Option<usize> {
         self.devices
             .iter()
@@ -697,6 +740,9 @@ impl ModelSelectionDialog {
             }
 
             ui.collapsing("Advanced", |ui| {
+                if self.selected_model.is_lisa() {
+                    self.lisa_serial_group(ui);
+                }
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.pram_enabled, "Persist PRAM");
@@ -827,7 +873,8 @@ impl ModelSelectionDialog {
                 |ui| {
                     let can_proceed = self.main_rom_valid
                         && self.rom_checks.values().all(|check| check.valid)
-                        && self.has_screen();
+                        && self.has_screen()
+                        && (!self.selected_model.is_lisa() || self.lisa_serial_error().is_none());
 
                     if ui
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
@@ -1388,7 +1435,7 @@ impl ModelSelectionDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snow_core::devices::{CdromConfig, DisplayConfig, built_in, bus_id};
+    use snow_core::devices::{CdromConfig, DisplayConfig};
 
     #[test]
     fn every_device_model_gets_a_config_of_its_function() {
