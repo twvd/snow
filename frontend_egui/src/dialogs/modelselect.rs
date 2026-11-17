@@ -310,7 +310,8 @@ impl ModelSelectionDialog {
 
     /// Makes the list of devices that of the selected model: each slot that the dialog
     /// describes keeps what the list had for it if the model takes it, and gets what the
-    /// model has there otherwise. A machine with NuBus slots gets a video card in the first.
+    /// model has there otherwise. A machine with NuBus slots and no card gets a video card
+    /// in the first.
     fn fit_devices(&mut self) {
         let mac = self.selected_model;
         let mut fitted = vec![];
@@ -318,7 +319,7 @@ impl ModelSelectionDialog {
             if !describes(&bus, mac) {
                 continue;
             }
-            for (index, slot) in bus.slots.iter().enumerate() {
+            for slot in &bus.slots {
                 let own = slot.device.as_ref().map(|device| device.model);
                 let had = self
                     .devices
@@ -328,10 +329,7 @@ impl ModelSelectionDialog {
                 let kept = had
                     .and_then(|c| c.model.or(own))
                     .filter(|m| models_for(bus.kind, mac).any(|info| info.model == *m));
-                let first_card = (bus.kind == BusKind::Nubus && index == 0)
-                    .then(|| models_for(bus.kind, mac).next().map(|info| info.model))
-                    .flatten();
-                let Some(model) = kept.or(own).or(first_card) else {
+                let Some(model) = kept.or(own) else {
                     continue;
                 };
                 let info = model.info();
@@ -347,6 +345,21 @@ impl ModelSelectionDialog {
                     model: Some(model),
                     rom: rom.or_else(|| self.remembered_rom(model)),
                     function,
+                });
+            }
+            // A machine with NuBus slots needs a video card: in its first slot, if it has none
+            let no_card = !fitted.iter().any(|c| c.bus == bus.id);
+            if bus.kind == BusKind::Nubus
+                && no_card
+                && let Some(info) = models_for(bus.kind, mac)
+                    .find(|info| matches!(info.function, FunctionInfo::Display(_)))
+            {
+                fitted.push(DeviceConfig {
+                    bus: bus.id.clone(),
+                    slot: bus.slots[0].id.clone(),
+                    model: Some(info.model),
+                    rom: self.remembered_rom(info.model),
+                    function: default_config(info),
                 });
             }
         }
@@ -397,10 +410,10 @@ impl ModelSelectionDialog {
         self.do_validate_device_roms();
     }
 
-    /// Whether the machine has a screen: a video whose screen is the machine's own, or one
-    /// with a monitor on its connector
-    fn has_screen(&self) -> bool {
-        self.devices.iter().any(|config| {
+    /// The number of screens of the machine: the videos whose screen is the machine's own,
+    /// and those with a monitor on their connector
+    fn screens(&self) -> usize {
+        let screen = |config: &&DeviceConfig| {
             let info = config.model.map(|model| model.info().function);
             match (info, &config.function) {
                 (Some(FunctionInfo::Display(info)), FunctionConfig::Display(display)) => {
@@ -408,7 +421,12 @@ impl ModelSelectionDialog {
                 }
                 _ => false,
             }
-        })
+        };
+        self.devices.iter().filter(screen).count()
+    }
+
+    fn has_screen(&self) -> bool {
+        self.screens() > 0
     }
 
     /// The device configs of the machine as it is described: those of the list that aren't
@@ -915,13 +933,22 @@ impl ModelSelectionDialog {
         // Each NuBus slot, with the ROM file, the monitor and the video RAM of its card
         for bus in buses.iter().filter(|bus| bus.kind == BusKind::Nubus) {
             for slot in &bus.slots {
-                if self.config_index(&bus.id, &slot.id).is_none() {
-                    continue;
-                }
-                self.video_card_row(ui, bus, &slot.id);
+                self.card_row(ui, bus, &slot.id);
                 self.rom_row(ui, settings, &bus.id, &slot.id);
                 self.display_rows(ui, &bus.id, &slot.id);
             }
+        }
+        if self.screens() > 1 {
+            ui.label("");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} More than one display is an experimental feature known to \
+                     have issues",
+                    egui_material_icons::icons::ICON_WARNING
+                ))
+                .color(egui::Color32::RED),
+            );
+            ui.end_row();
         }
 
         // The processor-direct slot, where a device model fits it
@@ -962,15 +989,17 @@ impl ModelSelectionDialog {
         }
     }
 
-    fn video_card_row(&mut self, ui: &mut egui::Ui, bus: &Bus, slot: &str) {
+    /// The row where the card of a NuBus slot is chosen, among the cards that fit
+    fn card_row(&mut self, ui: &mut egui::Ui, bus: &Bus, slot: &str) {
         let current = self
             .config_index(&bus.id, slot)
             .and_then(|index| self.devices[index].model);
         let mut choice = current;
-        ui.label("Video card");
-        egui::ComboBox::new(egui::Id::new(("Select video card", slot)), "")
-            .selected_text(current.map_or("", |model| model.info().name))
+        ui.label(format!("{} slot {}", bus.title, slot));
+        egui::ComboBox::new(egui::Id::new(("Select card", slot)), "")
+            .selected_text(current.map_or("Empty", |model| model.info().name))
             .show_ui(ui, |ui| {
+                ui.selectable_value(&mut choice, None, "Empty");
                 for info in models_for(bus.kind, self.selected_model) {
                     ui.selectable_value(&mut choice, Some(info.model), info.name);
                 }
@@ -1436,6 +1465,34 @@ mod tests {
         let index = dialog.config_index(bus_id::NUBUS, "9").unwrap();
         dialog.devices[index].function = display(Some(MacMonitor::NoMonitor), None);
         assert!(!dialog.has_screen());
+
+        // A second card with a monitor is a second screen
+        dialog.devices[index].function = display(None, None);
+        dialog.choose(bus_id::NUBUS, "B", Some(DeviceModel::DisplayCard824));
+        assert_eq!(dialog.screens(), 2);
+        // The cards stay where they are when the dialog fits the list again
+        dialog.fit_devices();
+        let cards: Vec<_> = dialog
+            .result_devices()
+            .into_iter()
+            .map(|c| c.slot)
+            .collect();
+        assert_eq!(cards, ["9", "B"]);
+        dialog.choose(bus_id::NUBUS, "B", None);
+        // And a machine whose only card isn't in the first slot gets no other
+        dialog.choose(bus_id::NUBUS, "9", None);
+        dialog.choose(bus_id::NUBUS, "C", Some(DeviceModel::DisplayCard824));
+        dialog.fit_devices();
+        let cards: Vec<_> = dialog
+            .result_devices()
+            .into_iter()
+            .map(|c| c.slot)
+            .collect();
+        assert_eq!(cards, ["C"]);
+        dialog.choose(bus_id::NUBUS, "C", None);
+        dialog.fit_devices();
+        let index = dialog.config_index(bus_id::NUBUS, "9").unwrap();
+        dialog.devices[index].function = display(Some(MacMonitor::NoMonitor), None);
 
         // Another card takes its place, with the ROM file last used for it
         let rom = PathBuf::from("toby.rom");

@@ -1087,6 +1087,121 @@ mod tests {
     }
 
     #[test]
+    fn the_screens_of_the_guest_are_matched_to_the_displays() {
+        use crate::bus::Address;
+        use crate::emulator::EmulatorConfig;
+        use crate::emulator::comm::GuestScreen;
+
+        fn write_long(emu: &mut Emulator, addr: Address, value: u32) {
+            let config = &mut emu.config;
+            config.cpu_inspect_write_word(addr, (value >> 16) as u16, false);
+            config.cpu_inspect_write_word(addr + 2, value as u16, false);
+        }
+
+        /// A screen in the guest's list: the GDevice record at `gd` with its handle just
+        /// before it, and the device control entry of its driver
+        fn write_screen(
+            emu: &mut Emulator,
+            gd: Address,
+            unit: u16,
+            dctl_slot: u8,
+            flags: u16,
+            rect: [u16; 4],
+            next: Address,
+        ) {
+            const UNIT_TABLE: Address = 0x2000;
+            let dce = 0x3000 + 0x100 * Address::from(unit);
+            write_long(emu, UNIT_TABLE + 4 * Address::from(unit), dce - 4);
+            write_long(emu, dce - 4, dce);
+            emu.config.cpu_inspect_write(dce + 40, dctl_slot, false);
+            emu.config.cpu_inspect_write(dce + 41, 0x80, false);
+
+            write_long(emu, gd - 4, gd);
+            // gdRefNum: the reference number of the driver of a unit is -(unit + 1)
+            emu.config.cpu_inspect_write_word(gd, !unit, false);
+            emu.config.cpu_inspect_write_word(gd + 20, flags, false);
+            write_long(emu, gd + 30, next);
+            for (i, value) in rect.into_iter().enumerate() {
+                let addr = gd + 34 + 2 * i as Address;
+                emu.config.cpu_inspect_write_word(addr, value, false);
+            }
+        }
+
+        let dir = TestDir::new("screens");
+        let rom = dir.file("video.rom", 0);
+        let rom = Some(rom.as_path());
+        let devices = vec![
+            video_card("9", DeviceModel::DisplayCard824, rom, None),
+            video_card("B", DeviceModel::MacIIVideoCard, rom, None),
+        ];
+        let mut emu = make(MacModel::MacII, devices).unwrap();
+        let EmulatorConfig::MacII(cpu) = &mut emu.config else {
+            panic!("A Macintosh II has a 68020");
+        };
+        cpu.bus.macii_mut().end_overlay();
+        assert!(emu.screens_wanted());
+
+        // The guest has its main screen on the card of slot $B, and a screen it doesn't use
+        // yet on the card of slot $9, to the right. Both are screens (bit 13 of gdFlags), and
+        // the first is active (bit 15).
+        const SCREEN: u16 = 1 << 13;
+        const ACTIVE: u16 = 1 << 15;
+        emu.config.cpu_inspect_write(0x0CB2, 1, false);
+        write_long(&mut emu, 0x011C, 0x2000);
+        write_long(&mut emu, 0x08A8, 0x4000 - 4);
+        write_long(&mut emu, 0x08A4, 0x4000 - 4);
+        let main = [0, 0, 480, 640];
+        write_screen(&mut emu, 0x4000, 5, 0xB, SCREEN | ACTIVE, main, 0x4100 - 4);
+        let other = [0, 640, 384, 1152];
+        write_screen(&mut emu, 0x4100, 6, 0x9, SCREEN, other, 0);
+
+        let screens = emu.read_screens().unwrap();
+        assert_eq!(
+            screens,
+            [
+                // The card of slot $B is the second display of the machine
+                GuestScreen {
+                    display: 1,
+                    left: 0,
+                    top: 0,
+                    right: 640,
+                    bottom: 480,
+                    main: true,
+                    active: true,
+                },
+                GuestScreen {
+                    display: 0,
+                    left: 640,
+                    top: 0,
+                    right: 1152,
+                    bottom: 384,
+                    main: false,
+                    active: false,
+                },
+            ]
+        );
+
+        // The absolute mouse: a position on a display is where the guest puts that display,
+        // and a display that the guest doesn't use takes none
+        let mtemp = |emu: &mut Emulator| {
+            let x = emu.config.cpu_inspect_read_word(0x082A, false).unwrap();
+            let y = emu.config.cpu_inspect_read_word(0x0828, false).unwrap();
+            (x, y)
+        };
+        emu.screens.clone_from(&screens);
+        // The machine takes positions once the guest has set RawMouse, to (15, 15)
+        emu.config.cpu_inspect_write_word(0x082C, 15, false);
+        emu.config.cpu_inspect_write_word(0x082E, 15, false);
+        emu.mouse_update_abs(1, 10, 20);
+        assert_eq!(mtemp(&mut emu), (10, 20));
+        emu.mouse_update_abs(0, 30, 40);
+        assert_eq!(mtemp(&mut emu), (10, 20));
+        emu.screens[1].active = true;
+        emu.mouse_update_abs(0, 30, 40);
+        assert_eq!(mtemp(&mut emu), (670, 40));
+    }
+
+    #[test]
     fn a_device_config_that_cannot_be_used_does_not_stop_the_machine() {
         let dir = TestDir::new("refused");
         let no_image = scsi(

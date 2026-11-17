@@ -9,6 +9,7 @@ use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, defau
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
+use crate::widgets::arrangement::arrange;
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::DisassemblyWidget;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
@@ -21,10 +22,12 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
-use snow_core::devices::{DeviceConfig, FloppyImages, FunctionConfig, FunctionStatus, bus_id};
+use snow_core::devices::{
+    DeviceConfig, DisplayHandle, FloppyImages, FunctionConfig, FunctionStatus, bus_id,
+};
 use snow_core::emulator::MouseMode;
-use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
+use snow_core::emulator::comm::{GuestScreen, MemoryNotifierRange};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
@@ -202,7 +205,11 @@ pub struct SnowGui {
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
     toasts: egui_toast::Toasts,
-    framebuffer: FramebufferWidget,
+    /// The egui context, kept to make the widget of a display when a machine has several
+    egui_ctx: egui::Context,
+    /// The displays of the machine, at least one. The settings of the first are what the
+    /// menus change, and the others are drawn with them.
+    displays: Vec<FramebufferWidget>,
     registers: RegistersWidget,
     breakpoints: BreakpointsWidget,
     memory: MemoryViewerWidget,
@@ -439,7 +446,8 @@ impl SnowGui {
                             .response
                     })
             },
-            framebuffer: FramebufferWidget::new(cc),
+            egui_ctx: cc.egui_ctx.clone(),
+            displays: vec![FramebufferWidget::new(&cc.egui_ctx)],
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
             memory: MemoryViewerWidget::default(),
@@ -729,8 +737,18 @@ impl SnowGui {
             return self.mouse_grabbed;
         }
 
-        self.get_machine_mouse_pos(ctx).is_some()
+        self.get_machine_mouse_pos(ctx)
+            .is_some_and(|(display, _)| self.display_in_use(display))
             || (self.in_fullscreen && self.emu.is_mouse_relative())
+    }
+
+    /// Whether the guest uses a display: with several displays and the absolute mouse, the
+    /// ones it made active
+    fn display_in_use(&self, display: usize) -> bool {
+        let active = |screen: &GuestScreen| screen.display == display && screen.active;
+        self.displays.len() == 1
+            || self.emu.is_mouse_relative()
+            || self.emu.screens().iter().any(active)
     }
 
     /// Grabs the mouse, confining the host cursor to the window.
@@ -1382,7 +1400,7 @@ impl SnowGui {
                 ui.separator();
                 if self.emu.is_initialized() {
                     ui.add(
-                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
+                        egui::Slider::new(&mut self.displays[0].scale, 0.5..=4.0)
                             .text("Display scale"),
                     );
                     ui.menu_button("Display position", |ui| {
@@ -1406,7 +1424,7 @@ impl SnowGui {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
                         for algorithm in ScalingAlgorithm::iter() {
                             ui.radio_value(
-                                &mut self.framebuffer.scaling_algorithm,
+                                &mut self.displays[0].scaling_algorithm,
                                 algorithm,
                                 format!("{}", algorithm),
                             );
@@ -1435,10 +1453,10 @@ impl SnowGui {
                         self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
                     }
                     ui.add(egui::Checkbox::new(
-                        &mut self.framebuffer.shader_enabled,
+                        &mut self.displays[0].shader_enabled,
                         "Shader effects",
                     ));
-                    if self.framebuffer.shader_enabled {
+                    if self.displays[0].shader_enabled {
                         egui::containers::menu::SubMenuButton::new("Shader effect settings")
                             .config(
                                 egui::containers::menu::MenuConfig::new()
@@ -1452,9 +1470,9 @@ impl SnowGui {
                                 let mut add_shader: Option<crate::shader_pipeline::ShaderId> = None;
 
                                 // Dynamically generate UI for each shader in the pipeline
-                                let shader_count = self.framebuffer.shader_config_count();
+                                let shader_count = self.displays[0].shader_config_count();
                                 for i in 0..shader_count {
-                                    let config = &mut self.framebuffer.shader_configs_mut()[i];
+                                    let config = &mut self.displays[0].shader_configs_mut()[i];
                                     let heading = format!(
                                         "{}. {} ({})",
                                         i + 1,
@@ -1537,7 +1555,7 @@ impl SnowGui {
                                 }
 
                                 // Add shader menu
-                                let available_shaders = self.framebuffer.available_shaders();
+                                let available_shaders = self.displays[0].available_shaders();
                                 if !available_shaders.is_empty() {
                                     ui.separator();
                                     ui.menu_button("Add shader", |ui| {
@@ -1553,16 +1571,16 @@ impl SnowGui {
 
                                 if let Some((index, move_up)) = move_action {
                                     if move_up {
-                                        self.framebuffer.move_shader_up(index);
+                                        self.displays[0].move_shader_up(index);
                                     } else {
-                                        self.framebuffer.move_shader_down(index);
+                                        self.displays[0].move_shader_down(index);
                                     }
                                 }
                                 if let Some(index) = remove_index {
-                                    self.framebuffer.remove_shader(index);
+                                    self.displays[0].remove_shader(index);
                                 }
                                 if let Some(id) = add_shader {
-                                    self.framebuffer.add_shader(id);
+                                    self.displays[0].add_shader(id);
                                 }
                             });
                     }
@@ -3045,21 +3063,82 @@ impl SnowGui {
         }
     }
 
-    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
-        if !self.framebuffer.has_pointer() {
-            return None;
+    /// Connects each display of a new machine to a widget. The first widget stays, with its
+    /// settings, and each further display gets a new one.
+    fn connect_displays(&mut self, displays: Vec<DisplayHandle>) {
+        let model = self.emu.get_model().unwrap();
+        // The widgets of the displays of the machine before
+        self.displays.truncate(1);
+
+        for (index, display) in displays.into_iter().enumerate() {
+            if index > 0 {
+                self.displays.push(FramebufferWidget::new(&self.egui_ctx));
+            }
+            self.displays[index].load_shader_defaults(model);
+            self.displays[index].connect_receiver(display.receiver);
         }
+    }
+
+    /// Draws several displays as the guest arranges them, all at one scale: the display
+    /// scale, no larger than the room, or the room when `fill`. `center` puts them in the
+    /// middle of the room's height.
+    fn draw_arranged(&mut self, ui: &mut egui::Ui, fill: bool, center: bool) {
+        let size = |display: &FramebufferWidget| egui::Vec2::from(display.display_size::<f32>());
+        let sizes: Vec<_> = self.displays.iter().map(size).collect();
+        let (places, whole) = arrange(&sizes, self.emu.screens());
+        let room = ui.available_size();
+        let fits = if whole.x > 0.0 && whole.y > 0.0 {
+            (room.x / whole.x).min(room.y / whole.y)
+        } else {
+            self.displays[0].scale
+        };
+        let scale = if fill {
+            fits
+        } else {
+            self.displays[0].scale.min(fits)
+        };
+        if center {
+            let padding = whole.y.mul_add(-scale, room.y) / 2.0;
+            if padding > 0.0 {
+                ui.allocate_space(egui::Vec2::from([1.0, padding]));
+            }
+        }
+        let (area, _) = ui.allocate_exact_size(whole * scale, egui::Sense::hover());
+
+        let algorithm = self.displays[0].scaling_algorithm;
+        let shader = self.displays[0].shader_enabled;
+        for (display, place) in self.displays.iter_mut().zip(places) {
+            display.scaling_algorithm = algorithm;
+            display.shader_enabled = shader;
+            // A display with no picture yet is still drawn, which is when it takes its frames
+            let rect = match place {
+                Some(place) => egui::Rect::from_min_size(
+                    area.min + place.min.to_vec2() * scale,
+                    place.size() * scale,
+                ),
+                None => egui::Rect::from_min_size(area.min, egui::Vec2::ZERO),
+            };
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                display.draw(ui, true);
+            });
+        }
+    }
+
+    /// The display the pointer is over, by its index, and where in its pixels
+    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<(usize, egui::Pos2)> {
+        let over = |(_, display): &(usize, &FramebufferWidget)| display.has_pointer();
+        let (index, framebuffer) = self.displays.iter().enumerate().find(over)?;
 
         let mouse_pos = ctx.pointer_latest_pos()?;
-        let display_size = egui::Vec2::from(self.framebuffer.display_size());
-        let fbrect = self.framebuffer.rect();
-        let scale = self.framebuffer.scaling_factors_actual();
+        let display_size = egui::Vec2::from(framebuffer.display_size());
+        let fbrect = framebuffer.rect();
+        let scale = framebuffer.scaling_factors_actual();
         let x = (mouse_pos.x - fbrect.left_top().x) * scale.x;
         let y = (mouse_pos.y - fbrect.left_top().y) * scale.y;
         if x < 0.0 || y < 0.0 || x > display_size.x || y > display_size.y {
             None
         } else {
-            Some(egui::Pos2::from([x, y]))
+            Some((index, egui::Pos2::from([x, y])))
         }
     }
 
@@ -3147,9 +3226,7 @@ impl SnowGui {
             custom_datetime,
         ) {
             Ok(p) => {
-                self.framebuffer
-                    .load_shader_defaults(self.emu.get_model().unwrap());
-                self.framebuffer.connect_receiver(p.frame_receiver);
+                self.connect_displays(p.displays);
                 self.apply_workspace_bridges();
                 Some(p.refused)
             }
@@ -3296,9 +3373,9 @@ impl SnowGui {
         if let Some(joy) = &mut self.iie_joystick {
             joy.set_bindings(bindings);
         }
-        self.framebuffer.scale = self.workspace.viewport_scale;
-        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
-        self.framebuffer.shader_enabled = self.workspace.shader_enabled;
+        self.displays[0].scale = self.workspace.viewport_scale;
+        self.displays[0].scaling_algorithm = self.workspace.scaling_algorithm;
+        self.displays[0].shader_enabled = self.workspace.shader_enabled;
         if let Some(rompath) = self.workspace.get_rom_path() {
             let extension_rom_path = self.workspace.get_extension_rom_path();
             let devices = self.workspace.devices();
@@ -3339,17 +3416,16 @@ impl SnowGui {
         // Do this after the emulator is initialized so the shader defaults that get loaded are
         // overwritten.
         if !self.workspace.shader_configs.is_empty() {
-            self.framebuffer
-                .import_config(self.workspace.shader_configs.clone());
+            self.displays[0].import_config(self.workspace.shader_configs.clone());
         }
     }
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.iie_joystick_bindings = Some(self.joy_bindings());
-        self.workspace.viewport_scale = self.framebuffer.scale;
-        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
-        self.workspace.shader_enabled = self.framebuffer.shader_enabled;
-        self.workspace.shader_configs = self.framebuffer.export_config();
+        self.workspace.viewport_scale = self.displays[0].scale;
+        self.workspace.scaling_algorithm = self.displays[0].scaling_algorithm;
+        self.workspace.shader_enabled = self.displays[0].shader_enabled;
+        self.workspace.shader_configs = self.displays[0].export_config();
         if self.emu.is_initialized() {
             self.workspace.set_devices(self.emu.devices());
         }
@@ -3509,7 +3585,7 @@ impl SnowGui {
             chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
         );
         p.push(&filename);
-        if let Err(e) = self.framebuffer.write_screenshot_file(p) {
+        if let Err(e) = self.displays[0].write_screenshot_file(p) {
             self.show_error(&format!("Failed to write screenshot: {}", e));
         }
         self.toasts.add(
@@ -3837,9 +3913,7 @@ impl SnowGui {
             self.workspace.pause_on_state_load,
         ) {
             Ok(p) => {
-                self.framebuffer
-                    .load_shader_defaults(self.emu.get_model().unwrap());
-                self.framebuffer.connect_receiver(p.frame_receiver);
+                self.connect_displays(p.displays);
                 // Images created by restoring the state
                 for f in p.temp_files {
                     if !self.temp_files.contains(&f) {
@@ -4671,7 +4745,7 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.state_dialog.take_picked() {
             if self.state_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
                 self.emu
-                    .save_state(&path, self.framebuffer.screenshot().ok());
+                    .save_state(&path, self.displays[0].screenshot().ok());
             } else {
                 self.load_statefile(path);
             }
@@ -4701,6 +4775,7 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
+            let multi_display = self.displays.len() > 1;
             if !self.is_ui_hidden() && self.workspace.framebuffer_mode == FramebufferMode::Detached
             {
                 // Render framebuffer in a floating window
@@ -4708,10 +4783,14 @@ impl eframe::App for SnowGui {
                     .resizable(true)
                     .show(ctx, |ui| {
                         ui.vertical_centered(|ui| {
-                            let response = self.framebuffer.draw(ui, true);
+                            if multi_display {
+                                self.draw_arranged(ui, false, false);
+                            } else {
+                                self.displays[0].draw(ui, true);
+                            }
                             // Consume drag events on the framebuffer to prevent window dragging
                             ui.interact(
-                                response.rect,
+                                ui.min_rect(),
                                 ui.id().with("fb_drag_blocker"),
                                 egui::Sense::drag(),
                             );
@@ -4725,8 +4804,8 @@ impl eframe::App for SnowGui {
                         .layout(egui::Layout::top_down(egui::Align::Center))
                         .sense(egui::Sense::click()),
                     |ui| {
-                        // Align framebuffer vertically
-                        if self.is_ui_hidden() {
+                        // Align framebuffer vertically. Several displays align themselves.
+                        if !multi_display && self.is_ui_hidden() {
                             const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
                             let host_aspect_ratio = ui.available_width() / ui.available_height();
 
@@ -4738,16 +4817,25 @@ impl eframe::App for SnowGui {
                                     ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                                 }
                             }
-                        } else if self.workspace.framebuffer_mode == FramebufferMode::Centered {
+                        } else if !multi_display
+                            && self.workspace.framebuffer_mode == FramebufferMode::Centered
+                        {
                             let padding_height =
-                                (ui.available_height() - self.framebuffer.max_height()) / 2.0;
+                                (ui.available_height() - self.displays[0].max_height()) / 2.0;
                             if padding_height > 0.0 {
                                 ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                             }
                         }
 
-                        self.framebuffer.draw(ui, self.is_ui_hidden());
-                        if self.is_ui_hidden() {
+                        let ui_hidden = self.is_ui_hidden();
+                        if multi_display {
+                            let center = ui_hidden
+                                || self.workspace.framebuffer_mode == FramebufferMode::Centered;
+                            self.draw_arranged(ui, ui_hidden, center);
+                        } else {
+                            self.displays[0].draw(ui, ui_hidden);
+                        }
+                        if ui_hidden {
                             // To fill the screen with hitbox for the context menu
                             ui.allocate_space(ui.available_size());
                         }
@@ -4950,6 +5038,14 @@ impl eframe::App for SnowGui {
         // grabbed, so it is clear that clicking is what hands the mouse to the machine.
         if self.ui_active && self.emu.is_running() && self.mouse_input_active(ctx) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
+        } else if self.ui_active
+            && self.emu.is_running()
+            && self
+                .get_machine_mouse_pos(ctx)
+                .is_some_and(|(display, _)| !self.display_in_use(display))
+        {
+            // A display that the guest doesn't use takes no input from the absolute mouse
+            ctx.set_cursor_icon(egui::CursorIcon::NotAllowed);
         }
 
         // Re-render to keep the display updating, but cap the repaint interval so the
@@ -5026,8 +5122,8 @@ impl eframe::App for SnowGui {
                         }
                     } else {
                         egui::Pos2 {
-                            x: (rel_p.x / self.framebuffer.scale) * 2.0,
-                            y: (rel_p.y / self.framebuffer.scale) * 2.0,
+                            x: (rel_p.x / self.displays[0].scale) * 2.0,
+                            y: (rel_p.y / self.displays[0].scale) * 2.0,
                         }
                     };
                     let relpos = self.apply_mouse_speed(relpos);
@@ -5037,7 +5133,7 @@ impl eframe::App for SnowGui {
                     } else {
                         self.get_machine_mouse_pos(ctx)
                     };
-                    self.emu.update_mouse(abs_p.as_ref(), &relpos);
+                    self.emu.update_mouse(abs_p, &relpos);
                     self.on_user_input();
                 }
                 egui::Event::PointerMoved(_) => {
@@ -5048,7 +5144,7 @@ impl eframe::App for SnowGui {
                     // No relative motion in this event
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
-                        self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
+                        self.emu.update_mouse(Some(abs_p), &egui::Pos2::default());
                         self.on_user_input();
                     }
                 }

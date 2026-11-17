@@ -57,7 +57,7 @@ use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
 use crate::mac::scsi::bus::ScsiBus;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, InputRecording, MemoryNotifierRange,
+    EmulatorStatus, GuestScreen, InputRecording, MemoryNotifierRange,
 };
 
 /// Mouse emulation mode
@@ -110,7 +110,8 @@ macro_rules! dispatch {
             $( fn $mut_call_method:ident(&mut self $(, $mut_arg:ident: $mut_arg_ty:ty)*) -> $mut_call_ret:ty { $($mut_call_target:tt)* } )*
         }
     ) => {
-        #[allow(dead_code)]
+        // `non_snake_case`: a method named after the guest's fields, as display_from_Mac_AuxDCE()
+        #[allow(dead_code, non_snake_case)]
         impl EmulatorConfig {
             // Generate immutable reference methods
             $(
@@ -198,6 +199,34 @@ const ADDR_RAWMOUSE_Y: Address = 0x082C;
 const ADDR_RAWMOUSE_X: Address = 0x082E;
 /// CrsrNew
 const ADDR_CRSRNEW: Address = 0x08CE;
+
+/// MMU32Bit: true when the guest runs in 32-bit mode (Inside Macintosh V, p. V-592)
+const ADDR_MMU32BIT: Address = 0x0CB2;
+/// Color QuickDraw's list of graphics devices and the main one, handles to GDevice records
+/// (Inside Macintosh: Imaging With QuickDraw, ch. 5)
+const ADDR_DEVICELIST: Address = 0x08A8;
+const ADDR_MAINDEVICE: Address = 0x08A4;
+/// The Device Manager's unit table, of handles to the device control entries of the drivers
+const ADDR_UTABLEBASE: Address = 0x011C;
+/// Offsets in a GDevice record: the reference number of its driver, the flags, the next
+/// device and the bounds (top, left, bottom, right)
+const GD_REFNUM: Address = 0;
+const GD_FLAGS: Address = 20;
+const GD_NEXTGD: Address = 30;
+const GD_RECT: Address = 34;
+/// gdFlags: the device is a screen, and one the guest uses. Without a 'scrn' resource, which
+/// the Monitors control panel makes, only the startup screen is used (Inside Macintosh V,
+/// p. V-126).
+const GD_SCREEN_DEVICE: u16 = 1 << 13;
+const GD_SCREEN_ACTIVE: u16 = 1 << 15;
+/// Offsets in the device control entry of a slot device (AuxDCE): the slot number and the id
+/// of the slot resource (Inside Macintosh: Devices, p. 1-55)
+const DCTL_SLOT: Address = 40;
+const DCTL_SLOTID: Address = 41;
+/// Most graphics devices looked at, against a broken list
+const MAX_GDEVICES: usize = 16;
+/// Time between two looks at where the guest puts the displays
+const SCREENS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Least time between two looks at the memory notifiers while running. Debugging
 /// mostly happens stopped, where each step or stop looks at them regardless.
@@ -328,6 +357,8 @@ dispatch! {
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
+        fn mouse_mode(&self) -> MouseMode { bus.mouse_mode() }
+        fn display_from_Mac_AuxDCE(&self, dctl_slot: u8, dctl_slot_id: u8) -> Option<(String, String, usize)> { bus.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id) }
     }
 
     mutable_calls {
@@ -455,6 +486,13 @@ pub struct Emulator {
     device_statuses: Vec<Option<FunctionStatus>>,
     /// The folder for the pages of a printer whose Config names none, once the frontend gave it
     default_print_dir: Option<PathBuf>,
+    /// The displays of the machine, in the order the frontend was given them: the ids of the
+    /// bus and slot of the device that shows each, and its index among the displays of that
+    /// device
+    displays: Vec<(String, String, usize)>,
+    /// Where the guest puts the displays, at the last look
+    screens: Vec<GuestScreen>,
+    screens_time: Instant,
 }
 
 impl Emulator {
@@ -598,6 +636,9 @@ impl Emulator {
             buses: Arc::default(),
             device_statuses: vec![],
             default_print_dir: None,
+            displays: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
 
         // Every device that isn't on the logic board is made, in the order of the list. A
@@ -619,7 +660,7 @@ impl Emulator {
         let buses = emu.buses();
         emu.send_buses(buses)?;
 
-        let displays = emu.displays();
+        let displays = emu.take_displays();
         if displays.is_empty() {
             // A device config that couldn't be used may be why
             let reasons: Vec<String> = refused
@@ -698,8 +739,11 @@ impl Emulator {
             buses: Arc::default(),
             device_statuses: vec![],
             default_print_dir: None,
+            displays: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
-        let displays = emu.displays();
+        let displays = emu.take_displays();
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -956,10 +1000,142 @@ impl Emulator {
         Ok(())
     }
 
+    /// The displays of the machine, for the frontend. The emulator keeps which device shows
+    /// each. Called once, when the machine is made or restored from a state.
+    fn take_displays(&mut self) -> Vec<DisplayHandle> {
+        let displays = self.displays();
+        let id = |d: &DisplayHandle| (d.bus.clone(), d.slot.clone(), d.index);
+        self.displays = displays.iter().map(id).collect();
+        displays
+    }
+
+    fn inspect_long(&mut self, addr: Address) -> Option<u32> {
+        let high = self.config.cpu_inspect_read_word(addr, false)?;
+        let low = self.config.cpu_inspect_read_word(addr + 2, false)?;
+        Some((u32::from(high) << 16) | u32::from(low))
+    }
+
+    /// A pointer in the guest's memory, as the guest follows it. In 24-bit mode the top byte
+    /// isn't part of the address, and a master pointer keeps the flags of its handle there:
+    /// StripAddress (Inside Macintosh V, p. V-593).
+    fn inspect_pointer(&mut self, addr: Address, mode32: bool) -> Option<Address> {
+        let pointer = self.inspect_long(addr)?;
+        Some(if mode32 {
+            pointer
+        } else {
+            pointer & 0x00FF_FFFF
+        })
+    }
+
+    /// Which display of the machine a screen of the guest is, by the slot number and the id
+    /// of the slot resource of its driver. Those two numbers are the guest's, and only the
+    /// machine knows what they mean.
+    #[allow(non_snake_case)]
+    fn display_from_Mac_AuxDCE(&self, dctl_slot: u8, dctl_slot_id: u8) -> Option<usize> {
+        let display = self
+            .config
+            .display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)?;
+        self.displays.iter().position(|d| *d == display)
+    }
+
+    /// Where the guest puts the displays: the screens of Color QuickDraw's list of devices,
+    /// each with the display that the machine says it is. None if the list can't be read.
+    fn read_screens(&mut self) -> Option<Vec<GuestScreen>> {
+        let mut screens = vec![];
+        let mode32 = self.config.cpu_inspect_read(ADDR_MMU32BIT, false)? != 0;
+        let main = self.inspect_pointer(ADDR_MAINDEVICE, mode32)?;
+        let unit_table = self.inspect_pointer(ADDR_UTABLEBASE, mode32)?;
+        let mut handle = self.inspect_pointer(ADDR_DEVICELIST, mode32)?;
+        for _ in 0..MAX_GDEVICES {
+            if handle == 0 {
+                break;
+            }
+            let gd = self.inspect_pointer(handle, mode32)?;
+            let flags = self.config.cpu_inspect_read_word(gd + GD_FLAGS, false)?;
+            let refnum = self.config.cpu_inspect_read_word(gd + GD_REFNUM, false)? as i16;
+            if flags & GD_SCREEN_DEVICE != 0 && refnum < 0 {
+                // The device control entry of the screen's driver
+                let unit = (-i32::from(refnum) - 1) as Address;
+                let dce_handle = self.inspect_pointer(unit_table + 4 * unit, mode32)?;
+                let dce = self.inspect_pointer(dce_handle, mode32)?;
+                let dctl_slot = self.config.cpu_inspect_read(dce + DCTL_SLOT, false)?;
+                let dctl_slot_id = self.config.cpu_inspect_read(dce + DCTL_SLOTID, false)?;
+                let mut rect = [0; 4];
+                for (i, v) in rect.iter_mut().enumerate() {
+                    let addr = gd + GD_RECT + 2 * i as Address;
+                    *v = self.config.cpu_inspect_read_word(addr, false)? as i16;
+                }
+                let [top, left, bottom, right] = rect;
+                if let Some(display) = self.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)
+                    && right > left
+                    && bottom > top
+                {
+                    screens.push(GuestScreen {
+                        display,
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        main: handle == main,
+                        active: flags & GD_SCREEN_ACTIVE != 0,
+                    });
+                }
+            }
+            handle = self.inspect_pointer(gd + GD_NEXTGD, mode32)?;
+        }
+        Some(screens)
+    }
+
+    /// The guest's screens are only looked at with several displays and the absolute mouse:
+    /// with the relative mouse, the guest may not be Mac OS (A/UX, Linux) and its memory is
+    /// left alone.
+    fn screens_wanted(&self) -> bool {
+        let absolute = self.config.mouse_mode() == MouseMode::Absolute;
+        self.displays.len() > 1 && absolute
+    }
+
+    /// Looks where the guest puts the displays, when there are several, and tells the
+    /// frontend when that changes. Called while the machine runs.
+    fn screens_tick(&mut self) -> Result<()> {
+        if !self.screens_wanted() {
+            if !self.screens.is_empty() {
+                self.screens.clear();
+                self.event_sender.send(EmulatorEvent::Screens(vec![]))?;
+            }
+            return Ok(());
+        }
+        if self.screens_time.elapsed() < SCREENS_INTERVAL {
+            return Ok(());
+        }
+        self.screens_time = Instant::now();
+        if let Some(screens) = self.read_screens()
+            && screens != self.screens
+        {
+            log::info!("Screens: {:?}", screens);
+            self.screens.clone_from(&screens);
+            self.event_sender.send(EmulatorEvent::Screens(screens))?;
+        }
+        Ok(())
+    }
+
     /// Reports a new position of the mouse in absolute mode to the OS, in its
-    /// low memory globals. If they have no translation at the moment, this
-    /// position is skipped.
-    fn mouse_update_abs(&mut self, x: u16, y: u16) {
+    /// low memory globals, from a position on one of the displays. If they
+    /// have no translation at the moment, or the guest doesn't use that
+    /// display, this position is skipped.
+    fn mouse_update_abs(&mut self, display: usize, x: u16, y: u16) {
+        // With several displays, the pixels of a display are where the guest puts it
+        let (x, y) = if self.displays.len() > 1 {
+            let screen = self.screens.iter().find(|s| s.display == display);
+            let Some(screen) = screen.filter(|s| s.active) else {
+                return;
+            };
+            (
+                x.wrapping_add_signed(screen.left),
+                y.wrapping_add_signed(screen.top),
+            )
+        } else {
+            (x, y)
+        };
         let (Some(old_x), Some(old_y)) = (
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_X, false),
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_Y, false),
@@ -1210,12 +1386,12 @@ impl Tickable for Emulator {
 
                         self.config.mouse_update_rel(relx, rely, btn);
                     }
-                    EmulatorCommand::MouseUpdateAbsolute { x, y } => {
+                    EmulatorCommand::MouseUpdateAbsolute { x, y, display } => {
                         if let Some(r) = self.record_input.as_mut() {
                             r.push((cycles, cmd));
                         }
 
-                        self.mouse_update_abs(x, y);
+                        self.mouse_update_abs(display, x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
                         log::info!("Mouse mode: {:?}", mode);
@@ -1657,6 +1833,9 @@ impl Tickable for Emulator {
 
         if !self.memory_notifiers.is_empty() && self.run {
             self.memory_notifiers_tick()?;
+        }
+        if self.run {
+            self.screens_tick()?;
         }
 
         if self.run {

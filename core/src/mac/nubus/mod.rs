@@ -7,7 +7,7 @@ use crate::bus::access::{
     BusAccess, BusResponse, CpuBus, bus_access_long, bus_access_word, write_lanes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceOps, MadeDevice};
+use crate::devices::{BusOps, DeviceOps, MadeDevice, bus_id};
 use crate::emulator::EmuContext;
 use crate::mac::dma::DmaOps;
 use crate::tickable::Ticks;
@@ -39,6 +39,15 @@ pub(crate) trait NubusSlot: Send + DeviceOps + Debuggable {
     /// Called by the machine at each of its ticks, with the time that passed. A card that
     /// masters the bus does its DMA here, through `dma`.
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()>;
+
+    /// For a card with video: which of its displays the guest's Slot Manager knows by the id
+    /// of the slot resource of its driver (`dCtlSlotId` of the AuxDCE), as an index among the
+    /// displays of the card. Called by the emulator, which reads the guest's list of screens.
+    /// None by default: the card has no display.
+    #[allow(non_snake_case)]
+    fn display_from_Mac_dCtlSlotId(&self, _dctl_slot_id: u8) -> Option<usize> {
+        None
+    }
 }
 
 /// The address a card is given of a NuBus address in its slot: the digit of
@@ -255,6 +264,28 @@ impl Nubus {
     }
 }
 
+impl Nubus {
+    /// The display that the guest's Slot Manager knows by a slot number and the id of a slot
+    /// resource, as the ids of its bus and slot and its index among the displays of that
+    /// device: the card in the NuBus slot of that number. No card shows several displays, so
+    /// the id of the slot resource isn't looked at.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        dctl_slot: u8,
+        dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        let index = usize::from(dctl_slot).checked_sub(0x9)?;
+        let card = self.cards.get(index)?.as_ref()?;
+        let display = card.display_from_Mac_dCtlSlotId(dctl_slot_id)?;
+        Some((
+            bus_id::NUBUS.to_string(),
+            SLOT_IDS[index].to_string(),
+            display,
+        ))
+    }
+}
+
 impl BusOps for Nubus {
     fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
         let card = self.cards[self.index(slot)?].as_mut()?;
@@ -378,5 +409,19 @@ mod tests {
             None,
             None,
         ]));
+    }
+
+    #[test]
+    fn a_card_names_its_display() {
+        let mut nubus = Nubus::new(1, &SLOT_IDS);
+        nubus
+            .attach("A", MadeDevice::Nubus(Box::new(Toby::new(&[]))))
+            .unwrap();
+        assert_eq!(
+            nubus.display_from_Mac_AuxDCE(0xA, 0x80),
+            Some((bus_id::NUBUS.to_string(), "A".to_string(), 0))
+        );
+        // An empty slot has no display
+        assert_eq!(nubus.display_from_Mac_AuxDCE(0x9, 0x80), None);
     }
 }

@@ -5,7 +5,7 @@ use crate::audio_cpal::CpalAudioProvider;
 #[cfg(feature = "audio_sdl2")]
 use crate::audio_sdl2::SDLAudioProvider;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui;
 use log::*;
@@ -27,7 +27,7 @@ use snow_core::devices::{
 #[cfg(feature = "ethernet")]
 use snow_core::devices::{EthernetConfig, EthernetLinkType};
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, GuestScreen, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
@@ -38,7 +38,6 @@ use snow_core::mac::MacModel;
 use snow_core::mac::maclc::pds_iie::GamePort;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
-use snow_core::renderer::FrameReceiver;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -112,7 +111,8 @@ impl FloppySlot {
 
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
-    pub frame_receiver: FrameReceiver,
+    /// The displays of the machine, at least one, in their order
+    pub displays: Vec<DisplayHandle>,
     /// The temporary files of a restored state, to remove when done
     pub temp_files: Vec<PathBuf>,
     /// The devices that the machine couldn't use, each with the reason, for the user
@@ -222,6 +222,8 @@ pub struct EmulatorState {
     device_status: HashMap<(String, String), FunctionStatus>,
     /// The Apple IIe Card is in front
     iie_in_front: bool,
+    /// Where the guest puts the displays, when the machine has several
+    screens: Vec<GuestScreen>,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -379,6 +381,8 @@ impl EmulatorState {
         audio_disabled: bool,
         pause: bool,
     ) -> Result<EmulatorInitResult> {
+        self.screens.clear();
+
         // The folders of the host, for a new machine and for one restored from a state alike
         cmd.send(EmulatorCommand::SetSharedDir(shared_dir))?;
         #[cfg(feature = "printer")]
@@ -447,10 +451,8 @@ impl EmulatorState {
         // Signal the UI to always update state
         self.force_update.set();
 
-        // The first display is the one that is shown
-        let display = displays.into_iter().next().context("No display")?;
         Ok(EmulatorInitResult {
-            frame_receiver: display.receiver,
+            displays,
             temp_files: vec![],
             refused: vec![],
         })
@@ -487,7 +489,8 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse(&self, abs_p: Option<&egui::Pos2>, rel_p: &egui::Pos2) {
+    /// `abs_p`: the display under the pointer, by its index, and where in its pixels
+    pub fn update_mouse(&self, abs_p: Option<(usize, egui::Pos2)>, rel_p: &egui::Pos2) {
         if !self.is_running() {
             return;
         }
@@ -498,11 +501,12 @@ impl EmulatorState {
 
         match self.mouse_mode {
             MouseMode::Absolute => {
-                if let Some(abs_p) = abs_p {
+                if let Some((display, abs_p)) = abs_p {
                     sender
                         .send(EmulatorCommand::MouseUpdateAbsolute {
                             x: abs_p.x as u16,
                             y: abs_p.y as u16,
+                            display,
                         })
                         .unwrap();
                 }
@@ -641,6 +645,7 @@ impl EmulatorState {
                     self.serial_bridge_status[ch.to_usize().unwrap()] = status;
                 }
                 EmulatorEvent::IieInFront(in_front) => self.iie_in_front = in_front,
+                EmulatorEvent::Screens(screens) => self.screens = screens,
             }
         }
 
@@ -1512,6 +1517,11 @@ impl EmulatorState {
     /// Whether the Apple IIe Card is in front
     pub fn iie_in_front(&self) -> bool {
         self.iie_in_front
+    }
+
+    /// Where the guest puts the displays, when the machine has several
+    pub fn screens(&self) -> &[GuestScreen] {
+        &self.screens
     }
 
     pub fn is_mouse_relative(&self) -> bool {
