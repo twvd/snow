@@ -1378,6 +1378,20 @@ mod tests {
     use snow_core::devices::{CdromConfig, DisplayConfig, built_in, bus_id};
 
     #[test]
+    fn a_built_in_ethernet_gets_an_ethernet_config() {
+        // The Quadra 700's SONIC is described with the machine
+        let dialog = dialog(MacModel::Quadra700, &[]);
+        let ethernet = dialog
+            .devices
+            .iter()
+            .find(|c| c.bus == bus_id::BUILT_IN && c.slot == built_in::ETHERNET)
+            .unwrap();
+        assert!(matches!(ethernet.function, FunctionConfig::Ethernet(_)));
+        // With nothing chosen, the machine is the Mac model's own
+        assert_eq!(dialog.result_devices(), []);
+    }
+
+    #[test]
     fn every_device_model_gets_a_config_of_its_function() {
         for model in DeviceModel::iter() {
             let info = model.info();
@@ -1511,9 +1525,16 @@ mod tests {
 
     #[test]
     fn a_quadra_700_takes_a_card_next_to_its_video() {
+        // The slots of the device configs of the machine, apart from the Ethernet of its
+        // logic board, which gets an address of its own when the build has Ethernet
+        fn slots_chosen(dialog: &ModelSelectionDialog) -> Vec<String> {
+            let slots = dialog.result_devices().into_iter().map(|c| c.slot);
+            slots.filter(|slot| slot != built_in::ETHERNET).collect()
+        }
+
         // Its slots are empty unless a card is chosen
         let mut dialog = dialog(MacModel::Quadra700, &[]);
-        assert_eq!(dialog.result_devices(), []);
+        assert!(slots_chosen(&dialog).is_empty());
         assert_eq!(dialog.screens(), 1);
 
         dialog.choose(bus_id::NUBUS, "D", Some(DeviceModel::DisplayCard824));
@@ -1524,12 +1545,7 @@ mod tests {
             .unwrap();
         dialog.devices[index].function = display(Some(MacMonitor::NoMonitor), None);
         assert_eq!(dialog.screens(), 1);
-        let slots: Vec<_> = dialog
-            .result_devices()
-            .into_iter()
-            .map(|c| c.slot)
-            .collect();
-        assert_eq!(slots, [built_in::VIDEO, "D"]);
+        assert_eq!(slots_chosen(&dialog), [built_in::VIDEO, "D"]);
     }
 
     #[test]

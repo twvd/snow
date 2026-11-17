@@ -17,6 +17,8 @@ use strum::IntoEnumIterator;
 use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
 use crate::mac::compact;
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet;
 use crate::mac::maclc;
 use crate::mac::maclc::pds_iie;
 use crate::mac::nubus;
@@ -290,6 +292,8 @@ pub enum DeviceModel {
     ScsiCdrom,
     #[cfg(feature = "ethernet")]
     DaynaPortScsiLink,
+    #[cfg(feature = "ethernet")]
+    BuiltInSonic,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
     Mac400KDrive,
@@ -318,6 +322,8 @@ impl DeviceModel {
             Self::ScsiCdrom => &scsi::cdrom::INFO,
             #[cfg(feature = "ethernet")]
             Self::DaynaPortScsiLink => &scsi::ethernet::INFO,
+            #[cfg(feature = "ethernet")]
+            Self::BuiltInSonic => &ethernet::built_in::INFO,
             #[cfg(feature = "printer")]
             Self::LaserWriterIISC => &scsi::printer::INFO,
             Self::Mac400KDrive => &swim::drive::INFO_400K,
