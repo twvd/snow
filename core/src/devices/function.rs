@@ -178,6 +178,22 @@ pub struct EthernetInfo {
     pub oui: [u8; 3],
 }
 
+impl FunctionInfo {
+    /// Whether a Config is the one of this function
+    pub const fn takes(&self, config: &FunctionConfig) -> bool {
+        matches!(
+            (self, config),
+            (Self::Floppy(_), FunctionConfig::Floppy)
+                | (Self::HardDisk, FunctionConfig::HardDisk(_))
+                | (Self::Cdrom, FunctionConfig::Cdrom(_))
+                | (Self::Ethernet(_), FunctionConfig::Ethernet(_))
+                | (Self::Printer, FunctionConfig::Printer(_))
+                | (Self::Display(_), FunctionConfig::Display(_))
+                | (Self::AppleIIeCard, FunctionConfig::AppleIIeCard(_))
+        )
+    }
+}
+
 /// What was chosen for a device, by function
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FunctionConfig {
@@ -370,6 +386,19 @@ pub struct DisplayConfig {
 pub struct DisplayStatus {
     /// False: nothing is on its connector, so it shows no display
     pub connected: bool,
+}
+
+/// One display of a machine, for the frontend to show
+pub struct DisplayHandle {
+    /// In the menus: "Built-in display", "NuBus slot 9: Macintosh Display Card 8-24"
+    pub name: String,
+    /// The device that shows it, by the ids of its bus and slot
+    pub bus: String,
+    pub slot: String,
+    /// Which of the device's displays: 0 unless it shows several
+    pub index: usize,
+    /// Where its frames arrive
+    pub receiver: FrameReceiver,
 }
 
 /// What an Ethernet adapter is connected to on the host

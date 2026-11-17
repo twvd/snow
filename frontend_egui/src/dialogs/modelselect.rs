@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::dialogs::filedialog::SnowFileDialog;
-use crate::emulator::EmulatorInitArgs;
+use crate::emulator::{EmulatorInitArgs, NubusDeviceKind, PdsCardKind};
 use crate::settings::AppSettings;
 use anyhow::{Result, anyhow, bail};
 use eframe::egui;
@@ -16,7 +16,7 @@ use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::quadra::dafb;
 use snow_core::mac::quadra::q800_bus;
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
+use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
 /// Video cards selectable for NuBus-equipped models.
