@@ -17,10 +17,11 @@ use crate::bus::{
 };
 use crate::debuggable::Debuggable;
 use crate::devices::{
-    BusOps, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, built_in, bus_id,
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, DisplayFunction, built_in, built_in_display,
+    bus_id,
 };
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
@@ -211,15 +212,19 @@ impl LcIIIBus {
     const OPENBUS: u8 = 0xFF;
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        video: &DisplayConfig,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let video = Video::with_config(DeviceModel::SonoraVideo, video);
+        let video = Video::with_config(DeviceModel::SonoraVideo, &built_in_display(devices));
         let swim = Swim::new_swim2(BUS_FREQUENCY);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -263,7 +268,7 @@ impl LcIIIBus {
 
         bus.disable_memtest();
 
-        bus
+        Ok(bus)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
@@ -1144,13 +1149,12 @@ mod tests {
     /// Seconds counted by the Egret, which is clocked like the VIA, while the
     /// bus runs for a second less `less` cycles
     fn clock_seconds(overclock: Option<u64>, less: Ticks) -> u32 {
-        let mut bus = LcIIIBus::new(
-            MacModel::LCIII,
-            &vec![0; 512 * 1024],
-            MouseMode::Disabled,
-            None,
-            &DisplayConfig::default(),
-        );
+        let rom = vec![0; 512 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LCIII)
+        };
+        let mut bus = LcIIIBus::new(&machine, &[]).unwrap();
         bus.set_speed(EmulatorSpeed::Uncapped);
         bus.set_overclock(overclock);
 
@@ -1174,13 +1178,12 @@ mod tests {
     /// ROM sits at the top of each 1 MB.
     #[test]
     fn iie_card_lciii_slot_aliases() {
-        let mut bus = LcIIIBus::new(
-            MacModel::LCIII,
-            &vec![0; 1024 * 1024],
-            MouseMode::Disabled,
-            None,
-            &DisplayConfig::default(),
-        );
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LCIII)
+        };
+        let mut bus = LcIIIBus::new(&machine, &[]).unwrap();
         let card = Box::new(PdsIIeCard::new());
         bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         fn read(bus: &mut LcIIIBus, addr: Address) -> u32 {
@@ -1213,13 +1216,12 @@ mod tests {
         const FROM: Address = 0x1000;
         const TO: Address = 0x2000;
 
-        let mut bus = LcIIIBus::new(
-            MacModel::LCIII,
-            &vec![0; 1024 * 1024],
-            MouseMode::Disabled,
-            None,
-            &DisplayConfig::default(),
-        );
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LCIII)
+        };
+        let mut bus = LcIIIBus::new(&machine, &[]).unwrap();
         let card = Box::new(DmaCard {
             from: FROM,
             to: TO,
@@ -1246,13 +1248,12 @@ mod tests {
     fn a_card_interrupts_at_level_2() {
         use crate::mac::pds::tests::IrqCard;
 
-        let mut bus = LcIIIBus::new(
-            MacModel::LCIII,
-            &vec![0; 1024 * 1024],
-            MouseMode::Disabled,
-            None,
-            &DisplayConfig::default(),
-        );
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LCIII)
+        };
+        let mut bus = LcIIIBus::new(&machine, &[]).unwrap();
         // The slot interrupt and the summary of the slot interrupts enabled
         bus.pseudovia.write(0x12, 0xA0);
         bus.pseudovia.write(0x13, 0x82);

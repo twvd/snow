@@ -10,9 +10,11 @@ use crate::bus::{
 };
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceModel, DeviceOps, built_in, bus_id};
+use crate::devices::{
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, built_in_config, bus_id,
+};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
@@ -270,20 +272,28 @@ impl MacIIBus {
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
-    #[allow(clippy::too_many_arguments)]
-    /// A machine with no card in its NuBus slots. `se30_video_rom` is the ROM of the SE/30's
-    /// video, on an SE/30.
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        se30_video_rom: Option<&[u8]>,
-        extension_rom: Option<&[u8]>,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        amu: bool,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device, which is the ROM file of the video on an SE/30.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            pmmu_enabled,
+            ..
+        } = machine;
+        // A Macintosh II has an AMU, unless a 68851 takes its place
+        let amu = matches!(model, MacModel::MacII | MacModel::MacIIFDHD) && !pmmu_enabled;
         let cards = Nubus::new(BUS_FREQUENCY, model.nubus_slots());
-        let se30_video = se30_video_rom.map(SE30Video::new);
+        let se30_video = if model == MacModel::SE30 {
+            let config = built_in_config(devices, built_in::VIDEO);
+            Some(SE30Video::with_config(config)?)
+        } else {
+            None
+        };
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let ram_config = Self::RAM_CONFIG
             .iter()
@@ -346,7 +356,7 @@ impl MacIIBus {
         bus.via1.adb.add_device(AdbMouse::new());
         bus.via1.adb.add_device(AdbKeyboard::new());
 
-        bus
+        Ok(bus)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
@@ -1286,15 +1296,12 @@ mod tests {
 
     #[test]
     fn a_card_reads_and_writes_the_ram_at_its_tick() {
-        let mut bus = MacIIBus::new(
-            MacModel::MacII,
-            &vec![0; 256 * 1024],
-            None,
-            None,
-            MouseMode::Disabled,
-            None,
-            true,
-        );
+        let rom = vec![0; 256 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::MacII)
+        };
+        let mut bus = MacIIBus::new(&machine, &[]).unwrap();
         bus.nubus
             .attach("9", MadeDevice::Nubus(Box::new(DmaCard)))
             .unwrap();
@@ -1362,15 +1369,24 @@ mod tests {
     fn the_se30_runs_the_card_of_its_processor_direct_slot() {
         use crate::bus::access::Bus68020;
 
-        let mut bus = MacIIBus::new(
-            MacModel::SE30,
-            &vec![0; 256 * 1024],
-            None,
-            None,
-            MouseMode::Disabled,
-            None,
-            true,
-        );
+        let rom = vec![0; 256 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::SE30)
+        };
+        // The SE/30's video needs a ROM file
+        let video_rom = std::env::temp_dir().join(format!("snow_se30_pds_{}", std::process::id()));
+        std::fs::write(&video_rom, []).unwrap();
+        let video = DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: None,
+            rom: Some(video_rom.clone()),
+            function: FunctionConfig::Display(Default::default()),
+        };
+        let bus = MacIIBus::new(&machine, &[video]);
+        std::fs::remove_file(video_rom).unwrap();
+        let mut bus = bus.unwrap();
         let read =
             |bus: &mut MacIIBus, addr| bus.access(BusAccess::<Bus68020>::read(addr, 4, 0)).unwrap();
         // An empty slot is a bus error, as the Slot Manager expects

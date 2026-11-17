@@ -3,7 +3,7 @@ use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
-use crate::emulator::{EmulatorInitArgs, ScsiSlot};
+use crate::emulator::{EmulatorInitArgs, PdsCardKind, ScsiSlot};
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -26,9 +26,9 @@ use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
+use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
-use snow_core::mac::{MacModel, PdsCardKind};
 use snow_core::tickable::Ticks;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
@@ -597,7 +597,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(
+                app.load_rom_and_report(
                     path,
                     None,
                     None,
@@ -3118,6 +3118,9 @@ impl SnowGui {
         }
     }
 
+    /// Makes a machine. Returns the devices of the list that the machine couldn't use, each
+    /// with the reason, for the caller to show; None if the machine couldn't be made, which
+    /// the user was told.
     #[allow(clippy::too_many_arguments)]
     fn load_rom_from_path(
         &mut self,
@@ -3128,7 +3131,7 @@ impl SnowGui {
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
-    ) {
+    ) -> Option<Vec<String>> {
         // Parse custom datetime from workspace if specified
         let custom_datetime = self.workspace.custom_datetime.as_ref().and_then(|s| {
             // Try parsing with time first, then date-only
@@ -3143,7 +3146,7 @@ impl SnowGui {
                 .ok()
         });
 
-        match self.emu.init_from_rom(
+        let refused = match self.emu.init_from_rom(
             path,
             display_rom_path,
             extension_rom_path,
@@ -3159,9 +3162,13 @@ impl SnowGui {
                     .load_shader_defaults(self.emu.get_model().unwrap());
                 self.framebuffer.connect_receiver(p.frame_receiver);
                 self.apply_workspace_bridges();
+                Some(p.refused)
             }
-            Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
-        }
+            Err(e) => {
+                self.show_error(&format!("Failed to load ROM file: {}", e));
+                None
+            }
+        };
 
         self.iie_joystick = (args.pds_card == PdsCardKind::AppleIIe).then(|| {
             let mut joy = Joystick::new(args.iie_joystick_emulation);
@@ -3188,6 +3195,48 @@ impl SnowGui {
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
         self.workspace.model = model;
+        refused
+    }
+
+    /// Tells the user which parts of a workspace couldn't be used
+    fn show_workspace_unused(&mut self, unused: &[String]) {
+        if !unused.is_empty() {
+            self.show_error(&format!(
+                "Parts of the workspace can't be used:\n\n{}",
+                unused.join("\n")
+            ));
+        }
+    }
+
+    /// Makes a machine, and tells the user which devices it couldn't use
+    #[allow(clippy::too_many_arguments)]
+    fn load_rom_and_report(
+        &mut self,
+        path: &Path,
+        display_rom_path: Option<&Path>,
+        extension_rom_path: Option<&Path>,
+        devices: Vec<DeviceConfig>,
+        pram_path: Option<&Path>,
+        args: &EmulatorInitArgs,
+        model: Option<MacModel>,
+    ) {
+        let refused = self.load_rom_from_path(
+            path,
+            display_rom_path,
+            extension_rom_path,
+            devices,
+            pram_path,
+            args,
+            model,
+        );
+        if let Some(refused) = refused
+            && !refused.is_empty()
+        {
+            self.show_error(&format!(
+                "Some devices of the machine can't be used:\n\n{}",
+                refused.join("\n")
+            ));
+        }
     }
 
     /// Start the workspace's serial bridges on a new emulator. Every start
@@ -3233,16 +3282,13 @@ impl SnowGui {
         {
             self.afp_replaced_bridge = None;
         }
+        // What can't be used of the workspace: the parts that can't be read, then the devices
+        // that the machine refuses
+        let mut unused = vec![];
         if let Some(path) = path {
             match Workspace::from_file(path) {
                 Ok(mut ws) => {
-                    let unread = ws.take_unread();
-                    if !unread.is_empty() {
-                        self.show_error(&format!(
-                            "Parts of the workspace can't be used:\n\n{}",
-                            unread.join("\n")
-                        ));
-                    }
+                    unused = ws.take_unread();
                     self.workspace = ws;
                     self.workspace_file = Some(path.to_path_buf());
                     self.settings.add_recent_workspace(path);
@@ -3275,7 +3321,7 @@ impl SnowGui {
             let init_args = self.workspace.init_args.clone();
             let model = self.workspace.model;
 
-            self.load_rom_from_path(
+            let refused = self.load_rom_from_path(
                 &rompath,
                 display_rom_path.as_deref(),
                 extension_rom_path.as_deref(),
@@ -3284,6 +3330,11 @@ impl SnowGui {
                 &init_args,
                 model,
             );
+            // If the machine couldn't be made, the user was told why
+            if let Some(refused) = refused {
+                unused.extend(refused);
+                self.show_workspace_unused(&unused);
+            }
 
             if let Some(floppy_path) = self.workspace.get_floppy_images().first().cloned()
                 && floppy_path.exists()
@@ -3295,6 +3346,7 @@ impl SnowGui {
                 ));
             }
         } else {
+            self.show_workspace_unused(&unused);
             self.emu.deinit();
             self.ff_on = false;
             self.dynamic_ff_input_time = None;
@@ -3632,7 +3684,7 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
-        self.load_rom_from_path(
+        self.load_rom_and_report(
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             result.extension_rom_path.as_deref(),
@@ -3861,7 +3913,7 @@ impl SnowGui {
 
         match ext.as_ref() {
             "rom" => {
-                self.load_rom_from_path(
+                self.load_rom_and_report(
                     path,
                     None,
                     None,

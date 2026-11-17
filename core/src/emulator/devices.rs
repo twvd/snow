@@ -15,13 +15,11 @@ use super::comm::EmulatorEvent;
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
-    Bus, BusOps, CdromConfig, Device, DeviceConfig, DeviceModel, EthernetFunction, FloppyFunction,
-    FunctionConfig, FunctionInfo, FunctionMut, HardDiskConfig, Slot, bus_id, device_configs,
-    models_for, new_ethernet_address,
+    Bus, BusKind, BusOps, CdromConfig, Device, DeviceConfig, DeviceModel, DisplayHandle,
+    EthernetFunction, FloppyFunction, FunctionConfig, FunctionInfo, FunctionMut, HardDiskConfig,
+    Slot, bus_id, device_configs, models_for, new_ethernet_address,
 };
 use crate::mac::scsi::disk_image::DiskImage;
-use crate::mac::swim::drive::DriveType;
-use crate::renderer::FrameReceiver;
 
 /// The slots of a list of buses that hold a floppy drive
 fn floppy_slots(buses: &[Bus]) -> impl Iterator<Item = (&Bus, &Slot)> {
@@ -125,20 +123,43 @@ impl Emulator {
         Ok(())
     }
 
-    /// Where the frontend picks up the frames of the machine's screen: its first display that
-    /// has something on its connector, in the order of the list of buses. A machine with no
-    /// screen is refused.
-    pub(super) fn video_frames(&mut self) -> Result<FrameReceiver> {
+    /// The displays of the machine, for the frontend: one handle per device whose function is
+    /// Display and that has something on its connector, in the order of the list of buses.
+    /// Called once, when the machine is made or restored from a state.
+    pub(super) fn displays(&mut self) -> Vec<DisplayHandle> {
+        let mut displays = vec![];
         for bus in self.buses() {
             for slot in &bus.slots {
-                if let Ok(FunctionMut::Display(display)) = self.device_function(&bus.id, &slot.id)
-                    && display.status().connected
-                {
-                    return Ok(display.frames());
+                let Some(device) = &slot.device else {
+                    continue;
+                };
+                let Ok(FunctionMut::Display(display)) = self.device_function(&bus.id, &slot.id)
+                else {
+                    continue;
+                };
+                if !display.status().connected {
+                    continue;
                 }
+                let name = if bus.kind == BusKind::BuiltIn {
+                    "Built-in display".to_string()
+                } else {
+                    format!(
+                        "{} slot {}: {}",
+                        bus.title,
+                        slot.id,
+                        device.model.info().name
+                    )
+                };
+                displays.push(DisplayHandle {
+                    name,
+                    bus: bus.id.clone(),
+                    slot: slot.id.clone(),
+                    index: 0,
+                    receiver: display.frames(),
+                });
             }
         }
-        bail!("This machine has no screen: none of its videos has a monitor")
+        displays
     }
 
     /// The machine, as the list of device configs it can be made from again
@@ -302,36 +323,6 @@ impl Emulator {
         }
     }
 
-    /// Adds the devices the Mac model has in its slots without being asked: its floppy
-    /// drives, or drives of another type in their place. Called when the machine is made.
-    pub(super) fn add_default_devices(&mut self, floppy_drives: Option<DriveType>) -> Result<()> {
-        for bus in self.model.buses() {
-            for slot in bus.slots {
-                let Some(device) = slot.device else {
-                    continue;
-                };
-                let model = match floppy_drives {
-                    Some(drive_type) if bus.id == bus_id::SWIM => drive_type.device_model(),
-                    _ => device.model,
-                };
-                let config = DeviceConfig {
-                    bus: bus.id.clone(),
-                    slot: slot.id,
-                    model: Some(model),
-                    rom: device.rom,
-                    function: device.function,
-                };
-                // A device of the logic board is made with the machine
-                if bus.id == bus_id::BUILT_IN {
-                    self.configure_device(&config)?;
-                } else {
-                    self.add_device_to(&config, true)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Adds a device to the machine, in an empty slot. The device is made by the create
     /// function of its device model, attached, then given its Config with
     /// `configure_device()`. When that part of the Config can't be applied, the device stays and
@@ -426,7 +417,7 @@ impl Emulator {
     /// of an Ethernet adapter and the folder of a CD-ROM drive. The slot must hold a device of
     /// the Config's device model, if it names one. When that part of the Config can't be
     /// applied, the device stays and the error says why.
-    fn configure_device(&mut self, config: &DeviceConfig) -> Result<()> {
+    pub(super) fn configure_device(&mut self, config: &DeviceConfig) -> Result<()> {
         let device = self
             .bus_ops(&config.bus)
             .context("This machine has no such bus")?
@@ -559,15 +550,21 @@ mod tests {
     use crate::devices::{CdromStatus, DisplayConfig, DisplayStatus, FunctionStatus, built_in};
     #[cfg(feature = "ethernet")]
     use crate::devices::{EthernetConfig, EthernetLinkType};
+    use crate::emulator::MachineConfig;
     use crate::emulator::comm::EmulatorEvent;
-    use crate::emulator::{MachineConfig, MouseMode};
     use crate::mac::{MacModel, MacMonitor};
 
     /// A Macintosh Plus, which has a SCSI bus
     fn plus() -> Emulator {
-        Emulator::new(&vec![0; 128 * 1024], &[], MacModel::Plus)
-            .unwrap()
-            .0
+        make(MacModel::Plus, vec![]).unwrap()
+    }
+
+    /// A machine made from a list of devices, all of which it must take
+    fn make(model: MacModel, devices: Vec<DeviceConfig>) -> Result<Emulator> {
+        let rom = vec![0; 1024 * 1024];
+        let (emu, _, refused) = Emulator::new(&MachineConfig::new(&rom, model), devices)?;
+        assert_eq!(refused, []);
+        Ok(emu)
     }
 
     fn scsi(slot: &str, model: Option<DeviceModel>, function: FunctionConfig) -> DeviceConfig {
@@ -608,8 +605,16 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("snow_devices_{}_{}", name, std::process::id()));
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            // Two tests may ask for a folder of the same name at the same time
+            static COUNT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "snow_devices_{}_{}_{}",
+                name,
+                std::process::id(),
+                COUNT.fetch_add(1, Ordering::Relaxed)
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }
@@ -627,20 +632,54 @@ mod tests {
         }
     }
 
-    /// A machine of each Mac model, with the ROMs it asks for
-    fn machine(model: MacModel) -> Emulator {
-        use crate::mac::ExtraROMs;
+    /// The device config of a video card in a NuBus slot
+    fn video_card(
+        slot: &str,
+        model: DeviceModel,
+        rom: Option<&Path>,
+        monitor: Option<MacMonitor>,
+    ) -> DeviceConfig {
+        DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: slot.into(),
+            model: Some(model),
+            rom: rom.map(Path::to_path_buf),
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor,
+                vram_size: None,
+            }),
+        }
+    }
 
-        let extra_roms: &[ExtraROMs] = match model {
-            MacModel::SE30 => &[ExtraROMs::SE30Video(&[])],
+    /// The device configs that a machine of these tests needs to have a screen, with `rom` as
+    /// the ROM file of its video: the video of an SE/30, and an 8-24 card in the first slot of
+    /// a Macintosh II
+    fn video_configs(model: MacModel, rom: &Path) -> Vec<DeviceConfig> {
+        match model {
+            MacModel::SE30 => vec![DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::VIDEO.into(),
+                model: Some(DeviceModel::SE30Video),
+                rom: Some(rom.to_path_buf()),
+                function: FunctionConfig::Display(DisplayConfig::default()),
+            }],
             MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
-                &[ExtraROMs::MDC12(&[])]
+                vec![video_card(
+                    "9",
+                    DeviceModel::DisplayCard824,
+                    Some(rom),
+                    None,
+                )]
             }
-            _ => &[],
-        };
-        Emulator::new(&vec![0; 1024 * 1024], extra_roms, model)
-            .unwrap()
-            .0
+            _ => vec![],
+        }
+    }
+
+    /// A machine of each Mac model, with what it needs to have a screen
+    fn machine(model: MacModel) -> Emulator {
+        let dir = TestDir::new("machine");
+        let rom = dir.file("video.rom", 0);
+        make(model, video_configs(model, &rom)).unwrap()
     }
 
     /// The device events sent since the last call: lists of buses, and the statuses of the
@@ -664,25 +703,22 @@ mod tests {
     fn every_bus_of_a_mac_model_is_one_of_its_machine() {
         use strum::IntoEnumIterator;
 
+        let dir = TestDir::new("buses");
+        let rom = dir.file("video.rom", 0);
         for model in MacModel::iter() {
-            let mut emu = machine(model);
-            // A Macintosh II of these tests has a video card in its first slot
+            // An SE/30 of these tests has the ROM file of its video, and a Macintosh II a
+            // video card in its first slot
+            let devices = video_configs(model, &rom);
+            let mut emu = make(model, devices.clone()).unwrap();
             let mut buses = model.buses();
-            let mut devices = vec![];
-            if let Some(nubus) = buses.iter_mut().find(|bus| bus.id == bus_id::NUBUS) {
-                let function = FunctionConfig::Display(DisplayConfig::default());
-                nubus.slots[0].device = Some(Device {
-                    model: DeviceModel::DisplayCard824,
-                    rom: None,
-                    function: function.clone(),
+            for config in &devices {
+                let bus = buses.iter_mut().find(|b| b.id == config.bus).unwrap();
+                let slot = bus.slots.iter_mut().find(|s| s.id == config.slot).unwrap();
+                slot.device = Some(Device {
+                    model: config.model.unwrap(),
+                    rom: config.rom.clone(),
+                    function: config.function.clone(),
                     name: None,
-                });
-                devices.push(DeviceConfig {
-                    bus: nubus.id.clone(),
-                    slot: nubus.slots[0].id.clone(),
-                    model: Some(DeviceModel::DisplayCard824),
-                    rom: None,
-                    function,
                 });
             }
             for bus in &buses {
@@ -710,26 +746,44 @@ mod tests {
         }
     }
 
-    /// A machine with a monitor and a VRAM size chosen for its video
+    /// A machine with a monitor and a VRAM size chosen for its video: its built-in video, or
+    /// the card of a Macintosh II
     fn machine_with_video(
         model: MacModel,
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
     ) -> Result<Emulator> {
-        use crate::mac::ExtraROMs;
+        let dir = TestDir::new("video");
+        let rom = dir.file("video.rom", 0);
+        let video = match model {
+            MacModel::MacII => video_card("9", DeviceModel::DisplayCard824, Some(&rom), monitor),
+            // The video the Mac model has, whichever device model that is
+            _ => DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::VIDEO.into(),
+                model: None,
+                rom: None,
+                function: FunctionConfig::Display(DisplayConfig { monitor, vram_size }),
+            },
+        };
+        make(model, vec![video])
+    }
 
-        let extra_roms: &[ExtraROMs] = match model {
-            MacModel::MacII => &[ExtraROMs::MDC12(&[])],
-            _ => &[],
+    /// A device config of the Built-in bus is given to the device the machine has there, with
+    /// `configure_device()`, as `Emulator::new()` does
+    #[test]
+    fn a_built_in_device_is_configured() {
+        let mut emu = make(MacModel::LC, vec![]).unwrap();
+        let mut video = DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: None,
+            rom: None,
+            function: FunctionConfig::Display(DisplayConfig::default()),
         };
-        let rom = vec![0; 1024 * 1024];
-        let machine = MachineConfig {
-            mouse_mode: MouseMode::Disabled,
-            ..MachineConfig::new(&rom, model)
-        };
-        let (emu, _) =
-            Emulator::new_with_extra(&machine, extra_roms, monitor, None, vram_size, None)?;
-        Ok(emu)
+        emu.configure_device(&video).unwrap();
+        video.model = Some(DeviceModel::SonoraVideo);
+        assert!(emu.configure_device(&video).is_err());
     }
 
     #[test]
@@ -785,22 +839,158 @@ mod tests {
         let none = machine_with_video(MacModel::MacII, Some(MacMonitor::NoMonitor), None);
         let error = none.err().unwrap().to_string();
         assert!(error.contains("no screen"), "{error}");
+
+        // So is one with no card, and the device config that couldn't be used is in the error
+        assert!(make(MacModel::MacII, vec![]).is_err());
+        let no_file = video_card(
+            "9",
+            DeviceModel::DisplayCard824,
+            Some(Path::new("no such file")),
+            None,
+        );
+        let error = make(MacModel::MacII, vec![no_file]).err().unwrap();
+        let error = error.to_string();
+        assert!(error.contains("no screen"), "{error}");
+        assert!(error.contains("NuBus #9: Cannot read"), "{error}");
+
+        // An SE/30 needs the ROM file of its video
+        let error = make(MacModel::SE30, vec![]).err().unwrap().to_string();
+        assert!(error.contains("needs its ROM file"), "{error}");
+    }
+
+    #[test]
+    fn a_machine_is_made_from_a_list_of_devices() {
+        use strum::IntoEnumIterator;
+
+        let dir = TestDir::new("list");
+        let rom = dir.file("video.rom", 0);
+        for model in MacModel::iter() {
+            let machine_rom = vec![0; 1024 * 1024];
+            let machine = MachineConfig::new(&machine_rom, model);
+
+            // With what it needs for a screen and nothing else, the machine has one display
+            let mut devices = video_configs(model, &rom);
+            let (mut emu, displays, refused) = Emulator::new(&machine, devices.clone()).unwrap();
+            assert_eq!(refused, []);
+            assert_eq!(displays.len(), 1, "{model}");
+            let display = &displays[0];
+            match model {
+                MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
+                    assert_eq!(display.name, "NuBus slot 9: Macintosh Display Card 8-24");
+                    assert_eq!(
+                        (display.bus.as_str(), display.slot.as_str()),
+                        ("NuBus", "9")
+                    );
+                }
+                _ => {
+                    assert_eq!(display.name, "Built-in display");
+                    assert_eq!(display.bus, bus_id::BUILT_IN);
+                    assert_eq!(display.slot, built_in::VIDEO);
+                }
+            }
+            assert_eq!(emu.devices(), devices);
+
+            // With devices of its buses, it reports the list it was made from, and a machine
+            // made from that list reports the same
+            if model.has_scsi() {
+                devices.push(cdrom("3", None));
+            }
+            // A Mac with 400K drives takes an 800K drive
+            let drive = model.buses()[0].slots[0].device.as_ref().unwrap().model;
+            if drive == DeviceModel::Mac400KDrive {
+                devices.push(DeviceConfig {
+                    bus: bus_id::SWIM.into(),
+                    slot: "1".into(),
+                    model: Some(DeviceModel::Mac800KPwmDrive),
+                    rom: None,
+                    function: FunctionConfig::Floppy,
+                });
+            }
+            let mut emu = make(model, devices.clone()).unwrap();
+            let reported = emu.devices();
+            assert_eq!(reported.len(), devices.len(), "{model}");
+            for config in &devices {
+                assert!(reported.contains(config), "{model}: {config:?}");
+            }
+            assert_eq!(make(model, reported.clone()).unwrap().devices(), reported);
+        }
+    }
+
+    #[test]
+    fn a_video_card_in_each_slot_is_a_display() {
+        let dir = TestDir::new("cards");
+        let rom = dir.file("video.rom", 0);
+        let rom = Some(rom.as_path());
+        let machine_rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig::new(&machine_rom, MacModel::MacII);
+
+        // The displays are in the order of the slots, whatever the order of the list, and a
+        // card with nothing on its connector isn't one
+        let devices = vec![
+            video_card("B", DeviceModel::MacIIVideoCard, rom, None),
+            video_card(
+                "A",
+                DeviceModel::DisplayCard824,
+                rom,
+                Some(MacMonitor::NoMonitor),
+            ),
+            video_card("9", DeviceModel::DisplayCard824, rom, None),
+        ];
+        let (_, displays, refused) = Emulator::new(&machine, devices).unwrap();
+        assert_eq!(refused, []);
+        let names: Vec<_> = displays.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "NuBus slot 9: Macintosh Display Card 8-24",
+                "NuBus slot B: Macintosh II Video Card (Toby)"
+            ]
+        );
+        assert!(displays.iter().all(|d| d.index == 0));
+    }
+
+    #[test]
+    fn a_device_config_that_cannot_be_used_does_not_stop_the_machine() {
+        let dir = TestDir::new("refused");
+        let no_image = scsi(
+            "0",
+            Some(DeviceModel::ScsiHardDisk),
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(dir.0.join("no such image")),
+            }),
+        );
+        let no_folder = cdrom("3", Some(&dir.0.join("no such folder")));
+        let no_slot = cdrom("9", None);
+        let devices = vec![
+            no_image.clone(),
+            cdrom("4", None),
+            no_folder.clone(),
+            no_slot.clone(),
+        ];
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig::new(&rom, MacModel::Plus);
+        let (mut emu, _, refused) = Emulator::new(&machine, devices).unwrap();
+
+        // What the list couldn't have comes first, then what couldn't be made
+        let configs: Vec<_> = refused.iter().map(|r| &r.config).collect();
+        assert_eq!(configs, [&no_slot, &no_image, &no_folder]);
+        assert_eq!(refused[0].reason, "The bus has no such slot");
+        assert!(refused.iter().all(|r| !r.reason.is_empty()));
+
+        // The disk isn't there. The CD-ROM drive whose folder is missing is, empty.
+        assert!(emu.device_function(bus_id::SCSI, "0").is_err());
+        assert!(matches!(status(&mut emu, "4"), FunctionStatus::Cdrom(_)));
+        let FunctionStatus::Cdrom(drive) = status(&mut emu, "3") else {
+            panic!("A CD-ROM drive has the Cdrom function");
+        };
+        assert_eq!(drive.image, None);
     }
 
     #[test]
     fn a_video_card_is_made_from_its_rom_file() {
         let dir = TestDir::new("video_card");
         let rom = dir.file("card.rom", 4096);
-        let card = |slot: &str, model, rom: Option<&Path>, monitor| DeviceConfig {
-            bus: bus_id::NUBUS.into(),
-            slot: slot.into(),
-            model: Some(model),
-            rom: rom.map(Path::to_path_buf),
-            function: FunctionConfig::Display(DisplayConfig {
-                monitor,
-                vram_size: None,
-            }),
-        };
+        let card = video_card;
         let mut emu = machine(MacModel::MacII);
 
         // A second card, with the monitor chosen for it: the machine reports both as given
@@ -919,14 +1109,15 @@ mod tests {
             security_jumper: false,
             disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
         };
+        let card = DeviceConfig {
+            bus: bus_id::PDS_LC.into(),
+            slot: "0".into(),
+            model: Some(DeviceModel::AppleIIePdsCard),
+            rom: None,
+            function: FunctionConfig::AppleIIeCard(settings),
+        };
         for model in [MacModel::LC, MacModel::LCIII, MacModel::LC475] {
-            let rom = vec![0; 1024 * 1024];
-            let config = MachineConfig {
-                mouse_mode: MouseMode::Disabled,
-                ..MachineConfig::new(&rom, model)
-            };
-            let (mut emu, _) =
-                Emulator::new_with_extra(&config, &[], None, None, None, Some(settings)).unwrap();
+            let mut emu = make(model, vec![card.clone()]).unwrap();
 
             // A drive of the card is reached as the Mac's are
             let floppy = emu.floppy_in(bus_id::IIE_DISK, "2").unwrap();
@@ -984,16 +1175,14 @@ mod tests {
 
     #[test]
     fn drives_of_another_type_take_the_place_of_those_of_the_mac_model() {
-        let rom = vec![0; 64 * 1024];
-        let (mut emu, _) = Emulator::new_with_extra(
-            &MachineConfig::new(&rom, MacModel::Early128K),
-            &[],
-            None,
-            Some(DriveType::GCR800KPWM),
-            None,
-            None,
-        )
-        .unwrap();
+        let drive = |slot: &str| DeviceConfig {
+            bus: bus_id::SWIM.into(),
+            slot: slot.into(),
+            model: Some(DeviceModel::Mac800KPwmDrive),
+            rom: None,
+            function: FunctionConfig::Floppy,
+        };
+        let mut emu = make(MacModel::Early128K, vec![drive("1"), drive("2")]).unwrap();
         assert_eq!(
             floppy_drives(&mut emu),
             vec![DeviceModel::Mac800KPwmDrive; 2]
@@ -1410,9 +1599,7 @@ mod tests {
         assert!(emu.device_function(bus_id::SCSI, "0").is_err());
 
         // The first Macs have no SCSI bus
-        let mut emu = Emulator::new(&vec![0; 64 * 1024], &[], MacModel::Early512K)
-            .unwrap()
-            .0;
+        let mut emu = machine(MacModel::Early512K);
         assert!(emu.add_device(&cdrom("3", None)).is_err());
     }
 

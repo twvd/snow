@@ -20,9 +20,11 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceModel, DeviceOps, DisplayConfig, built_in, bus_id};
+use crate::devices::{
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, built_in_display, bus_id,
+};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::cuda::Cuda;
@@ -358,13 +360,17 @@ impl Lc475Bus {
     const SCSI_DMA_TIMEOUT: Ticks = 640;
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        video: &DisplayConfig,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let mut cuda = Cuda::default();
@@ -411,12 +417,12 @@ impl Lc475Bus {
             pds: Pds::new(C16M_FREQUENCY),
             dma_writes: 0,
 
-            dafb: Dafb::with_config(DeviceModel::MemcJrVideo, video),
+            dafb: Dafb::with_config(DeviceModel::MemcJrVideo, &built_in_display(devices)),
             mouse_mode,
         };
         bus.ram_map_update();
         bus.disable_memtest();
-        bus
+        Ok(bus)
     }
 
     /// First MB of a bank in the RAM space
@@ -1487,13 +1493,13 @@ mod tests {
     use crate::mac::maclc::pds_iie::{DECL_ROM, PdsIIeCard};
 
     fn bus() -> Lc475Bus {
-        Lc475Bus::new(
-            MacModel::LC475,
-            &vec![0; 1024 * 1024],
-            &DisplayConfig::default(),
-            MouseMode::Disabled,
-            Some(4 * 1024 * 1024),
-        )
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            ram_size: Some(4 * 1024 * 1024),
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LC475)
+        };
+        Lc475Bus::new(&machine, &[]).unwrap()
     }
 
     #[test]
@@ -1520,13 +1526,13 @@ mod tests {
     /// up bases, then moves them together
     #[test]
     fn ram_banks() {
-        let mut bus = Lc475Bus::new(
-            MacModel::LC475,
-            &vec![0; 1024 * 1024],
-            &DisplayConfig::default(),
-            MouseMode::Disabled,
-            Some(12 * 1024 * 1024),
-        );
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            ram_size: Some(12 * 1024 * 1024),
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LC475)
+        };
+        let mut bus = Lc475Bus::new(&machine, &[]).unwrap();
         assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));
         assert_eq!(bus.ram_index(0x0040_0000), None);
         assert_eq!(bus.ram_index(0x0400_0000), Some(0x40_0000));
