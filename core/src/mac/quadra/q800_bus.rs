@@ -29,7 +29,7 @@ use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
-use crate::mac::quadra::dafb::{self, Dafb};
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -93,10 +93,6 @@ const VIA_RELEASE: Ticks = 13;
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
-
-/// Sizes of video RAM which can be fitted: 512 KB on the board and sockets for
-/// another 512 KB (Developer Note)
-pub const VRAM_SIZES: &[usize] = dafb::VRAM_SIZES_MEMCJR;
 
 /// Bytes of the IOSB registers kept
 const IOSB_REGS_SIZE: usize = 0x80;

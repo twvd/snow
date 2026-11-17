@@ -203,7 +203,8 @@ pub struct EmulatorInitArgs {
     /// Disable audio, synchronize to video
     pub audio_disabled: bool,
 
-    /// Selected monitor (if available)
+    /// Deprecated; now the monitor of a video in the workspace's devices
+    #[serde(skip_serializing)]
     pub monitor: Option<MacMonitor>,
 
     #[serde(skip_serializing)]
@@ -219,7 +220,8 @@ pub struct EmulatorInitArgs {
     /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
 
-    /// Override the type of floppy drive (for all drives)
+    /// Deprecated; now the floppy drives in the workspace's devices
+    #[serde(skip_serializing)]
     pub override_fdd_type: Option<DriveType>,
 
     /// Enable PMMU (Macintosh II only)
@@ -228,20 +230,24 @@ pub struct EmulatorInitArgs {
     /// Enable FPU (Macintosh LC only)
     pub fpu_enabled: bool,
 
-    /// Configured video RAM size or default if None (Macintosh LC only)
+    /// Deprecated; now the VRAM size of a video in the workspace's devices
+    #[serde(skip_serializing)]
     pub vram_size: Option<usize>,
 
-    /// Card in the PDS slot (Macintosh LC family)
+    /// Deprecated; now the card of the PDS slot in the workspace's devices
+    #[serde(skip_serializing)]
     pub pds_card: PdsCardKind,
 
-    /// Apple IIe Card settings (used if it is in the PDS slot)
+    /// Deprecated; now the Config of the Apple IIe Card in the workspace's devices
+    #[serde(skip_serializing)]
     pub iie_card_settings: IieCardSettings,
 
     /// Apple IIe Card controller emulation: host keys can drive the
     /// joystick (used if it is in the PDS slot; on by default)
     pub iie_joystick_emulation: bool,
 
-    /// Selected NuBus video card (if applicable)
+    /// Deprecated; now the video card in the workspace's devices
+    #[serde(skip_serializing)]
     pub video_card: NubusDeviceKind,
 
     /// Overclock
@@ -278,11 +284,24 @@ impl Default for EmulatorInitArgs {
     }
 }
 
+impl NubusDeviceKind {
+    /// The device model of this kind of card
+    pub const fn device_model(self) -> DeviceModel {
+        match self {
+            Self::Mdc12 => DeviceModel::DisplayCard824,
+            Self::Toby => DeviceModel::MacIIVideoCard,
+            Self::SE30Video => DeviceModel::SE30Video,
+        }
+    }
+}
+
 impl EmulatorInitArgs {
-    /// The devices that these arguments describe, as device configs: the video card of a
-    /// Macintosh II or what was chosen for the built-in video, the card of the
-    /// processor-direct slot, and floppy drives of another type than the Mac model's.
-    /// `display_rom` is the ROM file of the video card, or of the video of an SE/30.
+    /// The devices that the deprecated fields of an older workspace describe, as device
+    /// configs: the video card of a Macintosh II, the ROM of the video of an SE/30, what was
+    /// chosen for a built-in video, the card of the processor-direct slot, and floppy drives
+    /// of another type than the Mac model's. `display_rom` is the workspace's ROM file of the
+    /// video card, or of the video of an SE/30. A workspace saved since has none of this, and
+    /// gets no device config.
     pub fn device_configs(&self, model: MacModel, display_rom: Option<&Path>) -> Vec<DeviceConfig> {
         let buses = model.buses();
         let bus = |id: &str| buses.iter().find(|bus| bus.id == id);
@@ -290,21 +309,21 @@ impl EmulatorInitArgs {
 
         if let Some(nubus) = bus(bus_id::NUBUS) {
             // The video card, in the first slot
-            let card = match self.video_card {
-                NubusDeviceKind::Toby => DeviceModel::MacIIVideoCard,
-                _ => DeviceModel::DisplayCard824,
-            };
-            configs.push(DeviceConfig {
-                bus: nubus.id.clone(),
-                slot: nubus.slots[0].id.clone(),
-                model: Some(card),
-                rom: display_rom.map(Path::to_path_buf),
-                function: FunctionConfig::Display(DisplayConfig {
-                    monitor: self.monitor,
-                    vram_size: None,
-                }),
-            });
-        } else if bus(bus_id::BUILT_IN).is_some() {
+            if let Some(rom) = display_rom {
+                configs.push(DeviceConfig {
+                    bus: nubus.id.clone(),
+                    slot: nubus.slots[0].id.clone(),
+                    model: Some(self.video_card.device_model()),
+                    rom: Some(rom.to_path_buf()),
+                    function: FunctionConfig::Display(DisplayConfig {
+                        monitor: self.monitor,
+                        vram_size: None,
+                    }),
+                });
+            }
+        } else if bus(bus_id::BUILT_IN).is_some()
+            && (display_rom.is_some() || self.monitor.is_some() || self.vram_size.is_some())
+        {
             configs.push(DeviceConfig {
                 bus: bus_id::BUILT_IN.into(),
                 slot: built_in::VIDEO.into(),
@@ -413,7 +432,6 @@ impl EmulatorState {
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
         devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
@@ -430,7 +448,6 @@ impl EmulatorState {
         };
         self.init(
             &rom,
-            display_rom_path,
             extension_rom.as_deref(),
             devices,
             pram,
@@ -446,7 +463,6 @@ impl EmulatorState {
     fn init(
         &mut self,
         rom: &[u8],
-        display_rom: Option<&Path>,
         extension_rom: Option<&[u8]>,
         devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
@@ -468,18 +484,6 @@ impl EmulatorState {
             // Fall back to ROM autodetection
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?
         };
-        // The devices that the arguments describe, then those of the list that are in
-        // another slot
-        let mut list = args.device_configs(model, display_rom);
-        for config in devices {
-            if !list
-                .iter()
-                .any(|d| d.bus == config.bus && d.slot == config.slot)
-            {
-                list.push(config);
-            }
-        }
-
         let mouse_mode = if matches!(args.mouse_disabled, Some(true)) {
             // Deprecated mouse_disabled
             MouseMode::Disabled
@@ -497,7 +501,7 @@ impl EmulatorState {
             pmmu_enabled: args.pmmu_enabled,
             fpu_enabled: args.fpu_enabled,
         };
-        let (mut emulator, displays, refused) = Emulator::new(&machine, list)?;
+        let (mut emulator, displays, refused) = Emulator::new(&machine, devices)?;
 
         let cmd = emulator.create_cmd_sender();
 
@@ -1887,7 +1891,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn init_args_describe_devices() {
+    fn deprecated_init_args_describe_devices() {
         let args = EmulatorInitArgs {
             monitor: Some(MacMonitor::RGB12),
             vram_size: Some(512 * 1024),
@@ -1944,5 +1948,11 @@ mod tests {
         let configs = args.device_configs(MacModel::SE30, Some(rom));
         assert_eq!(configs[0].bus, bus_id::BUILT_IN);
         assert_eq!(configs[0].rom.as_deref(), Some(rom));
+
+        // A workspace saved since has none of these fields, and nothing is made from them
+        let args = EmulatorInitArgs::default();
+        for model in [MacModel::LC, MacModel::MacII, MacModel::SE30] {
+            assert_eq!(args.device_configs(model, None), []);
+        }
     }
 }
