@@ -1106,7 +1106,11 @@ mod tests {
             displays.iter().map(|d| d.name.clone()).collect()
         };
 
-        for (model, slot, number) in [(MacModel::Quadra700, "D", 0xD)] {
+        let cases = [
+            (MacModel::Quadra700, "D", 0xD),
+            (MacModel::Quadra800, "C", 0xC),
+        ];
+        for (model, slot, number) in cases {
             let machine = MachineConfig::new(&machine_rom, model);
 
             // The built-in video is the first display, the card the second
