@@ -8,6 +8,7 @@ use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
 use crate::lisa::bus::LisaBus;
+use crate::lisa::fdc_sim;
 use crate::tickable::Ticks;
 use compact::bus::CompactMacBus;
 use macii::bus::MacIIBus;
@@ -383,6 +384,25 @@ impl MacModel {
                         id: slot.to_string(),
                         device: Some(Device {
                             model: *model,
+                            rom: None,
+                            function: FunctionConfig::Floppy,
+                            name: None,
+                        }),
+                    })
+                    .collect(),
+            });
+        }
+        if self.is_lisa() {
+            buses.push(Bus {
+                kind: BusKind::LisaFdc,
+                id: bus_id::LISA_FDC.to_string(),
+                title: "Floppy".to_string(),
+                slots: fdc_sim::SLOT_IDS
+                    .iter()
+                    .map(|slot| Slot {
+                        id: slot.to_string(),
+                        device: Some(Device {
+                            model: DeviceModel::Lisa400KDrive,
                             rom: None,
                             function: FunctionConfig::Floppy,
                             name: None,
