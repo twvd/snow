@@ -30,6 +30,7 @@ use crate::devices::{
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
+use crate::lisa::bus::LisaBus;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
@@ -127,6 +128,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
                         Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
                         Self::Quadra800(inner) => &machine_target!(inner, quadra800, $($ref_target)*),
+                        Self::Lisa(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -145,6 +147,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
                         Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
                         Self::Quadra800(inner) => &mut machine_target!(inner, quadra800_mut, $($mut_ref_target)*),
+                        Self::Lisa(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -163,6 +166,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
                         Self::Quadra800(inner) => machine_target!(inner, quadra800, $($immut_call_target)*),
+                        Self::Lisa(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -181,6 +185,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
                         Self::Quadra800(inner) => machine_target!(inner, quadra800_mut, $($mut_call_target)*),
+                        Self::Lisa(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -330,6 +335,8 @@ enum EmulatorConfig {
     LC475(Box<CpuM68040<MachineBus040>>),
     /// Macintosh Quadra 800 (68040)
     Quadra800(Box<CpuM68040<MachineBus040>>),
+    /// Apple Lisa
+    Lisa(Box<CpuM68000<LisaBus>>),
 }
 
 dispatch! {
@@ -609,6 +616,10 @@ impl Emulator {
                 let bus = Quadra800Bus::new(machine, &devices)?;
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
+            }
+            MacModel::Lisa25 => {
+                let bus = LisaBus::new(machine, &devices)?;
+                EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
         };
 

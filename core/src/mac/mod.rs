@@ -7,6 +7,7 @@ use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
+use crate::lisa::bus::LisaBus;
 use crate::tickable::Ticks;
 use compact::bus::CompactMacBus;
 use macii::bus::MacIIBus;
@@ -110,10 +111,16 @@ pub enum MacModel {
     Quadra700,
     /// Macintosh Quadra 800
     Quadra800,
+    /// Apple Lisa 2/5
+    Lisa25,
 }
 
 #[allow(clippy::match_like_matches_macro)]
 impl MacModel {
+    pub const fn is_lisa(self) -> bool {
+        matches!(self, Self::Lisa25)
+    }
+
     #[rustfmt::skip]
     const ROMS: &[(&str, &[Self])] = &[
         // Macintosh 128K
@@ -152,6 +159,10 @@ impl MacModel {
         ("18c3de07ca15cf66dfbaa5984aca34b48a2d7b4d0d8c7656f79533899ccec0a0", &[Self::LCII]),
         // Macintosh LC III
         ("b2a411c1b24c92af8f6b58f745e52e0545cc0d4dcdc1e15a90e0a78937cde61e", &[Self::LCIII]),
+        // Lisa boot ROM rev H, the two halves merged
+        ("4eb245a5a133a202cb07757a7430437a996d91acddfba2c1a3b787e8b5b9d8f5", &[Self::Lisa25]),
+        // Lisa boot ROM rev F, the two halves merged
+        ("50c404fe559814324dde6f6c28b577a5115da52babcdc8bd221f9c467060c3e3", &[Self::Lisa25]),
         // Macintosh LC III (older)
         ("00e3b10758b01ba998bb3aba9366c29b15f52c5b0667658ec82ee674dde9b4e2", &[Self::LCIII]),
         // Macintosh Quadra 700
@@ -166,7 +177,9 @@ impl MacModel {
 
     pub const fn has_adb(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => false,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::Lisa25 => {
+                false
+            }
             _ => true,
         }
     }
@@ -189,6 +202,7 @@ impl MacModel {
             Self::Quadra700 => 8 * 1024 * 1024,
             Self::LC475 => 36 * 1024 * 1024,
             Self::Quadra800 => 40 * 1024 * 1024,
+            Self::Lisa25 => 1024 * 1024,
         }
     }
 
@@ -292,6 +306,7 @@ impl MacModel {
                 72 * 1024 * 1024,
                 136 * 1024 * 1024,
             ],
+            Self::Lisa25 => &[512 * 1024, 1024 * 1024, 2048 * 1024],
         }
     }
 
@@ -311,6 +326,7 @@ impl MacModel {
             | Self::Quadra700
             | Self::LC475
             | Self::Quadra800 => true,
+            Self::Lisa25 => false,
         }
     }
 
@@ -347,6 +363,7 @@ impl MacModel {
             | Self::LCII
             | Self::Quadra700 => &[("1", MacSuperDrive), ("2", MacSuperDrive)],
             Self::LCIII | Self::LC475 | Self::Quadra800 => &[("1", MacSuperDrive)],
+            Self::Lisa25 => &[],
         }
     }
 
@@ -434,7 +451,7 @@ impl MacModel {
     /// Whether the machine has the floppy controller of the `SWIM` bus, an IWM or a SWIM.
     /// Every Mac has one.
     pub const fn has_swim(self) -> bool {
-        true
+        !self.is_lisa()
     }
 
     /// The devices on the logic board of this model, by the id of their slot on the `Built-in`
@@ -456,6 +473,7 @@ impl MacModel {
             Self::LC475 => Lc475Bus::BUILT_IN,
             Self::Quadra700 => Quadra700Bus::BUILT_IN,
             Self::Quadra800 => Quadra800Bus::BUILT_IN,
+            Self::Lisa25 => LisaBus::BUILT_IN,
         }
     }
 
@@ -466,7 +484,7 @@ impl MacModel {
 
     pub const fn has_scsi(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Early512Ke => false,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Lisa25 => false,
             _ => true,
         }
     }
@@ -501,7 +519,8 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic
             | Self::Portable
-            | Self::Portable15MB => M68000,
+            | Self::Portable15MB
+            | Self::Lisa25 => M68000,
             Self::MacII | Self::MacIIFDHD | Self::LC => M68020,
             Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LCII | Self::LCIII => M68030,
             Self::Quadra700 | Self::LC475 | Self::Quadra800 => M68040,
@@ -517,7 +536,8 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Portable
-            | Self::Portable15MB => via::RegisterA(0xFF),
+            | Self::Portable15MB
+            | Self::Lisa25 => via::RegisterA(0xFF),
             Self::Classic => {
                 // Mac Classic has a pulldown (R79) as model identifier
                 via::RegisterA(0xFF).with_sndpg2(false)
@@ -573,7 +593,8 @@ impl MacModel {
             | Self::Classic
             | Self::LC
             | Self::LCII
-            | Self::LCIII => panic!("Invalid operation for this model"),
+            | Self::LCIII
+            | Self::Lisa25 => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
             Self::Quadra700 | Self::LC475 | Self::Quadra800 => macii::via2::RegisterB(0xCF),
@@ -642,6 +663,7 @@ impl Display for MacModel {
                 Self::Quadra700 => "Macintosh Quadra 700",
                 Self::LC475 => "Macintosh LC 475",
                 Self::Quadra800 => "Macintosh Quadra 800",
+                Self::Lisa25 => "Apple Lisa 2/5",
             }
         )
     }

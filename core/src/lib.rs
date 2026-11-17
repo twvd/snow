@@ -5,6 +5,7 @@ pub mod debuggable;
 pub mod devices;
 pub mod emulator;
 pub mod keymap;
+pub mod lisa;
 pub mod mac;
 pub mod renderer;
 pub mod tickable;

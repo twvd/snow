@@ -652,13 +652,22 @@ impl ModelSelectionDialog {
             }
 
             ui.separator();
+            if self.selected_model.is_lisa() && self.init_args.mouse_mode == MouseMode::Absolute {
+                self.init_args.mouse_mode = MouseMode::RelativeHw;
+            }
             egui::Grid::new("model_grid_mouse").show(ui, |ui| {
                 ui.label("Mouse emulation:");
                 egui::ComboBox::new(egui::Id::new("mouse_mode"), "")
                     .selected_text(format!("{}", self.init_args.mouse_mode))
                     .show_ui(ui, |ui| {
                         for v in MouseMode::iter() {
-                            ui.selectable_value(&mut self.init_args.mouse_mode, v, v.to_string());
+                            // The Lisa's mouse only reports motion
+                            let possible =
+                                !(self.selected_model.is_lisa() && v == MouseMode::Absolute);
+                            ui.add_enabled_ui(possible, |ui| {
+                                ui.selectable_value(&mut self.init_args.mouse_mode, v, v.to_string())
+                                    .on_disabled_hover_text("The Lisa's mouse only reports motion");
+                            });
                         }
                     });
                 ui.end_row();
