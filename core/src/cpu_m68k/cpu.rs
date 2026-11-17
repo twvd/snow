@@ -1679,7 +1679,48 @@ where
                             log::error!("Cannot reset registers for stacking a bus error frame");
                         }
 
-                        if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
+                        let ssw = if details.instruction {
+                            // An instruction stream fault: the word that was
+                            // needed is stage C, stage B is fetched again.
+                            // The fault bit is only for a bus error; an
+                            // address error sets the rerun bits alone. DF is
+                            // clear: there is no data cycle to run again
+                            // (MC68030UM 8.2, 8.2.1).
+                            Group0Ssw::default()
+                                .with_fc(vector == VECTOR_BUS_ERROR)
+                                .with_rc(true)
+                                .with_rb(true)
+                                .with_read(true)
+                                .with_function_code(details.function_code)
+                                .with_size(2)
+                        } else {
+                            Group0Ssw::default()
+                                .with_read(details.read)
+                                .with_df(true)
+                                .with_function_code(details.function_code)
+                                .with_size(match details.size {
+                                    1 => 1,
+                                    2 => 2,
+                                    3 => 3,
+                                    4 => 0,
+                                    _ => {
+                                        log::error!(
+                                            "Unknown size in group 0 details: {}",
+                                            details.size
+                                        );
+                                        // Assume long
+                                        0
+                                    }
+                                })
+                        };
+
+                        // An instruction fault takes the long frame, which has
+                        // the address of the faulted word: the short one can
+                        // only tell PC + 2 and PC + 4 (MC68030UM 8.2)
+                        if self.regs.pc == details.start_pc
+                            && self.prefetch.len() == 2
+                            && !details.instruction
+                        {
                             // Bus error at instruction boundary
                             advance_cycles!(self, m68000: 0, m68020: 6, m68030: 10)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
@@ -1691,29 +1732,7 @@ where
                             )?;
                             // Internal register and special status register
                             // TODO size
-                            self.write_ticks(
-                                self.regs.ssp().wrapping_add(0x08),
-                                Long::from(
-                                    *Group0Ssw::default()
-                                        .with_read(details.read)
-                                        .with_df(true)
-                                        .with_function_code(details.function_code)
-                                        .with_size(match details.size {
-                                            1 => 1,
-                                            2 => 2,
-                                            3 => 3,
-                                            4 => 0,
-                                            _ => {
-                                                log::error!(
-                                                    "Unknown size in group 0 details: {}",
-                                                    details.size
-                                                );
-                                                // Assume long
-                                                0
-                                            }
-                                        }),
-                                ),
-                            )?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), Long::from(*ssw))?;
                             // Instruction pipe stages C and B
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u32)?;
                             // Data cycle fault address
@@ -1735,29 +1754,7 @@ where
                             )?;
                             // Internal register and special status register
                             // TODO size
-                            self.write_ticks(
-                                self.regs.ssp().wrapping_add(0x08),
-                                Long::from(
-                                    *Group0Ssw::default()
-                                        .with_read(details.read)
-                                        .with_df(true)
-                                        .with_function_code(details.function_code)
-                                        .with_size(match details.size {
-                                            1 => 1,
-                                            2 => 2,
-                                            3 => 3,
-                                            4 => 0,
-                                            _ => {
-                                                log::error!(
-                                                    "Unknown size in group 0 details: {}",
-                                                    details.size
-                                                );
-                                                // Assume long
-                                                0
-                                            }
-                                        }),
-                                ),
-                            )?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), Long::from(*ssw))?;
                             // Instruction pipe stages C and B
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u32)?;
                             // Data cycle fault address
@@ -1766,6 +1763,13 @@ where
                             // More internal stuff
                             for i in (0x14..0x5C).step_by(4) {
                                 self.write_ticks(self.regs.ssp().wrapping_add(i), 0u32)?;
+                            }
+                            // Stage B address: stage C is the word before it
+                            if details.instruction {
+                                self.write_ticks(
+                                    self.regs.ssp().wrapping_add(0x24),
+                                    details.address.wrapping_add(2),
+                                )?;
                             }
                         }
                     }

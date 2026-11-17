@@ -13,6 +13,7 @@ mod fpu_traps;
 mod group2_exceptions;
 mod illegal_exception;
 mod inspect;
+mod instr_fault;
 mod interrupt;
 mod link;
 mod m68k_rs_atc;
