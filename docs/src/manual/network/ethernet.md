@@ -38,6 +38,12 @@ Once the drivers are installed, reboot.
 To install MacTCP, simply drag the extension and control panel onto the System folder in your emulated system. Reboot
 afterwards.
 
+## MAC address
+
+An Ethernet adapter gets a random MAC address when it is attached. A [workspace](../workspaces.md) keeps
+the address, so the emulated system has the same one every time the workspace is loaded, and the other
+machines on the network see the same machine.
+
 ## Ethernet links
 
 Snow currently supports a NAT-based ethernet link that runs in userland on the host system. This link only supports
