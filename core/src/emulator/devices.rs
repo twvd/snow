@@ -1830,6 +1830,56 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn an_ethernet_card_goes_in_a_nubus_slot() {
+        let dir = TestDir::new("nubus_ethernet");
+        let rom = dir.file("video.rom", 0);
+        let mac = new_ethernet_address([0x08, 0x00, 0x07], &[]);
+        let card = DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: "C".into(),
+            model: Some(DeviceModel::AppleEthernetNbTp),
+            rom: None,
+            function: FunctionConfig::Ethernet(EthernetConfig {
+                mac: Some(mac),
+                link: EthernetLinkType::Down,
+            }),
+        };
+        let mut devices = video_configs(MacModel::MacIIx, &rom);
+        devices.push(card.clone());
+        let mut emu = make(MacModel::MacIIx, devices.clone()).unwrap();
+        assert_eq!(emu.devices(), devices);
+        let device = device_in(&mut emu, bus_id::NUBUS, "C").unwrap();
+        assert_eq!(
+            device.name.as_deref(),
+            Some("Apple Ethernet NB Twisted-Pair Card")
+        );
+        let function = emu.function_in(bus_id::NUBUS, "C").unwrap();
+        let FunctionStatus::Ethernet(ethernet) = function.status() else {
+            panic!("An Ethernet card has the Ethernet function");
+        };
+        assert_eq!(ethernet.mac, mac);
+
+        // With no address in its config, it gets one with Apple's prefix
+        let mut devices = video_configs(MacModel::MacIIx, &rom);
+        let mut no_address = card.clone();
+        no_address.function = FunctionConfig::Ethernet(EthernetConfig {
+            mac: None,
+            link: EthernetLinkType::Down,
+        });
+        devices.push(no_address);
+        let mut emu = make(MacModel::MacIIx, devices).unwrap();
+        let function = emu.function_in(bus_id::NUBUS, "C").unwrap();
+        let FunctionStatus::Ethernet(ethernet) = function.status() else {
+            panic!("An Ethernet card has the Ethernet function");
+        };
+        assert_eq!(ethernet.mac[..3], [0x08, 0x00, 0x07]);
+
+        // It shows no screen: a Macintosh II needs a video card too
+        assert!(make(MacModel::MacIIx, vec![card]).is_err());
+    }
+
     #[cfg(feature = "printer")]
     #[test]
     fn a_printer_is_added() {

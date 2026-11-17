@@ -3,8 +3,8 @@
 Snow can emulate the DaynaPORT SCSI/Link Ethernet adapter which is an ethernet adapter with a SCSI interface. You
 can use this adapter on any emulated Mac model that supports SCSI.
 
-Snow also emulates the Ethernet controller some Macs have on their logic board: see
-[Built-in Ethernet](#built-in-ethernet).
+Snow also emulates the Ethernet controller some Macs have on their logic board, and Ethernet cards: see
+[Built-in Ethernet](#built-in-ethernet) and [Ethernet cards](#ethernet-cards).
 
 ## Installation
 
@@ -46,6 +46,17 @@ afterwards.
 The Quadra 700 has Ethernet on its logic board, a National Semiconductor DP83932 SONIC, which Snow emulates. It is
 always there: you don't attach it. It is in the menu as 'Drives' -> 'Built-in Ethernet', with the same link
 choices as the DaynaPORT. The guest uses it as the Quadra's built-in Ethernet, with Apple's networking software.
+
+## Ethernet cards
+
+An Ethernet card is chosen in the Load ROM dialog, with the emulated Mac, and stays in its slot as long as the
+machine runs. It is in the 'Drives' menu under its name, with the same link choices as the DaynaPORT.
+
+### Apple Ethernet NB Twisted-Pair Card
+
+On the Macintosh II, IIx and IIcx and on the Quadras, a NuBus slot can hold an Apple Ethernet NB Twisted-Pair Card.
+Choose it for a NuBus slot: it needs no ROM file. The emulated system needs Apple's driver for it, 'Apple Ethernet
+NB', which the Network Software Installer installs.
 
 ## MAC address
 
