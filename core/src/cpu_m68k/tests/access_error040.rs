@@ -220,3 +220,44 @@ fn address_error_frame() {
     assert_eq!(cpu.regs.pc, CODE);
     assert_eq!(*cpu.regs.ssp(), STACK);
 }
+
+/// Steps until the access error handler is entered
+fn step_to_handler(cpu: &mut TestCpu) {
+    for _ in 0..4 {
+        cpu.step().unwrap();
+        if cpu.regs.pc == ACCESS_ERROR_HANDLER {
+            return;
+        }
+    }
+    panic!("no access error");
+}
+
+#[test]
+fn instruction_page_fault_is_an_atc_fault() {
+    // JMP NOT_RESIDENT
+    let mut cpu = testcpu(&[0x4EF9, (NOT_RESIDENT >> 16) as Word, NOT_RESIDENT as Word]);
+
+    step_to_handler(&mut cpu);
+
+    // Restarts at the instruction whose fetch faulted
+    assert_eq!(read_long(&cpu, FRAME + 0x02), NOT_RESIDENT);
+    assert_eq!(read_word(&cpu, FRAME + 0x06), 0x7008);
+    // SSW: ATC, read, supervisor code
+    let ssw = read_word(&cpu, FRAME + 0x0C);
+    assert_eq!(ssw & 0x0507, 0x0506, "SSW {ssw:04X}");
+    assert_eq!(read_long(&cpu, FRAME + 0x14), NOT_RESIDENT);
+}
+
+#[test]
+fn instruction_bus_error_is_not_an_atc_fault() {
+    // JMP BUS_ERROR
+    let mut cpu = testcpu(&[0x4EF9, (BUS_ERROR >> 16) as Word, BUS_ERROR as Word]);
+
+    step_to_handler(&mut cpu);
+
+    assert_eq!(read_long(&cpu, FRAME + 0x02), BUS_ERROR);
+    // SSW: read, supervisor code, no ATC
+    let ssw = read_word(&cpu, FRAME + 0x0C);
+    assert_eq!(ssw & 0x0507, 0x0106, "SSW {ssw:04X}");
+    assert_eq!(read_long(&cpu, FRAME + 0x14), BUS_ERROR);
+}

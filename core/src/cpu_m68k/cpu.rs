@@ -97,17 +97,18 @@ pub(in crate::cpu_m68k) struct WriteBack040 {
 pub enum PrefetchWord {
     /// A successfully fetched instruction word.
     Word(u16),
-    /// A prefetch read that bus-faulted; carries the faulting address. The bus
+    /// A prefetch read that bus-faulted; carries the faulting address, and
+    /// whether the fault came from the ATC rather than from the bus. The bus
     /// error is raised only when this entry is consumed; failed speculative
     /// fetches are discarded upon branches.
-    Fault(Address),
+    Fault(Address, bool),
 }
 
 impl PrefetchWord {
     pub fn word(self) -> u16 {
         match self {
             Self::Word(w) => w,
-            Self::Fault(_) => 0,
+            Self::Fault(..) => 0,
         }
     }
 }
@@ -183,7 +184,7 @@ impl FromIterator<PrefetchWord> for PrefetchQueue {
 
 fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<PrefetchWord> {
     match e.downcast_ref::<CpuError>() {
-        Some(CpuError::BusError(_)) => Ok(PrefetchWord::Fault(fetch_addr)),
+        Some(CpuError::BusError(details)) => Ok(PrefetchWord::Fault(fetch_addr, details.atc_fault)),
         _ => Err(e),
     }
 }
@@ -888,11 +889,13 @@ where
                 }
                 Ok(v)
             }
-            PrefetchWord::Fault(address) => bail!(CpuError::BusError(Group0Details {
+            // The ATC bit tells a page fault from a physical bus error, also for
+            // an instruction prefetch (MC68040UM 8.4.6.2, 8.4.6.7)
+            PrefetchWord::Fault(address, atc_fault) => bail!(CpuError::BusError(Group0Details {
                 function_code: self.fc_program(),
                 ir: 0,
                 size: std::mem::size_of::<Word>(),
-                atc_fault: false,
+                atc_fault,
                 instruction: true,
                 read: true,
                 address,
