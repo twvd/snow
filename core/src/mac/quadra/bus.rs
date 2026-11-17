@@ -8,9 +8,11 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceModel, DeviceOps, DisplayConfig, built_in, bus_id};
+use crate::devices::{
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, built_in_display, bus_id,
+};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
@@ -170,14 +172,18 @@ impl Quadra700Bus {
     const SCSI_DMA_TIMEOUT: Ticks = 640;
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        extension_rom: Option<&[u8]>,
-        video: &DisplayConfig,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         if extension_rom.is_some() {
@@ -216,7 +222,7 @@ impl Quadra700Bus {
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            dafb: Dafb::with_config(DeviceModel::DafbVideo, video),
+            dafb: Dafb::with_config(DeviceModel::DafbVideo, &built_in_display(devices)),
             mouse_mode,
         };
 
@@ -226,7 +232,7 @@ impl Quadra700Bus {
 
         bus.disable_memtest();
 
-        bus
+        Ok(bus)
     }
 
     /// Makes the ROM skip its memory test

@@ -10,7 +10,7 @@ pub use function::*;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
@@ -140,6 +140,145 @@ pub fn device_configs(buses: &[Bus], mac: MacModel) -> Vec<DeviceConfig> {
         }
     }
     configs
+}
+
+/// The device config of a built-in device in a list, by the id of its slot on the `Built-in`
+/// bus. Called by the constructor of a machine, which makes its built-in devices.
+pub(crate) fn built_in_config<'a>(
+    devices: &'a [DeviceConfig],
+    slot: &str,
+) -> Option<&'a DeviceConfig> {
+    devices
+        .iter()
+        .find(|config| config.bus == bus_id::BUILT_IN && config.slot == slot)
+}
+
+/// What a list of device configs has chosen for the built-in video: nothing, if the list
+/// doesn't name it
+pub(crate) fn built_in_display(devices: &[DeviceConfig]) -> DisplayConfig {
+    match built_in_config(devices, built_in::VIDEO) {
+        Some(DeviceConfig {
+            function: FunctionConfig::Display(display),
+            ..
+        }) => *display,
+        _ => DisplayConfig::default(),
+    }
+}
+
+/// A device config that a machine couldn't use, or whose device was made without a part of
+/// its Config
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedDevice {
+    pub config: DeviceConfig,
+    /// Why, for the user
+    pub reason: String,
+}
+
+/// Why a device config can't be used on a Mac model, given the device configs kept before it.
+/// A device config that names no device model gets the one the Mac model has in the slot.
+fn check_device_config(
+    mac: MacModel,
+    buses: &[Bus],
+    kept: &[DeviceConfig],
+    config: &mut DeviceConfig,
+) -> Result<()> {
+    let bus = buses
+        .iter()
+        .find(|bus| bus.id == config.bus)
+        .context("This Mac model has no such bus")?;
+    let slot = bus
+        .slots
+        .iter()
+        .find(|slot| slot.id == config.slot)
+        .context("The bus has no such slot")?;
+    if kept
+        .iter()
+        .any(|k| k.bus == config.bus && k.slot == config.slot)
+    {
+        bail!("Another device is in this slot already");
+    }
+    let model = match (config.model, &slot.device) {
+        (Some(model), _) => model,
+        (None, Some(device)) => device.model,
+        (None, None) => bail!("No device model is given"),
+    };
+    let info = model.info();
+    if !models_for(bus.kind, mac).any(|m| m.model == model) {
+        bail!("{} doesn't fit this bus", info.name);
+    }
+    if !info.function.takes(&config.function) {
+        bail!("The Config isn't that of the function of {}", info.name);
+    }
+    config.model = Some(model);
+    Ok(())
+}
+
+/// Checks a list of device configs against what a Mac model has, and completes it: each slot
+/// in which the Mac model has a device without being asked, and that the list doesn't name,
+/// gets a device config for that device, and each Ethernet adapter with no address gets one
+/// that no other adapter of the list has. Returns the list to make the machine from, and the
+/// device configs that can't be used.
+pub(crate) fn complete_device_configs(
+    mac: MacModel,
+    configs: Vec<DeviceConfig>,
+) -> (Vec<DeviceConfig>, Vec<RefusedDevice>) {
+    let buses = mac.buses();
+    let mut kept = vec![];
+    let mut refused = vec![];
+    for mut config in configs {
+        match check_device_config(mac, &buses, &kept, &mut config) {
+            Ok(()) => kept.push(config),
+            Err(e) => refused.push(RefusedDevice {
+                config,
+                reason: format!("{:#}", e),
+            }),
+        }
+    }
+    for bus in buses {
+        for slot in bus.slots {
+            let Some(device) = slot.device else {
+                continue;
+            };
+            if kept.iter().any(|k| k.bus == bus.id && k.slot == slot.id) {
+                continue;
+            }
+            kept.push(DeviceConfig {
+                bus: bus.id.clone(),
+                slot: slot.id,
+                model: Some(device.model),
+                rom: device.rom,
+                function: device.function,
+            });
+        }
+    }
+    give_ethernet_addresses(&mut kept);
+    (kept, refused)
+}
+
+/// Gives each Ethernet adapter of a list of device configs that has no address a random one,
+/// with the maker's prefix of its device model, that no other adapter of the list has
+fn give_ethernet_addresses(configs: &mut [DeviceConfig]) {
+    let mut taken: Vec<[u8; 6]> = configs
+        .iter()
+        .filter_map(|config| match &config.function {
+            FunctionConfig::Ethernet(ethernet) => ethernet.mac,
+            _ => None,
+        })
+        .collect();
+    for config in configs {
+        let (Some(model), FunctionConfig::Ethernet(ethernet)) =
+            (config.model, &mut config.function)
+        else {
+            continue;
+        };
+        if let FunctionInfo::Ethernet(info) = model.info().function
+            && ethernet.mac.is_none()
+        {
+            let mac = new_ethernet_address(info.oui, &taken);
+            taken.push(mac);
+            ethernet.mac = Some(mac);
+        }
+    }
 }
 
 /// One kind of device. It fits one type of bus and provides one function.
@@ -367,5 +506,174 @@ mod tests {
         assert!(models(MacModel::Plus).eq(scsi));
         // No SCSI on the first Macs
         assert_eq!(models(MacModel::Early512K).count(), 0);
+    }
+
+    fn config(bus: &str, slot: &str, model: Option<DeviceModel>) -> DeviceConfig {
+        let function = match bus {
+            bus_id::SCSI => FunctionConfig::Cdrom(CdromConfig::default()),
+            bus_id::SWIM => FunctionConfig::Floppy,
+            _ => FunctionConfig::Display(DisplayConfig::default()),
+        };
+        DeviceConfig {
+            bus: bus.into(),
+            slot: slot.into(),
+            model,
+            rom: None,
+            function,
+        }
+    }
+
+    #[test]
+    fn a_list_is_completed_with_what_the_mac_model_has() {
+        // Nothing asked: the two drives of an LC and its video
+        let (kept, refused) = complete_device_configs(MacModel::LC, vec![]);
+        assert_eq!(refused, []);
+        assert_eq!(
+            kept,
+            [
+                config(bus_id::SWIM, "1", Some(DeviceModel::MacSuperDrive)),
+                config(bus_id::SWIM, "2", Some(DeviceModel::MacSuperDrive)),
+                config(
+                    bus_id::BUILT_IN,
+                    built_in::VIDEO,
+                    Some(DeviceModel::V8Video)
+                ),
+            ]
+        );
+
+        // A slot that the list names keeps what the list says, and a device config with no
+        // device model gets the one of the Mac model
+        let mut video = config(bus_id::BUILT_IN, built_in::VIDEO, None);
+        video.function = FunctionConfig::Display(DisplayConfig {
+            monitor: Some(crate::mac::MacMonitor::RGB12),
+            vram_size: None,
+        });
+        let cdrom = config(bus_id::SCSI, "3", Some(DeviceModel::ScsiCdrom));
+        let asked = vec![cdrom.clone(), video.clone()];
+        let (kept, refused) = complete_device_configs(MacModel::LC, asked);
+        assert_eq!(refused, []);
+        video.model = Some(DeviceModel::V8Video);
+        assert_eq!(
+            kept,
+            [
+                cdrom,
+                video,
+                config(bus_id::SWIM, "1", Some(DeviceModel::MacSuperDrive)),
+                config(bus_id::SWIM, "2", Some(DeviceModel::MacSuperDrive)),
+            ]
+        );
+
+        // A drive of another type in the place of one of a Macintosh 128K
+        let drive = config(bus_id::SWIM, "2", Some(DeviceModel::Mac800KPwmDrive));
+        let (kept, refused) = complete_device_configs(MacModel::Early128K, vec![drive.clone()]);
+        assert_eq!(refused, []);
+        assert_eq!(
+            kept,
+            [
+                drive,
+                config(bus_id::SWIM, "1", Some(DeviceModel::Mac400KDrive)),
+                config(
+                    bus_id::BUILT_IN,
+                    built_in::VIDEO,
+                    Some(DeviceModel::CompactVideo)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_device_config_the_mac_model_cannot_use_is_refused() {
+        let cdrom = config(bus_id::SCSI, "3", Some(DeviceModel::ScsiCdrom));
+        let cases = [
+            // The Mac model has no such bus
+            (
+                config(bus_id::NUBUS, "9", Some(DeviceModel::DisplayCard824)),
+                "This Mac model has no such bus",
+            ),
+            // The bus has no such slot
+            (
+                config(bus_id::SCSI, "7", Some(DeviceModel::ScsiCdrom)),
+                "The bus has no such slot",
+            ),
+            // An earlier device config names the slot
+            (
+                config(bus_id::SCSI, "3", Some(DeviceModel::ScsiHardDisk)),
+                "Another device is in this slot already",
+            ),
+            // The device model doesn't fit the bus
+            (
+                config(bus_id::SCSI, "4", Some(DeviceModel::MacSuperDrive)),
+                "SuperDrive doesn't fit this bus",
+            ),
+            // Nor this Mac model
+            (
+                config(
+                    bus_id::BUILT_IN,
+                    built_in::VIDEO,
+                    Some(DeviceModel::SonoraVideo),
+                ),
+                "Built-in video doesn't fit this bus",
+            ),
+            // No device model, in a slot where the Mac model has no device
+            (config(bus_id::SCSI, "5", None), "No device model is given"),
+            // The Config of another function
+            (
+                config(bus_id::SWIM, "1", Some(DeviceModel::MacSuperDrive)),
+                "",
+            ),
+        ];
+        let mut asked = vec![cdrom.clone()];
+        asked.extend(cases.iter().map(|(config, _)| config.clone()));
+        // The last case: a floppy drive with the Config of a CD-ROM drive
+        asked.last_mut().unwrap().function = FunctionConfig::Cdrom(CdromConfig::default());
+
+        let (kept, refused) = complete_device_configs(MacModel::LC, asked);
+        // The CD-ROM drive, and what the LC has
+        assert_eq!(kept.len(), 4);
+        assert_eq!(kept[0], cdrom);
+        assert_eq!(refused.len(), cases.len());
+        for (refused, (_, reason)) in refused.iter().zip(&cases[..cases.len() - 1]) {
+            assert_eq!(refused.reason, *reason);
+        }
+        assert_eq!(
+            refused.last().unwrap().reason,
+            "The Config isn't that of the function of SuperDrive"
+        );
+    }
+
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn the_ethernet_adapters_of_a_list_get_the_addresses_they_lack() {
+        use crate::devices::{EthernetConfig, EthernetLinkType};
+
+        let adapter = |slot: &str, mac| DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: slot.into(),
+            model: Some(DeviceModel::DaynaPortScsiLink),
+            rom: None,
+            function: FunctionConfig::Ethernet(EthernetConfig {
+                mac,
+                link: EthernetLinkType::Down,
+            }),
+        };
+        let given = [0x00, 0x80, 0x19, 1, 2, 3];
+        let mut configs = [
+            adapter("4", Some(given)),
+            adapter("5", None),
+            adapter("6", None),
+        ];
+        give_ethernet_addresses(&mut configs);
+        let macs: Vec<_> = configs
+            .iter()
+            .map(|config| match &config.function {
+                FunctionConfig::Ethernet(ethernet) => ethernet.mac.unwrap(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(macs[0], given);
+        assert_eq!(macs[1][..3], [0x00, 0x80, 0x19]);
+        assert_ne!(macs[1], macs[0]);
+        assert_ne!(macs[2], macs[0]);
+        assert_ne!(macs[2], macs[1]);
     }
 }

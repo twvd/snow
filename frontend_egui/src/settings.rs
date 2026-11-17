@@ -1,9 +1,10 @@
+use crate::emulator::NubusDeviceKind;
 use crate::joystick::{JoyBindings, default_bindings};
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::mac::{MacModel, NubusDeviceKind};
+use snow_core::mac::MacModel;
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
 
