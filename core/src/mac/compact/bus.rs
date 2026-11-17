@@ -1123,7 +1123,6 @@ impl Debuggable for CompactMacBus {
         let mut result = vec![
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA (SY6522)", self.via),
-            dbgprop_nest!("Video circuit", self.video),
         ];
 
         if self.model.has_scsi() {
