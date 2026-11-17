@@ -13,23 +13,13 @@ use crate::debuggable::DebuggableProperties;
 use crate::devices::{EthernetConfig, EthernetFunction, EthernetLinkType, EthernetStatus};
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "ethernet_nat")]
 use snow_nat::NatEngineStats;
 
 use std::path::{Path, PathBuf};
-#[cfg(any(
-    feature = "ethernet_nat",
-    all(feature = "ethernet_tap", target_os = "linux")
-))]
 use std::sync::Arc;
-#[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-use std::sync::atomic::AtomicBool;
-#[cfg(any(
-    feature = "ethernet_nat",
-    all(feature = "ethernet_tap", target_os = "linux")
-))]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pcap::PcapCaptureState;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
@@ -72,6 +62,14 @@ pub struct EthernetPort {
     /// Receive queue (network -> Mac)
     #[serde(skip)]
     rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
+
+    /// Whether the adapter's receiver is on. The host side drops the frames for the guest while
+    /// it is off. It is in a save state, so that a restored adapter needn't set it again.
+    #[serde(
+        serialize_with = "serialize_flag",
+        deserialize_with = "deserialize_flag"
+    )]
+    rx_enabled: Arc<AtomicBool>,
 
     /// Link type
     #[serde(skip)]
@@ -121,6 +119,7 @@ impl EthernetPort {
             mac,
             tx: None,
             rx: None,
+            rx_enabled: Arc::new(AtomicBool::new(true)),
             link: EthernetLinkType::Down,
             #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
@@ -212,6 +211,20 @@ impl EthernetPort {
         }
     }
 
+    /// Turns the adapter's receiver on or off. While it is off, the host
+    /// side drops the frames for the guest as they arrive, and the ones
+    /// already queued are dropped.
+    pub fn set_rx_enabled(&mut self, enabled: bool) {
+        self.rx_enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            self.flush_rx();
+        }
+    }
+
+    pub fn rx_enabled(&self) -> bool {
+        self.rx_enabled.load(Ordering::Relaxed)
+    }
+
     /// Drops all received frames
     pub fn flush_rx(&mut self) {
         if let Some(rx) = &self.rx {
@@ -276,6 +289,7 @@ impl EthernetPort {
 
                 let mut nat = snow_nat::NatEngine::new(
                     nat_tx,
+                    self.rx_enabled.clone(),
                     nat_rx,
                     NAT_MAC_ADDRESS,
                     [10, 0, 0, 1],
@@ -298,6 +312,7 @@ impl EthernetPort {
 
                 let mut nat = snow_nat::NatEngine::new(
                     nat_tx,
+                    self.rx_enabled.clone(),
                     nat_rx,
                     NAT_MAC_ADDRESS,
                     [10, 0, 0, 1],
@@ -475,6 +490,16 @@ impl EthernetPort {
     }
 }
 
+fn serialize_flag<S: Serializer>(flag: &Arc<AtomicBool>, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(flag.load(Ordering::Relaxed))
+}
+
+fn deserialize_flag<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Arc<AtomicBool>, D::Error> {
+    Ok(Arc::new(AtomicBool::new(bool::deserialize(deserializer)?)))
+}
+
 /// The Ethernet function of every adapter model is its port: the frontend works on the port
 impl EthernetFunction for EthernetPort {
     fn status(&self) -> EthernetStatus {
@@ -495,5 +520,20 @@ impl EthernetFunction for EthernetPort {
 
     fn stop_capture(&mut self) -> Option<(PathBuf, usize)> {
         Self::stop_capture(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_receiver_stays_off_across_a_save() {
+        let mut port = EthernetPort::new([0, 0x80, 0x19, 1, 2, 3]);
+        assert!(port.rx_enabled());
+        port.set_rx_enabled(false);
+        let saved = serde_json::to_string(&port).unwrap();
+        let port: EthernetPort = serde_json::from_str(&saved).unwrap();
+        assert!(!port.rx_enabled());
     }
 }

@@ -45,6 +45,7 @@ impl EthernetPort {
 
                 // Physical RX -> Virtual RX
                 let t_emu_mac = self.mac;
+                let rx_enabled = self.rx_enabled.clone();
                 let t_physical_mac: pnet::datalink::MacAddr = if REWRITE_MACS {
                     interface.mac.unwrap()
                 } else {
@@ -76,6 +77,10 @@ impl EthernetPort {
                                 }
 
                                 //log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
+
+                                if !rx_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                                    continue;
+                                }
 
                                 match bridge_tx.try_send(packet.to_vec()) {
                                     Ok(_) => {}
