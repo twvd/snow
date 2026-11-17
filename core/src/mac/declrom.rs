@@ -205,6 +205,18 @@ pub fn checksum(rom: &[u8]) -> u32 {
     })
 }
 
+/// Whether a ROM image is a declaration ROM: the TestPattern of its format
+/// block, and its length and checksum match
+pub fn valid(rom: &[u8]) -> bool {
+    let Some(fb) = rom.len().checked_sub(FORMAT_BLOCK) else {
+        return false;
+    };
+    let long = |at: usize| u32::from_be_bytes(rom[at..at + 4].try_into().unwrap());
+    long(fb + 14) == TEST_PATTERN
+        && long(fb + 4) as usize == rom.len()
+        && long(fb + 8) == checksum(rom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +328,16 @@ mod tests {
         let t = target(at, entry);
         assert_eq!(rom[t..t + 8], [0, 4, 0, 1, 0, 0, 0x01, 0x19]);
         assert_eq!(enet[2], (id::RSRC_HW_DEV_ID, enet[2].1, 0x0800_0001));
+    }
+
+    #[test]
+    fn valid_rom() {
+        let mut rom = twisted_pair();
+        assert!(valid(&rom));
+        assert!(!valid(&rom[1..]));
+        assert!(!valid(&[0; 8]));
+        rom[0] ^= 0xFF;
+        assert!(!valid(&rom));
     }
 
     #[test]

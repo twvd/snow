@@ -1,5 +1,6 @@
 //! Ethernet controllers
 
+pub mod appl_lc_sonic;
 pub mod appl_nb_sonic_tp;
 pub mod built_in;
 pub mod sonic;
