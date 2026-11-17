@@ -13,12 +13,21 @@ pub mod bus_id {
     pub const SCSI: &str = "SCSI";
     pub const SWIM: &str = "SWIM";
     pub const NUBUS: &str = "NuBus";
+    /// The devices on the logic board
+    pub const BUILT_IN: &str = "Built-in";
     /// The processor-direct slot of the LC family
     pub const PDS_LC: &str = "PDS_LC";
     /// The processor-direct slot of the SE/30
     pub const PDS_SE30: &str = "PDS_SE30";
     /// The disk port of the Apple IIe Card in the processor-direct slot of an LC
     pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
+}
+
+/// The ids of the slots of the `Built-in` bus. They are written in the files a frontend saves:
+/// they must not change.
+pub mod built_in {
+    /// The machine's own video
+    pub const VIDEO: &str = "video";
 }
 
 /// One device, as described in a list of devices: where it is, which device it is, and what

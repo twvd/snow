@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
-use crate::devices::{DisplayFunction, DisplayStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo, RomInfo,
+};
 use crate::emulator::EmuContext;
+use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -131,6 +135,46 @@ impl SE30Video {
         self.renderer = renderer;
         self.renderer.update()?;
         Ok(())
+    }
+}
+
+fn fits(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::SE30Video)
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fits,
+    fixed: true,
+    rom: Some(RomInfo {
+        label: "SE/30 video ROM",
+        digests: &["8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"],
+        optional: false,
+    }),
+    ..ModelInfo::base(
+        DeviceModel::SE30Video,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            // The screen is the machine's own
+            monitors: &[],
+            default_monitor: 0,
+            vram_sizes: &[],
+            default_vram_size: 0,
+        }),
+    )
+};
+
+impl DeviceOps for SE30Video {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig::default())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
     }
 }
 

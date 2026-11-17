@@ -8,7 +8,15 @@ use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
 use crate::tickable::Ticks;
+use compact::bus::CompactMacBus;
+use macii::bus::MacIIBus;
+use maclc::lc_475_bus::Lc475Bus;
+use maclc::lc_i_bus::LcIBus;
+use maclc::lc_iii_bus::LcIIIBus;
 use pds::Pds;
+use portable::bus::MacPortableBus;
+use quadra::bus::Quadra700Bus;
+use quadra::q800_bus::Quadra800Bus;
 use scsi::bus::ScsiBus;
 
 pub mod adb;
@@ -374,6 +382,28 @@ impl MacModel {
                 &ScsiBus::SLOT_IDS,
             ));
         }
+        // The devices on the logic board, before the cards: the built-in video is the first
+        // display of a machine
+        let built_in = self.built_in();
+        if !built_in.is_empty() {
+            buses.push(Bus {
+                kind: BusKind::BuiltIn,
+                id: bus_id::BUILT_IN.to_string(),
+                title: "Built-in".to_string(),
+                slots: built_in
+                    .iter()
+                    .map(|(slot, model)| Slot {
+                        id: slot.to_string(),
+                        device: Some(Device {
+                            model: *model,
+                            rom: None,
+                            function: model.info().function.default_config(),
+                            name: None,
+                        }),
+                    })
+                    .collect(),
+            });
+        }
         if !self.nubus_slots().is_empty() {
             buses.push(Bus::new(
                 BusKind::Nubus,
@@ -405,6 +435,33 @@ impl MacModel {
     /// Every Mac has one.
     pub const fn has_swim(self) -> bool {
         true
+    }
+
+    /// The devices on the logic board of this model, by the id of their slot on the `Built-in`
+    /// bus: the table of its machine
+    fn built_in(self) -> &'static [(&'static str, DeviceModel)] {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => CompactMacBus::BUILT_IN,
+            Self::Portable | Self::Portable15MB => MacPortableBus::BUILT_IN,
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx => &[],
+            Self::SE30 => MacIIBus::BUILT_IN_SE30,
+            Self::LC | Self::LCII => LcIBus::BUILT_IN,
+            Self::LCIII => LcIIIBus::BUILT_IN,
+            Self::LC475 => Lc475Bus::BUILT_IN,
+            Self::Quadra700 => Quadra700Bus::BUILT_IN,
+            Self::Quadra800 => Quadra800Bus::BUILT_IN,
+        }
+    }
+
+    /// Whether this model has a device of a device model on its logic board
+    pub fn has_built_in(self, model: DeviceModel) -> bool {
+        self.built_in().iter().any(|(_, m)| *m == model)
     }
 
     pub const fn has_scsi(self) -> bool {

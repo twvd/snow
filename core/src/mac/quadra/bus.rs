@@ -8,13 +8,13 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DisplayFunction, bus_id};
+use crate::devices::{BusOps, DeviceModel, DeviceOps, DisplayConfig, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
-use crate::mac::quadra::dafb::{Dafb, DafbKind};
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -22,10 +22,8 @@ use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -158,6 +156,9 @@ pub struct Quadra700Bus {
 }
 
 impl Quadra700Bus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::DafbVideo)];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -173,7 +174,7 @@ impl Quadra700Bus {
         model: MacModel,
         rom: &[u8],
         extension_rom: Option<&[u8]>,
-        monitor: MacMonitor,
+        video: &DisplayConfig,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
@@ -215,7 +216,7 @@ impl Quadra700Bus {
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            dafb: Dafb::new(monitor, DafbKind::Dafb, Dafb::VRAM_SIZE),
+            dafb: Dafb::with_config(DeviceModel::DafbVideo, video),
             mouse_mode,
         };
 
@@ -671,20 +672,12 @@ impl Quadra700Bus {
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
-    }
-
-    /// Where the frontend picks up the frames of the machine's video
-    pub fn video_frames(&self) -> FrameReceiver {
-        self.dafb.frames()
-    }
-
     /// The bus with this id, for the emulator's device code
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
             _ => None,
         }
     }
@@ -729,6 +722,16 @@ impl Quadra700Bus {
             Region::Ram => Some((2, 1)),
             Region::Rom => Some((3, 3)),
             Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => Some((2, 1)),
+            _ => None,
+        }
+    }
+}
+
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for Quadra700Bus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.dafb),
             _ => None,
         }
     }

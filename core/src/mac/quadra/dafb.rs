@@ -14,8 +14,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::devices::{DisplayFunction, DisplayStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::emulator::EmuContext;
+use crate::mac::MacModel;
 use crate::mac::MacMonitor;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
@@ -32,15 +36,19 @@ pub enum DafbKind {
     MemcJr,
 }
 
+/// Sizes of the video RAM with MEMCjr
+pub const VRAM_SIZES_MEMCJR: &[usize] = &[512 * 1024, 1024 * 1024];
+
 /// Monitors which the DAFB of the Quadra 700 supports
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::VGA,
+    MacMonitor::PortraitBW,
     MacMonitor::RGB16,
     MacMonitor::RGB21,
-    MacMonitor::PortraitBW,
     MacMonitor::TwoPageBW,
-    MacMonitor::VGA,
+    MacMonitor::NoMonitor,
 ];
 
 /// Monitors which the DAFB II cell of MEMCjr and djMEMC supports, the same and
@@ -48,12 +56,13 @@ pub const MONITORS: &[MacMonitor] = &[
 pub const MONITORS_MEMCJR: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::VGA,
+    MacMonitor::PortraitBW,
     MacMonitor::RGB16,
     MacMonitor::RGB19,
     MacMonitor::RGB21,
-    MacMonitor::PortraitBW,
     MacMonitor::TwoPageBW,
-    MacMonitor::VGA,
+    MacMonitor::NoMonitor,
 ];
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr, Serialize, Deserialize)]
@@ -106,8 +115,14 @@ pub struct Dafb {
     #[serde(skip)]
     renderer: ChannelRenderer,
 
+    /// The monitor and the VRAM size that were chosen for it, if they were
+    chosen_monitor: Option<MacMonitor>,
+    chosen_vram_size: Option<usize>,
+
     monitor: MacMonitor,
 
+    /// Which video it is: the DAFB's, MEMCjr's or djMEMC's
+    model: DeviceModel,
     kind: DafbKind,
 
     pub vram: Vec<u8>,
@@ -213,10 +228,41 @@ impl Dafb {
     /// Sense register after reset: no sense line driven
     const SENSE_UNDRIVEN: u32 = 0b111;
 
+    /// The video of the device model `model`, from the Config of its device config
+    pub fn with_config(model: DeviceModel, config: &DisplayConfig) -> Self {
+        let FunctionInfo::Display(info) = model.info().function else {
+            panic!("{:?} is no video", model);
+        };
+        let kind = match model {
+            DeviceModel::DafbVideo => DafbKind::Dafb,
+            _ => DafbKind::MemcJr,
+        };
+        let monitor = config.monitor.or_else(|| info.default_monitor()).unwrap();
+        let vram_size = match kind {
+            DafbKind::Dafb => Self::VRAM_SIZE,
+            DafbKind::MemcJr => config
+                .vram_size
+                .or_else(|| info.default_vram_size())
+                .unwrap(),
+        };
+        Self {
+            model,
+            chosen_monitor: config.monitor,
+            chosen_vram_size: config.vram_size,
+            ..Self::new(monitor, kind, vram_size)
+        }
+    }
+
     pub fn new(monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
         Self {
             renderer: ChannelRenderer::default(),
+            chosen_monitor: None,
+            chosen_vram_size: None,
             monitor,
+            model: match kind {
+                DafbKind::Dafb => DeviceModel::DafbVideo,
+                DafbKind::MemcJr => DeviceModel::MemcJrVideo,
+            },
             kind,
             vram: vec![0; vram_size],
 
@@ -537,9 +583,92 @@ impl Dafb {
     }
 }
 
+fn fits_dafb(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::DafbVideo)
+}
+
+fn fits_memcjr(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::MemcJrVideo)
+}
+
+fn fits_djmemc(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::DjMemcVideo)
+}
+
+/// The DAFB of the Quadra 700
+pub const INFO: ModelInfo = ModelInfo {
+    fits: fits_dafb,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::DafbVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            monitors: MONITORS,
+            // The 14" high-res
+            default_monitor: 1,
+            vram_sizes: &[Dafb::VRAM_SIZE],
+            default_vram_size: 0,
+        }),
+    )
+};
+
+/// What the DAFB II cell of MEMCjr and djMEMC can have
+const DISPLAY_MEMCJR: DisplayInfo = DisplayInfo {
+    monitors: MONITORS_MEMCJR,
+    // The 14" high-res
+    default_monitor: 1,
+    vram_sizes: VRAM_SIZES_MEMCJR,
+    // 1 MB
+    default_vram_size: 1,
+};
+
+/// The DAFB II cell of MEMCjr, on the LC 475
+pub const INFO_MEMCJR: ModelInfo = ModelInfo {
+    fits: fits_memcjr,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::MemcJrVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DISPLAY_MEMCJR),
+    )
+};
+
+/// The DAFB II cell of djMEMC, on the Quadra 800
+pub const INFO_DJMEMC: ModelInfo = ModelInfo {
+    fits: fits_djmemc,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::DjMemcVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DISPLAY_MEMCJR),
+    )
+};
+
+impl DeviceOps for Dafb {
+    fn info(&self) -> &'static ModelInfo {
+        self.model.info()
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig {
+            monitor: self.chosen_monitor,
+            vram_size: self.chosen_vram_size,
+        })
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
+    }
+}
+
 impl DisplayFunction for Dafb {
     fn status(&self) -> DisplayStatus {
-        DisplayStatus { connected: true }
+        DisplayStatus {
+            connected: self.monitor != MacMonitor::NoMonitor,
+        }
     }
 
     fn blank(&mut self) -> Result<()> {
