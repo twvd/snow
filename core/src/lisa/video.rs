@@ -28,6 +28,9 @@ const CPU_PER_STATE: Ticks = 4;
 /// Size of the 16-bit words the video scans
 const DOTS_PER_WORD: usize = 16;
 
+/// A line counts as displayed if vertical sync is off this far into it
+const FIRST_WORDS_OF_LINE: usize = 6;
+
 /// Size of the area of RAM that the video latch can select
 const PAGE_SHIFT: u32 = 15;
 
@@ -35,6 +38,7 @@ const PAGE_SHIFT: u32 = 15;
 const PROM_END_OF_LINE: u8 = 1 << 0;
 const PROM_END_OF_FRAME: u8 = 1 << 3;
 const PROM_NOT_BLANK: u8 = 1 << 2;
+const PROM_NOT_VSYNC: u8 = 1 << 1;
 const PROM_NOT_INTERRUPT: u8 = 1 << 5;
 const PROM_CSYNC: u8 = 1 << 4;
 const PROM_SERIAL: u8 = 1 << 7;
@@ -139,8 +143,14 @@ impl LisaVideo {
             states.push(State { address, outputs });
 
             if outputs & PROM_NOT_BLANK != 0 {
-                width = width.max(x + DOTS_PER_WORD);
-                height = height.max(y + 1);
+                // Vertical sync starts some words into its first line, which the
+                // PROM doesn't blank
+                if outputs & PROM_NOT_VSYNC != 0 {
+                    width = width.max(x + DOTS_PER_WORD);
+                    if x == FIRST_WORDS_OF_LINE * DOTS_PER_WORD {
+                        height = height.max(y + 1);
+                    }
+                }
                 address = address.wrapping_add(1);
             }
             if outputs & PROM_END_OF_FRAME != 0 {
@@ -164,12 +174,10 @@ impl LisaVideo {
         self.height = height;
     }
 
-    fn state_index(&self) -> usize {
-        (self.clock / CPU_PER_STATE) as usize
-    }
-
-    fn state(&self) -> State {
-        self.states[self.state_index()]
+    /// The state the PROM is in, `ahead` CPU clocks from the last tick
+    fn state(&self, ahead: Ticks) -> State {
+        let index = ((self.clock + ahead) / CPU_PER_STATE) as usize;
+        self.states[index % self.states.len()]
     }
 
     /// Physical address of the video page
@@ -177,15 +185,17 @@ impl LisaVideo {
         usize::from(self.latch & 0x3F) << PAGE_SHIFT
     }
 
-    /// The serial number bit, in the state the video is in
-    pub fn serial_bit(&self) -> bool {
-        self.state().outputs & PROM_SERIAL != 0
+    /// The serial number bit, in the state the video is in. The boot ROM reads it
+    /// with bus cycles one state apart, so the state has to be exact: `ahead` is
+    /// the CPU clocks since the last tick.
+    pub fn serial_bit(&self, ahead: Ticks) -> bool {
+        self.state(ahead).outputs & PROM_SERIAL != 0
     }
 
     /// The bits of the status register that come from the video: vertical
     /// retrace (active low), video output, composite sync
-    pub fn status(&self, ram: &[u8]) -> u16 {
-        let state = self.state();
+    pub fn status(&self, ram: &[u8], ahead: Ticks) -> u16 {
+        let state = self.state(ahead);
         let word = self.page() + usize::from(state.address) * 2;
         let video_bit = ram.get(word).is_some_and(|&b| b & 1 != 0);
         (if self.interrupt { 0 } else { 1 << 2 })
@@ -325,11 +335,11 @@ impl DisplayFunction for LisaVideo {
     }
 }
 
-/// A PROM with a frame of one line of 4 words, for the tests that make a Lisa
+/// A PROM with a frame of one line of 8 words, for the tests that make a Lisa
 #[cfg(test)]
 pub(crate) fn test_prom() -> Vec<u8> {
-    let mut prom = vec![PROM_NOT_BLANK | PROM_NOT_INTERRUPT; PROM_SIZE];
-    prom[3] |= PROM_END_OF_LINE | PROM_END_OF_FRAME;
+    let mut prom = vec![PROM_NOT_BLANK | PROM_NOT_VSYNC | PROM_NOT_INTERRUPT; PROM_SIZE];
+    prom[7] |= PROM_END_OF_LINE | PROM_END_OF_FRAME;
     prom
 }
 
@@ -339,7 +349,7 @@ mod tests {
 
     /// A small PROM: 4 words a line, a line of blanking, 2 lines of video
     fn prom() -> Vec<u8> {
-        let visible = PROM_NOT_BLANK | PROM_NOT_INTERRUPT;
+        let visible = PROM_NOT_BLANK | PROM_NOT_VSYNC | PROM_NOT_INTERRUPT;
         let mut prom = vec![visible; 256];
         for bank in 0..4 {
             prom[bank * 64 + 3] = visible | PROM_END_OF_LINE;
@@ -350,13 +360,20 @@ mod tests {
     }
 
     #[test]
+    fn the_prom_of_the_tests_has_a_frame() {
+        let video = LisaVideo::new(&test_prom());
+        assert_eq!((video.width, video.height), (8 * DOTS_PER_WORD, 1));
+    }
+
+    #[test]
     fn serial_from_prom_position() {
         let mut p = prom();
         p[0] |= PROM_SERIAL;
-        p[3] |= PROM_END_OF_FRAME;
+        p[3] &= !PROM_END_OF_LINE;
+        p[7] |= PROM_END_OF_FRAME;
         let video = LisaVideo::new(&p);
-        assert!(video.serial_bit());
-        assert_eq!(video.width, 4 * DOTS_PER_WORD);
+        assert!(video.serial_bit(0));
+        assert_eq!(video.width, 8 * DOTS_PER_WORD);
         assert_eq!(video.height, 1);
     }
 
@@ -370,9 +387,9 @@ mod tests {
         assert!(!video.irq());
         video.tick(CPU_PER_STATE, &ram).unwrap();
         assert!(video.irq());
-        assert_eq!(video.status(&ram) & (1 << 2), 0);
+        assert_eq!(video.status(&ram, 0) & (1 << 2), 0);
         video.set_disabled(true);
         assert!(!video.irq());
-        assert_eq!(video.status(&ram) & (1 << 2), 1 << 2);
+        assert_eq!(video.status(&ram, 0) & (1 << 2), 1 << 2);
     }
 }
