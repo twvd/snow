@@ -300,7 +300,12 @@ impl Swim {
                                         .get_selected_drive()
                                         .read_sense(self.get_selected_drive_reg_u8()),
                             )
-                            .with_motoron(self.get_selected_drive().motor)
+                            // "This bit is set to 1 if either the MotorOn bit in the
+                            // mode register is a 1 or the timer is timing out" (SWIM
+                            // Chip User's Reference, handshake register bit 4)
+                            .with_motoron(
+                                self.chip.ism_mode.motor() || self.enable_hold > self.cycles,
+                            )
                             .with_error(self.chip.ism_error.0 != 0)
                             .with_fifo_two(if self.chip.ism_mode.write() {
                                 // In write mode, indicates FIFO has room for 2+ bytes
@@ -941,6 +946,20 @@ mod tests {
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
         swim.tick((1 << 23) + 1, ()).unwrap();
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
+    }
+
+    #[test]
+    fn handshake_motoron_follows_the_chip() {
+        // The motor of the drive is on, but not the MotorOn of the chip
+        let mut swim = swim(0xA0);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x10, 0x00);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x10, 0x10);
+        // The MotorOn timer holds it for about half a second
+        swim.write(reg(REG_MODE_ZERO), MODE_MOTOR);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x10, 0x10);
+        swim.tick((1 << 23) + 1, ()).unwrap();
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x10, 0x00);
     }
 
     #[test]
