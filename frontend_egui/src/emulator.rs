@@ -448,6 +448,12 @@ impl EmulatorState {
         while !self.poll() {}
         while self.poll() {}
 
+        // The Lisa's mouse only reports motion
+        if self.get_model().is_some_and(MacModel::is_lisa) && self.mouse_mode == MouseMode::Absolute
+        {
+            self.mouse_mode = MouseMode::RelativeHw;
+        }
+
         // Signal the UI to always update state
         self.force_update.set();
 

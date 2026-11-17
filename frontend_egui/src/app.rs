@@ -23,7 +23,8 @@ use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::devices::{
-    DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo, FunctionConfig, FunctionStatus, bus_id,
+    DeviceConfig, DeviceModel, DisplayHandle, FloppyImages, FloppyInfo, FunctionConfig,
+    FunctionStatus, bus_id,
 };
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -130,6 +131,12 @@ enum PendingConfirm {
 
 /// Bytes of the disassembly listing from the PC on
 const DISASSEMBLY_LENGTH: u32 = 200;
+
+/// Counts of the Lisa's mouse per host pixel. One count per pixel moves the pointer too fast,
+/// and the Office System speeds up the reports of more than about 4 counts by half again
+/// (measured in Snow with LOS 3.1). A guess at a comfortable speed, not the real mouse's
+/// resolution.
+const LISA_MOUSE_SCALE: f32 = 0.5;
 
 #[derive(Clone)]
 struct Snowflake {
@@ -794,16 +801,19 @@ impl SnowGui {
         }
     }
 
-    /// Scales relative mouse motion by the configured mouse speed
+    /// Scales relative mouse motion by the configured mouse speed, and on the Lisa by
+    /// LISA_MOUSE_SCALE
     fn apply_mouse_speed(&mut self, relpos: egui::Pos2) -> egui::Pos2 {
         if !self.emu.is_mouse_relative() {
             return relpos;
         }
 
-        let scaled = egui::Vec2::new(
-            relpos.x * self.settings.relative_mouse_speed,
-            relpos.y * self.settings.relative_mouse_speed,
-        ) + self.mouse_rel_remainder;
+        let speed = if self.emu.get_model().is_some_and(MacModel::is_lisa) {
+            self.settings.relative_mouse_speed * LISA_MOUSE_SCALE
+        } else {
+            self.settings.relative_mouse_speed
+        };
+        let scaled = egui::Vec2::new(relpos.x * speed, relpos.y * speed) + self.mouse_rel_remainder;
         let whole = egui::Vec2::new(scaled.x.trunc(), scaled.y.trunc());
         self.mouse_rel_remainder = scaled - whole;
         whole.to_pos2()
@@ -926,8 +936,18 @@ impl SnowGui {
                     ui.separator();
                     ui.menu_button("Mouse emulation", |ui| {
                         let current = self.emu.mouse_mode();
+                        let lisa = self.emu.get_model().is_some_and(MacModel::is_lisa);
                         for mode in MouseMode::iter() {
-                            if ui.radio(current == mode, mode.to_string()).clicked() {
+                            // The Lisa's mouse only reports motion
+                            let possible = !(lisa && mode == MouseMode::Absolute);
+                            if ui
+                                .add_enabled(
+                                    possible,
+                                    egui::RadioButton::new(current == mode, mode.to_string()),
+                                )
+                                .on_disabled_hover_text("The Lisa's mouse only reports motion")
+                                .clicked()
+                            {
                                 self.emu.set_mouse_mode(mode);
                             }
                         }
@@ -3285,7 +3305,10 @@ impl SnowGui {
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
             for config in &devices {
-                if let (Some(device), Some(rom)) = (config.model, &config.rom) {
+                // The Lisa's PROM holds its serial number: only its workspace keeps it
+                if let (Some(device), Some(rom)) = (config.model, &config.rom)
+                    && device != DeviceModel::LisaVideo
+                {
                     self.settings.set_last_card_rom(device, rom);
                 }
             }

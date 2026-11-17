@@ -741,9 +741,21 @@ mod tests {
 
     /// The device configs that a machine of these tests needs to have a screen, with `rom` as
     /// the ROM file of its video: the video of an SE/30, and an 8-24 card in the first slot of
-    /// a Macintosh II
+    /// a Macintosh II. A Lisa gets a video state PROM, in a file next to `rom`: its video
+    /// can't be made from a file of zeroes.
     fn video_configs(model: MacModel, rom: &Path) -> Vec<DeviceConfig> {
         match model {
+            MacModel::Lisa25 => {
+                let prom = rom.with_file_name("lisa.prom");
+                std::fs::write(&prom, crate::lisa::video::test_prom()).unwrap();
+                vec![DeviceConfig {
+                    bus: bus_id::BUILT_IN.into(),
+                    slot: built_in::VIDEO.into(),
+                    model: Some(DeviceModel::LisaVideo),
+                    rom: Some(prom),
+                    function: FunctionConfig::Display(DisplayConfig::default()),
+                }]
+            }
             MacModel::SE30 => vec![DeviceConfig {
                 bus: bus_id::BUILT_IN.into(),
                 slot: built_in::VIDEO.into(),
@@ -1478,6 +1490,8 @@ mod tests {
                 | MacModel::LCII
                 | MacModel::Quadra700 => (MacSuperDrive, 2),
                 MacModel::LCIII | MacModel::LC475 | MacModel::Quadra800 => (MacSuperDrive, 1),
+                // No `SWIM` bus: its floppy controller is its own
+                MacModel::Lisa25 => continue,
             };
             let mut emu = machine(model);
             assert_eq!(floppy_drives(&mut emu), vec![drive; count], "{model}");

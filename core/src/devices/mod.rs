@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::debuggable::DebuggableProperties;
+use crate::lisa;
 use crate::mac::MacModel;
 use crate::mac::compact;
 use crate::mac::maclc;
@@ -309,6 +310,7 @@ pub enum DeviceModel {
     AppleIIePdsCard,
     UniDisk35,
     Apple525Drive,
+    LisaVideo,
 }
 
 impl DeviceModel {
@@ -337,6 +339,7 @@ impl DeviceModel {
             Self::AppleIIePdsCard => &pds_iie::INFO,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
+            Self::LisaVideo => &lisa::video::INFO,
         }
     }
 }
