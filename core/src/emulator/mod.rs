@@ -433,6 +433,9 @@ pub struct MachineConfig<'a> {
     pub pmmu_enabled: bool,
     /// A 68882 in an LC family Mac
     pub fpu_enabled: bool,
+    /// The serial number of the machine, for a machine that has one in a ROM that the core
+    /// makes. None: the core's own.
+    pub serial_number: Option<&'a str>,
 }
 
 impl<'a> MachineConfig<'a> {
@@ -446,6 +449,7 @@ impl<'a> MachineConfig<'a> {
             mouse_mode: MouseMode::default(),
             pmmu_enabled: false,
             fpu_enabled: false,
+            serial_number: None,
         }
     }
 }
