@@ -653,8 +653,6 @@ pub enum ExtraROMs<'a> {
     Toby(&'a [u8]),
     /// SE/30 video ROM
     SE30Video(&'a [u8]),
-    /// Extension ROM
-    ExtensionROM(&'a [u8]),
 }
 
 /// A type of card that can occupy a NuBus slot.

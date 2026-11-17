@@ -558,6 +558,7 @@ mod tests {
     #[cfg(feature = "ethernet")]
     use crate::devices::{EthernetConfig, EthernetLinkType};
     use crate::emulator::comm::EmulatorEvent;
+    use crate::emulator::{MachineConfig, MouseMode};
     use crate::mac::{MacModel, MacMonitor};
 
     /// A Macintosh Plus, which has a SCSI bus
@@ -713,26 +714,19 @@ mod tests {
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
     ) -> Result<Emulator> {
-        use crate::emulator::MouseMode;
         use crate::mac::ExtraROMs;
 
         let extra_roms: &[ExtraROMs] = match model {
             MacModel::MacII => &[ExtraROMs::MDC12(&[])],
             _ => &[],
         };
-        let (emu, _) = Emulator::new_with_extra(
-            &vec![0; 1024 * 1024],
-            extra_roms,
-            model,
-            monitor,
-            MouseMode::Disabled,
-            None,
-            None,
-            false,
-            false,
-            vram_size,
-            None,
-        )?;
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, model)
+        };
+        let (emu, _) =
+            Emulator::new_with_extra(&machine, extra_roms, monitor, None, vram_size, None)?;
         Ok(emu)
     }
 
@@ -917,7 +911,6 @@ mod tests {
 
     #[test]
     fn the_drives_of_the_apple_iie_card_are_on_its_disk_port() {
-        use crate::emulator::MouseMode;
         use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice};
 
         let settings = IieCardSettings {
@@ -925,20 +918,13 @@ mod tests {
             disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
         };
         for model in [MacModel::LC, MacModel::LCIII, MacModel::LC475] {
-            let (mut emu, _) = Emulator::new_with_extra(
-                &vec![0; 1024 * 1024],
-                &[],
-                model,
-                None,
-                MouseMode::Disabled,
-                None,
-                None,
-                false,
-                false,
-                None,
-                Some(settings),
-            )
-            .unwrap();
+            let rom = vec![0; 1024 * 1024];
+            let config = MachineConfig {
+                mouse_mode: MouseMode::Disabled,
+                ..MachineConfig::new(&rom, model)
+            };
+            let (mut emu, _) =
+                Emulator::new_with_extra(&config, &[], None, None, None, Some(settings)).unwrap();
 
             // A drive of the card is reached as the Mac's are
             let floppy = emu.floppy_in(bus_id::IIE_DISK, "2").unwrap();
@@ -996,16 +982,12 @@ mod tests {
 
     #[test]
     fn drives_of_another_type_take_the_place_of_those_of_the_mac_model() {
+        let rom = vec![0; 64 * 1024];
         let (mut emu, _) = Emulator::new_with_extra(
-            &vec![0; 64 * 1024],
+            &MachineConfig::new(&rom, MacModel::Early128K),
             &[],
-            MacModel::Early128K,
-            None,
-            crate::emulator::MouseMode::default(),
             None,
             Some(DriveType::GCR800KPWM),
-            false,
-            false,
             None,
             None,
         )
