@@ -338,8 +338,16 @@ impl LisaBus {
         self.nmi = true;
     }
 
-    /// Nothing is kept in the PRAM file yet
-    pub fn persist_pram(&mut self, _path: &Path) {}
+    /// Keeps the parameter memory of the floppy controller in the PRAM file from now on
+    pub fn persist_pram(&mut self, path: &Path) {
+        if let Err(e) = self.fdc.persist_parameter_memory(path) {
+            warn!(
+                "Cannot use parameter memory file '{}', changes will not be saved: {:#}",
+                path.display(),
+                e
+            );
+        }
+    }
 
     /// The clock of the COPS isn't set from the host
     pub fn set_datetime(&mut self, _dt: chrono::NaiveDateTime) {}
@@ -744,6 +752,10 @@ impl Tickable for LisaBus {
         }
 
         self.fdc.tick(ticks);
+        // The emulator has no call for it: written as soon as the guest changes it
+        if let Err(e) = self.fdc.save_parameter_memory() {
+            warn!("Cannot write parameter memory file: {:#}", e);
+        }
         if let Some(profile) = &mut self.profile {
             profile.tick(ticks);
         }
