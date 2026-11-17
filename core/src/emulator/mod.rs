@@ -387,6 +387,37 @@ dispatch! {
     }
 }
 
+/// What a machine is, apart from its devices
+pub struct MachineConfig<'a> {
+    pub model: MacModel,
+    /// The contents of the main ROM
+    pub rom: &'a [u8],
+    /// The contents of a second ROM that some Mac models map next to the main one
+    pub extension_rom: Option<&'a [u8]>,
+    /// The RAM size in bytes. None: the default of the Mac model.
+    pub ram_size: Option<usize>,
+    pub mouse_mode: MouseMode,
+    /// A 68851 in a Macintosh II
+    pub pmmu_enabled: bool,
+    /// A 68882 in an LC family Mac
+    pub fpu_enabled: bool,
+}
+
+impl<'a> MachineConfig<'a> {
+    /// A machine of this Mac model with this ROM, and the defaults for the rest
+    pub fn new(rom: &'a [u8], model: MacModel) -> Self {
+        Self {
+            model,
+            rom,
+            extension_rom: None,
+            ram_size: None,
+            mouse_mode: MouseMode::default(),
+            pmmu_enabled: false,
+            fpu_enabled: false,
+        }
+    }
+}
+
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
 pub trait EmuContext {
     fn speed(&self) -> EmulatorSpeed;
@@ -444,34 +475,34 @@ impl Emulator {
         model: MacModel,
     ) -> Result<(Self, FrameReceiver)> {
         Self::new_with_extra(
-            rom,
+            &MachineConfig::new(rom, model),
             extra_roms,
-            model,
-            None,
-            MouseMode::default(),
             None,
             None,
-            false,
-            false,
             None,
             None,
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::large_stack_frames)]
+    #[allow(clippy::large_stack_frames)]
     pub fn new_with_extra(
-        rom: &[u8],
+        machine: &MachineConfig,
         extra_roms: &[ExtraROMs],
-        model: MacModel,
         monitor: Option<MacMonitor>,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
-        pmmu_enabled: bool,
-        fpu_enabled: bool,
         vram_size: Option<usize>,
         iie_card: Option<IieCardSettings>,
     ) -> Result<(Self, FrameReceiver)> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            pmmu_enabled,
+            fpu_enabled,
+        } = machine;
+
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
@@ -491,12 +522,6 @@ impl Emulator {
             | MacModel::Classic => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU
                 let bus = CompactMacBus::new(model, rom, extension_rom, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
@@ -506,12 +531,6 @@ impl Emulator {
             }
             MacModel::Portable | MacModel::Portable15MB => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
 
                 // Initialize bus and CPU
                 let bus = MacPortableBus::new(model, rom, extension_rom, mouse_mode, ram_size);
@@ -524,12 +543,6 @@ impl Emulator {
                 assert!(override_fdd_type.is_none());
 
                 video_card = Some(Self::video_card(extra_roms, monitor)?);
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
 
                 // Initialize bus and CPU. A 68851 takes the place of the AMU.
                 let bus = MacIIBus::new(
@@ -554,12 +567,6 @@ impl Emulator {
 
                 video_card = Some(Self::video_card(extra_roms, monitor)?);
 
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU
                 let bus =
                     MacIIBus::new(model, rom, None, extension_rom, mouse_mode, ram_size, false);
@@ -578,12 +585,6 @@ impl Emulator {
                 else {
                     bail!("Macintosh SE/30 requires video ROM")
                 };
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
 
                 // Initialize bus and CPU
                 let bus = MacIIBus::new(
@@ -633,12 +634,6 @@ impl Emulator {
             }
             MacModel::Quadra700 => {
                 assert!(override_fdd_type.is_none());
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
 
                 // Initialize bus and CPU
                 let bus =
