@@ -294,6 +294,7 @@ pub enum DeviceModel {
     DaynaPortScsiLink,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
+    Hd20,
     Mac400KDrive,
     Mac800KDrive,
     Mac800KPwmDrive,
@@ -322,6 +323,7 @@ impl DeviceModel {
             Self::DaynaPortScsiLink => &scsi::ethernet::INFO,
             #[cfg(feature = "printer")]
             Self::LaserWriterIISC => &scsi::printer::INFO,
+            Self::Hd20 => &swim::dcd::INFO,
             Self::Mac400KDrive => &swim::drive::INFO_400K,
             Self::Mac800KDrive => &swim::drive::INFO_800K,
             Self::Mac800KPwmDrive => &swim::drive::INFO_800K_PWM,

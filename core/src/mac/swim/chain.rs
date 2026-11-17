@@ -65,7 +65,8 @@ impl BusOps for Chain {
 }
 
 impl Chain {
-    /// The number of places on the chain
+    /// The number of places on the chain: the Mac's driver finds four HD20s at most
+    /// (docs/HD20.md)
     pub(super) const PLACES: usize = 4;
 
     /// The ids of the slots of the bus: the places on the chain, counted from 1
@@ -78,6 +79,11 @@ impl Chain {
             passed: 0,
             tick_rate,
         }
+    }
+
+    /// The number of devices that passed the selection on, for the debugger
+    pub(super) fn passed(&self) -> usize {
+        self.passed
     }
 
     pub(super) fn is_empty(&self) -> bool {

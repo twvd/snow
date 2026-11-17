@@ -4543,7 +4543,11 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
                 DialogMode::PickFile => {
-                    if let Some(s) = crate::util::mac::hdd_sanitycheck(&path) {
+                    let (bus, slot) = &self.hdd_dialog_target;
+                    // An HD20 takes a volume image; a SCSI disk doesn't
+                    if bus == bus_id::SCSI
+                        && let Some(s) = crate::util::mac::hdd_sanitycheck(&path)
+                    {
                         self.toasts.add(
                             Toast::default()
                                 .text(s)
@@ -4551,7 +4555,6 @@ impl eframe::App for SnowGui {
                                 .kind(ToastKind::Warning),
                         );
                     }
-                    let (bus, slot) = &self.hdd_dialog_target;
                     if self.emu.device_status(bus, slot).is_some() {
                         // A disk that takes another image
                         self.emu.load_hard_disk(bus, slot, &path);

@@ -8,10 +8,10 @@ use crate::settings::AppSettings;
 use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
-use snow_core::cpu_m68k::M68040;
+use snow_core::cpu_m68k::{M68000, M68040};
 use snow_core::devices::{
     Bus, BusKind, Device, DeviceConfig, DeviceModel, DisplayInfo, FunctionConfig, FunctionInfo,
-    ModelInfo, RomInfo, bus_id, device_configs, models_for,
+    HardDiskConfig, ModelInfo, RomInfo, bus_id, device_configs, models_for,
 };
 use snow_core::emulator::MouseMode;
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
@@ -28,6 +28,11 @@ fn default_config(info: &ModelInfo) -> FunctionConfig {
 /// are never added or removed while it runs
 fn describes(bus: &Bus, mac: MacModel) -> bool {
     models_for(bus.kind, mac).any(|info| info.fixed)
+}
+
+/// The number of HD20s a Mac model gets when it is chosen in the dialog
+fn default_hd20_count(mac: MacModel) -> usize {
+    if mac == MacModel::Early512Ke { 1 } else { 0 }
 }
 
 /// The check of the ROM file of a device
@@ -62,6 +67,11 @@ pub struct ModelSelectionDialog {
     monitors: Vec<Option<MacMonitor>>,
     /// The "Use 800K floppy drive" checkbox, kept across a change of Mac model
     drive_800k: bool,
+    /// The "Offer HD20s" checkbox, for the Macs whose processor isn't a 68000
+    hd20_offered: bool,
+    /// The file dialog of the image of an HD20, and the slot of the HD20 it is for
+    hd20_dialog: SnowFileDialog,
+    hd20_dialog_slot: String,
 
     // Main ROM selection
     main_rom_path: String,
@@ -129,6 +139,12 @@ impl Default for ModelSelectionDialog {
             devices: vec![],
             monitors: vec![],
             drive_800k: false,
+            hd20_offered: false,
+            hd20_dialog: SnowFileDialog::new()
+                .add_filter("Disk images", &["img", "dsk", "hda", "hfv", "image"])
+                .show_pinned_folders(false)
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
+            hd20_dialog_slot: String::new(),
 
             main_rom_path: String::new(),
             main_rom_valid: false,
@@ -200,6 +216,8 @@ impl ModelSelectionDialog {
         self.init_args = init_args.clone();
         self.devices = devices.to_vec();
         self.fit_devices();
+        // A machine with HD20s shows them, whatever its processor
+        self.hd20_offered = self.hd20_count() > 0;
 
         if let Some(p) = main_rom_path {
             self.main_rom_path = p.to_string_lossy().to_string();
@@ -520,11 +538,13 @@ impl ModelSelectionDialog {
         self.device_rom_dialog.update(ctx, frame);
         self.pram_dialog.update(ctx, frame);
         self.extension_rom_dialog.update(ctx, frame);
+        self.hd20_dialog.update(ctx, frame);
 
         if *self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
             || *self.device_rom_dialog.state() == egui_file_dialog::DialogState::Open
             || *self.pram_dialog.state() == egui_file_dialog::DialogState::Open
             || *self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.hd20_dialog.state() == egui_file_dialog::DialogState::Open
         {
             return;
         }
@@ -541,6 +561,13 @@ impl ModelSelectionDialog {
                 self.devices[index].rom = Some(path);
             }
             self.do_validate_device_roms();
+        }
+
+        if let Some(path) = self.hd20_dialog.take_picked()
+            && let Some(index) = self.config_index(bus_id::HD20, &self.hd20_dialog_slot)
+        {
+            self.devices[index].function =
+                FunctionConfig::HardDisk(HardDiskConfig { media: Some(path) });
         }
 
         if let Some(path) = self.pram_dialog.take_picked() {
@@ -710,6 +737,7 @@ impl ModelSelectionDialog {
                 ui.group(|ui| {
                     ui.vertical(|ui| {
                         self.drive_checkbox(ui);
+                        self.hd20_checkbox(ui);
                         ui.checkbox(
                             &mut self.init_args.audio_disabled,
                             "Disable audio (sync to video)",
@@ -866,6 +894,7 @@ impl ModelSelectionDialog {
 
         if last_model != self.selected_model {
             self.do_model_changed();
+            self.fit_hd20s();
         }
 
         if last_validation_disabled != self.disable_rom_validation {
@@ -892,6 +921,7 @@ impl ModelSelectionDialog {
         });
         display_choice
             || slots
+            || self.hd20s_shown()
             || matches!(
                 mac,
                 MacModel::LC
@@ -950,6 +980,10 @@ impl ModelSelectionDialog {
                 .color(egui::Color32::RED),
             );
             ui.end_row();
+        }
+
+        if self.hd20s_shown() {
+            self.hd20_rows(ui, settings);
         }
 
         // The processor-direct slot, where a device model fits it
@@ -1143,6 +1177,124 @@ impl ModelSelectionDialog {
                         ui.selectable_value(&mut display.vram_size, Some(sz), format_ram(sz));
                     }
                 });
+            ui.end_row();
+        }
+    }
+
+    /// Whether the Mac model can have HD20s on its floppy port
+    fn has_hd20_port(&self) -> bool {
+        self.selected_model
+            .buses()
+            .iter()
+            .any(|bus| bus.kind == BusKind::Hd20)
+    }
+
+    /// Whether "Select peripherals" shows the HD20s: on a Mac with a 68000, the compact Macs
+    /// that HD20s were made for, and on the others when "Offer HD20s" is ticked
+    fn hd20s_shown(&self) -> bool {
+        self.has_hd20_port() && (self.selected_model.cpu_type() == M68000 || self.hd20_offered)
+    }
+
+    /// The checkbox of "Advanced" that shows the HD20s on a Mac with no 68000. Unticked, the
+    /// machine has none.
+    fn hd20_checkbox(&mut self, ui: &mut egui::Ui) {
+        if !self.has_hd20_port() || self.selected_model.cpu_type() == M68000 {
+            return;
+        }
+        if ui
+            .checkbox(&mut self.hd20_offered, "Offer HD20s on the floppy port")
+            .changed()
+            && !self.hd20_offered
+        {
+            self.set_hd20_count(0);
+        }
+    }
+
+    /// Fits the HD20s to a Mac model the user chose: those of the list stay where the dialog
+    /// shows them, and a Mac with none gets the number it has by default
+    fn fit_hd20s(&mut self) {
+        if !self.hd20s_shown() {
+            self.set_hd20_count(0);
+        } else if self.hd20_count() == 0 {
+            self.set_hd20_count(default_hd20_count(self.selected_model));
+        }
+    }
+
+    /// The number of HD20s in the list
+    fn hd20_count(&self) -> usize {
+        self.devices
+            .iter()
+            .filter(|config| config.bus == bus_id::HD20)
+            .count()
+    }
+
+    /// Puts HD20s in the first `count` places of the chain, keeping those there, and none
+    /// behind them
+    fn set_hd20_count(&mut self, count: usize) {
+        let buses = self.selected_model.buses();
+        let Some(bus) = buses.iter().find(|bus| bus.kind == BusKind::Hd20) else {
+            return;
+        };
+        for (place, slot) in bus.slots.iter().enumerate() {
+            let has = self.config_index(&bus.id, &slot.id).is_some();
+            if place < count && !has {
+                self.choose(&bus.id, &slot.id, Some(DeviceModel::Hd20));
+            } else if place >= count && has {
+                self.choose(&bus.id, &slot.id, None);
+            }
+        }
+    }
+
+    /// The rows of the HD20s: their number, then the image of each. A drive with no image has
+    /// no disk until one is loaded from the Devices menu.
+    fn hd20_rows(&mut self, ui: &mut egui::Ui, settings: &AppSettings) {
+        let current = self.hd20_count();
+        let mut count = current;
+        ui.label("HD20s:");
+        egui::ComboBox::new(egui::Id::new("hd20_count"), "")
+            .selected_text(count.to_string())
+            .show_ui(ui, |ui| {
+                for n in 0..=4 {
+                    ui.selectable_value(&mut count, n, n.to_string());
+                }
+            });
+        ui.label("");
+        ui.end_row();
+        if count != current {
+            self.set_hd20_count(count);
+        }
+
+        let slots: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|config| config.bus == bus_id::HD20)
+            .map(|config| config.slot.clone())
+            .collect();
+        for slot in slots {
+            let Some(index) = self.config_index(bus_id::HD20, &slot) else {
+                continue;
+            };
+            let FunctionConfig::HardDisk(disk) = &self.devices[index].function else {
+                continue;
+            };
+            let mut path = disk
+                .media
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default();
+            ui.label(format!("HD20 #{} image", slot));
+            ui.horizontal(|ui| {
+                if ui.text_edit_singleline(&mut path).changed() {
+                    let media = (!path.is_empty()).then(|| PathBuf::from(&path));
+                    self.devices[index].function =
+                        FunctionConfig::HardDisk(HardDiskConfig { media });
+                }
+                if ui.button("Browse...").clicked() {
+                    self.hd20_dialog_slot = slot.clone();
+                    self.hd20_dialog.pick_file(settings.native_file_dialogs);
+                }
+            });
+            ui.label("");
             ui.end_row();
         }
     }
@@ -1629,6 +1781,47 @@ mod tests {
                 config(bus_id::SWIM, "2", Some(drive)),
             ]
         );
+    }
+
+    #[test]
+    fn hd20s_are_chosen_by_their_number() {
+        let hd20 = |slot| config(bus_id::HD20, slot, Some(DeviceModel::Hd20));
+
+        // The 512Ke has one by default, the Plus none
+        let mut dialog = dialog(MacModel::Plus, &[]);
+        dialog.selected_model = MacModel::Early512Ke;
+        dialog.do_model_changed();
+        dialog.fit_hd20s();
+        assert_eq!(dialog.result_devices(), [hd20("1")]);
+        dialog.set_hd20_count(3);
+        assert_eq!(dialog.result_devices(), [hd20("1"), hd20("2"), hd20("3")]);
+        dialog.set_hd20_count(2);
+        assert_eq!(dialog.result_devices(), [hd20("1"), hd20("2")]);
+
+        // A Mac with a 68000 keeps them
+        dialog.selected_model = MacModel::Plus;
+        dialog.do_model_changed();
+        dialog.fit_hd20s();
+        assert_eq!(dialog.result_devices(), [hd20("1"), hd20("2")]);
+
+        // Another Mac shows them only when "Offer HD20s" is ticked
+        dialog.selected_model = MacModel::SE30;
+        dialog.do_model_changed();
+        dialog.fit_hd20s();
+        assert!(!dialog.hd20s_shown());
+        assert_eq!(dialog.hd20_count(), 0);
+        dialog.hd20_offered = true;
+        assert!(dialog.hd20s_shown());
+
+        // A machine that has some shows them
+        let dialog = super::tests::dialog(MacModel::MacIIx, &[hd20("1")]);
+        assert!(dialog.hd20s_shown());
+        assert_eq!(dialog.hd20_count(), 1);
+
+        // A Mac with no HD20 port has none
+        let dialog = super::tests::dialog(MacModel::LCIII, &[hd20("1")]);
+        assert!(!dialog.hd20s_shown());
+        assert_eq!(dialog.hd20_count(), 0);
     }
 
     #[test]

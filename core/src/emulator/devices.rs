@@ -1956,4 +1956,137 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// The device config of an HD20 in a slot of the chain of the floppy port
+    fn hd20(slot: &str, media: &Path) -> DeviceConfig {
+        DeviceConfig {
+            bus: bus_id::HD20.into(),
+            slot: slot.into(),
+            model: Some(DeviceModel::Hd20),
+            rom: None,
+            function: FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(media.to_path_buf()),
+            }),
+        }
+    }
+
+    /// The status of the hard disk in a slot of the chain
+    fn hd20_status(emu: &mut Emulator, slot: &str) -> (Option<PathBuf>, usize) {
+        let function = emu.device_function(bus_id::HD20, slot).unwrap();
+        let FunctionStatus::HardDisk(disk) = function.status() else {
+            panic!("An HD20 has the HardDisk function");
+        };
+        (disk.media, disk.capacity)
+    }
+
+    #[test]
+    fn the_hd20_chain_is_on_the_macs_that_drive_an_hd20() {
+        use bus_id::{BUILT_IN, HD20, SCSI, SWIM};
+        use strum::IntoEnumIterator;
+
+        let without = [
+            MacModel::LC,
+            MacModel::LCII,
+            MacModel::LCIII,
+            MacModel::LC475,
+            MacModel::Quadra700,
+            MacModel::Quadra800,
+        ];
+        for model in MacModel::iter() {
+            let has_chain = model.buses().iter().any(|bus| bus.id == HD20);
+            assert_eq!(has_chain, !without.contains(&model), "{model}");
+        }
+
+        // The chain comes after SCSI
+        let ids = |model: MacModel| -> Vec<String> {
+            model.buses().into_iter().map(|bus| bus.id).collect()
+        };
+        assert_eq!(ids(MacModel::Early512Ke), [SWIM, HD20, BUILT_IN]);
+        assert_eq!(ids(MacModel::Plus), [SWIM, SCSI, HD20, BUILT_IN]);
+
+        // An HD20 on a Mac with no chain is refused
+        let dir = TestDir::new("hd20_none");
+        let rom = vec![0; 1024 * 1024];
+        let devices = vec![hd20("1", &dir.file("a.img", 1024 * 1024))];
+        let machine = MachineConfig::new(&rom, MacModel::LCIII);
+        let (_, _, refused) = Emulator::new(&machine, devices.clone()).unwrap();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].config, devices[0]);
+        assert_eq!(refused[0].reason, "This Mac model has no such bus");
+    }
+
+    #[test]
+    fn hd20s_are_fixed_and_their_images_are_changed() {
+        let dir = TestDir::new("hd20_chain");
+        let a = dir.file("a.img", 1024 * 1024);
+        let b = dir.file("b.img", 2 * 1024 * 1024);
+        let c = dir.file("c.img", 1024 * 1024);
+
+        // A machine is made with its HD20s in the slots that the list names: a place of the
+        // chain can stay empty, and a drive can have no disk
+        let mut no_image = hd20("2", &a);
+        no_image.function = FunctionConfig::HardDisk(HardDiskConfig::default());
+        let devices = vec![hd20("1", &a), no_image, hd20("4", &b)];
+        let mut emu = make(MacModel::Early512Ke, devices.clone()).unwrap();
+        assert_eq!(emu.devices(), devices);
+        assert_eq!(
+            hd20_status(&mut emu, "4"),
+            (Some(b.clone()), 2 * 1024 * 1024)
+        );
+        assert_eq!(hd20_status(&mut emu, "2"), (None, 0));
+        assert_eq!(emu.slot_label(bus_id::HD20, "4"), "HD20 #4");
+
+        // No HD20 comes or goes while the machine runs
+        assert!(emu.add_device(&hd20("3", &c)).is_err());
+        assert!(emu.remove_device(bus_id::HD20, "1").is_err());
+
+        // Its image is loaded or changed instead
+        let FunctionMut::HardDisk(disk) = emu.device_function(bus_id::HD20, "2").unwrap() else {
+            panic!("An HD20 has the HardDisk function");
+        };
+        disk.load(&c).unwrap();
+        assert_eq!(hd20_status(&mut emu, "2"), (Some(c.clone()), 1024 * 1024));
+        let FunctionMut::HardDisk(disk) = emu.device_function(bus_id::HD20, "4").unwrap() else {
+            panic!("An HD20 has the HardDisk function");
+        };
+        assert!(disk.load(&dir.0.join("gone.img")).is_err());
+        assert_eq!(hd20_status(&mut emu, "4"), (Some(b), 2 * 1024 * 1024));
+
+        // An HD20 doesn't go on the SCSI bus, nor a SCSI disk on the chain
+        let rom = vec![0; 1024 * 1024];
+        let mut on_scsi = hd20("1", &a);
+        on_scsi.bus = bus_id::SCSI.into();
+        let mut scsi_disk = hd20("1", &a);
+        scsi_disk.model = Some(DeviceModel::ScsiHardDisk);
+        let machine = MachineConfig::new(&rom, MacModel::Plus);
+        let (_, _, refused) = Emulator::new(&machine, vec![on_scsi, scsi_disk]).unwrap();
+        assert_eq!(refused.len(), 2);
+    }
+
+    #[cfg(feature = "savestates")]
+    #[test]
+    fn a_save_state_holds_the_images_of_the_hd20s() {
+        let dir = TestDir::new("hd20_state");
+        let a = dir.file("a.img", 1024 * 1024);
+        let b = dir.file("b.img", 2 * 1024 * 1024);
+        std::fs::write(&a, vec![0xA5; 1024 * 1024]).unwrap();
+        let devices = vec![hd20("1", &a), hd20("2", &b)];
+        let mut emu = make(MacModel::Early512Ke, devices).unwrap();
+        let state = dir.0.join("machine.snows");
+        emu.save_state(&state, None).unwrap();
+        drop(emu);
+
+        // Each disk carries on from a temporary copy of its image
+        let tmp = dir.0.join("tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let (mut restored, _) = Emulator::load_state(&state, &tmp).unwrap();
+        assert_eq!(restored.temp_files().len(), 2);
+        let (copy_a, size_a) = hd20_status(&mut restored, "1");
+        let (copy_b, size_b) = hd20_status(&mut restored, "2");
+        assert_eq!(size_a, 1024 * 1024);
+        assert_eq!(size_b, 2 * 1024 * 1024);
+        let copy_a = copy_a.unwrap();
+        assert!(copy_a.starts_with(&tmp) && copy_b.unwrap().starts_with(&tmp));
+        assert_eq!(std::fs::read(copy_a).unwrap(), vec![0xA5; 1024 * 1024]);
+    }
 }
