@@ -310,13 +310,14 @@ impl ModelSelectionDialog {
 
     /// Makes the list of devices that of the selected model: each slot that the dialog
     /// describes keeps what the list had for it if the model takes it, and gets what the
-    /// model has there otherwise. A machine with NuBus slots and no card gets a video card
-    /// in the first.
+    /// model has there otherwise. A machine with no video gets a video card in its first
+    /// NuBus slot.
     fn fit_devices(&mut self) {
         let mac = self.selected_model;
+        let buses = mac.buses();
         let mut fitted = vec![];
-        for bus in mac.buses() {
-            if !describes(&bus, mac) {
+        for bus in &buses {
+            if !describes(bus, mac) {
                 continue;
             }
             for slot in &bus.slots {
@@ -347,21 +348,21 @@ impl ModelSelectionDialog {
                     function,
                 });
             }
-            // A machine with NuBus slots needs a video card: in its first slot, if it has none
-            let no_card = !fitted.iter().any(|c| c.bus == bus.id);
-            if bus.kind == BusKind::Nubus
-                && no_card
-                && let Some(info) = models_for(bus.kind, mac)
-                    .find(|info| matches!(info.function, FunctionInfo::Display(_)))
-            {
-                fitted.push(DeviceConfig {
-                    bus: bus.id.clone(),
-                    slot: bus.slots[0].id.clone(),
-                    model: Some(info.model),
-                    rom: self.remembered_rom(info.model),
-                    function: default_config(info),
-                });
-            }
+        }
+        // A machine with no video of its own needs a video card
+        let video = |c: &DeviceConfig| matches!(c.function, FunctionConfig::Display(_));
+        if !fitted.iter().any(video)
+            && let Some(bus) = buses.iter().find(|bus| bus.kind == BusKind::Nubus)
+            && let Some(info) = models_for(bus.kind, mac)
+                .find(|info| matches!(info.function, FunctionInfo::Display(_)))
+        {
+            fitted.push(DeviceConfig {
+                bus: bus.id.clone(),
+                slot: bus.slots[0].id.clone(),
+                model: Some(info.model),
+                rom: self.remembered_rom(info.model),
+                function: default_config(info),
+            });
         }
         self.devices = fitted;
     }
@@ -1506,6 +1507,29 @@ mod tests {
         };
         assert_eq!(dialog.result_devices(), [toby]);
         assert!(dialog.has_screen());
+    }
+
+    #[test]
+    fn a_quadra_700_takes_a_card_next_to_its_video() {
+        // Its slots are empty unless a card is chosen
+        let mut dialog = dialog(MacModel::Quadra700, &[]);
+        assert_eq!(dialog.result_devices(), []);
+        assert_eq!(dialog.screens(), 1);
+
+        dialog.choose(bus_id::NUBUS, "D", Some(DeviceModel::DisplayCard824));
+        assert_eq!(dialog.screens(), 2);
+        // With no monitor on its own video, the card's is its only screen
+        let index = dialog
+            .config_index(bus_id::BUILT_IN, built_in::VIDEO)
+            .unwrap();
+        dialog.devices[index].function = display(Some(MacMonitor::NoMonitor), None);
+        assert_eq!(dialog.screens(), 1);
+        let slots: Vec<_> = dialog
+            .result_devices()
+            .into_iter()
+            .map(|c| c.slot)
+            .collect();
+        assert_eq!(slots, [built_in::VIDEO, "D"]);
     }
 
     #[test]
