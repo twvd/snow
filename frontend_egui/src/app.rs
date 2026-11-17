@@ -216,7 +216,8 @@ pub struct SnowGui {
 
     workspace_dialog: SnowFileDialog,
     hdd_dialog: SnowFileDialog,
-    hdd_dialog_idx: usize,
+    /// The bus and the slot of the hard disk the dialog is for
+    hdd_dialog_target: (String, String),
     cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: usize,
     cdrom_files_dialog: SnowFileDialog,
@@ -259,8 +260,9 @@ pub struct SnowGui {
     afp_dir_dialog: SnowFileDialog,
     #[cfg(feature = "ethernet")]
     pcap_capture_dialog: SnowFileDialog,
+    /// The bus and the slot of the Ethernet adapter the dialog is for
     #[cfg(feature = "ethernet")]
-    pcap_capture_dialog_idx: usize,
+    pcap_capture_dialog_target: (String, String),
 
     error_dialog_open: bool,
     #[cfg(feature = "afp_server")]
@@ -455,7 +457,7 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_hdd),
-            hdd_dialog_idx: 0,
+            hdd_dialog_target: Default::default(),
             cdrom_dialog: SnowFileDialog::new()
                 .add_filter("CD-ROM images", &["iso", "toast", "cue"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -540,7 +542,7 @@ impl SnowGui {
                 .default_save_extension("pcap")
                 .initial_directory(Self::default_dir()),
             #[cfg(feature = "ethernet")]
-            pcap_capture_dialog_idx: 0,
+            pcap_capture_dialog_target: Default::default(),
 
             error_dialog_open: false,
             error_string: String::new(),
@@ -990,7 +992,7 @@ impl SnowGui {
             });
 
             if self.emu.is_initialized() {
-                ui.menu_button("Drives", |ui| {
+                ui.menu_button("Devices", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
                     if let Some(slots) = self.emu.scsi_slots() {
@@ -1005,6 +1007,7 @@ impl SnowGui {
                             }
                         }
                     }
+                    self.draw_menu_other_devices(ui);
                 });
             }
             ui.menu_button("Ports", |ui| {
@@ -1637,6 +1640,206 @@ impl SnowGui {
         });
     }
 
+    /// The items of the Devices menu for an Ethernet adapter, whatever its bus: its link and
+    /// a packet capture
+    #[cfg(feature = "ethernet")]
+    fn draw_ethernet_items(
+        &mut self,
+        ui: &mut egui::Ui,
+        bus: &str,
+        slot: &str,
+        target: &snow_core::devices::EthernetStatus,
+    ) {
+        use snow_core::devices::EthernetLinkType;
+
+        ui.strong("Link type");
+
+        let link_type = target.link.clone();
+        let mut new_link_type = link_type.clone();
+        ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
+        #[cfg(feature = "ethernet_nat")]
+        {
+            ui.radio_value(&mut new_link_type, EthernetLinkType::NAT, "NAT");
+        }
+        #[cfg(feature = "ethernet_nat_https_stripping")]
+        {
+            ui.radio_value(
+                &mut new_link_type,
+                EthernetLinkType::NATHttpsStripping,
+                "NAT (HTTPS stripping)",
+            );
+        }
+        #[cfg(feature = "ethernet_raw")]
+        {
+            for interface in pnet::datalink::interfaces()
+                .into_iter()
+                .filter(|i| i.is_up() && !i.ips.is_empty() && !i.is_loopback())
+            {
+                ui.radio_value(
+                    &mut new_link_type,
+                    EthernetLinkType::Bridge(interface.index),
+                    format!("Bridge: {}", interface.name),
+                );
+            }
+        }
+        #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+        {
+            let tap_devices: Vec<_> = pnet::datalink::interfaces()
+                .into_iter()
+                .filter(|i| i.name.starts_with("tap") || i.name.starts_with("snow"))
+                .collect();
+
+            if tap_devices.is_empty() {
+                ui.weak("TAP devices: No TAP devices found");
+            } else {
+                for interface in tap_devices {
+                    ui.radio_value(
+                        &mut new_link_type,
+                        EthernetLinkType::TapBridge(interface.name.clone()),
+                        format!("TAP device: {}", interface.name),
+                    );
+                }
+            }
+        }
+
+        if new_link_type != link_type {
+            self.emu.set_eth_link(bus, slot, new_link_type);
+        }
+
+        ui.separator();
+        ui.strong("Packet capture");
+
+        let capture_active = target.capture.as_ref().map(|s| s.active).unwrap_or(false);
+
+        if capture_active {
+            // Show capture information
+            if let Some(capture) = &target.capture {
+                ui.label(format!(
+                    "Capturing to: {}",
+                    capture
+                        .filename
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("(unknown)")
+                ));
+                ui.label(format!("Packets: {}", capture.packet_count));
+
+                if let Some(error) = &capture.error {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                }
+            }
+
+            if ui.button("Stop capture").clicked() {
+                self.emu.stop_ethernet_capture(bus, slot);
+                ui.close_kind(egui::UiKind::Menu);
+            }
+        } else if ui.button("Start capture...").clicked() {
+            self.pcap_capture_dialog_target = (bus.to_string(), slot.to_string());
+            self.pcap_capture_dialog
+                .save_file(self.settings.native_file_dialogs);
+            ui.close_kind(egui::UiKind::Menu);
+        }
+    }
+
+    /// The items of the Devices menu for a hard disk, whatever its bus. A disk whose device
+    /// model is `fixed` can't be removed while the machine runs: it only takes another image.
+    /// The others are detached, and branched off to a copy of their image.
+    fn draw_hard_disk_items(
+        &mut self,
+        ui: &mut egui::Ui,
+        bus: &str,
+        slot: &str,
+        disk: &snow_core::devices::HardDiskStatus,
+        fixed: bool,
+    ) {
+        if fixed {
+            let item = if disk.media.is_some() {
+                "Change image..."
+            } else {
+                "Load image..."
+            };
+            if ui.button(item).clicked() {
+                self.hdd_dialog_target = (bus.to_string(), slot.to_string());
+                self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
+            }
+            return;
+        }
+        if ui.button("Detach hard drive").clicked() {
+            self.emu.remove_device(bus, slot);
+        }
+        ui.separator();
+        if ui.button("Branch off image...").clicked() {
+            self.hdd_dialog_target = (bus.to_string(), slot.to_string());
+            self.hdd_dialog.save_file(self.settings.native_file_dialogs);
+        }
+    }
+
+    /// The devices of the other buses than the floppy buses and SCSI: one section per function,
+    /// in the order of `FunctionInfo`, and by bus within a function. A section is drawn only
+    /// when it has a device.
+    fn draw_menu_other_devices(&mut self, ui: &mut egui::Ui) {
+        let devices = self.emu.other_devices();
+        let disks: Vec<_> = devices
+            .iter()
+            .filter(|d| matches!(d.status, FunctionStatus::HardDisk(_)))
+            .collect();
+        if !disks.is_empty() {
+            ui.separator();
+            ui.strong("Hard disks");
+            for device in disks {
+                let FunctionStatus::HardDisk(disk) = &device.status else {
+                    continue;
+                };
+                let image = disk
+                    .media
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .map_or_else(|| "(no image)".into(), |name| name.to_string_lossy());
+                let fixed = device.device.model.info().fixed;
+                ui.menu_button(
+                    format!(
+                        "{} {}: {}",
+                        egui_material_icons::icons::ICON_HARD_DRIVE_2,
+                        device.label,
+                        image
+                    ),
+                    |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        self.draw_hard_disk_items(ui, &device.bus, &device.slot, disk, fixed);
+                    },
+                );
+            }
+        }
+        #[cfg(feature = "ethernet")]
+        {
+            let adapters: Vec<_> = devices
+                .iter()
+                .filter(|d| matches!(d.status, FunctionStatus::Ethernet(_)))
+                .collect();
+            if !adapters.is_empty() {
+                ui.separator();
+                ui.strong("Ethernet");
+                for device in adapters {
+                    let FunctionStatus::Ethernet(adapter) = &device.status else {
+                        continue;
+                    };
+                    ui.menu_button(
+                        format!(
+                            "{} {}",
+                            egui_material_icons::icons::ICON_SETTINGS_ETHERNET,
+                            device.label
+                        ),
+                        |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            self.draw_ethernet_items(ui, &device.bus, &device.slot, adapter);
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     fn draw_scsi_target_menu(&mut self, ui: &mut egui::Ui, slot: &ScsiSlot, show_detach: bool) {
         let id = slot.id;
         // One piece of menu per function
@@ -1657,14 +1860,14 @@ impl SnowGui {
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
-                            if ui.button("Detach hard drive").clicked() {
-                                self.emu.scsi_detach_target(id);
-                            }
-                            ui.separator();
-                            if ui.button("Branch off image...").clicked() {
-                                self.hdd_dialog_idx = id;
-                                self.hdd_dialog.save_file(self.settings.native_file_dialogs);
-                            }
+                            let fixed = slot.device.as_ref().is_some_and(|d| d.model.info().fixed);
+                            self.draw_hard_disk_items(
+                                ui,
+                                bus_id::SCSI,
+                                &id.to_string(),
+                                disk,
+                                fixed,
+                            );
                         },
                     );
                 }
@@ -1785,103 +1988,8 @@ impl SnowGui {
                             slot.name(),
                         ),
                         |ui| {
-                            use snow_core::devices::EthernetLinkType;
-
                             ui.set_min_width(Self::SUBMENU_WIDTH);
-                            ui.strong("Link type");
-
-                            let link_type = target.link.clone();
-                            let mut new_link_type = link_type.clone();
-                            ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
-                            #[cfg(feature = "ethernet_nat")]
-                            {
-                                ui.radio_value(&mut new_link_type, EthernetLinkType::NAT, "NAT");
-                            }
-                            #[cfg(feature = "ethernet_nat_https_stripping")]
-                            {
-                                ui.radio_value(
-                                    &mut new_link_type,
-                                    EthernetLinkType::NATHttpsStripping,
-                                    "NAT (HTTPS stripping)",
-                                );
-                            }
-                            #[cfg(feature = "ethernet_raw")]
-                            {
-                                for interface in pnet::datalink::interfaces()
-                                    .into_iter()
-                                    .filter(|i| i.is_up() && !i.ips.is_empty() && !i.is_loopback())
-                                {
-                                    ui.radio_value(
-                                        &mut new_link_type,
-                                        EthernetLinkType::Bridge(interface.index),
-                                        format!("Bridge: {}", interface.name),
-                                    );
-                                }
-                            }
-                            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-                            {
-                                let tap_devices: Vec<_> = pnet::datalink::interfaces()
-                                    .into_iter()
-                                    .filter(|i| {
-                                        i.name.starts_with("tap") || i.name.starts_with("snow")
-                                    })
-                                    .collect();
-
-                                if tap_devices.is_empty() {
-                                    ui.weak("TAP devices: No TAP devices found");
-                                } else {
-                                    for interface in tap_devices {
-                                        ui.radio_value(
-                                            &mut new_link_type,
-                                            EthernetLinkType::TapBridge(interface.name.clone()),
-                                            format!("TAP device: {}", interface.name),
-                                        );
-                                    }
-                                }
-                            }
-
-                            if new_link_type != link_type {
-                                self.emu.set_eth_link(id, new_link_type);
-                            }
-
-                            ui.separator();
-                            ui.strong("Packet capture");
-
-                            let capture_active =
-                                target.capture.as_ref().map(|s| s.active).unwrap_or(false);
-
-                            if capture_active {
-                                // Show capture information
-                                if let Some(capture) = &target.capture {
-                                    ui.label(format!(
-                                        "Capturing to: {}",
-                                        capture
-                                            .filename
-                                            .as_ref()
-                                            .and_then(|p| p.file_name())
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("(unknown)")
-                                    ));
-                                    ui.label(format!("Packets: {}", capture.packet_count));
-
-                                    if let Some(error) = &capture.error {
-                                        ui.colored_label(
-                                            egui::Color32::RED,
-                                            format!("Error: {}", error),
-                                        );
-                                    }
-                                }
-
-                                if ui.button("Stop capture").clicked() {
-                                    self.emu.stop_ethernet_capture(id);
-                                    ui.close_kind(egui::UiKind::Menu);
-                                }
-                            } else if ui.button("Start capture...").clicked() {
-                                self.pcap_capture_dialog_idx = id;
-                                self.pcap_capture_dialog
-                                    .save_file(self.settings.native_file_dialogs);
-                                ui.close_kind(egui::UiKind::Menu);
-                            }
+                            self.draw_ethernet_items(ui, bus_id::SCSI, &id.to_string(), target);
 
                             ui.separator();
                             if ui.button("Detach").clicked() {
@@ -1930,7 +2038,7 @@ impl SnowGui {
                         self.create_disk_dialog.open(id, &self.workspace_dir());
                     }
                     if ui.button("Load HDD disk image...").clicked() {
-                        self.hdd_dialog_idx = id;
+                        self.hdd_dialog_target = (bus_id::SCSI.to_string(), id.to_string());
                         self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
                     }
                     ui.separator();
@@ -4288,10 +4396,17 @@ impl eframe::App for SnowGui {
                                 .kind(ToastKind::Warning),
                         );
                     }
-                    self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
+                    let (bus, slot) = &self.hdd_dialog_target;
+                    if self.emu.device_status(bus, slot).is_some() {
+                        // A disk that takes another image
+                        self.emu.load_hard_disk(bus, slot, &path);
+                    } else if let Ok(id) = slot.parse() {
+                        self.emu.scsi_attach_hdd(id, &path);
+                    }
                 }
                 DialogMode::SaveFile => {
-                    self.emu.scsi_branch_hdd(self.hdd_dialog_idx, &path);
+                    let (bus, slot) = &self.hdd_dialog_target;
+                    self.emu.branch_disk(bus, slot, &path);
                 }
                 _ => unreachable!(),
             }
@@ -4380,8 +4495,11 @@ impl eframe::App for SnowGui {
         {
             self.pcap_capture_dialog.update(ctx, frame);
             if let Some(path) = self.pcap_capture_dialog.take_picked() {
-                self.emu
-                    .start_ethernet_capture(self.pcap_capture_dialog_idx, path);
+                self.emu.start_ethernet_capture(
+                    &self.pcap_capture_dialog_target.0,
+                    &self.pcap_capture_dialog_target.1,
+                    path,
+                );
             }
             self.ui_active &=
                 *self.pcap_capture_dialog.state() != egui_file_dialog::DialogState::Open;

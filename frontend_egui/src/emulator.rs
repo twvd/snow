@@ -79,7 +79,19 @@ impl ScsiSlot {
     }
 }
 
-/// A floppy drive of the machine, as the Drives menu shows it
+/// A device of the machine, as the Devices menu shows it
+pub struct DeviceSlot {
+    /// The id of its bus
+    pub bus: String,
+    /// The id of its slot
+    pub slot: String,
+    /// What the menus call the device
+    pub label: String,
+    pub device: Device,
+    pub status: FunctionStatus,
+}
+
+/// A floppy drive of the machine, as the Devices menu shows it
 pub struct FloppySlot {
     /// The id of its bus
     pub bus: String,
@@ -804,6 +816,33 @@ impl EmulatorState {
         name.unwrap_or_else(|| format!("{} #{}", title, slot))
     }
 
+    /// The devices of the buses other than SCSI, which aren't floppy drives, in the order of
+    /// the list of buses: for the sections of the Devices menu
+    pub fn other_devices(&self) -> Vec<DeviceSlot> {
+        let mut devices = vec![];
+        for bus in self.buses.iter().filter(|bus| bus.kind != BusKind::Scsi) {
+            for slot in &bus.slots {
+                let Some(device) = &slot.device else {
+                    continue;
+                };
+                if matches!(device.model.info().function, FunctionInfo::Floppy(_)) {
+                    continue;
+                }
+                let Some(status) = self.device_status(&bus.id, &slot.id) else {
+                    continue;
+                };
+                devices.push(DeviceSlot {
+                    bus: bus.id.clone(),
+                    slot: slot.id.clone(),
+                    label: self.slot_label(&bus.id, &slot.id),
+                    device: device.clone(),
+                    status: status.clone(),
+                });
+            }
+        }
+        devices
+    }
+
     /// The floppy drives of the machine, in the order of the list of buses: the Mac's own,
     /// then those on a bus that a device adds, such as the drives of the Apple IIe Card
     pub fn floppy_slots(&self) -> Vec<FloppySlot> {
@@ -1046,17 +1085,34 @@ impl EmulatorState {
         true
     }
 
-    /// Branches off a SCSI HDD image to the specified path.
-    pub fn scsi_branch_hdd(&self, id: usize, path: &Path) {
+    /// Makes the hard disk in a slot carry on from a copy of its image, in this file
+    pub fn branch_disk(&self, bus: &str, slot: &str, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::BranchDisk(
-                bus_id::SCSI.into(),
-                id.to_string(),
+                bus.to_string(),
+                slot.to_string(),
                 path.to_path_buf(),
+            ))
+            .unwrap();
+    }
+
+    /// Gives the hard disk in a slot, one that can't be removed while the machine runs, the
+    /// image in this file
+    pub fn load_hard_disk(&self, bus: &str, slot: &str, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::LoadMedia(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
+                false,
             ))
             .unwrap();
     }
@@ -1141,20 +1197,27 @@ impl EmulatorState {
 
     /// Detach a target from a SCSI ID
     pub fn scsi_detach_target(&mut self, id: usize) {
+        self.remove_device(bus_id::SCSI, &id.to_string());
+    }
+
+    /// Takes the device in a slot out of the machine
+    pub fn remove_device(&mut self, bus: &str, slot: &str) {
         self.cmdsender
             .as_ref()
             .unwrap()
             .send(EmulatorCommand::RemoveDevice(
-                bus_id::SCSI.into(),
-                id.to_string(),
+                bus.to_string(),
+                slot.to_string(),
             ))
             .unwrap();
+        let device = if bus == bus_id::SCSI {
+            format!("SCSI device at #{}", slot)
+        } else {
+            self.slot_label(bus, slot)
+        };
         self.messages.push_back((
             UserMessageType::Notice,
-            format!(
-                "SCSI device at #{} detached. System should be restarted.",
-                id
-            ),
+            format!("{} detached. System should be restarted.", device),
         ));
     }
 
@@ -1603,45 +1666,50 @@ impl EmulatorState {
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn set_eth_link(&self, id: usize, link: EthernetLinkType) {
+    pub fn set_eth_link(&self, bus: &str, slot: &str, link: EthernetLinkType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::EthernetSetLink(
-                bus_id::SCSI.into(),
-                id.to_string(),
+                bus.to_string(),
+                slot.to_string(),
                 link,
             ))
             .unwrap();
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(&self, scsi_id: usize, filename: P) {
+    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(
+        &self,
+        bus: &str,
+        slot: &str,
+        filename: P,
+    ) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::EthernetStartCapture(
-                bus_id::SCSI.into(),
-                scsi_id.to_string(),
+                bus.to_string(),
+                slot.to_string(),
                 filename.as_ref().to_path_buf(),
             ))
             .unwrap();
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn stop_ethernet_capture(&self, scsi_id: usize) {
+    pub fn stop_ethernet_capture(&self, bus: &str, slot: &str) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::EthernetStopCapture(
-                bus_id::SCSI.into(),
-                scsi_id.to_string(),
+                bus.to_string(),
+                slot.to_string(),
             ))
             .unwrap();
     }

@@ -175,6 +175,7 @@ impl Emulator {
         match self.function_in(bus, slot)? {
             FunctionMut::Floppy(floppy) => floppy.load(path, read_only),
             FunctionMut::Cdrom(cdrom) => cdrom.load(path),
+            FunctionMut::HardDisk(disk) => disk.load(path),
             _ => bail!("This device takes no media"),
         }
     }
