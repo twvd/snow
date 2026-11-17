@@ -4,15 +4,17 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use itertools::Itertools;
 use log::*;
 
-use snow_core::devices::bus_id;
-use snow_core::emulator::Emulator;
+use snow_core::devices::{
+    DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig, built_in, bus_id,
+};
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
-use snow_core::mac::{ExtraROMs, MacModel};
+use snow_core::emulator::{Emulator, MachineConfig};
+use snow_core::mac::MacModel;
 use snow_core::tickable::{Tickable, Ticks};
 
 #[derive(Parser)]
@@ -55,16 +57,38 @@ fn main() -> Result<()> {
     });
 
     // Initialize emulator
-    let mut extra_roms = vec![];
-    let display_rom = args.display_rom.as_deref().map(|f| fs::read(f).unwrap());
-    if let Some(display_rom) = display_rom.as_deref() {
-        if model == MacModel::SE30 {
-            extra_roms.push(ExtraROMs::SE30Video(display_rom));
-        } else {
-            extra_roms.push(ExtraROMs::MDC12(display_rom));
-        }
+    // The ROM of the display is that of the video of an SE/30, or of an 8-24 card in the
+    // first slot of a Macintosh II
+    let mut devices = vec![];
+    if let Some(display_rom) = args.display_rom.as_deref() {
+        let buses = model.buses();
+        let (bus, slot, device) = match buses.iter().find(|bus| bus.id == bus_id::NUBUS) {
+            Some(nubus) => (
+                bus_id::NUBUS,
+                nubus.slots[0].id.as_str(),
+                Some(DeviceModel::DisplayCard824),
+            ),
+            None => (bus_id::BUILT_IN, built_in::VIDEO, None),
+        };
+        devices.push(DeviceConfig {
+            bus: bus.into(),
+            slot: slot.into(),
+            model: device,
+            rom: Some(display_rom.into()),
+            function: FunctionConfig::Display(DisplayConfig::default()),
+        });
     }
-    let (mut emulator, frame_recv) = Emulator::new(&rom, &extra_roms, model)?;
+    let (mut emulator, displays, refused) =
+        Emulator::new(&MachineConfig::new(&rom, model), devices)?;
+    if let Some(refused) = refused.first() {
+        bail!(
+            "{} #{}: {}",
+            refused.config.bus,
+            refused.config.slot,
+            refused.reason
+        );
+    }
+    let frame_recv = displays.into_iter().next().context("No display")?.receiver;
     let cmd = emulator.create_cmd_sender();
     let event_recv = emulator.create_event_recv();
     if let Some(floppy_fn) = args.floppy {

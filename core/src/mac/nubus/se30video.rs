@@ -1,13 +1,14 @@
 use std::fmt::Display;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::devices::{
-    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
-    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo, RomInfo,
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo,
+    DisplayStatus, FunctionConfig, FunctionInfo, FunctionMut, ModelInfo, RomInfo,
 };
 use crate::emulator::EmuContext;
 use crate::mac::MacModel;
@@ -23,6 +24,8 @@ pub struct SE30Video {
     renderer: ChannelRenderer,
 
     rom: Vec<u8>,
+    /// The file its ROM came from, if it was read from one
+    rom_path: Option<PathBuf>,
     vblank_irq: bool,
     pub vblank_enable: bool,
     pub fb_select: bool,
@@ -44,10 +47,23 @@ impl SE30Video {
     /// Amount of VRAM present
     const VRAM_SIZE: usize = 0x10000;
 
+    /// The video of an SE/30, with the ROM file that its device config names
+    pub fn with_config(config: Option<&DeviceConfig>) -> Result<Self> {
+        let path = config
+            .and_then(|config| config.rom.as_ref())
+            .with_context(|| format!("The {} needs its ROM file", INFO.name))?;
+        let rom =
+            std::fs::read(path).with_context(|| format!("Cannot read '{}'", path.display()))?;
+        let mut video = Self::new(&rom);
+        video.rom_path = Some(path.clone());
+        Ok(video)
+    }
+
     pub fn new(rom: &[u8]) -> Self {
         Self {
             renderer: ChannelRenderer::default(),
             rom: rom.to_owned(),
+            rom_path: None,
             vblank_irq: false,
             vblank_enable: false,
             fb_select: false,
@@ -167,6 +183,10 @@ pub const INFO: ModelInfo = ModelInfo {
 impl DeviceOps for SE30Video {
     fn info(&self) -> &'static ModelInfo {
         &INFO
+    }
+
+    fn rom(&self) -> Option<&Path> {
+        self.rom_path.as_deref()
     }
 
     fn config(&self) -> FunctionConfig {

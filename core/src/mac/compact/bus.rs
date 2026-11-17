@@ -10,9 +10,9 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DeviceModel, DeviceOps, built_in, bus_id};
+use crate::devices::{BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
@@ -151,13 +151,18 @@ impl CompactMacBus {
     /// Size of the sound buffer, in bytes
     const SOUNDBUF_SIZE: usize = 370 * 2;
 
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        extension_rom: Option<&[u8]>,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, _devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let fb_alt_start = ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_ALT_OFFSET;
@@ -221,7 +226,7 @@ impl CompactMacBus {
             bus.via.adb.add_device(AdbKeyboard::new());
         }
 
-        bus
+        Ok(bus)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization

@@ -24,8 +24,8 @@ use crate::cpu_m68k::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, BusOps, DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig,
-    FunctionMut, FunctionStatus, MadeDevice, bus_id,
+    AppleIIeCardFunction, BusOps, DeviceConfig, DisplayHandle, FunctionConfig, FunctionMut,
+    FunctionStatus, RefusedDevice, bus_id, complete_device_configs,
 };
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -36,10 +36,6 @@ use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
-use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::nubus::NubusSlot;
-use crate::mac::nubus::mdc12::Mdc12;
-use crate::mac::nubus::toby::Toby;
 use crate::mac::pds::Pds;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
@@ -47,14 +43,12 @@ use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
-use crate::mac::swim::drive::DriveType;
-use crate::mac::{AbsoluteMouse, ExtraROMs, MacModel, MacMonitor};
+use crate::mac::{AbsoluteMouse, MacModel};
 use crate::renderer::AudioProvider;
-use crate::renderer::FrameReceiver;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
@@ -415,6 +409,14 @@ impl<'a> MachineConfig<'a> {
     }
 }
 
+/// The security jumper of the logic board of an LC, which is among the settings of the Apple
+/// IIe Card
+fn security_jumper(devices: &[DeviceConfig]) -> bool {
+    devices.iter().any(|config| {
+        matches!(&config.function, FunctionConfig::AppleIIeCard(settings) if settings.security_jumper)
+    })
+}
+
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
 pub trait EmuContext {
     fn speed(&self) -> EmulatorSpeed;
@@ -456,49 +458,29 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn new(
-        rom: &[u8],
-        extra_roms: &[ExtraROMs],
-        model: MacModel,
-    ) -> Result<(Self, FrameReceiver)> {
-        Self::new_with_extra(
-            &MachineConfig::new(rom, model),
-            extra_roms,
-            None,
-            None,
-            None,
-            None,
-        )
-    }
-
+    /// Makes a machine from its description and from the list of its devices.
+    ///
+    /// Returns the emulator, one handle per display of the machine, and the device configs
+    /// that the machine couldn't use, each with the reason. A machine with no screen isn't
+    /// made.
     #[allow(clippy::large_stack_frames)]
-    pub fn new_with_extra(
+    pub fn new(
         machine: &MachineConfig,
-        extra_roms: &[ExtraROMs],
-        monitor: Option<MacMonitor>,
-        override_fdd_type: Option<DriveType>,
-        vram_size: Option<usize>,
-        iie_card: Option<IieCardSettings>,
-    ) -> Result<(Self, FrameReceiver)> {
-        let &MachineConfig {
-            model,
-            rom,
-            extension_rom,
-            ram_size,
-            mouse_mode,
-            pmmu_enabled,
-            fpu_enabled,
-        } = machine;
-
+        devices: Vec<DeviceConfig>,
+    ) -> Result<(Self, Vec<DisplayHandle>, Vec<RefusedDevice>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
 
-        // The video card of a Macintosh II, which goes in a slot once the machine is made
-        let mut video_card = None;
-        // What was chosen for the built-in video
-        let video = DisplayConfig { monitor, vram_size };
+        let model = machine.model;
+        let pmmu_enabled = machine.pmmu_enabled;
+        let fpu_enabled = machine.fpu_enabled;
 
+        // The list is checked against what the Mac model has, and gets a device config for
+        // each device that the Mac model has without being asked
+        let (devices, mut refused) = complete_device_configs(model, devices);
+
+        // The logic board, with its built-in devices
         let mut config = match model {
             MacModel::Early128K
             | MacModel::Early512K
@@ -510,7 +492,7 @@ impl Emulator {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
                 // Initialize bus and CPU
-                let bus = CompactMacBus::new(model, rom, extension_rom, mouse_mode, ram_size);
+                let bus = CompactMacBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -520,27 +502,15 @@ impl Emulator {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
                 // Initialize bus and CPU
-                let bus = MacPortableBus::new(model, rom, extension_rom, mouse_mode, ram_size);
+                let bus = MacPortableBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Portable(cpu)
             }
             MacModel::MacII | MacModel::MacIIFDHD => {
-                assert!(override_fdd_type.is_none());
-
-                video_card = Some(Self::video_card(extra_roms, monitor)?);
-
                 // Initialize bus and CPU. A 68851 takes the place of the AMU.
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    None,
-                    extension_rom,
-                    mouse_mode,
-                    ram_size,
-                    !pmmu_enabled,
-                );
+                let bus = MacIIBus::new(machine, &devices)?;
                 let mut cpu = Box::new(CpuM68020::new(MachineBus020::MacII(bus), FPU_M68881));
                 if pmmu_enabled {
                     cpu.add_68851();
@@ -549,40 +519,9 @@ impl Emulator {
 
                 EmulatorConfig::MacII(cpu)
             }
-            MacModel::MacIIx | MacModel::MacIIcx => {
-                assert!(override_fdd_type.is_none());
-
-                video_card = Some(Self::video_card(extra_roms, monitor)?);
-
+            MacModel::MacIIx | MacModel::MacIIcx | MacModel::SE30 => {
                 // Initialize bus and CPU
-                let bus =
-                    MacIIBus::new(model, rom, None, extension_rom, mouse_mode, ram_size, false);
-                let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
-                assert_eq!(cpu.get_type(), model.cpu_type());
-
-                EmulatorConfig::MacII30(cpu)
-            }
-            MacModel::SE30 => {
-                assert!(override_fdd_type.is_none());
-
-                // Find video ROM
-                let Some(ExtraROMs::SE30Video(vrom)) = extra_roms
-                    .iter()
-                    .find(|p| matches!(p, ExtraROMs::SE30Video(_)))
-                else {
-                    bail!("Macintosh SE/30 requires video ROM")
-                };
-
-                // Initialize bus and CPU
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    Some(vrom),
-                    extension_rom,
-                    mouse_mode,
-                    ram_size,
-                    false,
-                );
+                let bus = MacIIBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -590,58 +529,46 @@ impl Emulator {
             }
             MacModel::LC => {
                 assert!(!pmmu_enabled, "PMMU not available on Macintosh LC");
-                assert!(override_fdd_type.is_none());
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, &video);
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCII => {
-                assert!(override_fdd_type.is_none());
-
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, &video);
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCIII => {
-                assert!(override_fdd_type.is_none());
-
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIIIBus::new(model, rom, mouse_mode, ram_size, &video);
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIIIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
             }
             MacModel::Quadra700 => {
-                assert!(override_fdd_type.is_none());
-
                 // Initialize bus and CPU
-                let bus =
-                    Quadra700Bus::new(model, rom, extension_rom, &video, mouse_mode, ram_size);
+                let bus = Quadra700Bus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68040::new(MachineBus040::Quadra700(bus), FPU_M68040));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Quadra700(cpu)
             }
             MacModel::LC475 => {
-                assert!(override_fdd_type.is_none());
-
-                let bus = Lc475Bus::new(model, rom, &video, mouse_mode, ram_size);
+                let bus = Lc475Bus::new(machine, &devices)?;
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
                 EmulatorConfig::LC475(Box::new(CpuM68040::new(MachineBus040::Lc475(bus), fpu)))
             }
             MacModel::Quadra800 => {
-                assert!(override_fdd_type.is_none());
-
-                let bus = Quadra800Bus::new(model, rom, &video, mouse_mode, ram_size);
+                let bus = Quadra800Bus::new(machine, &devices)?;
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
             }
@@ -672,30 +599,41 @@ impl Emulator {
             device_statuses: vec![],
             default_print_dir: None,
         };
-        emu.add_default_devices(override_fdd_type)?;
-        // The video card of a Macintosh II, in its first slot
-        if let Some(card) = video_card {
-            emu.config
-                .bus_ops(bus_id::NUBUS)
-                .context("This machine has no NuBus")?
-                .attach(model.nubus_slots()[0], MadeDevice::Nubus(card))?;
-        }
-        // The Apple IIe Card, on a Mac model with the slot it fits
-        if let Some(settings) = iie_card
-            && model.buses().iter().any(|bus| bus.id == bus_id::PDS_LC)
-        {
-            let card = DeviceConfig {
-                bus: bus_id::PDS_LC.to_string(),
-                slot: Pds::SLOT_IDS[0].to_string(),
-                model: Some(DeviceModel::AppleIIePdsCard),
-                rom: None,
-                function: FunctionConfig::AppleIIeCard(settings),
+
+        // Every device that isn't on the logic board is made, in the order of the list. A
+        // device of the logic board was made with the machine: it gets what a Config can
+        // change on a device that exists.
+        for config in devices {
+            let result = if config.bus == bus_id::BUILT_IN {
+                emu.configure_device(&config)
+            } else {
+                emu.add_device_to(&config, true)
             };
-            emu.add_device_to(&card, true)?;
+            if let Err(e) = result {
+                refused.push(RefusedDevice {
+                    config,
+                    reason: format!("{:#}", e),
+                });
+            }
         }
-        let frame_recv = emu.video_frames()?;
         let buses = emu.buses();
         emu.send_buses(buses)?;
+
+        let displays = emu.displays();
+        if displays.is_empty() {
+            // A device config that couldn't be used may be why
+            let reasons: Vec<String> = refused
+                .iter()
+                .map(|r| {
+                    let slot = emu.slot_label(&r.config.bus, &r.config.slot);
+                    format!("\n{}: {}", slot, r.reason)
+                })
+                .collect();
+            bail!(
+                "This machine has no screen: none of its videos has a monitor{}",
+                reasons.concat()
+            );
+        }
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -703,7 +641,7 @@ impl Emulator {
                 .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
         }
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays, refused))
     }
 
     /// The temporary files that a restored state made: the images its devices carry on from.
@@ -717,7 +655,7 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, FrameReceiver)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
         let time = Instant::now();
@@ -761,7 +699,7 @@ impl Emulator {
             device_statuses: vec![],
             default_print_dir: None,
         };
-        let frame_recv = emu.video_frames()?;
+        let displays = emu.displays();
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -778,7 +716,7 @@ impl Emulator {
             time.elapsed()
         );
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
@@ -791,21 +729,6 @@ impl Emulator {
     /// This can be used to test date-dependent software behavior (e.g., easter eggs).
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
         self.config.set_datetime(dt);
-    }
-
-    /// The video card of a Macintosh II, made from the ROM that the frontend gave for it
-    fn video_card(
-        extra_roms: &[ExtraROMs],
-        monitor: Option<MacMonitor>,
-    ) -> Result<Box<dyn NubusSlot>> {
-        for rom in extra_roms {
-            match rom {
-                ExtraROMs::MDC12(data) => return Ok(Box::new(Mdc12::new(data, monitor))),
-                ExtraROMs::Toby(data) => return Ok(Box::new(Toby::new(data))),
-                _ => (),
-            }
-        }
-        bail!("Macintosh II requires display card ROM")
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {

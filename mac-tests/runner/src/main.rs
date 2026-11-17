@@ -27,10 +27,12 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use snow_core::devices::{DeviceConfig, DeviceModel, FunctionConfig, HardDiskConfig, bus_id};
-use snow_core::emulator::Emulator;
+use snow_core::devices::{
+    DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig, HardDiskConfig, built_in, bus_id,
+};
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
-use snow_core::mac::{ExtraROMs, MacModel};
+use snow_core::emulator::{Emulator, MachineConfig};
+use snow_core::mac::MacModel;
 use snow_core::tickable::{Tickable, Ticks};
 
 fn save_png(path: &str, width: u16, height: u16, rgba: &[u8]) -> Result<()> {
@@ -98,36 +100,32 @@ fn main() -> Result<()> {
         Some(mb) => Some(mb.parse::<usize>().context("RUNNER_RAM")? * 1024 * 1024),
         None => None,
     };
-    let display_rom = match env("RUNNER_DISPLAY_ROM") {
-        Some(path) => Some(fs::read(&path).with_context(|| format!("reading {path}"))?),
-        None => None,
+    // The display ROM is the SE/30's video, or an 8-24 card in the first slot of a Mac II
+    let devices = match env("RUNNER_DISPLAY_ROM") {
+        Some(path) if model == MacModel::SE30 => vec![DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: Some(DeviceModel::SE30Video),
+            rom: Some(PathBuf::from(path)),
+            function: FunctionConfig::Display(DisplayConfig::default()),
+        }],
+        Some(path) => vec![DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: "9".into(),
+            model: Some(DeviceModel::DisplayCard824),
+            rom: Some(PathBuf::from(path)),
+            function: FunctionConfig::Display(DisplayConfig::default()),
+        }],
+        None => vec![],
     };
-    let extra: Vec<ExtraROMs> = display_rom
-        .as_deref()
-        .map(|rom| {
-            if model == MacModel::SE30 {
-                ExtraROMs::SE30Video(rom)
-            } else {
-                ExtraROMs::MDC12(rom)
-            }
-        })
-        .into_iter()
-        .collect();
-
-    let (mut emu, frame_recv) = Emulator::new_with_extra(
-        &rom,
-        &extra,
-        model,
-        None,
-        Default::default(),
-        ram,
-        None,
-        env("RUNNER_PMMU").is_some(),
-        env("RUNNER_FPU").is_some(),
-        None,
-        None,
-        None,
-    )?;
+    let machine = MachineConfig {
+        ram_size: ram,
+        pmmu_enabled: env("RUNNER_PMMU").is_some(),
+        fpu_enabled: env("RUNNER_FPU").is_some(),
+        ..MachineConfig::new(&rom, model)
+    };
+    let (mut emu, displays, _) = Emulator::new(&machine, devices)?;
+    let frame_recv = displays.into_iter().next().context("no display")?.receiver;
     if let Some(path) = env("RUNNER_PRAM") {
         emu.persist_pram(Path::new(&path));
     }

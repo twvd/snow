@@ -5,7 +5,7 @@ use crate::audio_cpal::CpalAudioProvider;
 #[cfg(feature = "audio_sdl2")]
 use crate::audio_sdl2::SDLAudioProvider;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui;
 use log::*;
@@ -20,9 +20,9 @@ use snow_core::debuggable::DebuggableProperties;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
-    Bus, BusKind, CdromConfig, Device, DeviceConfig, FloppyImages, FloppyInfo, FloppyStatus,
-    FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, bus_id, device_configs,
-    models_for,
+    Bus, BusKind, CdromConfig, Device, DeviceConfig, DeviceModel, DisplayConfig, DisplayHandle,
+    FloppyImages, FloppyInfo, FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus,
+    HardDiskConfig, built_in, bus_id, device_configs, models_for,
 };
 #[cfg(feature = "ethernet")]
 use snow_core::devices::{EthernetConfig, EthernetLinkType};
@@ -38,7 +38,7 @@ use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
+use snow_core::mac::{MacModel, MacMonitor};
 use snow_core::renderer::FrameReceiver;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
@@ -116,6 +116,84 @@ pub struct EmulatorInitResult {
     pub frame_receiver: FrameReceiver,
     /// The temporary files of a restored state, to remove when done
     pub temp_files: Vec<PathBuf>,
+    /// The devices that the machine couldn't use, each with the reason, for the user
+    pub refused: Vec<String>,
+}
+
+/// A type of card that can occupy a NuBus slot.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::IntoStaticStr,
+)]
+pub enum NubusDeviceKind {
+    /// Macintosh Display Card 8-24 (MDC12, ROM 341-0868)
+    // The default here is the fallback for workspace files that existed before
+    // NuBus device list was passed to the emulator core and should always remain
+    // on Mdc12.
+    #[default]
+    Mdc12,
+    /// Macintosh II Video Card ("Toby", ROM 342-0008)
+    Toby,
+    /// Macintosh SE/30 onboard video
+    SE30Video,
+}
+
+impl std::fmt::Display for NubusDeviceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Mdc12 => "Macintosh Display Card 8-24",
+                Self::Toby => "Macintosh II Video Card (Toby)",
+                Self::SE30Video => "Macintosh SE/30 onboard video",
+            }
+        )
+    }
+}
+
+/// Card in the PDS slot of the Macintosh LC family
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::IntoStaticStr,
+)]
+pub enum PdsCardKind {
+    /// Empty slot
+    #[default]
+    None,
+    /// Apple IIe Card
+    AppleIIe,
+}
+
+impl std::fmt::Display for PdsCardKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::None => "None",
+                Self::AppleIIe => "Apple IIe Card",
+            }
+        )
+    }
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -200,6 +278,74 @@ impl Default for EmulatorInitArgs {
     }
 }
 
+impl EmulatorInitArgs {
+    /// The devices that these arguments describe, as device configs: the video card of a
+    /// Macintosh II or what was chosen for the built-in video, the card of the
+    /// processor-direct slot, and floppy drives of another type than the Mac model's.
+    /// `display_rom` is the ROM file of the video card, or of the video of an SE/30.
+    pub fn device_configs(&self, model: MacModel, display_rom: Option<&Path>) -> Vec<DeviceConfig> {
+        let buses = model.buses();
+        let bus = |id: &str| buses.iter().find(|bus| bus.id == id);
+        let mut configs = vec![];
+
+        if let Some(nubus) = bus(bus_id::NUBUS) {
+            // The video card, in the first slot
+            let card = match self.video_card {
+                NubusDeviceKind::Toby => DeviceModel::MacIIVideoCard,
+                _ => DeviceModel::DisplayCard824,
+            };
+            configs.push(DeviceConfig {
+                bus: nubus.id.clone(),
+                slot: nubus.slots[0].id.clone(),
+                model: Some(card),
+                rom: display_rom.map(Path::to_path_buf),
+                function: FunctionConfig::Display(DisplayConfig {
+                    monitor: self.monitor,
+                    vram_size: None,
+                }),
+            });
+        } else if bus(bus_id::BUILT_IN).is_some() {
+            configs.push(DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::VIDEO.into(),
+                model: None,
+                rom: display_rom.map(Path::to_path_buf),
+                function: FunctionConfig::Display(DisplayConfig {
+                    monitor: self.monitor,
+                    vram_size: self.vram_size,
+                }),
+            });
+        }
+
+        if self.pds_card == PdsCardKind::AppleIIe
+            && let Some(pds) = bus(bus_id::PDS_LC)
+        {
+            configs.push(DeviceConfig {
+                bus: pds.id.clone(),
+                slot: pds.slots[0].id.clone(),
+                model: Some(DeviceModel::AppleIIePdsCard),
+                rom: None,
+                function: FunctionConfig::AppleIIeCard(self.iie_card_settings),
+            });
+        }
+
+        if let Some(drive_type) = self.override_fdd_type
+            && let Some(swim) = bus(bus_id::SWIM)
+        {
+            for slot in &swim.slots {
+                configs.push(DeviceConfig {
+                    bus: swim.id.clone(),
+                    slot: slot.id.clone(),
+                    model: Some(drive_type.device_model()),
+                    rom: None,
+                    function: FunctionConfig::Floppy,
+                });
+            }
+        }
+        configs
+    }
+}
+
 /// Id of the memory notifier of the disassembly
 pub const NOTIFIER_DISASSEMBLY: u32 = 0;
 /// Id of the memory notifier of the memory viewer
@@ -277,11 +423,6 @@ impl EmulatorState {
         custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
-        let display_rom = if let Some(filename) = display_rom_path {
-            Some(std::fs::read(filename)?)
-        } else {
-            None
-        };
         let extension_rom = if let Some(filename) = extension_rom_path {
             Some(std::fs::read(filename)?)
         } else {
@@ -289,7 +430,7 @@ impl EmulatorState {
         };
         self.init(
             &rom,
-            display_rom.as_deref(),
+            display_rom_path,
             extension_rom.as_deref(),
             devices,
             pram,
@@ -305,7 +446,7 @@ impl EmulatorState {
     fn init(
         &mut self,
         rom: &[u8],
-        display_rom: Option<&[u8]>,
+        display_rom: Option<&Path>,
         extension_rom: Option<&[u8]>,
         devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
@@ -327,18 +468,15 @@ impl EmulatorState {
             // Fall back to ROM autodetection
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?
         };
-        // Build extra ROMs array
-        let mut extra_roms = Vec::new();
-        if let Some(display_rom) = display_rom {
-            if model == MacModel::SE30 {
-                extra_roms.push(ExtraROMs::SE30Video(display_rom));
-            } else {
-                // Macintosh II family: the card is chosen explicitly
-                match args.video_card {
-                    NubusDeviceKind::Toby => extra_roms.push(ExtraROMs::Toby(display_rom)),
-                    NubusDeviceKind::Mdc12 => extra_roms.push(ExtraROMs::MDC12(display_rom)),
-                    _ => todo!(),
-                }
+        // The devices that the arguments describe, then those of the list that are in
+        // another slot
+        let mut list = args.device_configs(model, display_rom);
+        for config in devices {
+            if !list
+                .iter()
+                .any(|d| d.bus == config.bus && d.slot == config.slot)
+            {
+                list.push(config);
             }
         }
 
@@ -349,7 +487,6 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
-        let iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
         let machine = MachineConfig {
             model,
@@ -360,14 +497,7 @@ impl EmulatorState {
             pmmu_enabled: args.pmmu_enabled,
             fpu_enabled: args.fpu_enabled,
         };
-        let (mut emulator, frame_recv) = Emulator::new_with_extra(
-            &machine,
-            &extra_roms,
-            args.monitor,
-            args.override_fdd_type,
-            args.vram_size,
-            iie_card,
-        )?;
+        let (mut emulator, displays, refused) = Emulator::new(&machine, list)?;
 
         let cmd = emulator.create_cmd_sender();
 
@@ -383,17 +513,6 @@ impl EmulatorState {
             args.vm_pflush_workaround,
         ))?;
 
-        for config in &devices {
-            // The machine has its floppy drives and the card of its processor-direct slot
-            // already, made from the arguments above
-            if config.model.is_some_and(|model| model.info().fixed) {
-                continue;
-            }
-            if let Err(e) = emulator.add_device(config) {
-                error!("{} #{}: {:#}", config.bus, config.slot, e);
-            }
-        }
-
         if let Some(pram_path) = pram {
             emulator.persist_pram(pram_path);
         }
@@ -403,14 +522,19 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        self.init_finalize(
+        let mut result = self.init_finalize(
             emulator,
-            frame_recv,
+            displays,
             cmd,
             shared_dir,
             args.audio_disabled,
             false,
-        )
+        )?;
+        for device in refused {
+            let slot = self.slot_label(&device.config.bus, &device.config.slot);
+            result.refused.push(format!("{}: {}", slot, device.reason));
+        }
+        Ok(result)
     }
 
     pub fn init_from_statefile<P: AsRef<Path>>(
@@ -422,10 +546,10 @@ impl EmulatorState {
         // Terminate running emulator (if any)
         self.deinit();
 
-        let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
+        let (emulator, displays) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
         let temp_files = emulator.temp_files().to_vec();
-        let mut result = self.init_finalize(emulator, frame_recv, cmd, shared_dir, false, pause)?;
+        let mut result = self.init_finalize(emulator, displays, cmd, shared_dir, false, pause)?;
         result.temp_files = temp_files;
         Ok(result)
     }
@@ -433,7 +557,7 @@ impl EmulatorState {
     fn init_finalize(
         &mut self,
         mut emulator: Emulator,
-        frame_recv: FrameReceiver,
+        displays: Vec<DisplayHandle>,
         cmd: EmulatorCommandSender,
         shared_dir: Option<PathBuf>,
         audio_disabled: bool,
@@ -507,9 +631,12 @@ impl EmulatorState {
         // Signal the UI to always update state
         self.force_update.set();
 
+        // The first display is the one that is shown
+        let display = displays.into_iter().next().context("No display")?;
         Ok(EmulatorInitResult {
-            frame_receiver: frame_recv,
+            frame_receiver: display.receiver,
             temp_files: vec![],
+            refused: vec![],
         })
     }
 
@@ -1752,5 +1879,70 @@ impl EmulatorState {
             .as_ref()
             .map(|p| p.lock().unwrap().is_underrun())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_args_describe_devices() {
+        let args = EmulatorInitArgs {
+            monitor: Some(MacMonitor::RGB12),
+            vram_size: Some(512 * 1024),
+            pds_card: PdsCardKind::AppleIIe,
+            video_card: NubusDeviceKind::Toby,
+            override_fdd_type: Some(DriveType::GCR800KPWM),
+            ..Default::default()
+        };
+        let places = |model, rom| -> Vec<(String, String, Option<DeviceModel>)> {
+            args.device_configs(model, rom)
+                .into_iter()
+                .map(|config| (config.bus, config.slot, config.model))
+                .collect()
+        };
+        let place = |bus: &str, slot: &str, model| (bus.to_string(), slot.to_string(), model);
+        let drive = Some(DeviceModel::Mac800KPwmDrive);
+
+        // An LC: its video, the card of its slot, its two drives
+        let configs = args.device_configs(MacModel::LC, None);
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: Some(512 * 1024),
+            })
+        );
+        assert_eq!(
+            places(MacModel::LC, None),
+            [
+                place(bus_id::BUILT_IN, built_in::VIDEO, None),
+                place(bus_id::PDS_LC, "0", Some(DeviceModel::AppleIIePdsCard)),
+                place(bus_id::SWIM, "1", drive),
+                place(bus_id::SWIM, "2", drive),
+            ]
+        );
+
+        // A Macintosh II: the card that was chosen, with its ROM file and the monitor
+        let rom = Path::new("card.rom");
+        let configs = args.device_configs(MacModel::MacII, Some(rom));
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: None,
+            })
+        );
+        assert_eq!(
+            places(MacModel::MacII, Some(rom))[0],
+            place(bus_id::NUBUS, "9", Some(DeviceModel::MacIIVideoCard))
+        );
+
+        // An SE/30: the ROM file is that of its video
+        let configs = args.device_configs(MacModel::SE30, Some(rom));
+        assert_eq!(configs[0].bus, bus_id::BUILT_IN);
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
     }
 }
