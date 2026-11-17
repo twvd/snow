@@ -109,6 +109,10 @@ const TAG_SIZE: usize = 12;
 const DC42_HEADER_SIZE: usize = 0x54;
 const DC42_DATA_SIZE: usize = 0x40;
 const DC42_TAG_SIZE: usize = 0x44;
+const DC42_DATA_CHECKSUM: usize = 0x48;
+const DC42_TAG_CHECKSUM: usize = 0x4C;
+/// DiskCopy leaves the tags of the first sector out of its checksum
+const DC42_TAG_CHECKSUM_FROM: usize = 12;
 
 /// Sectors on a track
 fn sectors_on_track(track: u8) -> u8 {
@@ -126,10 +130,24 @@ pub struct LisaDisk {
     data: Vec<u8>,
     tags: Vec<u8>,
     write_protect: bool,
+    /// DiskCopy 4.2 header, none for a raw image
+    dc42_header: Option<Vec<u8>>,
+    /// Written since the image was loaded
+    dirty: bool,
     /// Name to show
     pub title: String,
     /// The file it was loaded from
     pub media: Option<PathBuf>,
+    /// Written back to that file when it leaves the drive
+    pub writeback: bool,
+}
+
+/// DiskCopy 4.2 checksum: add each big endian word, rotate right
+fn dc42_checksum(bytes: &[u8]) -> u32 {
+    bytes.chunks_exact(2).fold(0, |sum: u32, word| {
+        sum.wrapping_add(u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .rotate_right(1)
+    })
 }
 
 impl LisaDisk {
@@ -140,12 +158,14 @@ impl LisaDisk {
                 .get(at..at + 4)
                 .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
         };
+        let mut dc42_header = None;
         let (data, tags) = match (be32(DC42_DATA_SIZE), be32(DC42_TAG_SIZE)) {
             (Some(data_size), Some(tag_size))
                 if data_size > 0
                     && data_size % SECTOR_SIZE == 0
                     && DC42_HEADER_SIZE + data_size + tag_size == image.len() =>
             {
+                dc42_header = Some(image[..DC42_HEADER_SIZE].to_vec());
                 let tags_at = DC42_HEADER_SIZE + data_size;
                 (&image[DC42_HEADER_SIZE..tags_at], &image[tags_at..])
             }
@@ -164,14 +184,53 @@ impl LisaDisk {
             data: data.to_vec(),
             tags,
             write_protect,
+            dc42_header,
+            dirty: false,
             title: title.to_owned(),
             media: None,
+            writeback: false,
         })
     }
 
-    /// Serializes to a DiskCopy 4.2 image: writes aren't kept otherwise
-    pub fn data(&self) -> &[u8] {
-        &self.data
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// The image file for the disk as it is now, in the format it was loaded from
+    pub fn to_image(&self) -> Vec<u8> {
+        let Some(header) = &self.dc42_header else {
+            return self.data.clone();
+        };
+        let tag_size = u32::from_be_bytes([
+            header[DC42_TAG_SIZE],
+            header[DC42_TAG_SIZE + 1],
+            header[DC42_TAG_SIZE + 2],
+            header[DC42_TAG_SIZE + 3],
+        ]) as usize;
+        let tags = &self.tags[..tag_size];
+        let tag_checksum = tags.get(DC42_TAG_CHECKSUM_FROM..).map_or(0, dc42_checksum);
+
+        let mut image = header.clone();
+        image[DC42_DATA_CHECKSUM..DC42_DATA_CHECKSUM + 4]
+            .copy_from_slice(&dc42_checksum(&self.data).to_be_bytes());
+        image[DC42_TAG_CHECKSUM..DC42_TAG_CHECKSUM + 4]
+            .copy_from_slice(&tag_checksum.to_be_bytes());
+        image.extend_from_slice(&self.data);
+        image.extend_from_slice(tags);
+        image
+    }
+
+    /// Writes the image to the file it came from
+    fn write_back(&mut self) -> Result<()> {
+        let Some(path) = &self.media else {
+            return Ok(());
+        };
+        let image = self.to_image();
+        crate::util::atomic_write(path, |f| Ok(std::io::Write::write_all(f, &image)?))
+            .with_context(|| format!("writeback to '{}' failed", path.display()))?;
+        log::info!("Lisa floppy: writeback saved '{}'", path.display());
+        self.dirty = false;
+        Ok(())
     }
 }
 
@@ -207,6 +266,8 @@ pub struct Drive {
     inserted: bool,
     /// The user took the disk out, and the controller hasn't seen it yet
     removed: bool,
+    /// Out of the drive, to write back
+    ejected: Option<LisaDisk>,
 }
 
 impl FdcSim {
@@ -478,20 +539,23 @@ impl FdcSim {
                     .copy_from_slice(&self.ram[DATA..DATA + SECTOR_SIZE]);
                 disk.tags[index * TAG_SIZE..(index + 1) * TAG_SIZE]
                     .copy_from_slice(&self.ram[TAG..TAG + TAG_SIZE]);
+                disk.dirty = true;
             }
             RWTS_UNCLAMP => {
                 self.ram[CLAMPED] = 0;
-                drive.disk = None;
+                drive.ejected = drive.disk.take();
             }
             RWTS_FORMAT => {
                 disk.data.fill(0);
                 disk.tags.fill(0);
+                disk.dirty = true;
             }
             RWTS_FORMAT_TRACK => {
                 let count = usize::from(sectors_on_track(track.min(TRACKS - 1)));
                 let first = sectors_before_track(track.min(TRACKS - 1));
                 disk.data[first * SECTOR_SIZE..(first + count) * SECTOR_SIZE].fill(0);
                 disk.tags[first * TAG_SIZE..(first + count) * TAG_SIZE].fill(0);
+                disk.dirty = true;
             }
             RWTS_VERIFY | RWTS_VERIFY_TRACK | RWTS_CLAMP => (),
             _ => log::warn!("Unknown floppy controller RWTS command {:02X}", op),
@@ -507,9 +571,9 @@ impl FloppyFunction for Drive {
         FloppyStatus {
             title: disk.map(|d| d.title.clone()).unwrap_or_default(),
             ejected: disk.is_none(),
-            dirty: false,
-            writeback_supported: false,
-            writeback_enabled: false,
+            dirty: disk.is_some_and(|d| d.dirty),
+            writeback_supported: disk.is_some_and(|d| d.media.is_some()),
+            writeback_enabled: disk.is_some_and(|d| d.writeback),
         }
     }
 
@@ -528,8 +592,29 @@ impl FloppyFunction for Drive {
 
     /// Takes the disk out, as the user does
     fn eject(&mut self) {
-        self.disk = None;
+        self.ejected = self.disk.take();
         self.removed = true;
+    }
+
+    fn set_writeback(&mut self, enabled: bool) -> Result<()> {
+        let Some(disk) = self.disk.as_mut() else {
+            bail!("There is no disk in the drive");
+        };
+        disk.writeback = enabled;
+        Ok(())
+    }
+
+    /// A disk that left the drive, and with `force` the disk in the drive, each if it was
+    /// written since it was loaded or last written back
+    fn write_back(&mut self, force: bool) -> Result<()> {
+        let wanted = |disk: &LisaDisk| disk.writeback && disk.dirty;
+        if let Some(mut disk) = self.ejected.take().filter(wanted) {
+            disk.write_back()?;
+        }
+        if force && let Some(disk) = self.disk.as_mut().filter(|d| wanted(d)) {
+            disk.write_back()?;
+        }
+        Ok(())
     }
 }
 
@@ -732,5 +817,69 @@ mod tests {
     #[test]
     fn rejects_other_sizes() {
         assert!(LisaDisk::from_image(&[0; 1024], "x", false).is_err());
+    }
+
+    #[test]
+    fn dc42_checksum_rotates() {
+        assert_eq!(dc42_checksum(&[0, 1, 0, 2]), 0x4000_0001);
+    }
+
+    #[test]
+    fn write_comes_back_in_the_image() {
+        let mut fdc = ready();
+        insert(&mut fdc, disk());
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram_write(TRACK, 1);
+        fdc.ram_write(SECTOR, 0);
+        fdc.ram_write(DATA, 0x77);
+        fdc.ram_write(TAG, 0x88);
+        assert!(!fdc.disk().unwrap().dirty());
+        fdc.perform(RWTS_WRITE);
+        fdc.perform(RWTS_UNCLAMP);
+        assert!(fdc.disk().is_none());
+
+        let ejected = fdc.drive.as_mut().unwrap().ejected.take().unwrap();
+        assert!(ejected.dirty());
+        let again = LisaDisk::from_image(&ejected.to_image(), "again", false).unwrap();
+        assert_eq!(again.data[12 * SECTOR_SIZE], 0x77);
+        assert_eq!(again.tags[12 * TAG_SIZE], 0x88);
+        assert!(!again.dirty());
+    }
+
+    #[test]
+    fn a_written_disk_is_written_back_once() {
+        let path = std::env::temp_dir().join(format!("snow-lisa-wb-{}", std::process::id()));
+        let written_size = || std::fs::metadata(&path).map(|m| m.len()).ok();
+        let mut fdc = ready();
+        let mut written = disk();
+        written.media = Some(path.clone());
+        written.writeback = true;
+        insert(&mut fdc, written);
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram_write(TRACK, 1);
+        fdc.ram_write(SECTOR, 0);
+        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        assert_eq!(written_size(), None);
+        fdc.perform(RWTS_WRITE);
+        // Only on quit or eject while it is in the drive
+        fdc.drive.as_mut().unwrap().write_back(false).unwrap();
+        assert_eq!(written_size(), None);
+        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        assert!(written_size().is_some());
+        std::fs::remove_file(&path).unwrap();
+        fdc.drive.as_mut().unwrap().write_back(true).unwrap();
+        assert_eq!(written_size(), None);
+        fdc.perform(RWTS_WRITE);
+        fdc.perform(RWTS_UNCLAMP);
+        fdc.drive.as_mut().unwrap().write_back(false).unwrap();
+        assert!(written_size().is_some());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn raw_image_stays_raw() {
+        let image = vec![0x11; 800 * SECTOR_SIZE];
+        let disk = LisaDisk::from_image(&image, "raw", false).unwrap();
+        assert_eq!(disk.to_image(), image);
     }
 }
