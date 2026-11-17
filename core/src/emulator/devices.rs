@@ -741,21 +741,9 @@ mod tests {
 
     /// The device configs that a machine of these tests needs to have a screen, with `rom` as
     /// the ROM file of its video: the video of an SE/30, and an 8-24 card in the first slot of
-    /// a Macintosh II. A Lisa gets a video state PROM, in a file next to `rom`: its video
-    /// can't be made from a file of zeroes.
+    /// a Macintosh II.
     fn video_configs(model: MacModel, rom: &Path) -> Vec<DeviceConfig> {
         match model {
-            MacModel::Lisa25 => {
-                let prom = rom.with_file_name("lisa.prom");
-                std::fs::write(&prom, crate::lisa::video::test_prom()).unwrap();
-                vec![DeviceConfig {
-                    bus: bus_id::BUILT_IN.into(),
-                    slot: built_in::VIDEO.into(),
-                    model: Some(DeviceModel::LisaVideo),
-                    rom: Some(prom),
-                    function: FunctionConfig::Display(DisplayConfig::default()),
-                }]
-            }
             MacModel::SE30 => vec![DeviceConfig {
                 bus: bus_id::BUILT_IN.into(),
                 slot: built_in::VIDEO.into(),
@@ -2040,5 +2028,46 @@ mod tests {
             .unwrap()
             .status();
         assert!(matches!(status, FunctionStatus::HardDisk(d) if d.capacity == LISA_DISK_SIZE));
+    }
+
+    #[test]
+    fn a_lisa_floppy_goes_through_the_floppy_function() {
+        let dir = TestDir::new("lisa_floppy");
+        let mut emu = machine(MacModel::Lisa25);
+        let image = dir.file("disk.image", 800 * 512);
+        emu.load_media(bus_id::LISA_FDC, "1", &image, true).unwrap();
+        let status = emu.function_in(bus_id::LISA_FDC, "1").unwrap().status();
+        assert!(matches!(status, FunctionStatus::Floppy(f) if f.title == "disk.image"));
+        // A workspace doesn't keep the disk, nor the drive the machine has anyway
+        assert_eq!(emu.devices(), []);
+        // Nor can the drive be taken out or added again
+        assert!(emu.remove_device(bus_id::LISA_FDC, "1").is_err());
+        emu.eject_media(bus_id::LISA_FDC, "1").unwrap();
+        let status = emu.function_in(bus_id::LISA_FDC, "1").unwrap().status();
+        assert!(matches!(status, FunctionStatus::Floppy(f) if f.ejected));
+    }
+
+    #[test]
+    fn the_lisa_video_builds_its_prom() {
+        let kit = DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: Some(DeviceModel::LisaVideo),
+            rom: None,
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::LisaScreenKit),
+                vram_size: None,
+            }),
+        };
+        let mut emu = make(MacModel::Lisa25, vec![kit.clone()]).unwrap();
+        assert_eq!(emu.devices(), [kit]);
+
+        // A bad serial number stops the machine
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            serial_number: Some("123"),
+            ..MachineConfig::new(&rom, MacModel::Lisa25)
+        };
+        assert!(Emulator::new(&machine, vec![]).is_err());
     }
 }

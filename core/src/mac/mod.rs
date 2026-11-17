@@ -730,6 +730,10 @@ pub enum MacMonitor {
     RGB19,
     /// Nothing on the connector of the video
     NoMonitor,
+    /// The Lisa's own screen
+    Lisa,
+    /// The screen of a Lisa with the Screen Kit
+    LisaScreenKit,
 }
 
 impl Display for MacMonitor {
@@ -750,6 +754,8 @@ impl Display for MacMonitor {
                 Self::VGA => "VGA monitor",
                 Self::RGB19 => "Macintosh 19\" RGB monitor",
                 Self::NoMonitor => "",
+                Self::Lisa => "Standard Lisa",
+                Self::LisaScreenKit => "Lisa Screen Kit",
             },
             self.width(),
             self.height()
@@ -774,7 +780,8 @@ impl MacMonitor {
             // No line is tied to another or to the ground: 111, then 11 11 11 for the other
             // two lines while each is driven low (Macintosh LC III Developer Note, monitor
             // sense codes)
-            Self::NoMonitor => [7, 3, 5, 6],
+            // The Lisa has no sense lines: as no monitor
+            Self::NoMonitor | Self::Lisa | Self::LisaScreenKit => [7, 3, 5, 6],
         }
     }
 
@@ -789,6 +796,8 @@ impl MacMonitor {
             Self::VGA => 640,
             Self::RGB19 => 1024,
             Self::NoMonitor => 0,
+            Self::Lisa => 720,
+            Self::LisaScreenKit => 608,
         }
     }
 
@@ -803,6 +812,8 @@ impl MacMonitor {
             Self::VGA => 480,
             Self::RGB19 => 768,
             Self::NoMonitor => 0,
+            Self::Lisa => 364,
+            Self::LisaScreenKit => 431,
         }
     }
 
@@ -811,7 +822,11 @@ impl MacMonitor {
             Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB19 | Self::RGB21 | Self::VGA => {
                 true
             }
-            Self::PortraitBW | Self::TwoPageBW | Self::NoMonitor => false,
+            Self::PortraitBW
+            | Self::TwoPageBW
+            | Self::NoMonitor
+            | Self::Lisa
+            | Self::LisaScreenKit => false,
         }
     }
 }

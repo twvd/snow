@@ -139,7 +139,10 @@ impl LisaBus {
             ..
         } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let video = LisaVideo::with_config(built_in_config(devices, built_in::VIDEO))?;
+        let video = LisaVideo::with_config(
+            built_in_config(devices, built_in::VIDEO),
+            machine.serial_number,
+        )?;
         // MacWorks on a Screen Kit machine has its screen and boot in low memory
         let (ram_low, ram_high) = if video.is_screen_kit() {
             (0, ram_size as Address)

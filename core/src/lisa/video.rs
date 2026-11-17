@@ -7,14 +7,14 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::devices::{
     BusKind, DeviceConfig, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo,
     DisplayStatus, FunctionConfig, FunctionInfo, FunctionMut, ModelInfo, RomInfo,
 };
-use crate::mac::MacModel;
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::FrameReceiver;
 use crate::renderer::channel::ChannelRenderer;
 use crate::tickable::Ticks;
@@ -43,6 +43,118 @@ const PROM_NOT_INTERRUPT: u8 = 1 << 5;
 const PROM_CSYNC: u8 = 1 << 4;
 const PROM_SERIAL: u8 = 1 << 7;
 
+/// The PROM of the standard display, 720x364, without its serial number
+#[rustfmt::skip]
+const PROM_STANDARD: [u8; PROM_SIZE] = [
+    0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x76, 0x76, 0x72, 0x62, 0x62,
+    0x62, 0x62, 0x62, 0x72, 0x72, 0x72, 0x72, 0x73, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x76, 0x76, 0x72, 0x62, 0x62,
+    0x62, 0x62, 0x62, 0x72, 0x72, 0x72, 0x72, 0x73, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x44, 0x40, 0x44, 0x40, 0x44, 0x40, 0x44, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+    0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+    0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x14, 0x14, 0x54, 0x54, 0x50, 0x40, 0x40,
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x41, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x56, 0x52, 0x56, 0x52, 0x56, 0x52, 0x56, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12,
+    0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12, 0x16, 0x12,
+    0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x52, 0x52, 0x52, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x52, 0x52, 0x52, 0x52, 0x5B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+];
+
+/// The PROM of the Screen Kit, 608x431. Its lines of 48 states have no room for
+/// a serial number, which takes 56.
+#[rustfmt::skip]
+const PROM_SCREEN_KIT: [u8; PROM_SIZE] = [
+    0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0xB6, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x76, 0x72, 0x62, 0xE2, 0x62, 0x62, 0x72, 0x72, 0x72, 0x72, 0x73,
+    0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x76, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0xB6, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36, 0x36,
+    0x36, 0x36, 0x36, 0x36, 0x36, 0x76, 0x72, 0x62, 0xE2, 0x62, 0x62, 0x72, 0x72, 0x72, 0x72, 0x73,
+    0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+    0x84, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+    0x04, 0x04, 0x04, 0x14, 0x14, 0x54, 0x54, 0x44, 0xC4, 0x44, 0x44, 0x44, 0x44, 0x40, 0x40, 0x41,
+    0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B,
+    0x52, 0x52, 0x52, 0x52, 0x52, 0x52, 0x52, 0x12, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16,
+    0x96, 0x16, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12,
+    0x12, 0x12, 0x12, 0x12, 0x12, 0x52, 0x52, 0x42, 0xC2, 0x42, 0x42, 0x52, 0x52, 0x52, 0x52, 0x5B,
+    0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0x3B, 0xFF,
+];
+
+/// Digits of the serial number, without its checksum
+pub const SERIAL_DIGITS: usize = 20;
+
+/// Built-in serial number. Installed software is tied to it, don't change it.
+pub const DEFAULT_SERIAL: &str = "05832580232000106916";
+
+/// Sync byte of a block of the serial number
+const SERIAL_SYNC: u8 = 0xFF;
+
+/// PROM banks, each 64 bytes, selected by A14 of the video address
+const SERIAL_BLOCK_BANKS: [[usize; 2]; 2] = [[2, 3], [0, 1]];
+
+/// Checks a serial number as typed, and gives its digits
+pub fn parse_serial(serial: &str) -> Result<[u8; SERIAL_DIGITS]> {
+    let digits = serial
+        .chars()
+        .map(|c| c.to_digit(10).map(|d| d as u8))
+        .collect::<Option<Vec<u8>>>()
+        .ok_or_else(|| anyhow!("A Lisa serial number has only digits"))?;
+    digits
+        .try_into()
+        .map_err(|_| anyhow!("A Lisa serial number has {} digits", SERIAL_DIGITS))
+}
+
+/// Lays out a serial number as the boot ROM reads it: two blocks of a sync byte
+/// and 6 bytes. In 4-bit digits: F F d0..d11 F F d12..d19 c2 c1 c0 0, with the
+/// sum of all but the checksum, less the Fs, as the decimal number c2 c1 c0.
+fn serial_blocks(digits: &[u8; SERIAL_DIGITS]) -> [[u8; 7]; 2] {
+    let sum: u32 = digits.iter().map(|&d| u32::from(d)).sum();
+    let check = [
+        (sum / 100) as u8,
+        (sum / 10 % 10) as u8,
+        (sum % 10) as u8,
+        0,
+    ];
+    let byte = |pair: &[u8]| (pair[0] << 4) | pair[1];
+
+    let mut blocks = [[SERIAL_SYNC; 7]; 2];
+    for (to, from) in blocks[0][1..].iter_mut().zip(digits[..12].chunks(2)) {
+        *to = byte(from);
+    }
+    let rest: Vec<u8> = digits[12..].iter().chain(&check).copied().collect();
+    for (to, from) in blocks[1][1..].iter_mut().zip(rest.chunks(2)) {
+        *to = byte(from);
+    }
+    blocks
+}
+
+/// The video PROM of a monitor. A serial number only goes in the standard one.
+pub fn build_prom(screen_kit: bool, serial: Option<&str>) -> Result<Vec<u8>> {
+    if screen_kit {
+        return Ok(PROM_SCREEN_KIT.to_vec());
+    }
+    let digits = parse_serial(serial.unwrap_or(DEFAULT_SERIAL))?;
+    let mut prom = PROM_STANDARD.to_vec();
+    for (block, banks) in serial_blocks(&digits).iter().zip(SERIAL_BLOCK_BANKS) {
+        for bank in banks {
+            for (i, byte) in block.iter().enumerate() {
+                for bit in 0..8 {
+                    if byte & (0x80 >> bit) != 0 {
+                        prom[bank * 64 + i * 8 + bit] |= PROM_SERIAL;
+                    }
+                }
+            }
+        }
+    }
+    Ok(prom)
+}
+
 /// A state of the video PROM, in a frame
 #[derive(Clone, Copy)]
 struct State {
@@ -58,8 +170,10 @@ pub struct LisaVideo {
     renderer: ChannelRenderer,
 
     prom: Vec<u8>,
-    /// The file the PROM came from
+    /// The file the PROM came from. None: it is built in.
     prom_path: Option<PathBuf>,
+    /// The monitor chosen for the PROM built in
+    monitor: Option<MacMonitor>,
     #[serde(skip)]
     states: Vec<State>,
     /// Display size from the PROM
@@ -83,11 +197,19 @@ pub struct LisaVideo {
 }
 
 impl LisaVideo {
-    /// The video of a Lisa, with the PROM file that its device config names
-    pub fn with_config(config: Option<&DeviceConfig>) -> Result<Self> {
-        let path = config
-            .and_then(|config| config.rom.as_ref())
-            .with_context(|| format!("The {} needs its PROM file", INFO.name))?;
+    /// The video of a Lisa, with the PROM file that its device config names, or else the PROM
+    /// built in for its monitor and the machine's serial number
+    pub fn with_config(config: Option<&DeviceConfig>, serial: Option<&str>) -> Result<Self> {
+        let monitor = match config.map(|config| &config.function) {
+            Some(FunctionConfig::Display(display)) => display.monitor,
+            _ => None,
+        };
+        let Some(path) = config.and_then(|config| config.rom.as_ref()) else {
+            let screen_kit = monitor == Some(MacMonitor::LisaScreenKit);
+            let mut video = Self::new(&build_prom(screen_kit, serial)?);
+            video.monitor = monitor;
+            return Ok(video);
+        };
         let prom =
             std::fs::read(path).with_context(|| format!("Cannot read '{}'", path.display()))?;
         if prom.len() != PROM_SIZE {
@@ -95,6 +217,7 @@ impl LisaVideo {
         }
         let mut video = Self::new(&prom);
         video.prom_path = Some(path.clone());
+        video.monitor = monitor;
         Ok(video)
     }
 
@@ -103,6 +226,7 @@ impl LisaVideo {
             renderer: ChannelRenderer::default(),
             prom: prom.to_vec(),
             prom_path: None,
+            monitor: None,
             states: vec![],
             width: 0,
             height: 0,
@@ -301,7 +425,8 @@ pub const INFO: ModelInfo = ModelInfo {
             "31347919b61cfc77e7f54cfdde517018e8d7f36e99206b796204e13fc205c42f",
             "7548b5f60661bb833dae5f0de6b946a787478c5ee68d3af88ab59c8ad7130d2d",
         ],
-        optional: false,
+        // Built in when there is none
+        optional: true,
         varying_bits: PROM_SERIAL,
     }),
     ..ModelInfo::base(
@@ -309,8 +434,9 @@ pub const INFO: ModelInfo = ModelInfo {
         "Built-in video",
         BusKind::BuiltIn,
         FunctionInfo::Display(DisplayInfo {
-            // The screen is the machine's own
-            monitors: &[],
+            // For the PROM built in
+            monitors: &[MacMonitor::Lisa, MacMonitor::LisaScreenKit],
+            // MacMonitor::Lisa
             default_monitor: 0,
             vram_sizes: &[],
             default_vram_size: 0,
@@ -328,7 +454,10 @@ impl DeviceOps for LisaVideo {
     }
 
     fn config(&self) -> FunctionConfig {
-        FunctionConfig::Display(DisplayConfig::default())
+        FunctionConfig::Display(DisplayConfig {
+            monitor: self.monitor,
+            vram_size: None,
+        })
     }
 
     fn function(&mut self) -> FunctionMut<'_> {
@@ -419,5 +548,104 @@ mod tests {
         assert!(video.tick(1, &ram).unwrap());
         assert!(!video.tick(period - 1, &ram).unwrap());
         assert!(video.tick(period, &ram).unwrap());
+    }
+    fn bank_serial_bits(prom: &[u8], bank: usize) -> String {
+        prom[bank * 64..bank * 64 + 56]
+            .iter()
+            .map(|b| if b & PROM_SERIAL != 0 { '1' } else { '0' })
+            .collect()
+    }
+
+    /// As in the dump of 341-0229-A
+    #[test]
+    fn default_serial_as_in_the_dump() {
+        let prom = build_prom(false, None).unwrap();
+        for bank in [0, 1] {
+            assert_eq!(
+                bank_serial_bits(&prom, bank),
+                "11111111000000000001000001101001000101100000011000010000"
+            );
+        }
+        for bank in [2, 3] {
+            assert_eq!(
+                bank_serial_bits(&prom, bank),
+                "11111111000001011000001100100101100000000010001100100000"
+            );
+        }
+    }
+
+    /// The check of the boot ROM's RDSERN
+    #[test]
+    fn serial_checksum() {
+        let digits = parse_serial("12345678901234567890").unwrap();
+        let blocks = serial_blocks(&digits);
+        let nibbles: Vec<u8> = blocks
+            .iter()
+            .flatten()
+            .flat_map(|b| [b >> 4, b & 0x0F])
+            .collect();
+        assert_eq!(nibbles.len(), 28);
+        let sum: u32 = nibbles[..24].iter().map(|&n| u32::from(n)).sum();
+        let check =
+            100 * u32::from(nibbles[24]) + 10 * u32::from(nibbles[25]) + u32::from(nibbles[26]);
+        assert_eq!(sum + u32::from(nibbles[27]) - 4 * 0xF, check);
+    }
+
+    #[test]
+    fn serial_must_be_20_digits() {
+        assert!(parse_serial("123").is_err());
+        assert!(parse_serial("0583258023200010691X").is_err());
+        assert!(parse_serial(DEFAULT_SERIAL).is_ok());
+    }
+
+    fn frame(prom: &[u8]) -> (usize, usize, usize) {
+        let video = LisaVideo::new(prom);
+        (video.states.len(), video.width, video.height)
+    }
+
+    #[test]
+    fn built_in_frames() {
+        assert_eq!(frame(&build_prom(false, None).unwrap()), (20776, 720, 364));
+        assert_eq!(frame(&build_prom(true, None).unwrap()), (20976, 608, 431));
+    }
+
+    /// As the Load ROM dialog checks a dump
+    fn passes_as_a_dump(prom: &[u8]) -> bool {
+        use sha2::{Digest, Sha256};
+        let rom = INFO.rom.as_ref().unwrap();
+        let cleared: Vec<u8> = prom.iter().map(|b| b & !rom.varying_bits).collect();
+        rom.digests
+            .contains(&hex::encode(Sha256::digest(&cleared)).as_str())
+    }
+
+    #[test]
+    fn built_in_proms_pass_as_dumps_whatever_the_serial() {
+        assert!(passes_as_a_dump(&build_prom(false, None).unwrap()));
+        assert!(passes_as_a_dump(
+            &build_prom(false, Some("12345678901234567890")).unwrap()
+        ));
+        assert!(passes_as_a_dump(&build_prom(true, None).unwrap()));
+        assert!(!passes_as_a_dump(&[0; 256]));
+    }
+
+    #[test]
+    fn the_monitor_chooses_the_prom_built_in() {
+        let config = |monitor| DeviceConfig {
+            bus: crate::devices::bus_id::BUILT_IN.into(),
+            slot: crate::devices::built_in::VIDEO.into(),
+            model: Some(DeviceModel::LisaVideo),
+            rom: None,
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor,
+                vram_size: None,
+            }),
+        };
+        let video = LisaVideo::with_config(None, None).unwrap();
+        assert!(!video.is_screen_kit());
+        let kit = config(Some(MacMonitor::LisaScreenKit));
+        let video = LisaVideo::with_config(Some(&kit), None).unwrap();
+        assert!(video.is_screen_kit());
+        assert_eq!(video.config(), kit.function);
+        assert!(LisaVideo::with_config(None, Some("123")).is_err());
     }
 }
