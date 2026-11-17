@@ -269,15 +269,17 @@ impl ModelSelectionDialog {
         if !monitors.is_empty() {
             self.monitors = monitors;
         }
-        // The drives are the 800K drive or the 400K drive it replaces only on the Macs that
-        // have the checkbox
+        // The drives are an 800K drive, or the 400K drive it replaces only on the Macs that
+        // have the checkbox. The Lisa's 400K drive is on the 2/5 too, so it says nothing.
         let drives: Vec<_> = self
             .devices
             .iter()
-            .filter(|config| config.bus == bus_id::SWIM)
+            .filter(|config| config.bus == bus_id::SWIM || config.bus == bus_id::LISA_FDC)
             .filter_map(|config| config.model)
             .collect();
-        if drives.contains(&DeviceModel::Mac800KPwmDrive) {
+        if drives.contains(&DeviceModel::Mac800KPwmDrive)
+            || drives.contains(&DeviceModel::Lisa800KDrive)
+        {
             self.drive_800k = true;
         } else if drives.contains(&DeviceModel::Mac400KDrive) {
             self.drive_800k = false;
@@ -739,6 +741,14 @@ impl ModelSelectionDialog {
                     });
             }
 
+            // The options of the Lisa's hardware
+            self.drive_checkbox(
+                ui,
+                BusKind::LisaFdc,
+                DeviceModel::Lisa800KDrive,
+                "Use an 800K floppy drive, for MacWorks Plus",
+            );
+
             ui.collapsing("Advanced", |ui| {
                 if self.selected_model.is_lisa() {
                     self.lisa_serial_group(ui);
@@ -768,7 +778,12 @@ impl ModelSelectionDialog {
                 });
                 ui.group(|ui| {
                     ui.vertical(|ui| {
-                        self.drive_checkbox(ui);
+                        self.drive_checkbox(
+                            ui,
+                            BusKind::Swim,
+                            DeviceModel::Mac800KPwmDrive,
+                            "Use 800K floppy drive on Macintosh 128K/512K",
+                        );
                         ui.checkbox(
                             &mut self.init_args.audio_disabled,
                             "Disable audio (sync to video)",
@@ -1207,11 +1222,10 @@ impl ModelSelectionDialog {
         }
     }
 
-    /// The checkbox that gives a Mac with 400K drives the 800K drive that fits it
-    fn drive_checkbox(&mut self, ui: &mut egui::Ui) {
-        let drive = DeviceModel::Mac800KPwmDrive;
+    /// The checkbox that gives a machine with 400K drives the 800K drive that fits it
+    fn drive_checkbox(&mut self, ui: &mut egui::Ui, kind: BusKind, drive: DeviceModel, text: &str) {
         let buses = self.selected_model.buses();
-        let Some(bus) = buses.iter().find(|bus| bus.kind == BusKind::Swim) else {
+        let Some(bus) = buses.iter().find(|bus| bus.kind == kind) else {
             return;
         };
         if !models_for(bus.kind, self.selected_model).any(|info| info.model == drive) {
@@ -1227,7 +1241,7 @@ impl ModelSelectionDialog {
             .iter()
             .all(|slot| model_in(self, &slot.id) == Some(drive));
         let mut checked = current;
-        ui.checkbox(&mut checked, "Use 800K floppy drive on Macintosh 128K/512K");
+        ui.checkbox(&mut checked, text);
         if checked != current {
             self.drive_800k = checked;
             self.set_800k_drives(checked);
@@ -1235,20 +1249,24 @@ impl ModelSelectionDialog {
     }
 
     /// Puts the 800K drive in every slot of the floppy bus, or the drive the Mac model has
-    /// there, on a Mac model that takes that drive
+    /// there, on a Mac model that takes that drive: the Mac 128K/512K, or the Lisa 2/10
     fn set_800k_drives(&mut self, on: bool) {
-        let drive = DeviceModel::Mac800KPwmDrive;
         let buses = self.selected_model.buses();
-        let Some(bus) = buses.iter().find(|bus| bus.kind == BusKind::Swim) else {
-            return;
-        };
-        if !models_for(bus.kind, self.selected_model).any(|info| info.model == drive) {
-            return;
-        }
-        for slot in &bus.slots {
-            // Back to the drive the Mac model has
-            let own = slot.device.as_ref().map(|device| device.model);
-            self.choose(&bus.id, &slot.id, if on { Some(drive) } else { own });
+        for (kind, drive) in [
+            (BusKind::Swim, DeviceModel::Mac800KPwmDrive),
+            (BusKind::LisaFdc, DeviceModel::Lisa800KDrive),
+        ] {
+            let Some(bus) = buses.iter().find(|bus| bus.kind == kind) else {
+                continue;
+            };
+            if !models_for(bus.kind, self.selected_model).any(|info| info.model == drive) {
+                continue;
+            }
+            for slot in &bus.slots {
+                // Back to the drive the Mac model has
+                let own = slot.device.as_ref().map(|device| device.model);
+                self.choose(&bus.id, &slot.id, if on { Some(drive) } else { own });
+            }
         }
     }
 

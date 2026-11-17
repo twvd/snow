@@ -2070,4 +2070,29 @@ mod tests {
         };
         assert!(Emulator::new(&machine, vec![]).is_err());
     }
+    #[test]
+    fn a_lisa_has_drives_of_its_own() {
+        let dir = TestDir::new("lisa");
+        let drive = DeviceConfig {
+            bus: bus_id::LISA_FDC.into(),
+            slot: "1".into(),
+            model: Some(DeviceModel::Lisa800KDrive),
+            rom: None,
+            function: FunctionConfig::Floppy,
+        };
+        let widget = lisa_disk(DeviceModel::Widget, dir.file("w.image", LISA_DISK_SIZE));
+        let mut emu = make(MacModel::Lisa210, vec![drive.clone(), widget.clone()]).unwrap();
+        let reported = emu.devices();
+        assert!(reported.contains(&drive));
+        assert!(reported.contains(&widget));
+
+        // The 2/5 has neither, and its port takes the first entry
+        let profile = lisa_disk(DeviceModel::ProFile, dir.file("p.image", LISA_DISK_SIZE));
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig::new(&rom, MacModel::Lisa25);
+        let (mut emu, _, refused) =
+            Emulator::new(&machine, vec![profile.clone(), drive, widget]).unwrap();
+        assert_eq!(refused.len(), 2, "{:?}", refused);
+        assert_eq!(emu.devices(), [profile]);
+    }
 }
