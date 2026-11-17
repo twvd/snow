@@ -32,7 +32,7 @@ use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::macii::via2::Via2;
 use crate::mac::maclc::via::Via;
 use crate::mac::pds::Pds;
-use crate::mac::quadra::dafb::{self, Dafb};
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -98,9 +98,6 @@ const VIA_RELEASE: Ticks = 15;
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
-
-/// Sizes of video RAM which can be fitted
-pub const VRAM_SIZES: &[usize] = dafb::VRAM_SIZES_MEMCJR;
 
 /// Bytes of the PrimeTime registers kept
 const PRIMETIME_REGS_SIZE: usize = 0x80;
