@@ -32,7 +32,7 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
-use snow_core::emulator::{Emulator, MouseMode};
+use snow_core::emulator::{Emulator, MachineConfig, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use snow_core::mac::scc::SccCh;
@@ -341,9 +341,6 @@ impl EmulatorState {
                 }
             }
         }
-        if let Some(extension_rom) = extension_rom {
-            extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
-        }
 
         let mouse_mode = if matches!(args.mouse_disabled, Some(true)) {
             // Deprecated mouse_disabled
@@ -354,16 +351,20 @@ impl EmulatorState {
         self.mouse_mode = mouse_mode;
         let iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
-        let (mut emulator, frame_recv) = Emulator::new_with_extra(
-            rom,
-            &extra_roms,
+        let machine = MachineConfig {
             model,
-            args.monitor,
+            rom,
+            extension_rom,
+            ram_size: args.ram_size,
             mouse_mode,
-            args.ram_size,
+            pmmu_enabled: args.pmmu_enabled,
+            fpu_enabled: args.fpu_enabled,
+        };
+        let (mut emulator, frame_recv) = Emulator::new_with_extra(
+            &machine,
+            &extra_roms,
+            args.monitor,
             args.override_fdd_type,
-            args.pmmu_enabled,
-            args.fpu_enabled,
             args.vram_size,
             iie_card,
         )?;
