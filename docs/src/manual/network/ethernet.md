@@ -58,6 +58,16 @@ On the Macintosh II, IIx and IIcx and on the Quadras, a NuBus slot can hold an A
 Choose it for a NuBus slot: it needs no ROM file. The emulated system needs Apple's driver for it, 'Apple Ethernet
 NB', which the Network Software Installer installs.
 
+### Apple Ethernet LC Card and LC Twisted-Pair Card
+
+The PDS slot of the Macintosh LC, LC II, LC III and LC 475 can hold one of Apple's Ethernet LC cards, in place of
+the Apple IIe Card: choose it under 'PDS Slot'.
+
+* The Apple Ethernet LC Card needs the image of its ROM, 341-0470 or 341-0842, which holds its driver: browse for it
+  in its ROM row.
+* The Apple Ethernet LC Twisted-Pair Card needs no ROM file, but the emulated system needs Apple's driver for it:
+  the System 7.5 installer has 'EtherTalk for Apple Ethernet LC cards' among its options.
+
 ## MAC address
 
 An Ethernet adapter gets a random MAC address when it is attached. A [workspace](../workspaces.md) keeps

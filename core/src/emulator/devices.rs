@@ -1880,6 +1880,52 @@ mod tests {
         assert!(make(MacModel::MacIIx, vec![card]).is_err());
     }
 
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn an_ethernet_card_goes_in_the_pds_slot_of_an_lc() {
+        let mac = new_ethernet_address([0x08, 0x00, 0x07], &[]);
+        let card = |model, rom: Option<&Path>| DeviceConfig {
+            bus: bus_id::PDS_LC.into(),
+            slot: "0".into(),
+            model: Some(model),
+            rom: rom.map(Path::to_path_buf),
+            function: FunctionConfig::Ethernet(EthernetConfig {
+                mac: Some(mac),
+                link: EthernetLinkType::Down,
+            }),
+        };
+        let twisted_pair = card(DeviceModel::AppleEthernetLcTp, None);
+        for model in [
+            MacModel::LC,
+            MacModel::LCII,
+            MacModel::LCIII,
+            MacModel::LC475,
+        ] {
+            let mut emu = make(model, vec![twisted_pair.clone()]).unwrap();
+            assert_eq!(emu.devices(), vec![twisted_pair.clone()]);
+            let device = device_in(&mut emu, bus_id::PDS_LC, "0").unwrap();
+            assert_eq!(
+                device.name.as_deref(),
+                Some("Apple Ethernet LC Twisted-Pair Card")
+            );
+            let function = emu.function_in(bus_id::PDS_LC, "0").unwrap();
+            let FunctionStatus::Ethernet(ethernet) = function.status() else {
+                panic!("An Ethernet card has the Ethernet function");
+            };
+            assert_eq!(ethernet.mac, mac);
+        }
+
+        // The Ethernet LC Card needs the image of its declaration ROM
+        let dir = TestDir::new("lc_ethernet");
+        let not_a_rom = dir.file("card.rom", 0x8000);
+        for rom in [None, Some(not_a_rom.as_path())] {
+            let machine = MachineConfig::new(&[0; 1024 * 1024], MacModel::LC);
+            let devices = vec![card(DeviceModel::AppleEthernetLc, rom)];
+            let (_, _, refused) = Emulator::new(&machine, devices).unwrap();
+            assert_eq!(refused.len(), 1);
+        }
+    }
+
     #[cfg(feature = "printer")]
     #[test]
     fn a_printer_is_added() {

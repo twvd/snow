@@ -313,6 +313,10 @@ pub enum DeviceModel {
     MemcJrVideo,
     DjMemcVideo,
     AppleIIePdsCard,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetLc,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetLcTp,
     UniDisk35,
     Apple525Drive,
 }
@@ -345,6 +349,10 @@ impl DeviceModel {
             Self::MemcJrVideo => &quadra::dafb::INFO_MEMCJR,
             Self::DjMemcVideo => &quadra::dafb::INFO_DJMEMC,
             Self::AppleIIePdsCard => &pds_iie::INFO,
+            #[cfg(feature = "ethernet")]
+            Self::AppleEthernetLc => &ethernet::appl_lc_sonic::INFO,
+            #[cfg(feature = "ethernet")]
+            Self::AppleEthernetLcTp => &ethernet::appl_lc_sonic::INFO_TP,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
         }

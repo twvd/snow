@@ -10,15 +10,23 @@
 //! bit, clear). The Twisted-Pair Card's ROM (341-0740) holds no driver, only
 //! what the Slot Manager reads: Snow builds it at run time.
 
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::mac_prom_byte;
 use super::sonic::Sonic;
+use super::{APPLE, mac_prom_byte};
 use crate::bus::Address;
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
+    MadeDevice, ModelInfo, RomInfo,
+};
+use crate::emulator::EmuContext;
 use crate::mac::declrom::{CAT_BOARD, CAT_NETWORK, DeclRom, Entry, SResource, TYPE_ETHERNET, id};
 use crate::mac::dma::DmaOps;
+use crate::mac::pds::PdsSlot;
 use crate::net::EthernetPort;
 use crate::tickable::Ticks;
 
@@ -97,6 +105,12 @@ pub struct ApplLcSonic {
 
     /// Declaration ROM, at the top of the slot on all four byte lanes
     rom: Vec<u8>,
+
+    /// The file of the Ethernet LC Card's ROM. None: the Twisted-Pair Card, whose ROM is built.
+    rom_path: Option<PathBuf>,
+
+    /// The number of ticks in one second, for the ticks that `tick()` counts
+    tick_rate: Ticks,
 }
 
 impl ApplLcSonic {
@@ -105,6 +119,8 @@ impl ApplLcSonic {
         Self {
             sonic: Sonic::new(SONIC_REVISION, port),
             rom,
+            rom_path: None,
+            tick_rate: 1,
         }
     }
 
@@ -113,24 +129,19 @@ impl ApplLcSonic {
         Self::new(port, tp_decl_rom())
     }
 
-    pub fn port(&self) -> &EthernetPort {
-        self.sonic.port()
-    }
-
-    pub fn port_mut(&mut self) -> &mut EthernetPort {
-        self.sonic.port_mut()
-    }
-
-    pub fn irq(&self) -> bool {
-        self.sonic.irq()
-    }
-
-    pub fn reset(&mut self) {
-        self.sonic.reset();
-    }
-
-    pub fn tick(&mut self, ticks: Ticks, frequency: Ticks, dma: &mut dyn DmaOps) {
-        self.sonic.tick(ticks, frequency, dma);
+    /// The offset in the card's space of an address on the CPU's bus, if the card answers
+    /// there: the standard and super slot spaces of slot $E in the 32-bit map,
+    /// `$FE00 0000`-`$FEFF FFFF` and `$E000 0000`-`$EFFF FFFF`, and `$E0 0000`-`$EF FFFF` in the
+    /// 24-bit map and in the 32-bit map with A31 clear (Macintosh LC Developer Note,
+    /// "Addressing guidelines")
+    fn slot_offset(addr: Address, map32: bool) -> Option<Address> {
+        if map32 && addr & 0x8000_0000 != 0 {
+            return matches!(addr >> 24, 0xE0..=0xEF | 0xFE).then_some(addr & 0xFF_FFFF);
+        }
+        match addr & 0xFF_FFFF {
+            addr @ 0xE0_0000..=0xEF_FFFF => Some(addr - 0xE0_0000),
+            _ => None,
+        }
     }
 
     /// The SONIC register at `offset`, if `offset` is in the high half of a
@@ -201,10 +212,136 @@ impl Debuggable for ApplLcSonic {
 /// Whether `rom` is a declaration ROM which the Ethernet LC Card can carry
 pub fn check_rom(rom: &[u8]) -> Result<()> {
     if rom.len() != 0x8000 || !crate::mac::declrom::valid(rom) {
-        anyhow::bail!("Not a 32 KB declaration ROM of the Apple Ethernet LC Card");
+        bail!("Not a 32 KB declaration ROM of the Apple Ethernet LC Card");
     }
     Ok(())
 }
+
+#[typetag::serde]
+impl PdsSlot for ApplLcSonic {
+    /// The card answers every cycle in its slot space: what it doesn't decode reads open bus.
+    fn read(&mut self, addr: Address, size: u32, map32: bool) -> Option<u32> {
+        let offset = Self::slot_offset(addr, map32)?;
+        Some(Self::read(self, offset, size))
+    }
+
+    fn write(&mut self, addr: Address, size: u32, map32: bool, val: u32) -> Option<()> {
+        let offset = Self::slot_offset(addr, map32)?;
+        Self::write(self, offset, size, val);
+        Some(())
+    }
+
+    fn connected(&mut self, tick_rate: Ticks) {
+        self.tick_rate = tick_rate;
+    }
+
+    /// The SONIC's interrupt is the one line of the slot
+    fn irqs(&self) -> u8 {
+        self.sonic.irq().into()
+    }
+
+    fn reset(&mut self, _hard: bool) {
+        self.sonic.reset();
+    }
+
+    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()> {
+        self.sonic.tick(ticks, self.tick_rate, dma);
+        Ok(())
+    }
+}
+
+impl DeviceOps for ApplLcSonic {
+    fn info(&self) -> &'static ModelInfo {
+        if self.rom_path.is_some() {
+            &INFO
+        } else {
+            &INFO_TP
+        }
+    }
+
+    fn rom(&self) -> Option<&Path> {
+        self.rom_path.as_deref()
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Ethernet(self.sonic.port().config())
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(self.info().name.to_string())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        // The Ethernet function of an adapter is that of its port
+        FunctionMut::Ethernet(self.sonic.port_mut())
+    }
+
+    fn debug_properties(&self) -> DebuggableProperties {
+        self.sonic.get_debug_properties()
+    }
+}
+
+/// The port of a new card: the address of its config, and its link down. The emulator gives an
+/// address to a config that has none, and sets the link once the card is in its slot.
+fn port(config: &DeviceConfig) -> Result<EthernetPort> {
+    let FunctionConfig::Ethernet(ethernet) = &config.function else {
+        bail!("An Ethernet adapter needs an Ethernet adapter's config");
+    };
+    let mac = ethernet
+        .mac
+        .context("An Ethernet adapter needs an Ethernet address")?;
+    Ok(EthernetPort::new(mac))
+}
+
+/// Makes an Ethernet LC Card with the ROM file of its config, which holds the card's driver
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let path = config
+        .rom
+        .as_ref()
+        .with_context(|| format!("The {} needs its ROM file", INFO.name))?;
+    let rom = std::fs::read(path).with_context(|| format!("Cannot read '{}'", path.display()))?;
+    check_rom(&rom)?;
+    let mut card = ApplLcSonic::new(port(config)?, rom);
+    card.rom_path = Some(path.clone());
+    Ok(MadeDevice::Pds(Box::new(card)))
+}
+
+/// Makes an Ethernet LC Twisted-Pair Card
+fn create_tp(config: &DeviceConfig) -> Result<MadeDevice> {
+    let card = ApplLcSonic::new_twisted_pair(port(config)?);
+    Ok(MadeDevice::Pds(Box::new(card)))
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    // ROMs 341-0470 and 341-0842, both from the Macintosh LC Ethernet Adapter
+    rom: Some(RomInfo {
+        label: "Ethernet LC Card ROM",
+        digests: &[
+            "e4d460e1ed918232fdd39b0ee40c7e2daf6ad9ca57e779fd2d662886cfdcc67f",
+            "cb6151d8ac8438c97c51bc1c32680773e030f0e6a3dbc713537c46c1c5e9ce21",
+        ],
+        optional: false,
+    }),
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::AppleEthernetLc,
+        "Apple Ethernet LC Card",
+        BusKind::LcPds,
+        FunctionInfo::Ethernet(APPLE),
+    )
+};
+
+pub const INFO_TP: ModelInfo = ModelInfo {
+    fixed: true,
+    create: Some(create_tp),
+    ..ModelInfo::base(
+        DeviceModel::AppleEthernetLcTp,
+        "Apple Ethernet LC Twisted-Pair Card",
+        BusKind::LcPds,
+        FunctionInfo::Ethernet(APPLE),
+    )
+};
 
 #[cfg(test)]
 mod tests {
@@ -212,6 +349,17 @@ mod tests {
 
     fn card() -> ApplLcSonic {
         ApplLcSonic::new_twisted_pair(EthernetPort::new([0x08, 0x00, 0x07, 0x12, 0x34, 0x56]))
+    }
+
+    #[test]
+    fn the_card_answers_in_the_spaces_of_slot_e() {
+        assert_eq!(ApplLcSonic::slot_offset(0xE0_0010, false), Some(0x10));
+        assert_eq!(ApplLcSonic::slot_offset(0x50E0_0010, true), Some(0x10));
+        assert_eq!(ApplLcSonic::slot_offset(0xFE40_0000, true), Some(0x40_0000));
+        assert_eq!(ApplLcSonic::slot_offset(0xE040_0000, true), Some(0x40_0000));
+        // Not in the window above the video RAM that the Apple IIe Card uses
+        assert_eq!(ApplLcSonic::slot_offset(0xFC_0000, false), None);
+        assert_eq!(ApplLcSonic::slot_offset(0xFD00_0000, true), None);
     }
 
     #[test]
