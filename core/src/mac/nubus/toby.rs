@@ -317,6 +317,11 @@ impl NubusSlot for Toby {
         self.in_vblank = self.vblank_ticks >= ctx.bus_frequency() / 60 * 480 / 525;
         Ok(())
     }
+
+    /// The card has one display
+    fn display_from_Mac_dCtlSlotId(&self, _dctl_slot_id: u8) -> Option<usize> {
+        Some(0)
+    }
 }
 
 impl Toby {

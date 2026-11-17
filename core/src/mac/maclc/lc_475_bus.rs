@@ -1004,6 +1004,21 @@ impl Lc475Bus {
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display that the guest's Slot Manager knows by the slot number and the id of the
+    /// slot resource of its driver's AuxDCE. None: this machine has one display.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        _dctl_slot: u8,
+        _dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        None
+    }
+
     /// Updates the mouse position in absolute mode, given the current value
     /// of RawMouse. Returns what the low memory globals of the OS should hold
     /// for it, if they should change.

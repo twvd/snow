@@ -732,6 +732,31 @@ impl MacIIBus {
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// Ends the boot overlay, as the ROM does early on, for a test that needs the RAM at its
+    /// addresses
+    #[cfg(test)]
+    pub(crate) fn end_overlay(&mut self) {
+        self.overlay = false;
+    }
+
+    /// The display of the machine that the guest's Slot Manager knows by the slot number and
+    /// the id of the slot resource of its driver's AuxDCE (`dCtlSlot` and `dCtlSlotId`): the
+    /// ids of its bus and slot, and its index among the displays of that device. Called by
+    /// the emulator, which reads the guest's list of screens. The videos of this machine are
+    /// its NuBus cards.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        dctl_slot: u8,
+        dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        self.nubus.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)
+    }
+
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
     fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
         ram_offset(self.overlay, self.ram_mask, self.ram.len(), addr)
