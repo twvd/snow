@@ -1064,7 +1064,6 @@ impl Debuggable for Quadra700Bus {
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Enhanced Apple Sound Chip", self.asc),
-            dbgprop_nest!("Built-in video (DAFB)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),

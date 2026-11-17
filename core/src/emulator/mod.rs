@@ -864,9 +864,11 @@ impl Emulator {
 
         // Peripheral debug view
         if self.peripheral_debug {
-            self.event_sender.send(EmulatorEvent::PeripheralDebug(
-                self.config.debug_properties(),
-            ))?;
+            // The chips of the machine, then the devices on its buses
+            let mut properties = self.config.debug_properties();
+            properties.push(self.devices_debug());
+            self.event_sender
+                .send(EmulatorEvent::PeripheralDebug(properties))?;
         }
 
         Ok(())

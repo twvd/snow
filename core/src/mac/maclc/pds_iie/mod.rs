@@ -1657,6 +1657,10 @@ impl DeviceOps for PdsIIeCard {
         FunctionMut::AppleIIeCard(self)
     }
 
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+
     /// The card adds its disk port to the buses of the machine.
     fn extra_buses(&mut self) -> Vec<(Bus, &mut dyn BusOps)> {
         let port = Bus::new(

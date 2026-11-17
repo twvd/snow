@@ -1204,21 +1204,14 @@ impl Debuggable for MacIIBus {
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
-        let mut result = vec![
+        vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Apple Sound Chip", self.asc),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
-        ];
-
-        if let Some(video) = self.se30_video.as_ref() {
-            result.push(dbgprop_nest!("SE/30 video", video));
-            return result;
-        }
-        result.extend(self.nubus.debug_properties());
-        result
+        ]
     }
 }
 

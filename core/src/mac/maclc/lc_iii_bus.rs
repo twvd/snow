@@ -1120,7 +1120,6 @@ impl InspectableBus<Address, Byte> for LcIIIBus {
 
 impl Debuggable for LcIIIBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
-        use crate::dbgprop_group;
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
@@ -1130,12 +1129,7 @@ impl Debuggable for LcIIIBus {
             dbgprop_nest!("Sound", self.sound),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("Gate array registers", self.pseudovia),
-            dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
-            match self.pds.card() {
-                Some(card) => dbgprop_nest!("Apple IIe Card", card),
-                None => dbgprop_group!("Apple IIe Card (absent)", Vec::new()),
-            },
         ]
     }
 }
