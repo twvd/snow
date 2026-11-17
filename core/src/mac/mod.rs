@@ -8,7 +8,7 @@ use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
 use crate::lisa::bus::LisaBus;
-use crate::lisa::fdc_sim;
+use crate::lisa::{fdc_sim, profile_sim};
 use crate::tickable::Ticks;
 use compact::bus::CompactMacBus;
 use macii::bus::MacIIBus;
@@ -412,6 +412,12 @@ impl MacModel {
                     })
                     .collect(),
             });
+            buses.push(Bus::new(
+                BusKind::LisaParallel,
+                bus_id::LISA_PARALLEL,
+                "Parallel port",
+                &profile_sim::SLOT_IDS,
+            ));
         }
         if self.has_scsi() {
             buses.push(Bus::new(

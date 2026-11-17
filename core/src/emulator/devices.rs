@@ -1970,4 +1970,78 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// 5 MB, in blocks of 532 bytes
+    const LISA_DISK_SIZE: usize = 9728 * 532;
+
+    /// The device config of a hard disk on the parallel port of a Lisa
+    fn lisa_disk(model: DeviceModel, media: PathBuf) -> DeviceConfig {
+        DeviceConfig {
+            bus: bus_id::LISA_PARALLEL.into(),
+            slot: "0".into(),
+            model: Some(model),
+            rom: None,
+            function: FunctionConfig::HardDisk(HardDiskConfig { media: Some(media) }),
+        }
+    }
+
+    #[test]
+    fn a_lisa_hard_disk_is_added_and_removed() {
+        let dir = TestDir::new("lisa_disk");
+        let mut emu = machine(MacModel::Lisa25);
+        let video = emu.devices();
+        let image = dir.file("p.image", LISA_DISK_SIZE);
+        let disk = lisa_disk(DeviceModel::ProFile, image.clone());
+        emu.add_device(&disk).unwrap();
+        let status = emu
+            .device_function(bus_id::LISA_PARALLEL, "0")
+            .unwrap()
+            .status();
+        let FunctionStatus::HardDisk(status) = status else {
+            panic!("Not a hard disk");
+        };
+        assert_eq!(status.media, Some(image));
+        assert_eq!(status.capacity, LISA_DISK_SIZE);
+        assert_eq!(emu.devices(), [vec![disk.clone()], video.clone()].concat());
+
+        // The port has one place
+        assert!(emu.add_device(&disk).is_err());
+        let other = lisa_disk(DeviceModel::ProFile, dir.file("q.image", LISA_DISK_SIZE));
+        emu.remove_device(bus_id::LISA_PARALLEL, "0").unwrap();
+        assert_eq!(emu.devices(), video);
+        emu.add_device(&other).unwrap();
+        assert_eq!(emu.devices(), [vec![other], video].concat());
+
+        // A ProFile needs its image, and only a Lisa has the port
+        let mut none = disk.clone();
+        none.function = FunctionConfig::HardDisk(HardDiskConfig::default());
+        emu.remove_device(bus_id::LISA_PARALLEL, "0").unwrap();
+        assert!(emu.add_device(&none).is_err());
+        assert!(plus().add_device(&disk).is_err());
+    }
+
+    #[cfg(feature = "savestates")]
+    #[test]
+    fn a_save_state_holds_the_lisa_hard_disk() {
+        let dir = TestDir::new("state_lisa");
+        let mut devices = video_configs(MacModel::Lisa25, &dir.file("video.rom", 0));
+        // The list is in the order of the buses: the port comes before `Built-in`
+        devices.insert(
+            0,
+            lisa_disk(DeviceModel::ProFile, dir.file("p.image", LISA_DISK_SIZE)),
+        );
+        let mut emu = make(MacModel::Lisa25, devices.clone()).unwrap();
+        assert_eq!(emu.devices(), devices);
+        let state = dir.0.join("lisa.snows");
+        emu.save_state(&state, None).unwrap();
+        drop(emu);
+        let (mut restored, displays) = Emulator::load_state(&state, &dir.0).unwrap();
+        assert_eq!(displays.len(), 1);
+        assert_eq!(restored.devices(), devices);
+        let status = restored
+            .device_function(bus_id::LISA_PARALLEL, "0")
+            .unwrap()
+            .status();
+        assert!(matches!(status, FunctionStatus::HardDisk(d) if d.capacity == LISA_DISK_SIZE));
+    }
 }

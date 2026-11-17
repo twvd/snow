@@ -820,6 +820,15 @@ impl SnowGui {
         whole.to_pos2()
     }
 
+    /// Attaches a hard disk with this image to an empty slot
+    fn attach_hdd(&self, bus: &str, slot: &str, path: &Path) {
+        if bus != bus_id::SCSI {
+            self.emu.attach_hdd(bus, slot, path);
+        } else if let Ok(id) = slot.parse() {
+            self.emu.scsi_attach_hdd(id, path);
+        }
+    }
+
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
         if result.filename.try_exists()? {
             bail!(
@@ -833,7 +842,7 @@ impl SnowGui {
             file.write_all(&[0])?;
             file.flush()?;
         }
-        self.emu.scsi_attach_hdd(result.scsi_id, &result.filename);
+        self.attach_hdd(&result.bus, &result.slot, &result.filename);
         Ok(())
     }
 
@@ -1812,7 +1821,8 @@ impl SnowGui {
             .iter()
             .filter(|d| matches!(d.status, FunctionStatus::HardDisk(_)))
             .collect();
-        if !disks.is_empty() {
+        let empty = self.emu.empty_hard_disk_slots();
+        if !disks.is_empty() || !empty.is_empty() {
             ui.separator();
             ui.strong("Hard disks");
             for device in disks {
@@ -1835,6 +1845,34 @@ impl SnowGui {
                     |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
                         self.draw_hard_disk_items(ui, &device.bus, &device.slot, disk, fixed);
+                    },
+                );
+            }
+            for (bus, slot, info) in &empty {
+                let label = self.emu.slot_label(bus, slot);
+                ui.menu_button(
+                    format!(
+                        "{} {}: (no device)",
+                        egui_material_icons::icons::ICON_BLOCK,
+                        label
+                    ),
+                    |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
+                        if ui
+                            .button(format!("Create new {} image...", info.name))
+                            .clicked()
+                        {
+                            self.create_disk_dialog.open(
+                                bus,
+                                slot,
+                                label.clone(),
+                                &self.workspace_dir(),
+                            );
+                        }
+                        if ui.button(format!("Load {} image...", info.name)).clicked() {
+                            self.hdd_dialog_target = (bus.clone(), slot.clone());
+                            self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
+                        }
                     },
                 );
             }
@@ -2065,7 +2103,12 @@ impl SnowGui {
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
                     if ui.button("Create new HDD image...").clicked() {
-                        self.create_disk_dialog.open(id, &self.workspace_dir());
+                        self.create_disk_dialog.open(
+                            bus_id::SCSI,
+                            &id.to_string(),
+                            format!("SCSI ID #{}", id),
+                            &self.workspace_dir(),
+                        );
                     }
                     if ui.button("Load HDD disk image...").clicked() {
                         self.hdd_dialog_target = (bus_id::SCSI.to_string(), id.to_string());
@@ -4578,8 +4621,8 @@ impl eframe::App for SnowGui {
                     if self.emu.device_status(bus, slot).is_some() {
                         // A disk that takes another image
                         self.emu.load_hard_disk(bus, slot, &path);
-                    } else if let Ok(id) = slot.parse() {
-                        self.emu.scsi_attach_hdd(id, &path);
+                    } else {
+                        self.attach_hdd(bus, slot, &path);
                     }
                 }
                 DialogMode::SaveFile => {
