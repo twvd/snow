@@ -58,11 +58,11 @@ pub struct FramebufferWidget {
 }
 
 impl FramebufferWidget {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(egui_ctx: &egui::Context) -> Self {
         Self {
             frame: None,
             frame_recv: None,
-            viewport_texture: cc.egui_ctx.load_texture(
+            viewport_texture: egui_ctx.load_texture(
                 "viewport",
                 egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
