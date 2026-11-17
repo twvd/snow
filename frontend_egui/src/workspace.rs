@@ -10,6 +10,7 @@ use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 #[cfg(feature = "ethernet")]
 use snow_core::devices::EthernetConfig;
@@ -17,10 +18,13 @@ use snow_core::devices::EthernetLinkType;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
-    CdromConfig, DeviceConfig, DeviceModel, FunctionConfig, HardDiskConfig, bus_id,
+    CdromConfig, DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig, HardDiskConfig,
+    built_in, bus_id,
 };
-use snow_core::mac::MacModel;
+use snow_core::mac::maclc::pds_iie::IieCardSettings;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::swim::drive::DriveType;
+use snow_core::mac::{MacModel, MacMonitor};
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
 fn deserialize_shader_configs_lenient<'de, D>(
@@ -72,6 +76,137 @@ enum OldScsiTarget {
     CdromFolder(PathBuf),
     Ethernet,
     Printer,
+}
+
+/// The video card of an older workspace, and of older settings
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NubusDeviceKind {
+    /// Macintosh Display Card 8-24
+    // The card of the workspaces from before there was a choice
+    #[default]
+    Mdc12,
+    /// Macintosh II Video Card
+    Toby,
+    /// The video of an SE/30, in older settings
+    SE30Video,
+}
+
+impl NubusDeviceKind {
+    /// The device model of this kind of card
+    pub const fn device_model(self) -> DeviceModel {
+        match self {
+            Self::Mdc12 => DeviceModel::DisplayCard824,
+            Self::Toby => DeviceModel::MacIIVideoCard,
+            Self::SE30Video => DeviceModel::SE30Video,
+        }
+    }
+}
+
+/// The card in the PDS slot of an older workspace
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PdsCardKind {
+    #[default]
+    None,
+    AppleIIe,
+}
+
+/// What an older workspace says of the devices of its machine, among the arguments of the
+/// Load ROM dialog (`init_args`). Read, never written: a workspace saved since has them as
+/// device configs.
+#[derive(Debug, Default)]
+struct OldInitArgs {
+    monitor: Option<MacMonitor>,
+    vram_size: Option<usize>,
+    video_card: NubusDeviceKind,
+    pds_card: PdsCardKind,
+    iie_card_settings: IieCardSettings,
+    override_fdd_type: Option<DriveType>,
+}
+
+impl OldInitArgs {
+    /// The devices that these fields describe, as device configs: the video card of a
+    /// Macintosh II, the ROM of the video of an SE/30, what was chosen for a built-in video,
+    /// the card of the processor-direct slot, and floppy drives of another type than the Mac
+    /// model's. `display_rom` is the workspace's ROM file of the video card, or of the video
+    /// of an SE/30. A workspace saved since has none of this, and gets no device config.
+    fn device_configs(&self, model: MacModel, display_rom: Option<&Path>) -> Vec<DeviceConfig> {
+        let buses = model.buses();
+        let bus = |id: &str| buses.iter().find(|bus| bus.id == id);
+        let mut configs = vec![];
+
+        if let Some(nubus) = bus(bus_id::NUBUS) {
+            // The video card, in the first slot
+            if let Some(rom) = display_rom {
+                configs.push(DeviceConfig {
+                    bus: nubus.id.clone(),
+                    slot: nubus.slots[0].id.clone(),
+                    model: Some(self.video_card.device_model()),
+                    rom: Some(rom.to_path_buf()),
+                    function: FunctionConfig::Display(DisplayConfig {
+                        monitor: self.monitor,
+                        vram_size: None,
+                    }),
+                });
+            }
+        } else if bus(bus_id::BUILT_IN).is_some()
+            && (display_rom.is_some() || self.monitor.is_some() || self.vram_size.is_some())
+        {
+            configs.push(DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::VIDEO.into(),
+                model: None,
+                rom: display_rom.map(Path::to_path_buf),
+                function: FunctionConfig::Display(DisplayConfig {
+                    monitor: self.monitor,
+                    vram_size: self.vram_size,
+                }),
+            });
+        }
+
+        if self.pds_card == PdsCardKind::AppleIIe
+            && let Some(pds) = bus(bus_id::PDS_LC)
+        {
+            configs.push(DeviceConfig {
+                bus: pds.id.clone(),
+                slot: pds.slots[0].id.clone(),
+                model: Some(DeviceModel::AppleIIePdsCard),
+                rom: None,
+                function: FunctionConfig::AppleIIeCard(self.iie_card_settings),
+            });
+        }
+
+        if let Some(drive_type) = self.override_fdd_type
+            && let Some(swim) = bus(bus_id::SWIM)
+        {
+            for slot in &swim.slots {
+                configs.push(DeviceConfig {
+                    bus: swim.id.clone(),
+                    slot: slot.id.clone(),
+                    model: Some(drive_type.device_model()),
+                    rom: None,
+                    function: FunctionConfig::Floppy,
+                });
+            }
+        }
+        configs
+    }
+}
+
+/// One field of an older workspace, read on its own: its default if the file doesn't have it,
+/// or if it can't be read, which is noted for the user
+fn old_field<T: DeserializeOwned + Default>(
+    object: &serde_json::Value,
+    key: &str,
+    what: &str,
+    unread: &mut Vec<String>,
+) -> T {
+    let Some(value) = object.get(key) else {
+        return T::default();
+    };
+    serde_json::from_value(value.clone()).unwrap_or_else(|_| {
+        unread.push(format!("{} can't be read ({})", what, value));
+        T::default()
+    })
 }
 
 /// What can't be read of the file, for the user: the entry of a list, by its place in it
@@ -316,7 +451,9 @@ impl Workspace {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
-        let mut result: Self = serde_json::from_reader(reader)?;
+        // The file as it is, for the fields of older workspaces that are read one by one
+        let file: serde_json::Value = serde_json::from_reader(reader)?;
+        let mut result: Self = serde_json::from_value(file.clone())?;
 
         let parent = path.parent().context("Cannot resolve parent path")?;
         // Default to the current working directory if the input path has no parent. It could be
@@ -351,7 +488,27 @@ impl Workspace {
         if let Some(p) = result.afp_shared_dir.as_mut() {
             p.after_deserialize(parent)?;
         }
-        result.read_devices(parent);
+        let args = &file["init_args"];
+        let unread = &mut result.unread;
+        let old = OldInitArgs {
+            monitor: old_field(args, "monitor", "The monitor", unread),
+            vram_size: old_field(args, "vram_size", "The video RAM size", unread),
+            video_card: old_field(args, "video_card", "The video card", unread),
+            pds_card: old_field(args, "pds_card", "The PDS card", unread),
+            iie_card_settings: old_field(
+                args,
+                "iie_card_settings",
+                "The settings of the Apple IIe Card",
+                unread,
+            ),
+            override_fdd_type: old_field(
+                args,
+                "override_fdd_type",
+                "The type of the floppy drives",
+                unread,
+            ),
+        };
+        result.read_devices(parent, &old);
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
@@ -418,7 +575,7 @@ impl Workspace {
     /// Makes the list of devices of a workspace that was just read: the device configs of the
     /// file that can be read, then those made from the fields of older workspaces, with their
     /// paths made absolute. What can't be read is noted for the user.
-    fn read_devices(&mut self, parent: &Path) {
+    fn read_devices(&mut self, parent: &Path, old: &OldInitArgs) {
         let mut devices = vec![];
         for (i, device) in std::mem::take(&mut self.devices).into_iter().enumerate() {
             match device {
@@ -426,7 +583,7 @@ impl Workspace {
                 Lenient::Unread(value) => self.unread.push(unread_entry("Device", i, &value)),
             }
         }
-        self.convert_old_fields(&mut devices);
+        self.convert_old_fields(&mut devices, old);
         for config in &mut devices {
             config.convert_paths(|path| absolute_path(parent, path));
         }
@@ -435,7 +592,7 @@ impl Workspace {
 
     /// Turns the fields of older workspaces into device configs. A file saved since has none
     /// of them. The id of a SCSI slot is the SCSI ID, in decimal.
-    fn convert_old_fields(&mut self, devices: &mut Vec<DeviceConfig>) {
+    fn convert_old_fields(&mut self, devices: &mut Vec<DeviceConfig>, old: &OldInitArgs) {
         // The targets, by SCSI ID
         let mut targets = vec![];
         for (id, target) in std::mem::take(&mut self.scsi_targets)
@@ -533,7 +690,7 @@ impl Workspace {
         let detect = || MacModel::detect_from_rom(&std::fs::read(self.get_rom_path()?).ok()?);
         if let Some(model) = self.model.or_else(detect) {
             let display_rom = self.display_card_rom_path.take().map(|p| p.get_absolute());
-            for config in self.init_args.device_configs(model, display_rom.as_deref()) {
+            for config in old.device_configs(model, display_rom.as_deref()) {
                 devices.retain(|d| d.bus != config.bus || d.slot != config.slot);
                 devices.push(config);
             }
@@ -736,10 +893,102 @@ mod tests {
     }
 
     #[test]
-    fn the_machine_of_an_older_workspace_becomes_device_configs() {
-        use snow_core::devices::{DisplayConfig, built_in};
-        use snow_core::mac::MacMonitor;
+    fn the_old_fields_of_a_machine_describe_devices() {
+        let args = OldInitArgs {
+            monitor: Some(MacMonitor::RGB12),
+            vram_size: Some(512 * 1024),
+            pds_card: PdsCardKind::AppleIIe,
+            video_card: NubusDeviceKind::Toby,
+            override_fdd_type: Some(DriveType::GCR800KPWM),
+            ..Default::default()
+        };
+        let places = |model, rom| -> Vec<(String, String, Option<DeviceModel>)> {
+            args.device_configs(model, rom)
+                .into_iter()
+                .map(|config| (config.bus, config.slot, config.model))
+                .collect()
+        };
+        let place = |bus: &str, slot: &str, model| (bus.to_string(), slot.to_string(), model);
+        let drive = Some(DeviceModel::Mac800KPwmDrive);
 
+        // An LC: its video, the card of its slot, its two drives
+        let configs = args.device_configs(MacModel::LC, None);
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: Some(512 * 1024),
+            })
+        );
+        assert_eq!(
+            places(MacModel::LC, None),
+            [
+                place(bus_id::BUILT_IN, built_in::VIDEO, None),
+                place(bus_id::PDS_LC, "0", Some(DeviceModel::AppleIIePdsCard)),
+                place(bus_id::SWIM, "1", drive),
+                place(bus_id::SWIM, "2", drive),
+            ]
+        );
+
+        // A Macintosh II: the card that was chosen, with its ROM file and the monitor
+        let rom = Path::new("card.rom");
+        let configs = args.device_configs(MacModel::MacII, Some(rom));
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: None,
+            })
+        );
+        assert_eq!(
+            places(MacModel::MacII, Some(rom))[0],
+            place(bus_id::NUBUS, "9", Some(DeviceModel::MacIIVideoCard))
+        );
+
+        // An SE/30: the ROM file is that of its video
+        let configs = args.device_configs(MacModel::SE30, Some(rom));
+        assert_eq!(configs[0].bus, bus_id::BUILT_IN);
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
+
+        // A workspace saved since has none of these fields, and nothing is made from them
+        let args = OldInitArgs::default();
+        for model in [MacModel::LC, MacModel::MacII, MacModel::SE30] {
+            assert_eq!(args.device_configs(model, None), []);
+        }
+    }
+
+    #[test]
+    fn an_old_field_that_cannot_be_read_does_not_cost_the_workspace() {
+        let dir = TestDir::new("old_unread");
+        let mut workspace = dir.load(
+            r#"{"model":"LC","viewport_scale":3.0,
+                "init_args":{"monitor":"SomeFutureMonitor","vram_size":262144,
+                             "pds_card":"SomeFutureCard","ram_size":4194304}}"#,
+        );
+        // The rest of the file is read, the fields that can be read too
+        assert_eq!(workspace.viewport_scale, 3.0);
+        assert_eq!(workspace.init_args.ram_size, Some(4194304));
+        let devices = workspace.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(
+            devices[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: None,
+                vram_size: Some(262144),
+            })
+        );
+        assert_eq!(
+            workspace.take_unread(),
+            [
+                "The monitor can't be read (\"SomeFutureMonitor\")",
+                "The PDS card can't be read (\"SomeFutureCard\")",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_machine_of_an_older_workspace_becomes_device_configs() {
         let dir = TestDir::new("old_machine");
         std::fs::write(dir.0.join("card.rom"), []).unwrap();
         // A Macintosh II: the video card, its ROM file and its monitor
