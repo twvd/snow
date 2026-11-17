@@ -500,7 +500,11 @@ impl ModelSelectionDialog {
         }
 
         // Validate checksum
-        let rom_data = fs::read(path).map_err(|e| anyhow!("Invalid {}: {}", rom.label, e))?;
+        let mut rom_data = fs::read(path).map_err(|e| anyhow!("Invalid {}: {}", rom.label, e))?;
+        // What differs from one unit to the next isn't in the digests
+        for byte in &mut rom_data {
+            *byte &= !rom.varying_bits;
+        }
         let digest = Sha256::digest(&rom_data);
         let digest: String = digest.iter().map(|byte| format!("{:02x}", byte)).collect();
         if rom.digests.contains(&digest.as_str()) {
@@ -1648,6 +1652,18 @@ mod tests {
         // Any file that can be read, when the check is off
         assert!(check(rom, Some(&file), true).unwrap());
         assert!(check(rom, Some(&dir.join("none")), true).is_err());
+
+        // A ROM with a serial number in bit 7 of each byte, which the digest leaves out
+        let rom = RomInfo {
+            label: "Test ROM",
+            digests: &["374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"],
+            optional: false,
+            varying_bits: 0x80,
+        };
+        fs::write(&file, [0x80; 16]).unwrap();
+        assert!(check(&rom, Some(&file), false).unwrap());
+        fs::write(&file, [0x81; 16]).unwrap();
+        assert!(check(&rom, Some(&file), false).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

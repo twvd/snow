@@ -165,6 +165,7 @@ pub const INFO: ModelInfo = ModelInfo {
         label: "SE/30 video ROM",
         digests: &["8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"],
         optional: false,
+        varying_bits: 0,
     }),
     ..ModelInfo::base(
         DeviceModel::SE30Video,
