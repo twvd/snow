@@ -302,6 +302,8 @@ pub enum DeviceModel {
     MacSuperDrive,
     DisplayCard824,
     MacIIVideoCard,
+    #[cfg(feature = "ethernet")]
+    AppleEthernetNbTp,
     SE30Video,
     CompactVideo,
     PortableVideo,
@@ -332,6 +334,8 @@ impl DeviceModel {
             Self::MacSuperDrive => &swim::drive::INFO_SUPERDRIVE,
             Self::DisplayCard824 => &nubus::mdc12::INFO,
             Self::MacIIVideoCard => &nubus::toby::INFO,
+            #[cfg(feature = "ethernet")]
+            Self::AppleEthernetNbTp => &ethernet::appl_nb_sonic_tp::INFO,
             Self::SE30Video => &nubus::se30video::INFO,
             Self::CompactVideo => &compact::video::INFO,
             Self::PortableVideo => &portable::video::INFO,
