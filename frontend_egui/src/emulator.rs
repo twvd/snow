@@ -21,7 +21,7 @@ use snow_core::debuggable::DebuggableProperties;
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
     Bus, BusKind, CdromConfig, Device, DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo,
-    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, bus_id,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, ModelInfo, bus_id,
     device_configs, models_for,
 };
 #[cfg(feature = "ethernet")]
@@ -1036,6 +1036,47 @@ impl EmulatorState {
                 media: Some(path.to_path_buf()),
             }),
         );
+    }
+
+    /// The hard disk that a slot of a bus takes while the machine runs, if any
+    fn hard_disk_model(&self, bus: &str) -> Option<&'static ModelInfo> {
+        let model = self.status.as_ref()?.model;
+        let kind = self.buses.iter().find(|b| b.id == bus)?.kind;
+        models_for(kind, model).find(|info| info.function == FunctionInfo::HardDisk && !info.fixed)
+    }
+
+    /// Attaches a hard disk with this image to an empty slot of a bus other than SCSI
+    pub fn attach_hdd(&self, bus: &str, slot: &str, path: &Path) {
+        let (Some(sender), Some(info)) = (self.cmdsender.as_ref(), self.hard_disk_model(bus))
+        else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::AddDevice(DeviceConfig {
+                bus: bus.into(),
+                slot: slot.into(),
+                model: Some(info.model),
+                rom: None,
+                function: FunctionConfig::HardDisk(HardDiskConfig {
+                    media: Some(path.to_path_buf()),
+                }),
+            }))
+            .unwrap();
+    }
+
+    /// The empty slots of the buses other than SCSI that take a hard disk, with the device
+    /// model of that disk: for the Devices menu
+    pub fn empty_hard_disk_slots(&self) -> Vec<(String, String, &'static ModelInfo)> {
+        let mut slots = vec![];
+        for bus in self.buses.iter().filter(|bus| bus.kind != BusKind::Scsi) {
+            let Some(info) = self.hard_disk_model(&bus.id) else {
+                continue;
+            };
+            for slot in bus.slots.iter().filter(|slot| slot.device.is_none()) {
+                slots.push((bus.id.clone(), slot.id.clone(), info));
+            }
+        }
+        slots
     }
 
     /// Loads a SCSI HDD image from the specified path into the first free SCSI slot

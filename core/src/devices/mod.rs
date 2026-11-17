@@ -46,6 +46,8 @@ pub enum BusKind {
     BuiltIn,
     /// The floppy controller of a Lisa, with its drives
     LisaFdc,
+    /// The parallel port of a Lisa
+    LisaParallel,
 }
 
 /// A bus of a machine: a list of slots
@@ -313,6 +315,7 @@ pub enum DeviceModel {
     UniDisk35,
     Apple525Drive,
     Lisa400KDrive,
+    ProFile,
     LisaVideo,
 }
 
@@ -343,6 +346,7 @@ impl DeviceModel {
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
             Self::Lisa400KDrive => &lisa::fdc_sim::INFO_400K,
+            Self::ProFile => &lisa::profile_sim::INFO_PROFILE,
             Self::LisaVideo => &lisa::video::INFO,
         }
     }
@@ -379,6 +383,8 @@ pub(crate) enum MadeDevice {
     Pds(Box<dyn PdsSlot>),
     /// A drive for the floppy controller of a Lisa
     LisaFloppy(Box<lisa::fdc_sim::Drive>),
+    /// A device for the parallel port of a Lisa
+    LisaParallel(Box<dyn lisa::profile_sim::ParallelDevice>),
 }
 
 /// The ROM file a device model needs, which the user provides

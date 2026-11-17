@@ -23,6 +23,8 @@ pub mod bus_id {
     pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
     /// The floppy controller of a Lisa
     pub const LISA_FDC: &str = "LisaFDC";
+    /// The parallel port of a Lisa
+    pub const LISA_PARALLEL: &str = "LisaParallel";
 }
 
 /// The ids of the slots of the `Built-in` bus. They are written in the files a frontend saves:
