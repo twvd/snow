@@ -6,6 +6,8 @@ pub mod devices;
 pub mod emulator;
 pub mod keymap;
 pub mod mac;
+#[cfg(feature = "ethernet")]
+pub mod net;
 pub mod renderer;
 pub mod tickable;
 pub mod types;
