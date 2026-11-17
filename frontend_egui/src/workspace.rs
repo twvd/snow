@@ -504,9 +504,7 @@ impl Workspace {
                 #[cfg(feature = "printer")]
                 OldScsiTarget::Printer => (
                     DeviceModel::LaserWriterIISC,
-                    FunctionConfig::Printer(PrinterConfig {
-                        output_dir: Some(crate::emulator::default_print_dir()),
-                    }),
+                    FunctionConfig::Printer(PrinterConfig::default()),
                 ),
                 // A device this build doesn't have
                 #[cfg(not(feature = "ethernet"))]

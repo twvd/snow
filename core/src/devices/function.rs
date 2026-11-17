@@ -115,6 +115,9 @@ pub trait EthernetFunction {
 pub trait PrinterFunction {
     /// The live state of the printer. Called at each status update.
     fn status(&self) -> PrinterStatus;
+    /// Gives the printer the folder for its pages when its Config names none. Called when the
+    /// frontend gives that folder, and when a printer is added after it did.
+    fn set_default_dir(&mut self, dir: &Path);
 }
 
 /// A video display: a video card, or the built-in video of a machine. It owns its renderer.
