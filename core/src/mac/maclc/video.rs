@@ -205,6 +205,10 @@ impl DeviceOps for Video {
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Display(self)
     }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
 }
 
 impl Video {

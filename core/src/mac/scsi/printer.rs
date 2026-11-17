@@ -281,6 +281,10 @@ impl DeviceOps for ScsiTargetPrinter {
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Printer(self)
     }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
 }
 
 impl PrinterFunction for ScsiTargetPrinter {

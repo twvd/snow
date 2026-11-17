@@ -12,14 +12,72 @@ use log::*;
 
 use super::Emulator;
 use super::comm::EmulatorEvent;
+use crate::debuggable::{DebuggableProperties, DebuggableProperty};
 #[cfg(feature = "printer")]
 use crate::devices::PrinterConfig;
 use crate::devices::{
     Bus, BusKind, BusOps, CdromConfig, Device, DeviceConfig, DeviceModel, DisplayHandle,
-    EthernetFunction, FloppyFunction, FunctionConfig, FunctionInfo, FunctionMut, HardDiskConfig,
-    Slot, bus_id, device_configs, models_for, new_ethernet_address,
+    EthernetFunction, FloppyFunction, FunctionConfig, FunctionInfo, FunctionMut, FunctionStatus,
+    HardDiskConfig, Slot, bus_id, device_configs, models_for, new_ethernet_address,
 };
 use crate::mac::scsi::disk_image::DiskImage;
+
+/// What the debugger shows of the status of a device: one line per field
+fn status_properties(status: &FunctionStatus) -> DebuggableProperties {
+    use crate::debuggable::*;
+    use crate::{dbgprop_bool, dbgprop_string, dbgprop_udec};
+
+    let path = |path: &Option<PathBuf>| match path {
+        Some(path) => path.display().to_string(),
+        None => "None".to_string(),
+    };
+    match status {
+        FunctionStatus::Floppy(floppy) => {
+            let disk = if floppy.ejected {
+                "None".to_string()
+            } else {
+                floppy.title.clone()
+            };
+            vec![
+                dbgprop_string!("Disk", disk),
+                dbgprop_bool!("Unsaved writes", floppy.dirty),
+                dbgprop_bool!("Write-back", floppy.writeback_enabled),
+            ]
+        }
+        FunctionStatus::HardDisk(disk) => vec![
+            dbgprop_string!("Image", path(&disk.media)),
+            dbgprop_udec!("Capacity", disk.capacity),
+        ],
+        FunctionStatus::Cdrom(cdrom) => vec![
+            dbgprop_string!("Image", path(&cdrom.image)),
+            dbgprop_string!("Folder", path(&cdrom.folder)),
+        ],
+        FunctionStatus::Ethernet(ethernet) => {
+            let capture = match &ethernet.capture {
+                Some(capture) if capture.active => format!(
+                    "{} ({} packets)",
+                    path(&capture.filename),
+                    capture.packet_count
+                ),
+                _ => "Off".to_string(),
+            };
+            vec![
+                dbgprop_string!("Link", format!("{:?}", ethernet.link)),
+                dbgprop_string!("Capture", capture),
+            ]
+        }
+        FunctionStatus::Printer(printer) => {
+            vec![dbgprop_string!(
+                "Folder",
+                printer.output_dir.display().to_string()
+            )]
+        }
+        FunctionStatus::Display(display) => {
+            vec![dbgprop_bool!("Connected", display.connected)]
+        }
+        FunctionStatus::AppleIIeCard => vec![],
+    }
+}
 
 /// The slots of a list of buses that hold a floppy drive
 fn floppy_slots(buses: &[Bus]) -> impl Iterator<Item = (&Bus, &Slot)> {
@@ -108,6 +166,39 @@ impl Emulator {
             index += 1;
         }
         buses
+    }
+
+    /// The debugger's view of the devices of the machine: each bus, each of its slots, and for
+    /// the device in a slot its device model, its status and what the device itself shows.
+    /// Called at each status update while the debugger shows the peripherals.
+    pub(super) fn devices_debug(&mut self) -> DebuggableProperty {
+        use crate::debuggable::*;
+        use crate::{dbgprop_group, dbgprop_str};
+
+        let mut groups = vec![];
+        for bus in self.buses() {
+            let mut slots = vec![];
+            for slot in &bus.slots {
+                let device = self.bus_ops(&bus.id).and_then(|ops| ops.device(&slot.id));
+                let Some(device) = device else {
+                    slots.push(dbgprop_group!(
+                        format!("#{} - (no device)", slot.id),
+                        vec![]
+                    ));
+                    continue;
+                };
+                let name = device.info().name;
+                let mut properties = vec![dbgprop_str!("Device model", name)];
+                properties.extend(status_properties(&device.function().status()));
+                properties.extend(device.debug_properties());
+                slots.push(dbgprop_group!(
+                    format!("#{} - {}", slot.id, name),
+                    properties
+                ));
+            }
+            groups.push(dbgprop_group!(bus.title.clone(), slots));
+        }
+        dbgprop_group!("Devices", groups)
     }
 
     /// Shows a blank screen on every display of the machine: the devices of its buses whose
@@ -827,6 +918,55 @@ mod tests {
         // With nothing chosen, the video is the one the Mac model has: it isn't reported
         let mut emu = machine_with_video(MacModel::LC, None, None).unwrap();
         assert_eq!(emu.devices(), []);
+    }
+
+    #[test]
+    fn the_debugger_sees_the_devices_in_their_slots() {
+        use crate::debuggable::DebuggablePropertyValue;
+
+        /// The entries of a group, by name
+        fn entries(group: &DebuggableProperty) -> Vec<(&str, &DebuggableProperty)> {
+            let DebuggablePropertyValue::Nested(entries) = group.value() else {
+                panic!("{} isn't a group", group.name());
+            };
+            entries.iter().map(|entry| (entry.name(), entry)).collect()
+        }
+
+        let mut emu = plus();
+        emu.add_device(&cdrom("3", None)).unwrap();
+        let devices = emu.devices_debug();
+        assert_eq!(devices.name(), "Devices");
+
+        // One group per bus, by its title, in the order of the list of buses
+        let buses = entries(&devices);
+        let titles: Vec<_> = buses.iter().map(|(title, _)| *title).collect();
+        assert_eq!(titles, ["Floppy", "SCSI", "Built-in"]);
+
+        // One entry per slot, empty or with its device
+        let scsi = entries(buses[1].1);
+        assert_eq!(scsi.len(), 7);
+        assert_eq!(scsi[0].0, "#0 - (no device)");
+        assert_eq!(scsi[3].0, "#3 - CD-ROM drive");
+        // The device model, then the status
+        let drive: Vec<_> = entries(scsi[3].1).iter().map(|(name, _)| *name).collect();
+        assert_eq!(drive, ["Device model", "Image", "Folder"]);
+
+        // And then what the device shows of itself
+        let floppy = entries(buses[0].1);
+        assert_eq!(floppy[0].0, "#1 - 800K drive");
+        let drive: Vec<_> = entries(floppy[0].1).iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            drive[..5],
+            [
+                "Device model",
+                "Disk",
+                "Unsaved writes",
+                "Write-back",
+                "Type"
+            ]
+        );
+        let video = entries(buses[2].1);
+        assert_eq!(video[0].0, "#video - Built-in video");
     }
 
     #[test]

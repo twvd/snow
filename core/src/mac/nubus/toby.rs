@@ -195,6 +195,10 @@ impl DeviceOps for Toby {
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::Display(self)
     }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
 }
 
 #[typetag::serde]

@@ -713,7 +713,7 @@ impl Debuggable for Swim {
             dbgprop_header, dbgprop_string, dbgprop_udec, dbgprop_word, dbgprop_word_bin,
         };
 
-        let mut result = vec![
+        vec![
             dbgprop_enum!("Mode", self.mode),
             dbgprop_udec!("ISM switch counter", self.chip.ism_switch_ctr),
             dbgprop_group!(
@@ -783,16 +783,7 @@ impl Debuggable for Swim {
                     dbgprop_word!("CRC", self.chip.ism_crc),
                 ]
             ),
-        ];
-        for (connector, device) in self.drives.iter().enumerate() {
-            if let Some(device) = device {
-                result.push(dbgprop_group!(
-                    format!("Drive #{} ({})", connector + 1, device.info().name),
-                    device.debug_properties()
-                ));
-            }
-        }
-        result
+        ]
     }
 }
 
