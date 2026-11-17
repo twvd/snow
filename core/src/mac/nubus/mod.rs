@@ -6,7 +6,7 @@ use crate::bus::Address;
 use crate::bus::access::{
     BusAccess, BusResponse, CpuBus, bus_access_long, bus_access_word, write_lanes,
 };
-use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::debuggable::Debuggable;
 use crate::devices::{BusOps, DeviceOps, MadeDevice};
 use crate::emulator::EmuContext;
 use crate::mac::dma::DmaOps;
@@ -252,25 +252,6 @@ impl Nubus {
         for card in self.cards_mut() {
             card.reset();
         }
-    }
-
-    /// The debugger's entry for each of the machine's slots, with its card
-    /// or empty
-    pub fn debug_properties(&self) -> DebuggableProperties {
-        use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
-
-        let slots = SLOT_IDS.iter().zip(&self.cards).zip(self.slots);
-        slots
-            .filter(|(_, has_slot)| *has_slot)
-            .map(|((slot, card), _)| match card {
-                Some(card) => dbgprop_nest!(
-                    format!("NuBus slot ${} ({:?})", slot, card.info().name),
-                    card
-                ),
-                None => dbgprop_group!(format!("NuBus slot ${} (empty)", slot), vec![]),
-            })
-            .collect()
     }
 }
 

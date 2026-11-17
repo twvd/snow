@@ -103,6 +103,10 @@ impl DeviceOps for ScsiTargetDisk {
     fn function(&mut self) -> FunctionMut<'_> {
         FunctionMut::HardDisk(self)
     }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
 }
 
 impl HardDiskFunction for ScsiTargetDisk {

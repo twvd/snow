@@ -1474,7 +1474,6 @@ impl Debuggable for Lc475Bus {
             dbgprop_nest!("Cuda", self.cuda),
             dbgprop_nest!("DFAC II", self.dfac2),
             dbgprop_nest!("Sound", self.sound),
-            dbgprop_nest!("Built-in video (MEMCjr)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
