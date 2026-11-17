@@ -38,8 +38,9 @@ pub enum EmulatorCommand {
     AddDevice(DeviceConfig),
     /// Removes the device in a slot
     RemoveDevice(String, String),
-    /// Loads the image in a file in the drive in a slot. The last argument asks for the image
-    /// to be write-protected, for a drive that can write.
+    /// Loads the image in a file in the drive in a slot: a floppy drive, a CD-ROM drive, or a
+    /// hard disk that takes another image while the machine runs. The last argument asks for
+    /// the image to be write-protected, for a floppy drive that can write.
     LoadMedia(String, String, PathBuf, bool),
     /// Ejects the disk of the drive in a slot
     EjectMedia(String, String),
