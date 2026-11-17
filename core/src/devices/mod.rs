@@ -10,16 +10,20 @@ pub use function::*;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::debuggable::DebuggableProperties;
 use crate::mac::MacModel;
+use crate::mac::compact;
+use crate::mac::maclc;
 use crate::mac::maclc::pds_iie;
 use crate::mac::nubus;
 use crate::mac::nubus::NubusSlot;
 use crate::mac::pds::PdsSlot;
+use crate::mac::portable;
+use crate::mac::quadra;
 use crate::mac::scsi;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::swim;
@@ -37,6 +41,8 @@ pub enum BusKind {
     Se30Pds,
     /// The disk port of an Apple IIe Card
     IieDisk,
+    /// The devices on the logic board
+    BuiltIn,
 }
 
 /// A bus of a machine: a list of slots
@@ -153,6 +159,14 @@ pub enum DeviceModel {
     MacSuperDrive,
     DisplayCard824,
     MacIIVideoCard,
+    SE30Video,
+    CompactVideo,
+    PortableVideo,
+    V8Video,
+    SonoraVideo,
+    DafbVideo,
+    MemcJrVideo,
+    DjMemcVideo,
     AppleIIePdsCard,
     UniDisk35,
     Apple525Drive,
@@ -173,6 +187,14 @@ impl DeviceModel {
             Self::MacSuperDrive => &swim::drive::INFO_SUPERDRIVE,
             Self::DisplayCard824 => &nubus::mdc12::INFO,
             Self::MacIIVideoCard => &nubus::toby::INFO,
+            Self::SE30Video => &nubus::se30video::INFO,
+            Self::CompactVideo => &compact::video::INFO,
+            Self::PortableVideo => &portable::video::INFO,
+            Self::V8Video => &maclc::video::INFO,
+            Self::SonoraVideo => &maclc::video::INFO_SONORA,
+            Self::DafbVideo => &quadra::dafb::INFO,
+            Self::MemcJrVideo => &quadra::dafb::INFO_MEMCJR,
+            Self::DjMemcVideo => &quadra::dafb::INFO_DJMEMC,
             Self::AppleIIePdsCard => &pds_iie::INFO,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
@@ -260,9 +282,15 @@ pub(crate) trait BusOps {
     /// The device in a slot. Called by the emulator to reach a device, with the id of its slot.
     fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps>;
     /// Puts a new device in an empty slot. Called by the emulator when a device is added.
-    fn attach(&mut self, slot: &str, device: MadeDevice) -> Result<()>;
-    /// Removes the device in a slot. Called by the emulator when a device is removed.
-    fn detach(&mut self, slot: &str) -> Result<()>;
+    /// Refused by default.
+    fn attach(&mut self, _slot: &str, _device: MadeDevice) -> Result<()> {
+        bail!("This bus takes no device")
+    }
+    /// Removes the device in a slot. Called by the emulator when a device is removed. Refused
+    /// by default.
+    fn detach(&mut self, _slot: &str) -> Result<()> {
+        bail!("No device of this bus can be removed")
+    }
 }
 
 /// What the emulator can ask of any device, whichever bus it is on

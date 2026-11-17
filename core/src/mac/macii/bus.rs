@@ -10,7 +10,7 @@ use crate::bus::{
 };
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DisplayFunction, FunctionMut, bus_id};
+use crate::devices::{BusOps, DeviceModel, DeviceOps, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -27,9 +27,7 @@ use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
-};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -218,6 +216,10 @@ pub struct MacIIBus {
 }
 
 impl MacIIBus {
+    /// The devices on the logic board of an SE/30, by the id of their slot on the `Built-in`
+    /// bus. The Macintosh IIs have none.
+    pub const BUILT_IN_SE30: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::SE30Video)];
+
     /// RAM configuration properties
     const RAM_CONFIG: [RamConfig; 8] = [
         RamConfig {
@@ -811,38 +813,12 @@ impl MacIIBus {
         }
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        if let Some(video) = self.se30_video.as_mut() {
-            video.blank()?;
-        }
-        for card in self.nubus.cards_mut() {
-            if let FunctionMut::Display(display) = card.function() {
-                display.blank()?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Where the frontend picks up the frames of the machine's video
-    pub fn video_frames(&mut self) -> FrameReceiver {
-        // TODO multiple video cards
-        if let Some(video) = &self.se30_video {
-            return video.frames();
-        }
-        self.nubus
-            .cards_mut()
-            .find_map(|card| match card.function() {
-                FunctionMut::Display(display) => Some(display.frames()),
-                _ => None,
-            })
-            .expect("no video card")
-    }
-
     /// The bus with this id, for the emulator's device code
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN if self.model == MacModel::SE30 => Some(self),
             bus_id::NUBUS if !self.model.nubus_slots().is_empty() => Some(&mut self.nubus),
             bus_id::PDS_SE30 if self.model == MacModel::SE30 => Some(&mut self.pds),
             _ => None,
@@ -872,6 +848,19 @@ impl MacIIBus {
     /// Sets the date and time of the clock
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
         self.rtc_mut().set_datetime(dt);
+    }
+}
+
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for MacIIBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => {
+                let video = self.se30_video.as_mut()?;
+                Some(video)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1226,7 +1215,7 @@ impl Debuggable for MacIIBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, MadeDevice, ModelInfo};
+    use crate::devices::{FunctionConfig, FunctionMut, MadeDevice, ModelInfo};
     use crate::mac::nubus::NubusSlot;
     use crate::mac::pds::PdsSlot;
 
