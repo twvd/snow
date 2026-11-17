@@ -369,8 +369,9 @@ mod tests {
 
     #[test]
     fn test_read_max_8_packets() {
-        // Create a ScsiTargetEthernet instance
-        let mut eth = ScsiTargetEthernet::new([0, 0x80, 0x19, 1, 2, 3]);
+        // Create a ScsiTargetEthernet instance. Its address is not the source of the test
+        // packets: the port drops the echo of the adapter's own frames.
+        let mut eth = ScsiTargetEthernet::new([0, 0x80, 0x19, 4, 5, 6]);
 
         // Create channels for testing
         let tx = eth.port.connect_test_rx();
