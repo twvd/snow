@@ -20,7 +20,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DisplayFunction, bus_id};
+use crate::devices::{BusOps, DeviceModel, DeviceOps, DisplayConfig, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -30,7 +30,7 @@ use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::macii::via2::Via2;
 use crate::mac::maclc::via::Via;
 use crate::mac::pds::Pds;
-use crate::mac::quadra::dafb::{Dafb, DafbKind};
+use crate::mac::quadra::dafb::{self, Dafb};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -38,10 +38,8 @@ use crate::mac::sound::dfac2::Dfac2;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -100,7 +98,7 @@ const VIA_RELEASE: Ticks = 15;
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
 
 /// Sizes of video RAM which can be fitted
-pub const VRAM_SIZES: &[usize] = &[512 * 1024, 1024 * 1024];
+pub const VRAM_SIZES: &[usize] = dafb::VRAM_SIZES_MEMCJR;
 
 /// Bytes of the PrimeTime registers kept
 const PRIMETIME_REGS_SIZE: usize = 0x80;
@@ -346,6 +344,9 @@ pub struct Lc475Bus {
 }
 
 impl Lc475Bus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::MemcJrVideo)];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -360,10 +361,9 @@ impl Lc475Bus {
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        monitor: MacMonitor,
+        video: &DisplayConfig,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
-        vram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
@@ -411,11 +411,7 @@ impl Lc475Bus {
             pds: Pds::new(C16M_FREQUENCY),
             dma_writes: 0,
 
-            dafb: Dafb::new(
-                monitor,
-                DafbKind::MemcJr,
-                vram_size.unwrap_or(VRAM_SIZES[1]),
-            ),
+            dafb: Dafb::with_config(DeviceModel::MemcJrVideo, video),
             mouse_mode,
         };
         bus.ram_map_update();
@@ -1058,20 +1054,12 @@ impl Lc475Bus {
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
-    }
-
-    /// Where the frontend picks up the frames of the machine's video
-    pub fn video_frames(&self) -> FrameReceiver {
-        self.dafb.frames()
-    }
-
     /// The bus with this id, for the emulator's device code
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
             bus_id::PDS_LC => Some(&mut self.pds),
             _ => None,
         }
@@ -1140,6 +1128,16 @@ impl Lc475Bus {
             0
         } else {
             3
+        }
+    }
+}
+
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for Lc475Bus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.dafb),
+            _ => None,
         }
     }
 }
@@ -1492,10 +1490,9 @@ mod tests {
         Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
-            MacMonitor::default(),
+            &DisplayConfig::default(),
             MouseMode::Disabled,
             Some(4 * 1024 * 1024),
-            None,
         )
     }
 
@@ -1526,10 +1523,9 @@ mod tests {
         let mut bus = Lc475Bus::new(
             MacModel::LC475,
             &vec![0; 1024 * 1024],
-            MacMonitor::default(),
+            &DisplayConfig::default(),
             MouseMode::Disabled,
             Some(12 * 1024 * 1024),
-            None,
         );
         assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));
         assert_eq!(bus.ram_index(0x0040_0000), None);

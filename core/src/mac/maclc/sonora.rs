@@ -51,12 +51,16 @@ pub(super) const CPU_ID_LCIII: u32 = 0xA55A_0001;
 
 /// Monitors for the Sonora: 512x384, 640x480 (and 640x400, which the system
 /// offers on the same monitor), 640x870, 832x624, and VGA monitors.
+///
+/// With nothing on the connector, the sense lines read "No monitor" (Macintosh LC III Developer
+/// Note, Table 1-6, recognized monitor sense codes).
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::VGA,
     MacMonitor::PortraitBW,
     MacMonitor::RGB16,
-    MacMonitor::VGA,
+    MacMonitor::NoMonitor,
 ];
 
 /// Sizes of the video RAM: 512 KB are soldered, a SIMM adds 256 KB

@@ -24,8 +24,8 @@ use crate::cpu_m68k::{
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::devices::{
-    AppleIIeCardFunction, BusOps, DeviceConfig, DeviceModel, FunctionConfig, FunctionMut,
-    FunctionStatus, MadeDevice, bus_id,
+    AppleIIeCardFunction, BusOps, DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig,
+    FunctionMut, FunctionStatus, MadeDevice, bus_id,
 };
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -379,8 +379,6 @@ dispatch! {
         fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
         fn input_release_all(&mut self) -> () { bus.input_release_all() }
         fn progkey(&mut self) -> () { bus.progkey() }
-        fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
-        fn video_frames(&mut self) -> FrameReceiver { bus.video_frames() }
 
         fn bus_ops(&mut self, id: &str) -> Option<&mut dyn BusOps> { bus.bus_ops(id) }
 
@@ -480,6 +478,8 @@ impl Emulator {
 
         // The video card of a Macintosh II, which goes in a slot once the machine is made
         let mut video_card = None;
+        // What was chosen for the built-in video
+        let video = DisplayConfig { monitor, vram_size };
 
         let mut config = match model {
             MacModel::Early128K
@@ -606,7 +606,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
+                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, &video);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
@@ -616,7 +616,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
+                let mut bus = LcIBus::new(model, rom, mouse_mode, ram_size, &video);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
@@ -626,7 +626,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIIIBus::new(model, rom, mouse_mode, ram_size, monitor, vram_size);
+                let mut bus = LcIIIBus::new(model, rom, mouse_mode, ram_size, &video);
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
@@ -641,14 +641,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus = Quadra700Bus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                );
+                let bus =
+                    Quadra700Bus::new(model, rom, extension_rom, &video, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68040::new(MachineBus040::Quadra700(bus), FPU_M68040));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -657,14 +651,7 @@ impl Emulator {
             MacModel::LC475 => {
                 assert!(override_fdd_type.is_none());
 
-                let bus = Lc475Bus::new(
-                    model,
-                    rom,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    vram_size,
-                );
+                let bus = Lc475Bus::new(model, rom, &video, mouse_mode, ram_size);
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
                 EmulatorConfig::LC475(Box::new(CpuM68040::new(MachineBus040::Lc475(bus), fpu)))
@@ -672,14 +659,7 @@ impl Emulator {
             MacModel::Quadra800 => {
                 assert!(override_fdd_type.is_none());
 
-                let bus = Quadra800Bus::new(
-                    model,
-                    rom,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    vram_size,
-                );
+                let bus = Quadra800Bus::new(model, rom, &video, mouse_mode, ram_size);
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
             }
@@ -732,7 +712,7 @@ impl Emulator {
             };
             emu.add_device_to(&card, true)?;
         }
-        let frame_recv = emu.config.video_frames();
+        let frame_recv = emu.video_frames()?;
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -786,7 +766,6 @@ impl Emulator {
 
         let (mut config, temp_files) = load_state_from(f, tmpdir)?;
         config.after_deserialize();
-        let frame_recv = config.video_frames();
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
         // stuck.
@@ -817,6 +796,7 @@ impl Emulator {
             buses: Arc::default(),
             device_statuses: vec![],
         };
+        let frame_recv = emu.video_frames()?;
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;
@@ -1123,7 +1103,7 @@ impl Emulator {
             // As for the reset command: the bus first, for the overlay
             self.config.bus_reset()?;
             self.config.cpu_reset()?;
-            self.config.video_blank()?;
+            self.video_blank()?;
         }
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
@@ -1360,7 +1340,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
                         self.flush_pending_writebacks(true);
-                        self.config.video_blank()?;
+                        self.video_blank()?;
                         return Ok(0);
                     }
                     EmulatorCommand::SetIieGamePort(port) => {
@@ -1483,7 +1463,7 @@ impl Tickable for Emulator {
                         // otherwise the wrong reset vector is loaded.
                         self.config.bus_reset()?;
                         self.config.cpu_reset()?;
-                        self.config.video_blank()?;
+                        self.video_blank()?;
 
                         info!("Emulator reset");
                         self.status_update()?;

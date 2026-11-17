@@ -10,7 +10,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DisplayFunction, bus_id};
+use crate::devices::{BusOps, DeviceModel, DeviceOps, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -23,9 +23,7 @@ use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
-};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
@@ -143,6 +141,9 @@ pub struct CompactMacBus {
 }
 
 impl CompactMacBus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::CompactVideo)];
+
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -645,20 +646,12 @@ impl CompactMacBus {
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.video.blank()
-    }
-
-    /// Where the frontend picks up the frames of the machine's video
-    pub fn video_frames(&self) -> FrameReceiver {
-        self.video.frames()
-    }
-
     /// The bus with this id, for the emulator's device code
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI if self.model.has_scsi() => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
             _ => None,
         }
     }
@@ -730,6 +723,16 @@ impl CompactMacBus {
     /// Sets the date and time of the clock
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
         self.rtc_mut().set_datetime(dt);
+    }
+}
+
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for CompactMacBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.video),
+            _ => None,
+        }
     }
 }
 

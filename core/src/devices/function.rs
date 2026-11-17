@@ -150,6 +150,25 @@ pub enum FunctionInfo {
     AppleIIeCard,
 }
 
+impl FunctionInfo {
+    /// The Config of this function in which nothing was chosen: that of a device the machine
+    /// has without being asked. Called when the list of buses of a Mac model is built.
+    pub fn default_config(&self) -> FunctionConfig {
+        match self {
+            Self::Floppy(_) => FunctionConfig::Floppy,
+            Self::HardDisk => FunctionConfig::HardDisk(HardDiskConfig::default()),
+            Self::Cdrom => FunctionConfig::Cdrom(CdromConfig::default()),
+            Self::Ethernet(_) => FunctionConfig::Ethernet(EthernetConfig {
+                mac: None,
+                link: EthernetLinkType::Down,
+            }),
+            Self::Printer => FunctionConfig::Printer(PrinterConfig::default()),
+            Self::Display(_) => FunctionConfig::Display(DisplayConfig::default()),
+            Self::AppleIIeCard => FunctionConfig::AppleIIeCard(IieCardSettings::default()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EthernetInfo {
     /// The maker's prefix: the first three bytes of the Ethernet addresses of this device model
