@@ -44,6 +44,8 @@ pub enum BusKind {
     IieDisk,
     /// The devices on the logic board
     BuiltIn,
+    /// The floppy controller of a Lisa, with its drives
+    LisaFdc,
 }
 
 /// A bus of a machine: a list of slots
@@ -310,6 +312,7 @@ pub enum DeviceModel {
     AppleIIePdsCard,
     UniDisk35,
     Apple525Drive,
+    Lisa400KDrive,
     LisaVideo,
 }
 
@@ -339,6 +342,7 @@ impl DeviceModel {
             Self::AppleIIePdsCard => &pds_iie::INFO,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
+            Self::Lisa400KDrive => &lisa::fdc_sim::INFO_400K,
             Self::LisaVideo => &lisa::video::INFO,
         }
     }
@@ -373,6 +377,8 @@ pub(crate) enum MadeDevice {
     Nubus(Box<dyn NubusSlot>),
     /// A card for a processor-direct slot
     Pds(Box<dyn PdsSlot>),
+    /// A drive for the floppy controller of a Lisa
+    LisaFloppy(Box<lisa::fdc_sim::Drive>),
 }
 
 /// The ROM file a device model needs, which the user provides

@@ -21,6 +21,8 @@ pub mod bus_id {
     pub const PDS_SE30: &str = "PDS_SE30";
     /// The disk port of the Apple IIe Card in the processor-direct slot of an LC
     pub const IIE_DISK: &str = "Floppy:PDS_LC.0";
+    /// The floppy controller of a Lisa
+    pub const LISA_FDC: &str = "LisaFDC";
 }
 
 /// The ids of the slots of the `Built-in` bus. They are written in the files a frontend saves:
