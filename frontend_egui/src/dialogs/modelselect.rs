@@ -14,6 +14,7 @@ use snow_core::devices::{
     ModelInfo, RomInfo, built_in, bus_id, device_configs, models_for,
 };
 use snow_core::emulator::MouseMode;
+use snow_core::lisa::pfg;
 use snow_core::lisa::video::{DEFAULT_SERIAL, parse_serial};
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::{MacModel, MacMonitor};
@@ -748,7 +749,7 @@ impl ModelSelectionDialog {
                 DeviceModel::Lisa800KDrive,
                 "Use an 800K floppy drive, for MacWorks Plus",
             );
-            if self.selected_model.is_lisa() {
+            if pfg::fits(self.selected_model) {
                 ui.checkbox(
                     &mut self.init_args.pfg_enabled,
                     "X/Lisa PFG in the SCC socket, for MacWorks Plus II",
@@ -910,7 +911,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                         }
-                        if !self.selected_model.is_lisa() {
+                        if !pfg::fits(self.selected_model) {
                             self.init_args.pfg_enabled = false;
                         }
 

@@ -627,7 +627,7 @@ impl Emulator {
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
             }
-            MacModel::Lisa25 | MacModel::Lisa210 => {
+            MacModel::Lisa1 | MacModel::Lisa25 | MacModel::Lisa210 => {
                 let bus = LisaBus::new(machine, &devices)?;
                 EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
