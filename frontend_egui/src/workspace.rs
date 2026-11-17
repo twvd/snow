@@ -127,6 +127,7 @@ pub struct Workspace {
     rom_path: Option<RelativePath>,
 
     /// Last opened Display Card ROM
+    #[serde(skip_serializing)]
     display_card_rom_path: Option<RelativePath>,
 
     /// Last specified PRAM path
@@ -383,9 +384,6 @@ impl Workspace {
         if let Some(p) = self.rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
-        if let Some(p) = self.display_card_rom_path.as_mut() {
-            p.before_serialize(parent)?;
-        }
         if let Some(p) = self.pram_path.as_mut() {
             p.before_serialize(parent)?;
         }
@@ -528,6 +526,18 @@ impl Workspace {
                 function,
             });
         }
+
+        // The devices that older workspaces described with the arguments of the machine and
+        // with the ROM of its video. They take the place of a device config of the list for
+        // the same slot.
+        let detect = || MacModel::detect_from_rom(&std::fs::read(self.get_rom_path()?).ok()?);
+        if let Some(model) = self.model.or_else(detect) {
+            let display_rom = self.display_card_rom_path.take().map(|p| p.get_absolute());
+            for config in self.init_args.device_configs(model, display_rom.as_deref()) {
+                devices.retain(|d| d.bus != config.bus || d.slot != config.slot);
+                devices.push(config);
+            }
+        }
     }
 
     /// The devices of the workspace, as device configs
@@ -565,14 +575,6 @@ impl Workspace {
 
     pub fn get_extension_rom_path(&self) -> Option<PathBuf> {
         self.extension_rom_path.clone().map(|d| d.get_absolute())
-    }
-
-    pub fn set_display_card_rom_path(&mut self, p: Option<&Path>) {
-        self.display_card_rom_path = p.map(RelativePath::from_absolute);
-    }
-
-    pub fn get_display_card_rom_path(&self) -> Option<PathBuf> {
-        self.display_card_rom_path.clone().map(|d| d.get_absolute())
     }
 
     pub fn set_pram_path(&mut self, p: Option<&Path>) {
@@ -731,6 +733,68 @@ mod tests {
             DeviceModel::ScsiCdrom,
             FunctionConfig::Cdrom(CdromConfig { folder }),
         )
+    }
+
+    #[test]
+    fn the_machine_of_an_older_workspace_becomes_device_configs() {
+        use snow_core::devices::{DisplayConfig, built_in};
+        use snow_core::mac::MacMonitor;
+
+        let dir = TestDir::new("old_machine");
+        std::fs::write(dir.0.join("card.rom"), []).unwrap();
+        // A Macintosh II: the video card, its ROM file and its monitor
+        let mut workspace = dir.load(
+            r#"{"model":"MacII","display_card_rom_path":"card.rom",
+                "init_args":{"video_card":"Mdc12","monitor":"RGB12"}}"#,
+        );
+        let card = DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: "9".into(),
+            model: Some(DeviceModel::DisplayCard824),
+            rom: Some(dir.0.join("card.rom")),
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: None,
+            }),
+        };
+        assert_eq!(workspace.devices(), std::slice::from_ref(&card));
+        assert!(workspace.take_unread().is_empty());
+
+        // The fields win over a device config of the same slot, and are not written again
+        let mut workspace = dir.load(
+            r#"{"model":"MacII","display_card_rom_path":"card.rom",
+                "init_args":{"video_card":"Mdc12","monitor":"RGB12"},
+                "devices":[{"bus":"NuBus","slot":"9","model":"DisplayCard824",
+                            "function":{"Display":{}}},
+                           {"bus":"SCSI","slot":"3","model":"ScsiCdrom","function":{"Cdrom":{}}}]}"#,
+        );
+        assert_eq!(workspace.devices(), [cdrom("3", None), card.clone()]);
+        let path = dir.0.join("saved.snoww");
+        workspace.write_file(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        for field in ["display_card_rom_path", "video_card", "\"monitor\": null"] {
+            assert!(!saved.contains(field), "{field} in {saved}");
+        }
+        let workspace = Workspace::from_file(&path).unwrap();
+        assert_eq!(workspace.devices(), [cdrom("3", None), card]);
+
+        // An LC: what was chosen for its video, and the card of its slot
+        let workspace = dir.load(
+            r#"{"model":"LC","init_args":{"monitor":"RGB12","vram_size":262144,
+                "pds_card":"AppleIIe"}}"#,
+        );
+        let devices = workspace.devices();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].bus, bus_id::BUILT_IN);
+        assert_eq!(devices[0].slot, built_in::VIDEO);
+        assert_eq!(
+            devices[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: Some(262144),
+            })
+        );
+        assert_eq!(devices[1].model, Some(DeviceModel::AppleIIePdsCard));
     }
 
     #[test]

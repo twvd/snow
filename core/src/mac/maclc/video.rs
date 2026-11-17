@@ -25,29 +25,6 @@ use crate::types::Byte;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Monitors which can be connected to a model
-pub fn monitors(model: MacModel) -> &'static [MacMonitor] {
-    if model == MacModel::LCIII {
-        sonora::MONITORS
-    } else {
-        v8::MONITORS
-    }
-}
-
-/// Sizes of video RAM which can be fitted to a model
-pub fn vram_sizes(model: MacModel) -> &'static [usize] {
-    if model == MacModel::LCIII {
-        sonora::VRAM_SIZES
-    } else {
-        v8::VRAM_SIZES
-    }
-}
-
-/// The largest size
-pub fn vram_size_default(model: MacModel) -> usize {
-    *vram_sizes(model).last().unwrap()
-}
-
 /// Depth of 16 bits per pixel
 const DEPTH_16BPP: u8 = 4;
 
