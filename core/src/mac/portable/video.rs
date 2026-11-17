@@ -1,5 +1,9 @@
-use crate::devices::{DisplayFunction, DisplayStatus};
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::emulator::EmuContext;
+use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{FrameReceiver, MONOCHROME_LUT, render_packed};
 use crate::tickable::{Tickable, Ticks};
@@ -47,6 +51,41 @@ impl Default for Video {
             framebuffer: vec![0xFF; Self::FRAMEBUFFER_SIZE],
             vblank_ticks: 0,
         }
+    }
+}
+
+fn fits(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::PortableVideo)
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fits,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::PortableVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            // The screen is the machine's own
+            monitors: &[],
+            default_monitor: 0,
+            vram_sizes: &[],
+            default_vram_size: 0,
+        }),
+    )
+};
+
+impl DeviceOps for Video {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig::default())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
     }
 }
 

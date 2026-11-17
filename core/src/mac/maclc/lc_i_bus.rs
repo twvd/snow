@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use super::pseudovia::{PseudoVia, RegisterExp};
 use super::v8;
 use super::via::Via;
-use super::video::{self, Video};
+use super::video::Video;
 use crate::bus::access::{
     Bus68020, BusAccess, BusResponse, CpuBus, bus_access_byte, bus_access_long, bus_access_word,
 };
@@ -16,7 +16,7 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
-use crate::devices::{BusOps, DisplayFunction, bus_id};
+use crate::devices::{BusOps, DeviceModel, DeviceOps, DisplayConfig, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
@@ -30,10 +30,8 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, FrameReceiver, null_audio_sink,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -185,6 +183,9 @@ pub struct LcIBus {
 }
 
 impl LcIBus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::V8Video)];
+
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
 
@@ -194,8 +195,7 @@ impl LcIBus {
         rom: &[u8],
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
-        monitor: Option<MacMonitor>,
-        vram_size: Option<usize>,
+        video: &DisplayConfig,
     ) -> Self {
         const MB: usize = 1024 * 1024;
 
@@ -212,13 +212,7 @@ impl LcIBus {
             n => n,
         };
         let ram_size = ram_simm + ram_soldered;
-        let monitor = monitor
-            .filter(|m| video::monitors(model).contains(m))
-            .unwrap_or_default();
-        let vram_size = vram_size
-            .filter(|s| video::vram_sizes(model).contains(s))
-            .unwrap_or_else(|| video::vram_size_default(model));
-        let video = Video::new(monitor, vram_size);
+        let video = Video::with_config(DeviceModel::V8Video, video);
         let swim = Swim::new(model.fdd_hd(), BUS_FREQUENCY);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -802,20 +796,12 @@ impl LcIBus {
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.video.blank()
-    }
-
-    /// Where the frontend picks up the frames of the machine's video
-    pub fn video_frames(&self) -> FrameReceiver {
-        self.video.frames()
-    }
-
     /// The bus with this id, for the emulator's device code
     pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
             bus_id::PDS_LC => Some(&mut self.pds),
             _ => None,
         }
@@ -844,6 +830,16 @@ impl LcIBus {
     /// Sets the date and time of the clock
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
         self.rtc_mut().set_datetime(dt);
+    }
+}
+
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for LcIBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.video),
+            _ => None,
+        }
     }
 }
 
@@ -1175,8 +1171,7 @@ mod tests {
             &vec![0; 512 * 1024],
             MouseMode::Disabled,
             None,
-            None,
-            None,
+            &DisplayConfig::default(),
         );
         bus.set_speed(EmulatorSpeed::Uncapped);
         bus.set_overclock(overclock);
@@ -1208,8 +1203,7 @@ mod tests {
             &vec![0; 512 * 1024],
             MouseMode::Disabled,
             None,
-            None,
-            None,
+            &DisplayConfig::default(),
         );
         let card = Box::new(PdsIIeCard::new());
         bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
@@ -1266,8 +1260,7 @@ mod tests {
             &vec![0; 512 * 1024],
             MouseMode::Disabled,
             None,
-            None,
-            None,
+            &DisplayConfig::default(),
         );
         let card = Box::new(DmaCard {
             from: FROM,
@@ -1298,8 +1291,7 @@ mod tests {
             &vec![0; 512 * 1024],
             MouseMode::Disabled,
             None,
-            None,
-            None,
+            &DisplayConfig::default(),
         );
         // The slot interrupt and the summary of the slot interrupts enabled
         bus.pseudovia.write(0x12, 0xA0);

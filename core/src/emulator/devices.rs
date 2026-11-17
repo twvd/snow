@@ -23,6 +23,7 @@ use crate::devices::{
 };
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::drive::DriveType;
+use crate::renderer::FrameReceiver;
 
 /// The slots of a list of buses that hold a floppy drive
 fn floppy_slots(buses: &[Bus]) -> impl Iterator<Item = (&Bus, &Slot)> {
@@ -111,6 +112,35 @@ impl Emulator {
             index += 1;
         }
         buses
+    }
+
+    /// Shows a blank screen on every display of the machine: the devices of its buses whose
+    /// function is Display. Called when the machine resets or stops.
+    pub(super) fn video_blank(&mut self) -> Result<()> {
+        for bus in self.buses() {
+            for slot in &bus.slots {
+                if let Ok(FunctionMut::Display(display)) = self.device_function(&bus.id, &slot.id) {
+                    display.blank()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Where the frontend picks up the frames of the machine's screen: its first display that
+    /// has something on its connector, in the order of the list of buses. A machine with no
+    /// screen is refused.
+    pub(super) fn video_frames(&mut self) -> Result<FrameReceiver> {
+        for bus in self.buses() {
+            for slot in &bus.slots {
+                if let Ok(FunctionMut::Display(display)) = self.device_function(&bus.id, &slot.id)
+                    && display.status().connected
+                {
+                    return Ok(display.frames());
+                }
+            }
+        }
+        bail!("This machine has no screen: none of its videos has a monitor")
     }
 
     /// The machine, as the list of device configs it can be made from again
@@ -293,7 +323,12 @@ impl Emulator {
                     rom: device.rom,
                     function: device.function,
                 };
-                self.add_device_to(&config, true)?;
+                // A device of the logic board is made with the machine
+                if bus.id == bus_id::BUILT_IN {
+                    self.configure_device(&config)?;
+                } else {
+                    self.add_device_to(&config, true)?;
+                }
             }
         }
         Ok(())
@@ -503,7 +538,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::devices::{CdromStatus, DisplayConfig, DisplayStatus, FunctionStatus};
+    use crate::devices::{CdromStatus, DisplayConfig, DisplayStatus, FunctionStatus, built_in};
     #[cfg(feature = "ethernet")]
     use crate::devices::{EthernetConfig, EthernetLinkType};
     use crate::emulator::comm::EmulatorEvent;
@@ -654,6 +689,91 @@ mod tests {
             assert_eq!(emu.buses(), buses);
             assert_eq!(emu.devices(), devices);
         }
+    }
+
+    /// A machine with a monitor and a VRAM size chosen for its video
+    fn machine_with_video(
+        model: MacModel,
+        monitor: Option<MacMonitor>,
+        vram_size: Option<usize>,
+    ) -> Result<Emulator> {
+        use crate::emulator::MouseMode;
+        use crate::mac::ExtraROMs;
+
+        let extra_roms: &[ExtraROMs] = match model {
+            MacModel::MacII => &[ExtraROMs::MDC12(&[])],
+            _ => &[],
+        };
+        let (emu, _) = Emulator::new_with_extra(
+            &vec![0; 1024 * 1024],
+            extra_roms,
+            model,
+            monitor,
+            MouseMode::Disabled,
+            None,
+            None,
+            false,
+            false,
+            vram_size,
+            None,
+            None,
+        )?;
+        Ok(emu)
+    }
+
+    #[test]
+    fn a_built_in_video_is_reported_with_what_was_chosen() {
+        let video = |model, monitor, vram_size| DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: Some(model),
+            rom: None,
+            function: FunctionConfig::Display(DisplayConfig { monitor, vram_size }),
+        };
+        let cases = [
+            (MacModel::LC, DeviceModel::V8Video, 256 * 1024),
+            (MacModel::LCIII, DeviceModel::SonoraVideo, 512 * 1024),
+            (MacModel::LC475, DeviceModel::MemcJrVideo, 512 * 1024),
+            (MacModel::Quadra800, DeviceModel::DjMemcVideo, 512 * 1024),
+        ];
+        for (mac, model, vram_size) in cases {
+            let monitor = Some(MacMonitor::RGB12);
+            let mut emu = machine_with_video(mac, monitor, Some(vram_size)).unwrap();
+            assert_eq!(
+                emu.devices(),
+                [video(model, monitor, Some(vram_size))],
+                "{mac}"
+            );
+            let status = emu
+                .device_function(bus_id::BUILT_IN, built_in::VIDEO)
+                .unwrap()
+                .status();
+            assert_eq!(
+                status,
+                FunctionStatus::Display(DisplayStatus { connected: true })
+            );
+        }
+
+        // The Quadra 700 has one size of VRAM
+        let monitor = Some(MacMonitor::RGB16);
+        let mut emu = machine_with_video(MacModel::Quadra700, monitor, None).unwrap();
+        assert_eq!(
+            emu.devices(),
+            [video(DeviceModel::DafbVideo, monitor, None)]
+        );
+
+        // With nothing chosen, the video is the one the Mac model has: it isn't reported
+        let mut emu = machine_with_video(MacModel::LC, None, None).unwrap();
+        assert_eq!(emu.devices(), []);
+    }
+
+    #[test]
+    fn a_machine_with_no_screen_is_refused() {
+        // The only video of a Macintosh II is its card
+        assert!(machine_with_video(MacModel::MacII, Some(MacMonitor::RGB12), None).is_ok());
+        let none = machine_with_video(MacModel::MacII, Some(MacMonitor::NoMonitor), None);
+        let error = none.err().unwrap().to_string();
+        assert!(error.contains("no screen"), "{error}");
     }
 
     #[test]
