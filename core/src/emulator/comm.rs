@@ -125,6 +125,8 @@ pub enum EmulatorCommand {
     SccReceiveData(SccCh, Vec<u8>),
     SetSystrapHistory(bool),
     SetSharedDir(Option<PathBuf>),
+    /// Gives the folder for the pages of every printer whose Config names none
+    SetDefaultPrintDir(PathBuf),
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),

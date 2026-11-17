@@ -4,9 +4,7 @@
 //! ids of its bus and of its slot: through the bus operations of its bus, then through its own
 //! device operations. See docs/misc/device-model.md.
 
-use std::path::Path;
-#[cfg(feature = "printer")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -387,6 +385,13 @@ impl Emulator {
             error!("Failed setting CD audio provider: {}", e);
         }
 
+        // A printer writes its pages to the default folder, unless its Config names one
+        let default_print_dir = self.default_print_dir.clone();
+        let function = self.device_function(&config.bus, &config.slot)?;
+        if let (FunctionMut::Printer(printer), Some(dir)) = (function, default_print_dir) {
+            printer.set_default_dir(&dir);
+        }
+
         self.configure_device(config)
     }
 
@@ -447,6 +452,19 @@ impl Emulator {
             ) if cdrom.status().folder.as_ref() != Some(folder) => cdrom.set_folder(folder),
             _ => Ok(()),
         }
+    }
+
+    /// Gives every printer of the machine the folder for its pages when its Config names none,
+    /// and keeps it for the printers added later
+    pub(super) fn set_default_print_dir(&mut self, dir: PathBuf) {
+        for bus in self.buses() {
+            for slot in &bus.slots {
+                if let Ok(FunctionMut::Printer(printer)) = self.device_function(&bus.id, &slot.id) {
+                    printer.set_default_dir(&dir);
+                }
+            }
+        }
+        self.default_print_dir = Some(dir);
     }
 
     /// Removes the device in a slot from the machine
@@ -716,7 +734,6 @@ mod tests {
             false,
             vram_size,
             None,
-            None,
         )?;
         Ok(emu)
     }
@@ -921,7 +938,6 @@ mod tests {
                 false,
                 false,
                 None,
-                None,
                 Some(settings),
             )
             .unwrap();
@@ -992,7 +1008,6 @@ mod tests {
             Some(DriveType::GCR800KPWM),
             false,
             false,
-            None,
             None,
             None,
         )
@@ -1273,6 +1288,38 @@ mod tests {
             panic!("A printer has the Printer function");
         };
         assert_eq!(printer.output_dir, PathBuf::from("pages"));
+    }
+
+    #[cfg(feature = "printer")]
+    #[test]
+    fn a_printer_given_no_folder_uses_the_default_folder() {
+        fn folder(emu: &mut Emulator, slot: &str) -> PathBuf {
+            let FunctionStatus::Printer(printer) = status(emu, slot) else {
+                panic!("A printer has the Printer function");
+            };
+            printer.output_dir
+        }
+        let printer = |slot| {
+            scsi(
+                slot,
+                Some(DeviceModel::LaserWriterIISC),
+                FunctionConfig::Printer(PrinterConfig::default()),
+            )
+        };
+
+        // A printer that is there when the folder is given, and one added after
+        let mut emu = plus();
+        emu.add_device(&printer("5")).unwrap();
+        emu.attach_printer(4, PathBuf::from("pages")).unwrap();
+        assert_eq!(folder(&mut emu, "5"), std::env::current_dir().unwrap());
+        emu.set_default_print_dir(PathBuf::from("desktop"));
+        emu.add_device(&printer("6")).unwrap();
+        assert_eq!(folder(&mut emu, "5"), PathBuf::from("desktop"));
+        assert_eq!(folder(&mut emu, "6"), PathBuf::from("desktop"));
+        // A printer that was given a folder keeps it
+        assert_eq!(folder(&mut emu, "4"), PathBuf::from("pages"));
+        // The list the machine can be made from again has what the frontend gave
+        assert!(emu.devices().contains(&printer("5")));
     }
 
     #[test]

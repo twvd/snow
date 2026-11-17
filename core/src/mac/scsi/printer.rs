@@ -4,9 +4,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "savestates")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
 use crate::devices::{
@@ -49,6 +47,11 @@ pub(super) struct ScsiTargetPrinter {
     /// Output directory for PNG files. None: the default folder.
     output_dir: Option<PathBuf>,
 
+    /// The default folder, once the frontend gave it. It belongs to the host, and is given
+    /// again after a state is loaded.
+    #[serde(skip)]
+    default_dir: Option<PathBuf>,
+
     /// Page counter for debug or stats
     page_count: u16,
 
@@ -77,6 +80,7 @@ impl Default for ScsiTargetPrinter {
             viewport_x: 0,
             viewport_y: 0,
             output_dir: None,
+            default_dir: None,
             page_count: 0,
             mask_count: 0,
             pending_event: None,
@@ -100,11 +104,12 @@ impl ScsiTargetPrinter {
         }
     }
 
-    /// The folder the pages go to: the one the printer was given, or the current directory of
-    /// the process
+    /// The folder the pages go to: the one the printer was given, or the default folder, or
+    /// the current directory of the process until a frontend gives a default folder
     fn output_dir(&self) -> PathBuf {
         self.output_dir
             .clone()
+            .or_else(|| self.default_dir.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
     }
 
@@ -283,6 +288,10 @@ impl PrinterFunction for ScsiTargetPrinter {
         PrinterStatus {
             output_dir: self.output_dir(),
         }
+    }
+
+    fn set_default_dir(&mut self, dir: &Path) {
+        self.default_dir = Some(dir.to_path_buf());
     }
 }
 
@@ -637,5 +646,21 @@ mod tests {
             panic!("A printer has the Printer function");
         };
         assert_eq!(function.status().output_dir, PathBuf::from("pages"));
+    }
+
+    #[test]
+    fn default_folder_is_for_a_printer_given_none() {
+        let mut printer = ScsiTargetPrinter::new(None);
+        printer.set_default_dir(Path::new("desktop"));
+        assert_eq!(printer.status().output_dir, PathBuf::from("desktop"));
+        // What the printer was made with doesn't change
+        assert_eq!(
+            printer.config(),
+            FunctionConfig::Printer(PrinterConfig { output_dir: None })
+        );
+
+        let mut printer = ScsiTargetPrinter::new(Some(PathBuf::from("pages")));
+        printer.set_default_dir(Path::new("desktop"));
+        assert_eq!(printer.status().output_dir, PathBuf::from("pages"));
     }
 }

@@ -52,9 +52,9 @@ use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
-/// The folder a new printer writes its pages to
+/// The folder for the pages of a printer that was given none
 #[cfg(feature = "printer")]
-pub fn default_print_dir() -> PathBuf {
+fn default_print_dir() -> PathBuf {
     dirs::desktop_dir()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default()
@@ -365,7 +365,6 @@ impl EmulatorState {
             args.pmmu_enabled,
             args.fpu_enabled,
             args.vram_size,
-            shared_dir,
             iie_card,
         )?;
 
@@ -403,12 +402,20 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
+        self.init_finalize(
+            emulator,
+            frame_recv,
+            cmd,
+            shared_dir,
+            args.audio_disabled,
+            false,
+        )
     }
 
     pub fn init_from_statefile<P: AsRef<Path>>(
         &mut self,
         path: P,
+        shared_dir: Option<PathBuf>,
         pause: bool,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
@@ -417,7 +424,7 @@ impl EmulatorState {
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
         let temp_files = emulator.temp_files().to_vec();
-        let mut result = self.init_finalize(emulator, frame_recv, cmd, false, pause)?;
+        let mut result = self.init_finalize(emulator, frame_recv, cmd, shared_dir, false, pause)?;
         result.temp_files = temp_files;
         Ok(result)
     }
@@ -427,9 +434,15 @@ impl EmulatorState {
         mut emulator: Emulator,
         frame_recv: FrameReceiver,
         cmd: EmulatorCommandSender,
+        shared_dir: Option<PathBuf>,
         audio_disabled: bool,
         pause: bool,
     ) -> Result<EmulatorInitResult> {
+        // The folders of the host, for a new machine and for one restored from a state alike
+        cmd.send(EmulatorCommand::SetSharedDir(shared_dir))?;
+        #[cfg(feature = "printer")]
+        cmd.send(EmulatorCommand::SetDefaultPrintDir(default_print_dir()))?;
+
         // Initialize audio
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
@@ -1659,9 +1672,7 @@ impl EmulatorState {
         self.scsi_add_device(
             id,
             FunctionInfo::Printer,
-            FunctionConfig::Printer(PrinterConfig {
-                output_dir: Some(default_print_dir()),
-            }),
+            FunctionConfig::Printer(PrinterConfig::default()),
         );
     }
 

@@ -424,6 +424,8 @@ pub struct Emulator {
     buses: Arc<Vec<crate::devices::Bus>>,
     /// The status last sent of each slot of that list, in its order
     device_statuses: Vec<Option<FunctionStatus>>,
+    /// The folder for the pages of a printer whose Config names none, once the frontend gave it
+    default_print_dir: Option<PathBuf>,
 }
 
 type BreakpointHandler = Box<
@@ -453,7 +455,6 @@ impl Emulator {
             false,
             None,
             None,
-            None,
         )
     }
 
@@ -469,7 +470,6 @@ impl Emulator {
         pmmu_enabled: bool,
         fpu_enabled: bool,
         vram_size: Option<usize>,
-        shared_dir: Option<PathBuf>,
         iie_card: Option<IieCardSettings>,
     ) -> Result<(Self, FrameReceiver)> {
         // Set up channels
@@ -665,7 +665,6 @@ impl Emulator {
             }
         };
 
-        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
 
         let mut emu = Self {
@@ -690,6 +689,7 @@ impl Emulator {
             temp_files: vec![],
             buses: Arc::default(),
             device_statuses: vec![],
+            default_print_dir: None,
         };
         emu.add_default_devices(override_fdd_type)?;
         // The video card of a Macintosh II, in its first slot
@@ -795,6 +795,7 @@ impl Emulator {
             temp_files,
             buses: Arc::default(),
             device_statuses: vec![],
+            default_print_dir: None,
         };
         let frame_recv = emu.video_frames()?;
         let buses = emu.buses();
@@ -1641,6 +1642,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SetSharedDir(path) => {
                         self.config.scsi_mut().set_shared_dir(path);
+                    }
+                    EmulatorCommand::SetDefaultPrintDir(dir) => {
+                        self.set_default_print_dir(dir);
                     }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
