@@ -42,6 +42,7 @@ Currently supported hardware:
 * DaynaPORT SCSI/Link Ethernet adapter
 * Built-in Ethernet of the Quadra 700 and 800 (DP83932 SONIC)
 * Apple Ethernet NB Twisted-Pair Card (models with NuBus)
+* Apple Ethernet LC Card and LC Twisted-Pair Card (LC family PDS slot)
 
 Supported floppy image formats:
 
