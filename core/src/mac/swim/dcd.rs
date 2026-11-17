@@ -10,11 +10,16 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use log::*;
 use serde::{Deserialize, Serialize};
 
+use super::device::SwimBusDevice;
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
+    HardDiskConfig, HardDiskFunction, HardDiskStatus, MadeDevice, ModelInfo,
+};
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_udec};
@@ -211,10 +216,10 @@ enum RxStep {
 /// An HD20-compatible Directly Connected Disk
 #[derive(Serialize, Deserialize)]
 pub struct DcdDevice {
+    /// The image. None: the drive has no disk, until one is loaded. A save state holds the
+    /// image apart, through `HardDiskFunction::savestate_image()`.
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
-    /// Size of the whole image file in bytes, for save states
-    image_len: usize,
 
     /// First block of the volume in the image
     first_block: usize,
@@ -246,6 +251,8 @@ pub struct DcdDevice {
     /// Bus clocks since a reset the device is still busy with
     reset_busy: Option<Ticks>,
     tx_ticks: Ticks,
+    /// Bus clocks a byte takes on the wire, which the controller's tick rate gives
+    ticks_per_byte: Ticks,
 
     /// Block a write continuation goes to
     next_write_block: usize,
@@ -260,6 +267,41 @@ impl DcdDevice {
     }
 
     pub fn new(image: Box<dyn DiskImage>, writable: bool) -> Result<Self> {
+        let mut dcd = Self::empty();
+        dcd.set_image(image, writable)?;
+        Ok(dcd)
+    }
+
+    /// A drive with no disk: the guest finds it and mounts nothing
+    pub fn empty() -> Self {
+        Self {
+            backend: None,
+            first_block: 0,
+            blocks: 0,
+            writable: false,
+            phase: Phase::Idle,
+            state: 7,
+            hshk: false,
+            holdoff: false,
+            rx_step: RxStep::Sync,
+            rx_groups_expected: 0,
+            rx_groups_reply: 0,
+            rx_group: Vec::with_capacity(8),
+            rx_payload: Vec::new(),
+            responses: VecDeque::new(),
+            tx_wire: Vec::new(),
+            tx_pos: 0,
+            tx_sync: false,
+            tx_paused: false,
+            reset_busy: None,
+            tx_ticks: 0,
+            ticks_per_byte: TICKS_PER_BYTE,
+            next_write_block: 0,
+        }
+    }
+
+    /// Puts an image in the drive, in place of the one it has
+    fn set_image(&mut self, image: Box<dyn DiskImage>, writable: bool) -> Result<()> {
         if !image.byte_len().is_multiple_of(DCD_BLOCKSIZE) {
             bail!(
                 "HD20 image size is not a multiple of {} bytes",
@@ -281,76 +323,15 @@ impl DcdDevice {
             if writable { "" } else { ", read-only" }
         );
 
-        Ok(Self {
-            image_len: image.byte_len(),
-            backend: Some(image),
-            first_block,
-            blocks,
-            writable,
-            phase: Phase::Idle,
-            state: 7,
-            hshk: false,
-            holdoff: false,
-            rx_step: RxStep::Sync,
-            rx_groups_expected: 0,
-            rx_groups_reply: 0,
-            rx_group: Vec::with_capacity(8),
-            rx_payload: Vec::new(),
-            responses: VecDeque::new(),
-            tx_wire: Vec::new(),
-            tx_pos: 0,
-            tx_sync: false,
-            tx_paused: false,
-            reset_busy: None,
-            tx_ticks: 0,
-            next_write_block: 0,
-        })
-    }
-
-    /// Size of the presented volume in blocks
-    pub fn blocks(&self) -> usize {
-        self.blocks
-    }
-
-    /// False if the Mac can't write to the disk
-    pub fn writable(&self) -> bool {
-        self.writable
-    }
-
-    /// File the image was loaded from
-    pub fn image_path(&self) -> Option<&Path> {
-        self.backend.as_ref().and_then(|b| b.image_path())
-    }
-
-    /// Re-attaches the image after loading a save state
-    #[cfg(feature = "savestates")]
-    pub fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        let image = FileDiskImage::open(imgfn, true)?;
-        if image.byte_len() != self.image_len {
-            bail!(
-                "HD20 image in save state is {} bytes, expected {}",
-                image.byte_len(),
-                self.image_len
-            );
-        }
-        self.backend = Some(Box::new(image));
+        self.backend = Some(image);
+        self.first_block = first_block;
+        self.blocks = blocks;
+        self.writable = writable;
         Ok(())
     }
 
-    /// Size of the image to store in a save state
-    #[cfg(feature = "savestates")]
-    pub fn savestate_img_len(&self) -> usize {
-        self.image_len
-    }
-
-    /// Contents of the image to store in a save state
-    #[cfg(feature = "savestates")]
-    pub fn savestate_img_data(&self) -> Option<&[u8]> {
-        self.backend.as_ref().and_then(|b| b.media_bytes())
-    }
-
     /// Back to power-on state
-    pub fn reset(&mut self) {
+    pub fn power_on_reset(&mut self) {
         self.phase = Phase::Idle;
         self.hshk = false;
         self.holdoff = false;
@@ -379,7 +360,7 @@ impl DcdDevice {
     }
 
     /// SENSE (RD) as seen by the Mac in the given CA2:CA1:CA0 state
-    pub fn sense(&self, state: u8) -> bool {
+    pub fn sense_in(&self, state: u8) -> bool {
         match state & 7 {
             // Data
             0 | 1 => true,
@@ -404,7 +385,7 @@ impl DcdDevice {
             if self.phase != Phase::Idle {
                 debug!("HD20: reset during {:?}", self.phase);
             }
-            self.reset();
+            self.power_on_reset();
             self.hshk = true;
             self.reset_busy = Some(0);
             return;
@@ -442,7 +423,7 @@ impl DcdDevice {
             }
             (Phase::Rx, _) => {
                 warn!("HD20: command aborted in state {}", state);
-                self.reset();
+                self.power_on_reset();
             }
             (Phase::RxDone, 2) => {
                 self.process_command();
@@ -461,7 +442,7 @@ impl DcdDevice {
             (Phase::Tx, 0 | 1) => (),
             (Phase::Tx, _) => {
                 warn!("HD20: response aborted in state {}", state);
-                self.reset();
+                self.power_on_reset();
             }
             (Phase::TxDone, 2) => self.next_response(),
             _ => (),
@@ -494,7 +475,7 @@ impl DcdDevice {
 
     /// Advances time by `ticks` bus clocks, of which a byte takes `ticks_per_byte`;
     /// returns a byte that arrived in the IWM data register, if any
-    pub fn tick(&mut self, ticks: Ticks, ticks_per_byte: Ticks) -> Option<u8> {
+    pub fn send(&mut self, ticks: Ticks, ticks_per_byte: Ticks) -> Option<u8> {
         if self.phase != Phase::Tx || self.tx_paused {
             return None;
         }
@@ -530,7 +511,7 @@ impl DcdDevice {
     }
 
     /// A byte left the IWM write shifter
-    pub fn write_byte(&mut self, byte: u8) {
+    pub fn receive(&mut self, byte: u8) {
         if self.phase != Phase::Rx || byte & 0x80 == 0 {
             // Not receiving, or a flush byte
             return;
@@ -663,8 +644,10 @@ impl DcdDevice {
 
     /// Controller Status reply (without checksum)
     fn status_reply(&self) -> Vec<u8> {
-        let mut characteristics =
-            chars::MOUNTABLE | chars::READABLE | chars::ICON_INCLUDED | chars::DISK_IN_PLACE;
+        let mut characteristics = chars::READABLE | chars::ICON_INCLUDED;
+        if self.backend.is_some() {
+            characteristics |= chars::MOUNTABLE | chars::DISK_IN_PLACE;
+        }
         if self.writable {
             characteristics |= chars::WRITABLE;
         } else {
@@ -714,6 +697,136 @@ impl DcdDevice {
     }
 }
 
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    // The guest numbers the HD20s by their place on the chain: one can't come or go while
+    // the machine runs. Its image is changed with `HardDiskFunction::load()`.
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::Hd20,
+        "HD20",
+        BusKind::Hd20,
+        FunctionInfo::HardDisk,
+    )
+};
+
+/// Makes an HD20 on the image file its device config names, or with no disk if it names none
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::HardDisk(disk) = &config.function else {
+        bail!("An HD20 needs a hard disk's config");
+    };
+    let dcd = match disk.media.as_deref() {
+        Some(media) => DcdDevice::open(media, true)?,
+        None => DcdDevice::empty(),
+    };
+    Ok(MadeDevice::Swim(Box::new(dcd)))
+}
+
+impl DeviceOps for DcdDevice {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::HardDisk(HardDiskConfig {
+            media: self.status().media,
+        })
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::HardDisk(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+}
+
+/// The HD20 as the floppy controller sees it, on the chain of its external connector
+#[typetag::serde]
+impl SwimBusDevice for DcdDevice {
+    fn connected(&mut self, _connector: usize, tick_rate: Ticks) {
+        self.ticks_per_byte = ticks_per_byte(tick_rate);
+    }
+
+    /// CA0 to CA2 are the state of the protocol: an HD20 ignores SEL
+    fn set_lines(&mut self, lines: u8) {
+        self.set_state(lines >> 1);
+    }
+
+    /// An HD20 passes the enable on down the chain when LSTRB rises
+    fn strobe(&mut self, _lines: u8) -> bool {
+        true
+    }
+
+    fn sense(&self, lines: u8) -> bool {
+        self.sense_in(lines >> 1)
+    }
+
+    /// HD20s aren't on the machine's reset, so the disk stays. A real one wouldn't notice:
+    /// back to idle, so one in the middle of a transfer doesn't keep waiting for the rest
+    /// of it.
+    fn reset(&mut self) {
+        self.power_on_reset();
+    }
+
+    fn tick(&mut self, ticks: Ticks) {
+        self.tick_reset(ticks, self.ticks_per_byte);
+    }
+
+    fn read_byte(&mut self, ticks: Ticks) -> Option<u8> {
+        self.send(ticks, self.ticks_per_byte)
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        self.receive(byte);
+    }
+}
+
+/// The HardDisk function of an HD20
+impl HardDiskFunction for DcdDevice {
+    fn status(&self) -> HardDiskStatus {
+        HardDiskStatus {
+            media: self
+                .backend
+                .as_ref()
+                .and_then(|backend| backend.image_path())
+                .map(Path::to_path_buf),
+            capacity: self.blocks * DCD_BLOCKSIZE,
+        }
+    }
+
+    fn branch(&mut self, path: &Path) -> Result<()> {
+        if !self.writable {
+            bail!("A read-only HD20 can't be branched off");
+        }
+        self.backend
+            .as_deref_mut()
+            .context("This HD20 has no image")?
+            .branch_media(path)
+    }
+
+    /// Gives a drive with no disk its image: one restored from a save state
+    fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
+        if self.backend.is_some() {
+            bail!("The HD20 already has an image");
+        }
+        self.set_image(image, true)
+    }
+
+    fn savestate_image(&self) -> Option<&[u8]> {
+        self.backend.as_ref()?.media_bytes()
+    }
+
+    /// Puts the image file `path` in the drive, in place of the one it has. The guest isn't
+    /// told: a drive whose disk changes under a mounted volume is the user's matter, as when
+    /// disks are swapped while the Mac restarts.
+    fn load(&mut self, path: &Path) -> Result<()> {
+        let image = FileDiskImage::open(path, true)?;
+        self.set_image(Box::new(image), true)
+    }
+}
+
 impl Debuggable for DcdDevice {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
@@ -733,6 +846,7 @@ impl Debuggable for DcdDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::Address;
 
     /// In-memory disk image
     struct MemImage(Vec<u8>);
@@ -782,26 +896,26 @@ mod tests {
     fn transact(dev: &mut DcdDevice, payload: &[u8], reply_groups: usize) -> Vec<Vec<u8>> {
         // Idle check, request
         dev.set_state(2);
-        assert!(dev.sense(2), "/HSHK low before starting");
+        assert!(dev.sense_in(2), "/HSHK low before starting");
         dev.set_state(3);
-        assert!(!dev.sense(3), "no /HSHK for request");
+        assert!(!dev.sense_in(3), "no /HSHK for request");
         dev.set_state(1);
         for b in mac_wire(payload, reply_groups) {
-            dev.write_byte(b);
+            dev.receive(b);
         }
-        dev.write_byte(0);
-        dev.write_byte(0);
+        dev.receive(0);
+        dev.receive(0);
         dev.set_state(3);
-        assert!(dev.sense(3), "/HSHK not released after command");
+        assert!(dev.sense_in(3), "/HSHK not released after command");
         dev.set_state(2);
 
         let mut responses = vec![];
-        while !dev.sense(2) {
+        while !dev.sense_in(2) {
             dev.set_state(3);
             dev.set_state(1);
             let mut wire = vec![];
             for _ in 0..100_000 {
-                if let Some(b) = dev.tick(1, TICKS_PER_BYTE) {
+                if let Some(b) = dev.send(1, TICKS_PER_BYTE) {
                     wire.push(b);
                 }
                 if dev.phase == Phase::TxDone {
@@ -818,7 +932,7 @@ mod tests {
                 resp.extend_from_slice(&decode_group(&mac_order));
             }
             dev.set_state(3);
-            assert!(dev.sense(3), "/HSHK still low at end of response");
+            assert!(dev.sense_in(3), "/HSHK still low at end of response");
             dev.set_state(2);
             responses.push(resp);
         }
@@ -891,11 +1005,11 @@ mod tests {
     #[test]
     fn detection_senses() {
         let dev = device(16);
-        assert!(dev.sense(7));
-        assert!(dev.sense(6));
-        assert!(!dev.sense(5));
+        assert!(dev.sense_in(7));
+        assert!(dev.sense_in(6));
+        assert!(!dev.sense_in(5));
         // Idle: /HSHK deasserted means a disk is in place
-        assert!(dev.sense(2));
+        assert!(dev.sense_in(2));
     }
 
     #[test]
@@ -974,80 +1088,186 @@ mod tests {
         assert_eq!(dev.read_block(2).unwrap(), vec![0x55; DCD_BLOCKSIZE]);
     }
 
+    /// The floppy controller of a Mac with HD20s of these sizes, in blocks, on the chain of
+    /// its external connector, and the IWM in the mode the ROM sets
+    fn swim_with(blocks: &[usize]) -> crate::mac::swim::Swim {
+        use crate::bus::BusMember;
+        use crate::mac::swim::Swim;
+        use crate::mac::swim::chain::Chain;
+
+        let mut swim = Swim::new(false, 16_000_000);
+        for (slot, blocks) in Chain::SLOT_IDS.iter().zip(blocks) {
+            let dev = Box::new(device(*blocks));
+            swim.chain().attach(slot, MadeDevice::Swim(dev)).unwrap();
+        }
+        swim.read(Q6H);
+        swim.write(Q7H, 0x1F);
+        swim.read(Q7L);
+        swim.read(Q6L);
+        swim
+    }
+
+    const LSTRBL: Address = 6 << 9;
+    const LSTRBH: Address = 7 << 9;
+    const DISABLE: Address = 8 << 9;
+    const ENABLE: Address = 9 << 9;
+    const EXTDRIVE: Address = 11 << 9;
+    const Q6L: Address = 12 << 9;
+    const Q6H: Address = 13 << 9;
+    const Q7L: Address = 14 << 9;
+    const Q7H: Address = 15 << 9;
+
+    /// Sets CA2:CA1:CA0 on the controller
+    fn set_swim_state(swim: &mut crate::mac::swim::Swim, state: u8) {
+        use crate::bus::BusMember;
+
+        for line in 0..3 {
+            let high = Address::from(state >> line & 1);
+            swim.read((2 * line + high) << 9);
+        }
+    }
+
+    /// The sense line, in the status register of the IWM
+    fn swim_sense(swim: &mut crate::mac::swim::Swim) -> bool {
+        use crate::bus::BusMember;
+
+        swim.read(Q7L);
+        let status = swim.read(Q6H).unwrap();
+        swim.read(Q6L);
+        status & 0x80 != 0
+    }
+
+    /// The capacity of the hard disk in a slot of the chain, in blocks
+    fn blocks_in(swim: &mut crate::mac::swim::Swim, slot: &str) -> usize {
+        let FunctionMut::HardDisk(disk) = swim.chain().device(slot).unwrap().function() else {
+            unreachable!()
+        };
+        disk.status().capacity / DCD_BLOCKSIZE
+    }
+
     #[test]
     fn swim_reset_keeps_the_chain() {
-        use crate::mac::swim::Swim;
-        use crate::mac::swim::drive::DriveType;
+        use crate::bus::BusMember;
 
-        let mut swim =
-            Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K, DriveType::GCR800K]);
-        swim.attach_dcd(device(4)).unwrap();
-        swim.attach_dcd(device(8)).unwrap();
-        swim.dcds[0].set_state(2);
-        swim.dcds[0].set_state(3);
-        assert!(!swim.dcds[0].sense(3));
+        let mut swim = swim_with(&[4, 8]);
+        swim.read(EXTDRIVE);
+        swim.read(ENABLE);
+        set_swim_state(&mut swim, 2);
+        set_swim_state(&mut swim, 3);
+        assert!(!swim_sense(&mut swim));
 
         swim.reset();
 
-        assert_eq!(swim.dcds.len(), 2);
-        assert_eq!(swim.dcds[0].blocks(), 4);
-        assert_eq!(swim.dcds[0].phase, Phase::Idle);
-        assert!(swim.dcds[0].sense(3));
+        assert_eq!(blocks_in(&mut swim, "1"), 4);
+        assert_eq!(blocks_in(&mut swim, "2"), 8);
+        // Back to idle: /HSHK is released
+        swim.read(EXTDRIVE);
+        swim.read(ENABLE);
+        set_swim_state(&mut swim, 2);
+        assert!(swim_sense(&mut swim));
     }
 
     #[test]
     fn daisy_chain() {
-        use crate::bus::{Address, BusMember};
-        use crate::mac::swim::drive::DriveType;
-        use crate::mac::swim::{MOTOR_TIMER, Swim};
-        use crate::tickable::Tickable;
+        use crate::bus::BusMember;
 
-        const LSTRBL: Address = 6 << 9;
-        const LSTRBH: Address = 7 << 9;
-        const DISABLE: Address = 8 << 9;
-        const ENABLE: Address = 9 << 9;
-        const EXTDRIVE: Address = 11 << 9;
-
-        let mut swim =
-            Swim::new(false, 16_000_000).with_drives(&[DriveType::GCR800K, DriveType::GCR800K]);
-        swim.attach_dcd(device(4)).unwrap();
-        swim.attach_dcd(device(8)).unwrap();
+        let mut swim = swim_with(&[4, 8]);
+        // What tells the two HD20s and the empty connector apart: an HD20 in state 3 asserts
+        // /HSHK, and a reset in state 4 keeps the first one busy
         swim.read(EXTDRIVE);
         swim.read(ENABLE);
-        assert_eq!(swim.selected_dcd().unwrap().blocks(), 4);
+        set_swim_state(&mut swim, 4);
+        set_swim_state(&mut swim, 2);
+        assert!(!swim_sense(&mut swim));
 
-        // One rising edge of LSTRB passes the enable on once, however often LSTRBH is hit
+        // One rising edge of LSTRB passes the enable on once, however often LSTRBH is hit:
+        // the second HD20 isn't busy
         for _ in 0..3 {
             swim.read(LSTRBH);
         }
         swim.read(LSTRBL);
-        assert_eq!(swim.selected_dcd().unwrap().blocks(), 8);
+        assert!(swim_sense(&mut swim));
+        set_swim_state(&mut swim, 3);
+        assert!(!swim_sense(&mut swim));
 
-        // Past the last HD20 the external floppy drive answers
+        // Past the last HD20 the external floppy drive answers: none here, the line is high
         swim.read(LSTRBH);
         swim.read(LSTRBL);
-        assert!(swim.selected_dcd().is_none());
+        assert!(swim_sense(&mut swim));
 
-        // With the IWM's timer on, !ENBL2 stays active after the enable drops: the chain
-        // stays where it is
+        // Dropping the enable goes back to the head of the chain
+        set_swim_state(&mut swim, 2);
         swim.read(DISABLE);
         swim.read(ENABLE);
-        assert!(swim.selected_dcd().is_none());
+        assert!(!swim_sense(&mut swim));
+    }
 
-        // Until the timer runs out, which goes back to the head of the chain
-        swim.read(DISABLE);
-        swim.tick(MOTOR_TIMER + 1, ()).unwrap();
-        swim.read(ENABLE);
-        assert_eq!(swim.selected_dcd().unwrap().blocks(), 4);
+    #[test]
+    fn status_through_the_controller() {
+        use crate::bus::BusMember;
+        use crate::tickable::Tickable;
 
-        // With the timer off, as Mac OS has it, that's immediate
-        swim.chip.iwm_mode.set_onesec(true);
-        swim.read(LSTRBH);
-        swim.read(LSTRBL);
-        assert_eq!(swim.selected_dcd().unwrap().blocks(), 8);
-        swim.read(DISABLE);
+        let mut swim = swim_with(&[1234]);
+        swim.read(EXTDRIVE);
         swim.read(ENABLE);
-        assert_eq!(swim.selected_dcd().unwrap().blocks(), 4);
+
+        // The command: the Mac waits for the device, then writes each byte when the
+        // handshake register says the write buffer is free
+        set_swim_state(&mut swim, 2);
+        assert!(swim_sense(&mut swim));
+        set_swim_state(&mut swim, 3);
+        assert!(!swim_sense(&mut swim));
+        set_swim_state(&mut swim, 1);
+        let mut wire = mac_wire(&seal_payload(vec![0x03, 0, 0, 0, 0, 0], 1), 49);
+        wire.extend([0, 0]);
+        swim.read(Q6H);
+        swim.read(Q7H);
+        for byte in wire {
+            swim.read(Q6H);
+            swim.write(Q7H, byte);
+            for _ in 0..1000 {
+                swim.tick(1, ()).unwrap();
+                if swim.read(Q6L).unwrap() & 0x80 != 0 {
+                    break;
+                }
+            }
+        }
+        swim.tick(1000, ()).unwrap();
+        swim.read(Q7L);
+        set_swim_state(&mut swim, 3);
+        assert!(swim_sense(&mut swim));
+        set_swim_state(&mut swim, 2);
+        assert!(!swim_sense(&mut swim));
+
+        // The response: the bytes come in the data register, 16.34us apart
+        set_swim_state(&mut swim, 3);
+        set_swim_state(&mut swim, 1);
+        swim.read(Q6L);
+        let mut wire = vec![];
+        let mut ticks = 0;
+        while wire.len() < 1 + 49 * 8 {
+            swim.tick(1, ()).unwrap();
+            ticks += 1;
+            let byte = swim.read(Q6L).unwrap();
+            if byte & 0x80 != 0 {
+                wire.push(byte);
+            }
+            assert!(ticks < 1_000_000);
+        }
+        assert_eq!(ticks, (1 + 49 * 8) * ticks_per_byte(16_000_000));
+        assert_eq!(wire[0], SYNC);
+        let mut reply = vec![];
+        for g in wire[1..].chunks_exact(8) {
+            let mut mac_order = [0; 8];
+            mac_order[0] = g[7];
+            mac_order[1..].copy_from_slice(&g[..7]);
+            reply.extend_from_slice(&decode_group(&mac_order));
+        }
+        assert!(checksum_ok(&reply));
+        assert_eq!(reply[0], 0x83);
+        assert_eq!(&reply[11..14], &[0x00, 0x04, 0xD2]);
+        set_swim_state(&mut swim, 3);
+        assert!(swim_sense(&mut swim));
     }
 
     #[test]
@@ -1088,17 +1308,17 @@ mod tests {
         dev.set_state(1);
         // Sync, counts, then the first two groups; holdoff after the 3rd byte of group 2
         for &b in &wire[..3 + 8 + 3] {
-            dev.write_byte(b);
+            dev.receive(b);
         }
         dev.set_state(0);
         for &b in &wire[3 + 8 + 3..3 + 16] {
-            dev.write_byte(b);
+            dev.receive(b);
         }
-        dev.write_byte(0);
+        dev.receive(0);
         dev.set_state(1);
-        dev.write_byte(SYNC);
+        dev.receive(SYNC);
         for &b in &wire[3 + 16..] {
-            dev.write_byte(b);
+            dev.receive(b);
         }
         dev.set_state(3);
         dev.set_state(2);
@@ -1114,7 +1334,7 @@ mod tests {
         dev.set_state(3);
         dev.set_state(1);
         for b in mac_wire(&p, 77) {
-            dev.write_byte(b);
+            dev.receive(b);
         }
         dev.set_state(3);
         dev.set_state(2);
@@ -1124,7 +1344,7 @@ mod tests {
         let mut wire = vec![];
         let mut ticks = 0;
         while dev.phase != Phase::TxDone {
-            if let Some(b) = dev.tick(1, TICKS_PER_BYTE) {
+            if let Some(b) = dev.send(1, TICKS_PER_BYTE) {
                 wire.push(b);
                 // Holdoff after the 4th byte of the 3rd group (sync + 2 groups + 4)
                 if wire.len() == 1 + 16 + 4 {
@@ -1136,7 +1356,7 @@ mod tests {
                 assert_eq!(wire.len(), 1 + 24);
                 // Nothing arrives during holdoff
                 for _ in 0..1000 {
-                    assert_eq!(dev.tick(1, TICKS_PER_BYTE), None);
+                    assert_eq!(dev.send(1, TICKS_PER_BYTE), None);
                 }
                 dev.set_state(1);
             }
@@ -1161,18 +1381,18 @@ mod tests {
         let mut dev = device(4);
         dev.set_state(2);
         dev.set_state(3);
-        assert!(!dev.sense(3));
+        assert!(!dev.sense_in(3));
         dev.set_state(4);
         dev.set_state(6);
         dev.set_state(2);
         assert_eq!(dev.phase, Phase::Idle);
 
         // Busy, then ready
-        assert!(!dev.sense(2));
+        assert!(!dev.sense_in(2));
         dev.tick_reset(RESET_BUSY_BYTES * TICKS_PER_BYTE - 1, TICKS_PER_BYTE);
-        assert!(!dev.sense(2));
+        assert!(!dev.sense_in(2));
         dev.tick_reset(1, TICKS_PER_BYTE);
-        assert!(dev.sense(2));
+        assert!(dev.sense_in(2));
     }
 
     #[test]
