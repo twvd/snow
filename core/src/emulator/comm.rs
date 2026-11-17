@@ -62,9 +62,13 @@ pub enum EmulatorCommand {
     EthernetSetLink(String, String, EthernetLinkType),
     EthernetStartCapture(String, String, PathBuf),
     EthernetStopCapture(String, String),
+    /// A position on one of the displays of the machine, in its pixels. `display` is the
+    /// index of the display in the list that the frontend was given.
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
+        #[serde(default)]
+        display: usize,
     },
     MouseUpdateRelative {
         relx: i16,
@@ -233,4 +237,23 @@ pub enum EmulatorEvent {
     SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
     /// The Apple IIe Card came to the front (true) or left it
     IieInFront(bool),
+    /// Where the guest puts the displays of a machine that has several, when that changes
+    Screens(Vec<GuestScreen>),
+}
+
+/// Where the guest puts one of the displays of the machine on its desktop
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestScreen {
+    /// The index of the display in the list that the frontend was given
+    pub display: usize,
+    /// Its bounds in the guest's global coordinates, where the top left of the main screen is
+    /// (0, 0)
+    pub left: i16,
+    pub top: i16,
+    pub right: i16,
+    pub bottom: i16,
+    /// It has the menu bar
+    pub main: bool,
+    /// The guest uses it: until then, the pointer can't go there
+    pub active: bool,
 }

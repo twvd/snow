@@ -405,6 +405,11 @@ impl NubusSlot for Mdc12 {
         }
         Ok(())
     }
+
+    /// The card has one display
+    fn display_from_Mac_dCtlSlotId(&self, _dctl_slot_id: u8) -> Option<usize> {
+        Some(0)
+    }
 }
 
 impl Mdc12 {
