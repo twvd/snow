@@ -3796,10 +3796,11 @@ impl SnowGui {
     }
 
     fn load_statefile<P: AsRef<Path>>(&mut self, path: P) {
-        match self
-            .emu
-            .init_from_statefile(path.as_ref(), self.workspace.pause_on_state_load)
-        {
+        match self.emu.init_from_statefile(
+            path.as_ref(),
+            self.workspace.get_shared_dir(),
+            self.workspace.pause_on_state_load,
+        ) {
             Ok(p) => {
                 self.framebuffer
                     .load_shader_defaults(self.emu.get_model().unwrap());
