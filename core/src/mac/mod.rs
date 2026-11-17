@@ -18,6 +18,7 @@ use portable::bus::MacPortableBus;
 use quadra::bus::Quadra700Bus;
 use quadra::q800_bus::Quadra800Bus;
 use scsi::bus::ScsiBus;
+use swim::chain::Chain;
 
 pub mod adb;
 pub mod compact;
@@ -382,6 +383,14 @@ impl MacModel {
                 &ScsiBus::SLOT_IDS,
             ));
         }
+        if self.has_hd20_port() {
+            buses.push(Bus::new(
+                BusKind::Hd20,
+                bus_id::HD20,
+                "HD20",
+                &Chain::SLOT_IDS,
+            ));
+        }
         // The devices on the logic board, before the cards: the built-in video is the first
         // display of a machine
         let built_in = self.built_in();
@@ -462,6 +471,17 @@ impl MacModel {
     /// Whether this model has a device of a device model on its logic board
     pub fn has_built_in(self, model: DeviceModel) -> bool {
         self.built_in().iter().any(|(_, m)| *m == model)
+    }
+
+    /// Whether HD20s can be chained on the external floppy port: the Macs whose ROM, or Apple's
+    /// HD20 INIT, drives an HD20 (see docs/HD20.md). The SWIM2 of the LC III, LC 475 and
+    /// Quadra 800 has no IWM mode (Apple's SWIM2 ERS describes an ISM only). The LC, LC II and
+    /// Quadra 700 are left out until someone checks that their ROM drives an HD20.
+    pub const fn has_hd20_port(self) -> bool {
+        !matches!(
+            self,
+            Self::LC | Self::LCII | Self::LCIII | Self::LC475 | Self::Quadra700 | Self::Quadra800
+        )
     }
 
     pub const fn has_scsi(self) -> bool {

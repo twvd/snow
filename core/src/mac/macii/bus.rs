@@ -853,6 +853,7 @@ impl MacIIBus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::HD20 => Some(self.swim.chain()),
             bus_id::BUILT_IN if self.model == MacModel::SE30 => Some(self),
             bus_id::NUBUS if !self.model.nubus_slots().is_empty() => Some(&mut self.nubus),
             bus_id::PDS_SE30 if self.model == MacModel::SE30 => Some(&mut self.pds),

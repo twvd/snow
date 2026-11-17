@@ -276,7 +276,7 @@ impl Swim {
         Self {
             drives: Default::default(),
             pending_ticks: 0,
-            chain: Chain::default(),
+            chain: Chain::new(base_frequency),
             chain_enabled: false,
             write_ticks: 0,
             lines_sent: (Place::Connector(0), 0),
@@ -515,6 +515,14 @@ impl Swim {
         if let Some(byte) = device.read_byte(ticks) {
             self.chip.datareg = byte;
         }
+    }
+
+    /// Gets the chain of the external connector, for the emulator to act on its devices
+    pub(crate) fn chain(&mut self) -> &mut dyn BusOps {
+        self.sync_devices();
+        // A device may come or go
+        self.spinning = None;
+        &mut self.chain
     }
 
     /// Gets the device on a connector, for the emulator to act on it
@@ -808,9 +816,8 @@ impl Swim {
 
     /// Puts these devices on the chain of the external connector, from its first place
     pub(super) fn with_chain(mut self, devices: Vec<Box<dyn SwimBusDevice>>) -> Self {
-        for (place, mut device) in devices.into_iter().enumerate() {
-            device.connected(place, self.base_frequency);
-            self.chain.put(place, device);
+        for (slot, device) in Chain::SLOT_IDS.iter().zip(devices) {
+            self.chain().attach(slot, MadeDevice::Swim(device)).unwrap();
         }
         self
     }
