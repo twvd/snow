@@ -15,7 +15,9 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
 use crate::mac::macii::via2::Via2;
+use crate::mac::nubus::Nubus;
 use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
@@ -53,6 +55,13 @@ const IO_BUS_WAITS: Ticks = 6;
 /// now the access is stretched by about two PCLK cycles. Not measured.
 const SCC_PCLK_WAITS: Ticks = 4;
 
+/// Wait states of a NuBus transaction, approximate: two cycles of the 10 MHz
+/// NuBus and the crossing between its clock and the 25 MHz bus add up to about
+/// 7 bus clocks. The 68040's own bus cycle is two of them, so these are the
+/// other five. The YANCC takes a write in a buffer and lets the CPU go on
+/// before the transaction is done, which isn't modelled.
+const NUBUS_WAITS: Ticks = 5;
+
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
@@ -72,6 +81,45 @@ enum Region {
     SuperSlot,
     /// Built-in video (DAFB), slot $9
     Video,
+    /// NuBus standard slots
+    Slot,
+}
+
+/// The machine's RAM, as a device that masters the bus reaches it. It borrows only the fields
+/// the DMA operations need, so that the bus can lend it while it ticks its cards.
+struct Dma<'a> {
+    ram: &'a mut [u8],
+    overlay: bool,
+    writes: &'a mut u32,
+}
+
+impl DmaRam for Dma<'_> {
+    fn ram(&mut self) -> &mut [u8] {
+        self.ram
+    }
+
+    fn ram_offset(&self, addr: Address) -> Option<usize> {
+        let offset = addr as usize;
+        (!self.overlay && offset < self.ram.len()).then_some(offset)
+    }
+
+    /// Those of a single cycle, as `Quadra700Bus::memory_waits()` gives them
+    fn ram_timing(&self, _write: bool) -> (u32, Ticks) {
+        let (waits, _) = Quadra700Bus::memory_waits(Region::Ram, 0).unwrap_or_default();
+        (4, waits)
+    }
+}
+
+impl DmaOps for Dma<'_> {
+    fn read(&mut self, addr: Address, data: &mut [u8]) -> DmaOutcome {
+        dma::read_ram(self, addr, data)
+    }
+
+    fn write(&mut self, addr: Address, data: &[u8]) -> DmaOutcome {
+        // Counted even when it stops short: what was written until then is in the RAM
+        *self.writes = self.writes.wrapping_add(1);
+        dma::write_ram(self, addr, data)
+    }
 }
 
 const fn region(overlay: bool, block: usize) -> Region {
@@ -83,6 +131,7 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x58..=0x5F => Region::ExtRom,
         0x60..=0xEF => Region::SuperSlot,
         0xF9 => Region::Video,
+        0xF1..=0xFF => Region::Slot,
         _ => Region::None,
     }
 }
@@ -152,6 +201,11 @@ pub struct Quadra700Bus {
 
     /// Built-in video controller
     pub(crate) dafb: Dafb,
+
+    /// The cards in the NuBus slots $D and $E
+    nubus: Nubus,
+    /// Writes to the RAM by a card that masters the bus, counted for the views of the memory
+    dma_writes: u32,
 
     /// Mouse mode
     mouse_mode: MouseMode,
@@ -223,6 +277,8 @@ impl Quadra700Bus {
             progkey_pressed: LatchingEvent::default(),
 
             dafb: Dafb::with_config(DeviceModel::DafbVideo, &built_in_display(devices)),
+            nubus: Nubus::new(BUS_FREQUENCY, model.nubus_slots()),
+            dma_writes: 0,
             mouse_mode,
         };
 
@@ -621,21 +677,6 @@ impl Quadra700Bus {
         self.mouse_mode = mode;
     }
 
-    pub fn mouse_mode(&self) -> MouseMode {
-        self.mouse_mode
-    }
-
-    /// The display that the guest's Slot Manager knows by the slot number and the id of the
-    /// slot resource of its driver's AuxDCE. None: this machine has one display.
-    #[allow(non_snake_case)]
-    pub fn display_from_Mac_AuxDCE(
-        &self,
-        _dctl_slot: u8,
-        _dctl_slot_id: u8,
-    ) -> Option<(String, String, usize)> {
-        None
-    }
-
     /// Updates the mouse position in absolute mode, given the current value
     /// of RawMouse. Returns what the low memory globals of the OS should hold
     /// for it, if they should change.
@@ -698,9 +739,31 @@ impl Quadra700Bus {
         match bus {
             bus_id::SCSI => Some(self.scsi.bus_mut()),
             bus_id::SWIM => Some(&mut self.swim),
+            bus_id::NUBUS => Some(&mut self.nubus),
             bus_id::BUILT_IN => Some(self),
             _ => None,
         }
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display of the machine that the guest's Slot Manager knows by the slot number and
+    /// the id of the slot resource of its driver's AuxDCE (`dCtlSlot` and `dCtlSlotId`): the
+    /// ids of its bus and slot, and its index among the displays of that device. Called by
+    /// the emulator, which reads the guest's list of screens. The driver of the built-in
+    /// video has slot 0; the other videos are NuBus cards.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        dctl_slot: u8,
+        dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        if dctl_slot == 0 {
+            return Some((bus_id::BUILT_IN.into(), built_in::VIDEO.into(), 0));
+        }
+        self.nubus.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)
     }
 
     /// Dispatches a key event to the keyboard
@@ -782,15 +845,24 @@ impl Bus<Address, Byte> for Quadra700Bus {
 
         let mut resp = match region {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Region::SuperSlot | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
+            Region::SuperSlot | Region::Video | Region::Slot if acc.pending > 0 => {
+                BusResponse::Stall(0)
+            }
             Region::Ram => bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
             Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
-            Region::SuperSlot => {
-                bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
-            }
+            // What the card of the slot doesn't answer, or an empty slot, stays as
+            // superslot_read() and superslot_write() have it
+            Region::SuperSlot => match self.nubus.access(acc, NUBUS_WAITS) {
+                Some(resp) if resp != BusResponse::BusError => resp,
+                _ => bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write),
+            },
             Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
+            Region::Slot => self
+                .nubus
+                .access(acc, NUBUS_WAITS)
+                .unwrap_or(BusResponse::BusError),
             Region::None => BusResponse::BusError,
         };
 
@@ -824,6 +896,7 @@ impl Bus<Address, Byte> for Quadra700Bus {
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Self::new_via2(self.model);
         self.dafb.reset();
+        self.nubus.reset();
         self.asc.reset();
         // The DAFB drives the 53C96 reset
         self.scsi.reset();
@@ -931,9 +1004,26 @@ impl Tickable for Quadra700Bus {
         self.dafb.tick(native_ticks, ctx)?;
         let video_irq = self.dafb.get_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
+
+        // The interrupt of slot $D is on PA4 and the one of slot $E on PA5 (Designing Cards
+        // and Drivers for the Macintosh Family, 3rd ed., table 16-6)
+        let mut dma = Dma {
+            ram: &mut self.ram,
+            overlay: self.overlay,
+            writes: &mut self.dma_writes,
+        };
+        let mut nubus_dma = NubusDma {
+            dma: &mut dma,
+            nubus_waits: NUBUS_WAITS,
+        };
+        self.nubus.tick(native_ticks, ctx, &mut nubus_dma)?;
+        let slot_irqs = self.nubus.irqs();
+        self.via2.a_in.set_v2irqs(!slot_irqs);
+
+        // An OR gate of the slot and video interrupts makes /SLOTIRQ (same chapter)
         self.via2.set_line(
             ViaLine::CA1,
-            if video_irq {
+            if video_irq || slot_irqs != 0 {
                 LineState::Low
             } else {
                 LineState::High
@@ -1067,30 +1157,22 @@ impl InspectableBus<Address, Byte> for Quadra700Bus {
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay)
+        (self.dma_writes << 1) | u32::from(self.overlay)
     }
 }
 
 impl Debuggable for Quadra700Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
 
-        let mut result = vec![
+        vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Enhanced Apple Sound Chip", self.asc),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
-        ];
-
-        for slot in ["D", "E"] {
-            result.push(dbgprop_group!(
-                format!("NuBus slot ${} (empty)", slot),
-                vec![]
-            ));
-        }
-        result
+        ]
     }
 }

@@ -1087,6 +1087,61 @@ mod tests {
     }
 
     #[test]
+    fn a_quadra_takes_a_video_card_next_to_its_video() {
+        let dir = TestDir::new("quadra");
+        let rom = dir.file("video.rom", 0);
+        let card = |slot| video_card(slot, DeviceModel::DisplayCard824, Some(&rom), None);
+        let built_in = |monitor| DeviceConfig {
+            bus: bus_id::BUILT_IN.into(),
+            slot: built_in::VIDEO.into(),
+            model: None,
+            rom: None,
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor,
+                vram_size: None,
+            }),
+        };
+        let machine_rom = vec![0; 1024 * 1024];
+        let names = |displays: &[DisplayHandle]| -> Vec<String> {
+            displays.iter().map(|d| d.name.clone()).collect()
+        };
+
+        for (model, slot, number) in [(MacModel::Quadra700, "D", 0xD)] {
+            let machine = MachineConfig::new(&machine_rom, model);
+
+            // The built-in video is the first display, the card the second
+            let (emu, displays, refused) = Emulator::new(&machine, vec![card(slot)]).unwrap();
+            assert_eq!(refused, []);
+            let card_name = format!("NuBus slot {}: Macintosh Display Card 8-24", slot);
+            assert_eq!(names(&displays), ["Built-in display", card_name.as_str()]);
+            // The guest knows the built-in video as slot 0, and the card by its slot number
+            assert_eq!(emu.display_from_Mac_AuxDCE(0, 0x80), Some(0));
+            assert_eq!(emu.display_from_Mac_AuxDCE(number, 0x80), Some(1));
+            assert_eq!(emu.display_from_Mac_AuxDCE(0xE, 0x80), None);
+
+            // With nothing on the connector of the built-in video, the card is the screen
+            let none = built_in(Some(MacMonitor::NoMonitor));
+            let devices = vec![none.clone(), card(slot)];
+            let (mut emu, displays, _) = Emulator::new(&machine, devices).unwrap();
+            assert_eq!(names(&displays), [card_name.as_str()]);
+            assert_eq!(emu.display_from_Mac_AuxDCE(0, 0x80), None);
+            assert_eq!(emu.display_from_Mac_AuxDCE(number, 0x80), Some(0));
+            assert_eq!(
+                emu.function_in(bus_id::BUILT_IN, built_in::VIDEO)
+                    .unwrap()
+                    .status(),
+                FunctionStatus::Display(DisplayStatus { connected: false })
+            );
+            // And without a card, the machine has no screen
+            assert!(Emulator::new(&machine, vec![none]).is_err());
+
+            // A slot that the machine doesn't have takes no card
+            let (_, _, refused) = Emulator::new(&machine, vec![card("9")]).unwrap();
+            assert_eq!(refused.len(), 1);
+        }
+    }
+
+    #[test]
     fn the_screens_of_the_guest_are_matched_to_the_displays() {
         use crate::bus::Address;
         use crate::emulator::EmulatorConfig;
