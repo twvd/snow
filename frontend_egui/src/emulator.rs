@@ -161,6 +161,10 @@ pub struct EmulatorInitArgs {
     /// The serial number of the machine, for a machine whose core makes the ROM that holds it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_number: Option<String>,
+
+    /// An X/Lisa PFG in the SCC socket (Lisa only)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pfg_enabled: bool,
 }
 
 impl Default for EmulatorInitArgs {
@@ -178,6 +182,7 @@ impl Default for EmulatorInitArgs {
             cache_flush_workaround: Default::default(),
             vm_pflush_workaround: Default::default(),
             serial_number: None,
+            pfg_enabled: false,
         }
     }
 }
@@ -320,6 +325,7 @@ impl EmulatorState {
             pmmu_enabled: args.pmmu_enabled,
             fpu_enabled: args.fpu_enabled,
             serial_number: args.serial_number.as_deref(),
+            pfg_enabled: args.pfg_enabled,
         };
         let (mut emulator, displays, refused) = Emulator::new(&machine, devices)?;
 
