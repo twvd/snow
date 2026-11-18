@@ -436,6 +436,8 @@ pub struct MachineConfig<'a> {
     /// The serial number of the machine, for a machine that has one in a ROM that the core
     /// makes. None: the core's own.
     pub serial_number: Option<&'a str>,
+    /// An X/Lisa PFG in the SCC socket of a Lisa, for MacWorks Plus II
+    pub pfg_enabled: bool,
 }
 
 impl<'a> MachineConfig<'a> {
@@ -450,6 +452,7 @@ impl<'a> MachineConfig<'a> {
             pmmu_enabled: false,
             fpu_enabled: false,
             serial_number: None,
+            pfg_enabled: false,
         }
     }
 }

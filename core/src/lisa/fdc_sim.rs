@@ -9,8 +9,10 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::pfg::EEPROM_SIZE;
 use crate::devices::{
     BusKind, BusOps, DeviceConfig, DeviceModel, DeviceOps, FloppyFunction, FloppyImages,
     FloppyInfo, FloppyStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo,
@@ -45,7 +47,7 @@ const IMSK: usize = 0x2C;
 const OKTOGO: usize = 0x2E;
 const IST: usize = 0x2F;
 const PARAMETER_MEMORY: usize = 0xC0;
-const PARAMETER_MEMORY_SIZE: usize = 0x40;
+pub(super) const PARAMETER_MEMORY_SIZE: usize = 0x40;
 const TAG: usize = 0x1F4;
 const DATA: usize = 0x200;
 
@@ -121,6 +123,8 @@ const TIMING_LOOP_TICKS: Ticks = 5788;
 const WRITE_PROTECT_SENSE_CODE: [u8; 14] = [
     0x20, 0x02, 0x13, 0xA9, 0x00, 0xAA, 0xB0, 0x01, 0xCA, 0x86, 0x08, 0x85, 0x06, 0x60,
 ];
+/// The 6504's clock, DOTCK/10
+pub const FDC_CLOCK: Ticks = 2_037_504;
 /// From power on to listening
 const START_TICKS: Ticks = 6_367_200;
 const OPERATION_TICKS: Ticks = 101_875;
@@ -300,6 +304,8 @@ pub struct FdcSim {
     parked: bool,
     /// When the timing loop is over
     timing_loop_done_at: Option<Ticks>,
+    /// The clock a PFG gives the 6504, instead of its own
+    clock: Option<Ticks>,
     /// The lower drive, once the machine has it
     drive: Option<Box<Drive>>,
     /// File the parameter memory is kept in. A save state doesn't bring it back, like
@@ -337,6 +343,7 @@ impl FdcSim {
             operation: None,
             parked: false,
             timing_loop_done_at: None,
+            clock: None,
             drive: None,
             parameter_memory_path: None,
             parameter_memory_changed: false,
@@ -364,8 +371,8 @@ impl FdcSim {
     }
 
     /// Keeps parameter memory in a file from now on. A file that doesn't exist or is
-    /// empty is a run down battery. One of another size is refused and left as it is:
-    /// it is likely the PRAM file of a Mac.
+    /// empty is a run down battery. The EEPROM of a PFG may follow it. A file of another
+    /// size is refused and left as it is: it is likely the PRAM file of a Mac.
     pub fn persist_parameter_memory(&mut self, path: &Path) -> Result<()> {
         let saved = match std::fs::read(path) {
             Ok(data) => data,
@@ -374,9 +381,9 @@ impl FdcSim {
         };
         match saved.len() {
             0 => self.parameter_memory_changed = true,
-            PARAMETER_MEMORY_SIZE => {
+            n if n == PARAMETER_MEMORY_SIZE || n == PARAMETER_MEMORY_SIZE + EEPROM_SIZE => {
                 self.ram[PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE]
-                    .copy_from_slice(&saved);
+                    .copy_from_slice(&saved[..PARAMETER_MEMORY_SIZE]);
             }
             n => bail!("{} bytes, not {}", n, PARAMETER_MEMORY_SIZE),
         }
@@ -390,10 +397,13 @@ impl FdcSim {
             return Ok(());
         }
         if let Some(path) = &self.parameter_memory_path {
-            std::fs::write(
-                path,
-                &self.ram[PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE],
-            )?;
+            // Without truncating: the EEPROM of a PFG may follow
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)?;
+            file.write_all(&self.ram[PARAMETER_MEMORY..PARAMETER_MEMORY + PARAMETER_MEMORY_SIZE])?;
         }
         Ok(())
     }
@@ -444,6 +454,11 @@ impl FdcSim {
         } else {
             0x02
         };
+    }
+
+    /// The clock of a PFG, or None for the 6504's own
+    pub fn set_clock(&mut self, clock: Option<Ticks>) {
+        self.clock = clock;
     }
 
     /// An 800K drive instead of a 400K one
@@ -541,7 +556,11 @@ impl FdcSim {
                     && self.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + TIMING_LOOP_CODE.len()]
                         == TIMING_LOOP_CODE
                 {
-                    self.timing_loop_done_at = Some(self.now + TIMING_LOOP_TICKS);
+                    let ticks = match self.clock {
+                        Some(clock) => TIMING_LOOP_TICKS * FDC_CLOCK / clock,
+                        None => TIMING_LOOP_TICKS,
+                    };
+                    self.timing_loop_done_at = Some(self.now + ticks);
                     return;
                 }
                 if usize::from(target) == TIMING_LOOP_AT

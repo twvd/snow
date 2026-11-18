@@ -2129,4 +2129,15 @@ mod tests {
         assert_eq!(refused.len(), 2, "{:?}", refused);
         assert_eq!(emu.devices(), [profile]);
     }
+    #[test]
+    fn the_pfg_is_a_flag_of_the_lisa() {
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            pfg_enabled: true,
+            ..MachineConfig::new(&rom, MacModel::Lisa25)
+        };
+        let (mut emu, _, refused) = Emulator::new(&machine, vec![]).unwrap();
+        assert!(refused.is_empty(), "{:?}", refused);
+        assert!(emu.devices().is_empty());
+    }
 }

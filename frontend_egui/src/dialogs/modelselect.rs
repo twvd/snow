@@ -748,6 +748,12 @@ impl ModelSelectionDialog {
                 DeviceModel::Lisa800KDrive,
                 "Use an 800K floppy drive, for MacWorks Plus",
             );
+            if self.selected_model.is_lisa() {
+                ui.checkbox(
+                    &mut self.init_args.pfg_enabled,
+                    "X/Lisa PFG in the SCC socket, for MacWorks Plus II",
+                );
+            }
 
             ui.collapsing("Advanced", |ui| {
                 if self.selected_model.is_lisa() {
@@ -903,6 +909,9 @@ impl ModelSelectionDialog {
                             MacModel::LC | MacModel::LCII | MacModel::LCIII | MacModel::LC475
                         ) {
                             self.init_args.fpu_enabled = false;
+                        }
+                        if !self.selected_model.is_lisa() {
+                            self.init_args.pfg_enabled = false;
                         }
 
                         self.result = Some(ModelSelectionResult {
