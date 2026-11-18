@@ -243,7 +243,7 @@ impl Swim {
 
         let pulse = VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()];
         self.sync_devices();
-        for device in self.drives.iter_mut().flatten() {
+        for device in self.devices_mut() {
             device.set_pwm(pulse);
         }
         Ok(())
