@@ -152,6 +152,10 @@ pub struct Esp {
 
     /// A selection with ATN waits for its message byte by DMA
     identify_pending: bool,
+
+    /// Nanoseconds before a selection that no target answers times out
+    #[serde(default)]
+    sel_timeout_left: Option<u64>,
 }
 
 impl Esp {
@@ -183,6 +187,7 @@ impl Esp {
             dma16,
             selecting: false,
             identify_pending: false,
+            sel_timeout_left: None,
         }
     }
 
@@ -383,6 +388,7 @@ impl Esp {
         self.dma_in = false;
         self.selecting = false;
         self.identify_pending = false;
+        self.sel_timeout_left = None;
     }
 
     fn fifo_push(&mut self, val: u8) {
@@ -535,10 +541,8 @@ impl Esp {
         self.dma_xfer = false;
 
         if id >= ScsiBus::MAX_TARGETS || self.bus.targets[id].is_none() {
-            // Nothing at this ID: report a disconnect
-            self.stat &= !STAT_PHASE;
-            self.intr |= INTR_DC;
-            self.raise_irq();
+            // Nothing answers at this ID: the selection times out (tick)
+            self.sel_timeout_left = Some(self.selection_timeout_ns());
             return;
         }
         self.bus.sel_id = id;
@@ -588,6 +592,27 @@ impl Esp {
         else {
             self.seq = SEQ_CMD;
         }
+    }
+
+    /// The selection time-out period in the Time-Out register, in nanoseconds.
+    /// Data sheet "Time-Out (Write address 05)": the period is
+    /// RV x 8192 x CCF / CLK, CCF the clock conversion factor of write
+    /// register 9 ("Clock Conversion (Write address 09)").
+    ///
+    /// The chip's CLK isn't known here, so it is taken as CCF x 5 MHz, the
+    /// top of the band of clock frequencies that the factor stands for in the
+    /// Clock Conversion table: the period is then RV x 1.6384 ms. That is
+    /// exact for the data sheet's example (RV 153 at 25 MHz, factor 5: 250 ms)
+    /// and for a Quadra 700 (25 MHz).
+    fn selection_timeout_ns(&self) -> u64 {
+        u64::from(self.sel_timeout) * 8192 * 200
+    }
+
+    /// A selection that no target answered: the chip reports a disconnect
+    fn selection_timed_out(&mut self) {
+        self.stat &= !STAT_PHASE;
+        self.intr |= INTR_DC;
+        self.raise_irq();
     }
 
     /// Whether the command buffer holds a complete CDB
@@ -921,6 +946,16 @@ impl Tickable<&dyn EmuContext> for Esp {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.bus.tick_targets(ticks, ctx)?;
 
+        if let Some(left) = self.sel_timeout_left {
+            let ns = ticks * 1_000_000_000 / ctx.bus_frequency();
+            if ns >= left {
+                self.sel_timeout_left = None;
+                self.selection_timed_out();
+            } else {
+                self.sel_timeout_left = Some(left - ns);
+            }
+        }
+
         if let Some(result) = self.bus.poll() {
             self.target_answered(result);
         }
@@ -1075,6 +1110,31 @@ mod tests {
 
     fn phase(esp: &mut Esp) -> u8 {
         esp.read(REG_STATUS).unwrap() & STAT_PHASE
+    }
+
+    /// Selecting an ID where nothing answers interrupts with a disconnect
+    /// only once the period in the Time-Out register has passed
+    #[test]
+    fn selection_of_an_empty_id_times_out() {
+        const REG_BUS_ID: Address = 0x40;
+        const REG_TIMEOUT: Address = 0x50;
+        let (mut esp, _) = esp_with_disk();
+        esp.write(REG_BUS_ID, 3).unwrap();
+        // 153 x 1.6384 ms: 250.7 ms, the data sheet's usual value
+        esp.write(REG_TIMEOUT, 0x99).unwrap();
+        for b in [0x00, 0, 0, 0, 0, 0] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        command(&mut esp, 0x41);
+        assert!(!esp.get_irq());
+        // 1 ms per tick at the test context's 16 MHz
+        for _ in 0..250 {
+            esp.tick(16_000, &TestContext).unwrap();
+            assert!(!esp.get_irq());
+        }
+        esp.tick(16_000, &TestContext).unwrap();
+        assert!(esp.get_irq());
+        assert_eq!(esp.read(REG_INTR).unwrap() & INTR_DC, INTR_DC);
     }
 
     #[test]
