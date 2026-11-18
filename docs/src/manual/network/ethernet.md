@@ -68,6 +68,11 @@ the Apple IIe Card: choose it under 'PDS Slot'.
 * The Apple Ethernet LC Twisted-Pair Card needs no ROM file, but the emulated system needs Apple's driver for it:
   the System 7.5 installer has 'EtherTalk for Apple Ethernet LC cards' among its options.
 
+### DaynaPORT E/si30
+
+The PDS of the Macintosh SE/30 can hold a DaynaPORT E/si30: choose it under 'PDS Slot'. It needs no ROM file, but
+the emulated system needs Dayna's driver for it, which the DaynaPORT installer installs.
+
 ## MAC address
 
 An Ethernet adapter gets a random MAC address when it is attached. A [workspace](../workspaces.md) keeps

@@ -317,6 +317,8 @@ pub enum DeviceModel {
     AppleEthernetLc,
     #[cfg(feature = "ethernet")]
     AppleEthernetLcTp,
+    #[cfg(feature = "ethernet")]
+    DaynaPortEsi30,
     UniDisk35,
     Apple525Drive,
 }
@@ -353,6 +355,8 @@ impl DeviceModel {
             Self::AppleEthernetLc => &ethernet::appl_lc_sonic::INFO,
             #[cfg(feature = "ethernet")]
             Self::AppleEthernetLcTp => &ethernet::appl_lc_sonic::INFO_TP,
+            #[cfg(feature = "ethernet")]
+            Self::DaynaPortEsi30 => &ethernet::dayna_si30::INFO,
             Self::UniDisk35 => &pds_iie::unidisk::INFO,
             Self::Apple525Drive => &pds_iie::disk::INFO,
         }
