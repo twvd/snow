@@ -1,5 +1,5 @@
 [package]
-name = "atalk-runner"
+name = "mac-tests-runner"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,13 @@ edition = "2024"
 # test-only AppleTalk features for every other package built alongside.
 [workspace]
 
+[features]
+# The built-in AppleTalk node on SCC channel B, with its test features
+afp = ["snow_core/afp_server", "snow_core/afp_server_test"]
+
 [dependencies]
 anyhow = "1.0.97"
 env_logger = "0.11.8"
 log = "0.4.27"
 png = "0.17.16"
-snow_core = { path = "../../core", features = ["mmap", "afp_server", "afp_server_test"] }
+snow_core = { path = "../../core", features = ["mmap"] }

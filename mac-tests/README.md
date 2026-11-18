@@ -1,53 +1,95 @@
-# mac-tests: Retro68 guest testers for the built-in AppleTalk node
+# mac-tests: guest testers
 
-`ATalkTest` is a Retro68 (m68k) program that boots inside an emulated
-Mac (System 7), exercises the AppleTalk link/DDP/AFP stack of the
-built-in node in Snow, and writes its findings to
-`ATalkTest Results`/`ATalkTest Log` next to itself.
+A **guest tester** is a Mac program that runs inside the emulated Mac, exercises one part of
+Snow from the guest's side, the way real software uses it, and writes what it found to a file on
+the emulated disk. A script boots it headless, then reads that file back on the host.
 
-## Contents
+They complement the unit tests of `snow_core` (`cargo test`), which test a device model from the
+host's side: a guest tester checks that real system software, its drivers included, works with
+the model.
 
-- `atalktest.c` — the test program. Opens DDP socket 0x64, exchanges
-  broadcast test datagrams with the node's test module, then exercises
-  the full AFP session (NBP lookup, ASP login, volume, enumeration,
-  fork reads) and a packet-loss retransmit test.
-- `atalk_listener.s` — a small 68k AppleTalk link-listener stub the
-  test installs to see raw LAP packets.
-- `Makefile` — builds `ATalkTest.bin` (a Retro68 app) and, optionally,
-  `ATalkTest-800k.img`, a bootable 800K floppy image carrying it
-  (hfsutils `hformat`/`hcopy` required).
-- `inject-tester.sh` — builds the app and copies it into the
-  `:System Folder:Startup Items:` folder of a bootable disk image.
-- `runner/` — a headless runner around `snow_core`, with the test
-  features (`afp_server`, `afp_server_test`): boots a ROM with SCSI
-  disks and the built-in AppleTalk node on SCC channel B, sharing
-  `SNOW_AFP_ROOT` read-only, and saves the last screen. `make runner`
-  builds it; it is its own cargo workspace, so the test features never
-  reach the emulator's build. Upstream's `testrunner` does not fit
-  this: it boots floppy images and compares the screen with control
-  frames, has no hard disks or serial bridges, and as a workspace
-  member it cannot turn the test features on.
-- `run-tester.sh` — builds the runner, injects the app into a fresh
-  copy of a base disk image, boots it and extracts the results.
+| Tester | What it tests |
+|---|---|
+| [`afp/`](afp/README.md) `ATalkTest` | The built-in AppleTalk node: LAP, DDP, NBP, ASP and the AFP server |
 
-## Running
+## Layout
+
+- `common/retro68.mk`: the Make rules the testers share. A tester's `Makefile` names its program,
+  its object files and its options, then includes it. It builds `<Program>.bin`, a MacBinary
+  application, and `<Program>-<size>k.img`, an HFS floppy image carrying it.
+- `common/disk.sh`: shell functions for the run scripts: a fresh copy of a base image, a blank
+  disk, installing a program in the Startup Items folder, getting a file out of an image.
+- `runner/`: the headless runner, which boots a ROM with SCSI disks for a number of cycles.
+- `afp/`: one folder per tester, with its source, its `Makefile`, its `run.sh` and its
+  `README.md`.
+- `Makefile`: `make` builds every tester, `make runner` and `make runner-afp` the runner.
+
+## Requirements
+
+- [Retro68](https://github.com/autc04/Retro68), the m68k toolchain: set `RETRO68` to its
+  toolchain folder (`.../Retro68-build/toolchain`).
+- hfsutils (`hformat`, `hmount`, `hcopy`, `humount`), and `flock` (util-linux).
+- A ROM, and a bootable disk image with the System the tester needs. They aren't distributed
+  with Snow.
+- Rust, for the runner.
+
+## The runner
 
 ```
-RETRO68=/path/to/Retro68-build/toolchain \
-ROM=/path/to/mac-plus.rom \
-BASE_IMG=/path/to/bootable-system7.img \
-SNOW_AFP_ROOT=/path/to/share \
-./run-tester.sh
+mac-tests-runner <rom> <cycles> <screenshot.png> [<scsi id>:<image>...]
 ```
 
-- `BASE_IMG` is a pristine, bootable System 7 disk image (a copy of
-  the emulator's hdd image). Every run works on a fresh copy of it, so
-  stale results cannot fake a pass; the copy is deleted afterwards.
-- The share the AFP server exposes comes from `SNOW_AFP_ROOT`. The
-  runner shares it read-only: the test enumerates the first folder it
-  finds, which on a writable volume can be the `Network Trash Folder`
-  the Finder creates.
-- The results, the log and the last screen stay in `RUN_DIR`.
+It boots the ROM with the disks at the given SCSI IDs, runs the given number of cycles uncapped,
+and saves the last frame. It stops with an error if the emulator stops.
 
-The rules of the harness: never boot the original images (copies
-only), and hfsutils touches one image at a time.
+Snow doesn't model a guest powering the machine off, so a tester that is done can't end the run
+that way. Instead, the runner can look for a text the tester writes at its end
+(`RUNNER_UNTIL`): Snow's disks are files mapped in memory, so what the guest writes is in the
+image file at once. It counts the text in the image at the start, so that a copy left in the free
+blocks of the base image doesn't end the run. Other settings come from
+the environment:
+
+| Variable | Setting |
+|---|---|
+| `RUNNER_MODEL` | The model, as Snow names it (default: the one the ROM is for) |
+| `RUNNER_RAM` | RAM size in MB (default: the model's) |
+| `RUNNER_PMMU` | Set: the 68851 PMMU of a Mac II is fitted (A/UX needs it) |
+| `RUNNER_FPU` | Set: the FPU is fitted, where it is optional |
+| `RUNNER_PRAM` | A file to keep the PRAM in |
+| `RUNNER_DISPLAY_ROM` | The ROM of a Macintosh Display Card 8-24, or of the SE/30's video |
+| `RUNNER_FLOPPY` | A floppy image, inserted write-protected at start |
+| `RUNNER_OVERCLOCK` | The CPU clock, in Hz |
+| `RUNNER_SHOTS` | Set: a frame every 1/8 of the run too, as `<screenshot>-<n>.png` |
+| `RUNNER_UNTIL` | A text the guest writes when it is done: the run stops once the disk at ID 0 holds it more times than at the start |
+
+`RUST_LOG` sets the emulator's log level, as for Snow itself.
+
+The runner is its own cargo workspace, not a member of Snow's, and comes in two builds:
+`make runner`, and `make runner-afp` with the `afp` feature, which adds the test features of the
+built-in AppleTalk node (see [`afp/`](afp/README.md)). In Snow's workspace those features would
+reach every other package built with it. Each build has its own target folder under
+`runner/target/`, so switching from one to the other doesn't rebuild `snow_core`.
+
+Upstream's `testrunner` serves another purpose: it boots floppy images and compares the screen
+with control frames, without hard disks or serial bridges.
+
+## Rules
+
+- **Never boot or modify an original image.** A run works on a fresh copy of its base image, so
+  that a result left by an earlier run can't pass for a new one, and deletes it at the end.
+  hfsutils rewrites the volumes it opens.
+- **hfsutils has a single current volume per user** (`~/.hcwd`), so two scripts using it at once
+  would step on each other. The functions of `common/disk.sh` hold a lock (`~/.hcwd.lock`, or
+  `HFS_LOCK`) while they use it, so runs can go in parallel.
+
+## Adding a tester
+
+1. A folder with the program's source and a `Makefile` that sets `APP` and `OBJS` (and
+   `LDFLAGS`, `REZ_SRC`, `FLOPPY_KB` if needed), then includes `../common/retro68.mk`. Add the
+   folder to `TESTERS` in the top `Makefile`.
+2. The program writes its results to a file of the guest's disk, and flushes it as it goes, so
+   that a run that ends early still says how far it got.
+3. A `run.sh` that builds the runner and the program, prepares the disks with
+   `common/disk.sh`, boots, and gets the results out. It exits with an error when the test fails.
+4. A `README.md`: what it tests, what it needs, how to run it, how to read its results.
+5. A line in the table above.
