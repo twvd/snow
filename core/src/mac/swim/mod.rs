@@ -3,6 +3,7 @@
 //! Floppy drive controller consisting of two different controllers:
 //! Integrated Wozniak Machine, Integrated Sander Machine.
 
+pub mod chain;
 pub mod device;
 pub mod drive;
 pub mod ism;
@@ -13,6 +14,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 
 use anyhow::{Context, Result, bail};
+use chain::Chain;
 use ism::{IsmError, IsmSetup, IsmStatus};
 use rand::Rng;
 
@@ -134,6 +136,27 @@ enum SwimMode {
     Ism,
 }
 
+/// Where a device of the controller is
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum Place {
+    /// On a drive connector
+    Connector(usize),
+    /// At a place on the chain of the external drive connector
+    Chain(usize),
+}
+
+/// The device at a place: a field-level borrow, so that the chip can be used next to it
+fn device_in<'a>(
+    drives: &'a mut [Option<Box<dyn SwimBusDevice>>],
+    chain: &'a mut Chain,
+    place: Place,
+) -> Option<&'a mut Box<dyn SwimBusDevice>> {
+    match place {
+        Place::Connector(connector) => drives[connector].as_mut(),
+        Place::Chain(place) => chain.device_at(place),
+    }
+}
+
 /// Sander-Wozniak Integrated Machine - floppy drive controller
 #[derive(Serialize, Deserialize)]
 pub struct Swim {
@@ -171,12 +194,23 @@ pub struct Swim {
     /// The devices on the drive connectors
     drives: [Option<Box<dyn SwimBusDevice>>; Self::CONNECTORS],
 
+    /// The devices chained on the external drive connector, in front of its drive
+    chain: Chain,
+
+    /// Whether the external drive connector was enabled, with a device on its chain, when the
+    /// control lines were last looked at
+    chain_enabled: bool,
+
+    /// The ticks since the byte in the write shifter started on its way to a device that
+    /// exchanges bytes
+    write_ticks: Ticks,
+
     /// The ticks the devices haven't been given yet. They get them before any other of their
     /// methods is called, not on each tick of the controller.
     pending_ticks: Ticks,
 
     /// The device and the level of the control lines last given to `set_lines()`
-    lines_sent: (usize, u8),
+    lines_sent: (Place, u8),
 
     /// SEL and the internal drive select, which the machine sets at any time, as they were
     /// when the control lines were last looked at
@@ -242,7 +276,10 @@ impl Swim {
         Self {
             drives: Default::default(),
             pending_ticks: 0,
-            lines_sent: (0, 0),
+            chain: Chain::default(),
+            chain_enabled: false,
+            write_ticks: 0,
+            lines_sent: (Place::Connector(0), 0),
             machine_lines: (false, false),
             spinning: None,
             ism_available,
@@ -313,7 +350,7 @@ impl Swim {
 
     /// Resets the controller, as the system RESET line does: back to the
     /// power-on mode with all drive control lines low. The drives keep their
-    /// disks.
+    /// disks, and the chained devices stay. Each device is told of the reset.
     pub fn reset(&mut self) {
         let base_frequency = self.base_frequency;
         let mut fresh = if self.iwm_available {
@@ -322,6 +359,8 @@ impl Swim {
             Self::new_swim2(base_frequency)
         };
         std::mem::swap(&mut fresh.drives, &mut self.drives);
+        std::mem::swap(&mut fresh.chain, &mut self.chain);
+        fresh.chain.rewind();
         fresh.pending_ticks = self.pending_ticks;
         fresh.lines_sent = self.lines_sent;
         fresh.cycles = self.cycles;
@@ -330,6 +369,10 @@ impl Swim {
         fresh.intdrive = self.intdrive;
         fresh.dbg_pc = self.dbg_pc;
         fresh.dbg_break = std::mem::take(&mut self.dbg_break);
+        fresh.sync_devices();
+        for device in fresh.devices_mut() {
+            device.reset();
+        }
         *self = fresh;
     }
 
@@ -403,10 +446,75 @@ impl Swim {
         if self.pending_ticks == 0 {
             return;
         }
-        for device in self.drives.iter_mut().flatten() {
-            device.tick(self.pending_ticks);
+        let ticks = self.pending_ticks;
+        for device in self.devices_mut() {
+            device.tick(ticks);
         }
         self.pending_ticks = 0;
+    }
+
+    /// Every device of the controller: those on the drive connectors, then the chained ones
+    fn devices_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn SwimBusDevice>> {
+        self.drives
+            .iter_mut()
+            .flatten()
+            .chain(self.chain.devices_mut())
+    }
+
+    /// Whether the external drive connector is enabled, with a device on its chain. The
+    /// chain is only followed in IWM mode: in ISM mode the drive of the connector answers.
+    fn chain_is_enabled(&self) -> bool {
+        !self.chain.is_empty()
+            && self.mode == SwimMode::Iwm
+            && self.extdrive
+            && self.iwm_drive_enabled()
+    }
+
+    /// The device the controller talks to: the drive of the selected connector or, while the
+    /// external connector is enabled, the device of its chain that the selection has reached
+    fn selected(&self) -> Place {
+        if self.chain_is_enabled()
+            && let Some(place) = self.chain.reached()
+        {
+            return Place::Chain(place);
+        }
+        Place::Connector(self.get_selected_drive_idx())
+    }
+
+    /// The ticks a byte takes between the IWM and a device that exchanges bytes: eight bit
+    /// cells of 16 periods of C8M each
+    fn byte_ticks(&self) -> Ticks {
+        8 * 16 * self.base_frequency / (C16M_FREQUENCY / 2)
+    }
+
+    /// Moves whole bytes between the IWM and the selected device, one that has no stream:
+    /// it exchanges bytes and not the bits of a disk
+    fn exchange_bytes(&mut self, place: Place, ticks: Ticks) {
+        let byte_ticks = self.byte_ticks();
+        let Some(device) = device_in(&mut self.drives, &mut self.chain, place) else {
+            return;
+        };
+
+        // Writing: the device has a byte once its eight bits have left the shifter
+        if self.chip.write_pos != 0 {
+            self.write_ticks += ticks;
+            if self.write_ticks >= byte_ticks {
+                device.write_byte(self.chip.write_shift);
+                self.chip.write_pos = 0;
+            }
+        }
+        if self.chip.write_pos == 0
+            && let Some(byte) = self.chip.write_buffer.take()
+        {
+            self.chip.write_shift = byte;
+            self.chip.write_pos = 8;
+            self.write_ticks = 0;
+        }
+
+        // Reading: a byte of the device goes to the data register
+        if let Some(byte) = device.read_byte(ticks) {
+            self.chip.datareg = byte;
+        }
     }
 
     /// Gets the device on a connector, for the emulator to act on it
@@ -418,26 +526,28 @@ impl Swim {
         Some(&mut **device)
     }
 
-    /// The strobe line rose: the selected device gets it
+    /// The strobe line rose: the selected device gets it. A chained device says whether it
+    /// passes the selection on to the next device of the chain.
     fn strobe(&mut self) {
-        let selected = self.get_selected_drive_idx();
+        let selected = self.selected();
         let lines = self.get_selected_drive_reg_u8();
         self.sync_devices();
         self.spinning = None;
-        if let Some(device) = &mut self.drives[selected] {
-            // A device says here whether it passes the selection on to the next one of its
-            // chain. None of the devices of a Mac is chained yet.
-            device.strobe(lines);
+        if let Some(device) = device_in(&mut self.drives, &mut self.chain, selected)
+            && device.strobe(lines)
+            && matches!(selected, Place::Chain(_))
+        {
+            self.chain.pass();
         }
     }
 
     /// Gets the level of the sense line: that of the selected device, or high on a connector
     /// with no device, which has a pull-up
     fn sense(&mut self) -> bool {
+        let selected = self.selected();
         let lines = self.get_selected_drive_reg_u8();
         self.sync_devices();
-        self.drives[self.get_selected_drive_idx()]
-            .as_ref()
+        device_in(&mut self.drives, &mut self.chain, selected)
             .is_none_or(|device| device.sense(lines))
     }
 
@@ -445,15 +555,16 @@ impl Swim {
     /// another device is selected
     fn update_lines(&mut self) {
         self.machine_lines = (self.sel, self.intdrive);
-        let lines = (
-            self.get_selected_drive_idx(),
-            self.get_selected_drive_reg_u8(),
-        );
+        self.chain_enabled = self.chain_is_enabled();
+        if !self.chain_enabled {
+            self.chain.rewind();
+        }
+        let lines = (self.selected(), self.get_selected_drive_reg_u8());
         if lines != self.lines_sent {
             self.lines_sent = lines;
             self.sync_devices();
             self.spinning = None;
-            if let Some(device) = &mut self.drives[lines.0] {
+            if let Some(device) = device_in(&mut self.drives, &mut self.chain, lines.0) {
                 device.set_lines(lines.1);
             }
         }
@@ -540,7 +651,11 @@ impl Tickable for Swim {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.cycles += ticks;
         self.pending_ticks += ticks;
-        if (self.sel, self.intdrive) != self.machine_lines {
+        if (self.sel, self.intdrive) != self.machine_lines
+            || (self.chain_enabled && !self.chain_is_enabled())
+        {
+            // The machine changed a line, or the motor timer ended the enable of the external
+            // connector, with no access
             self.update_lines();
         }
 
@@ -548,11 +663,22 @@ impl Tickable for Swim {
         // device: one that doesn't isn't asked again until then
         if self.spinning != Some(false) {
             self.sync_devices();
-            let selected = self.get_selected_drive_idx();
-            let stream = self.drives[selected]
-                .as_mut()
-                .and_then(|device| device.stream())
-                .filter(|stream| stream.spinning);
+            let selected = self.selected();
+            let device = device_in(&mut self.drives, &mut self.chain, selected);
+            let Some(stream) = device.map(|device| device.stream()) else {
+                // No device: nothing to read or write
+                self.spinning = Some(false);
+                return self.tick_no_disk(ticks);
+            };
+            let Some(stream) = stream else {
+                // A device with no stream exchanges whole bytes, in IWM mode
+                if self.mode == SwimMode::Iwm {
+                    self.exchange_bytes(selected, ticks);
+                    return Ok(ticks);
+                }
+                return self.tick_no_disk(ticks);
+            };
+            let stream = Some(stream).filter(|stream| stream.spinning);
             self.spinning = Some(stream.is_some());
             if let Some(stream) = stream {
                 // Advance read/write operation
@@ -564,11 +690,17 @@ impl Tickable for Swim {
                 return Ok(ticks);
             }
         }
+        self.tick_no_disk(ticks)
+    }
+}
+
+impl Swim {
+    /// A tick with no disk spinning under the selected device's heads
+    fn tick_no_disk(&mut self, ticks: Ticks) -> Result<Ticks> {
         if self.mode == SwimMode::Ism {
             let byte_ticks = self.base_frequency * 16 / 1_000_000;
             self.chip.ism_tick_no_disk(ticks, byte_ticks);
         }
-
         Ok(ticks)
     }
 }
@@ -682,6 +814,15 @@ impl Swim {
     pub(super) fn drive(&mut self, connector: usize) -> &mut FloppyDrive {
         self.drive_at(connector).unwrap().as_floppy_drive()
     }
+
+    /// Puts these devices on the chain of the external connector, from its first place
+    pub(super) fn with_chain(mut self, devices: Vec<Box<dyn SwimBusDevice>>) -> Self {
+        for (place, mut device) in devices.into_iter().enumerate() {
+            device.connected(place, self.base_frequency);
+            self.chain.put(place, device);
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -697,8 +838,11 @@ mod tests {
     const CA0H: Address = 1 << 9;
     const CA1H: Address = 3 << 9;
     const CA2H: Address = 5 << 9;
+    const LSTRBL: Address = 6 << 9;
     const LSTRBH: Address = 7 << 9;
+    const DISABLE: Address = 8 << 9;
     const ENABLE: Address = 9 << 9;
+    const EXTDRIVEL: Address = 10 << 9;
     const EXTDRIVEH: Address = 11 << 9;
     const Q6L: Address = 12 << 9;
     const Q6H: Address = 13 << 9;
@@ -985,6 +1129,10 @@ mod tests {
     struct Probe {
         #[serde(skip)]
         notes: Arc<Mutex<Vec<String>>>,
+        /// It is chained: it passes the selection on at a strobe
+        chained: bool,
+        /// The byte it sends when it is next asked for one
+        byte: Option<u8>,
     }
 
     impl Probe {
@@ -1019,7 +1167,7 @@ mod tests {
 
         fn strobe(&mut self, lines: u8) -> bool {
             self.note(format!("strobe {:04b}", lines));
-            false
+            self.chained
         }
 
         fn sense(&self, lines: u8) -> bool {
@@ -1029,6 +1177,164 @@ mod tests {
         fn tick(&mut self, ticks: Ticks) {
             self.note(format!("tick {}", ticks));
         }
+
+        fn reset(&mut self) {
+            self.note("reset".to_string());
+        }
+
+        fn read_byte(&mut self, _ticks: Ticks) -> Option<u8> {
+            self.byte.take()
+        }
+
+        fn write_byte(&mut self, byte: u8) {
+            self.note(format!("byte {:02X}", byte));
+        }
+    }
+
+    /// The controller with a probe on its external connector and two chained in front of
+    /// it, with the notes of the three: the two of the chain, then the one on the connector.
+    /// The first of the chain has a byte to send.
+    fn swim_with_chain() -> (Swim, [Arc<Mutex<Vec<String>>>; 3]) {
+        let chained = |byte| Probe {
+            chained: true,
+            byte,
+            ..Default::default()
+        };
+        let probes = [chained(Some(0xC5)), chained(None), Probe::default()];
+        let notes = probes.each_ref().map(|probe| probe.notes.clone());
+        let [first, second, drive] = probes.map(|probe| Box::new(probe) as Box<dyn SwimBusDevice>);
+        let mut swim = Swim::new(false, 16_000_000).with_chain(vec![first, second]);
+        swim.attach("2", MadeDevice::Swim(drive)).unwrap();
+        for notes in &notes {
+            take_notes(notes);
+        }
+        (swim, notes)
+    }
+
+    /// Takes the notes of a probe, without those of the time passing
+    fn take_notes(notes: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+        let notes = std::mem::take(&mut *notes.lock().unwrap());
+        notes
+            .into_iter()
+            .filter(|note| !note.starts_with("tick"))
+            .collect()
+    }
+
+    #[test]
+    fn the_selection_goes_down_the_chain_of_the_external_connector() {
+        let (mut swim, notes) = swim_with_chain();
+        let [first, second, drive] = notes.each_ref();
+
+        // The first device of the chain answers when the connector is enabled
+        swim.read(EXTDRIVEH);
+        assert_eq!(take_notes(drive), ["lines 0000"]);
+        swim.read(ENABLE);
+        swim.read(CA2H);
+        assert_eq!(take_notes(first), ["lines 0000", "lines 1000"]);
+
+        // A strobe: it passes the selection on, once, however often LSTRBH is accessed
+        for _ in 0..3 {
+            swim.read(LSTRBH);
+        }
+        swim.read(LSTRBL);
+        assert_eq!(take_notes(first), ["strobe 1000"]);
+        assert_eq!(take_notes(second), ["lines 1000"]);
+
+        // Past the last device of the chain is the drive of the connector, which keeps
+        // the selection
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert_eq!(take_notes(second), ["strobe 1000"]);
+        assert_eq!(take_notes(drive), ["lines 1000"]);
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert_eq!(take_notes(drive), ["strobe 1000"]);
+
+        // The motor timer keeps the connector enabled after ENABLE goes off: the selection
+        // stays where it is
+        swim.read(DISABLE);
+        swim.read(ENABLE);
+        swim.sel = true;
+        swim.tick(1, ()).unwrap();
+        assert_eq!(take_notes(drive), ["lines 1001"]);
+
+        // When the timer runs out, it goes back to the first device
+        swim.read(DISABLE);
+        swim.tick(MOTOR_TIMER + 1, ()).unwrap();
+        swim.read(ENABLE);
+        assert_eq!(take_notes(first), ["lines 1001"]);
+
+        // The chain isn't on the internal connector
+        swim.read(EXTDRIVEL);
+        swim.read(LSTRBH);
+        assert!(take_notes(first).is_empty());
+        assert!(take_notes(second).is_empty());
+    }
+
+    #[test]
+    fn a_device_with_no_stream_exchanges_whole_bytes() {
+        let (mut swim, notes) = swim_with_chain();
+        let byte_ticks = swim.byte_ticks();
+        assert_eq!(byte_ticks, 261);
+        // As Mac OS sets the mode: no motor timer
+        swim.read(Q6H);
+        swim.write(Q7H, 0x1F);
+        swim.read(Q7L);
+        swim.read(Q6L);
+        swim.read(EXTDRIVEH);
+        swim.read(ENABLE);
+
+        // The byte the selected device sends is in the data register at the next tick
+        assert_eq!(swim.read(Q6L), Some(0));
+        swim.tick(1, ()).unwrap();
+        assert_eq!(swim.read(Q6L), Some(0xC5));
+        swim.tick(1, ()).unwrap();
+        assert_eq!(swim.read(Q6L), Some(0));
+
+        // A byte the guest writes reaches the selected device, here the second, after the
+        // time of eight bit cells, and the write buffer is free meanwhile
+        swim.read(LSTRBH);
+        for notes in &notes {
+            take_notes(notes);
+        }
+        swim.read(Q6H);
+        swim.write(Q7H, 0xAA);
+        swim.tick(1, ()).unwrap();
+        assert_eq!(swim.read(Q6L).unwrap() & 0x80, 0x80);
+        swim.tick(byte_ticks - 1, ()).unwrap();
+        assert!(take_notes(&notes[1]).is_empty());
+        swim.tick(1, ()).unwrap();
+        assert_eq!(take_notes(&notes[1]), ["byte AA"]);
+        assert!(take_notes(&notes[2]).is_empty());
+    }
+
+    #[test]
+    fn the_chain_stays_through_a_reset_and_a_saved_state() {
+        let (mut swim, notes) = swim_with_chain();
+        swim.read(EXTDRIVEH);
+        swim.read(ENABLE);
+        swim.read(LSTRBH);
+        for notes in &notes {
+            take_notes(notes);
+        }
+
+        // Every device is told of a reset, in the middle of an exchange, after which the
+        // first of the chain answers again
+        swim.reset();
+        for notes in &notes {
+            assert_eq!(take_notes(notes), ["reset"]);
+        }
+        swim.read(EXTDRIVEH);
+        swim.read(ENABLE);
+        swim.read(CA0H);
+        assert_eq!(take_notes(&notes[0]), ["lines 0000", "lines 0010"]);
+
+        let state = serde_json::to_string(&swim).unwrap();
+        let mut loaded: Swim = serde_json::from_str(&state).unwrap();
+        assert!(loaded.chain.device_at(0).is_some());
+        assert!(loaded.chain.device_at(1).is_some());
+        assert!(loaded.chain.device_at(2).is_none());
+        assert!(loaded.selected() == Place::Chain(0));
     }
 
     #[test]
