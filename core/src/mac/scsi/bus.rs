@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
 use crate::emulator::EmuContext;
-use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -22,6 +21,9 @@ use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
+use crate::mac::scsi::{
+    ASC_LOGICAL_UNIT_NOT_SUPPORTED, CC_KEY_ILLEGAL_REQUEST, STATUS_CHECK_CONDITION, ScsiCmdResult,
+};
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
@@ -43,6 +45,11 @@ pub(crate) enum CmdOutcome {
 pub struct ScsiBus {
     /// Selected SCSI ID
     pub(crate) sel_id: usize,
+
+    /// The logical unit of the IDENTIFY message of this selection, when the
+    /// initiator sent one
+    #[serde(default)]
+    pub(crate) sel_lun: Option<u8>,
 
     /// Command buffer
     pub(crate) cmdbuf: Vec<u8>,
@@ -97,6 +104,7 @@ impl ScsiBus {
 
         Self {
             sel_id: 0,
+            sel_lun: None,
             cmdbuf: vec![],
             cmdlen: 0,
             dataout_len: 0,
@@ -304,6 +312,7 @@ impl ScsiBus {
         // commands (LIST_CDS 0xD7 / SET_NEXT_CD 0xD8 / COUNT_CDS 0xDA) fall through
         // to the addressed target, which owns the folder of images and its media.
         let result = match cmd_op {
+            _ if self.logical_unit(cmd) != 0 => Ok(Self::unsupported_lun(cmd)),
             0xD0..=0xD6 | 0xD9 => {
                 let toolbox_devices = self.toolbox_device_map();
                 let r = self.toolbox.handle_command(
@@ -332,6 +341,49 @@ impl ScsiBus {
 
         self.trace_result(cmd_op, &result);
         self.finish(result?)
+    }
+
+    /// The logical unit a command is for. [SCSI-2] 7.2.2: the one of the
+    /// IDENTIFY message, else the LUN field of the CDB (bits 7-5 of byte 1),
+    /// which SCSI-1 initiators use. Byte 1 of a vendor-specific command
+    /// (C0h-FFh) is the vendor's, and the BlueSCSI toolbox commands use it
+    /// so: those are for logical unit 0 unless an IDENTIFY says otherwise.
+    fn logical_unit(&self, cmd: &[u8]) -> u8 {
+        match (self.sel_lun, cmd.first()) {
+            (Some(lun), _) => lun,
+            (None, Some(0xC0..=0xFF)) => 0,
+            (None, _) => cmd.get(1).map_or(0, |b| b >> 5),
+        }
+    }
+
+    /// The answer to a command for a logical unit other than 0, which no
+    /// target has. [SCSI-2] 7.5.3 (a): INQUIRY returns its data with the
+    /// peripheral qualifier of 8.2.5.1 (7Fh: no device can be on this logical
+    /// unit), REQUEST SENSE returns ILLEGAL REQUEST, LOGICAL UNIT NOT
+    /// SUPPORTED, and any other command ends with CHECK CONDITION.
+    fn unsupported_lun(cmd: &[u8]) -> ScsiCmdResult {
+        let alloc_len = usize::from(cmd.get(4).copied().unwrap_or(0));
+        match cmd[0] {
+            0x12 => {
+                // [SCSI-2] 8.2.5.1: the standard INQUIRY data, 36 bytes
+                let mut data = vec![0; 36];
+                data[0] = 0x7F;
+                data[4] = 31;
+                data.truncate(alloc_len);
+                ScsiCmdResult::DataIn(data)
+            }
+            0x03 => {
+                // [SCSI-2] 8.2.14.3: current error, additional length 10
+                let mut data = vec![0; 18];
+                data[0] = 0x70;
+                data[2] = CC_KEY_ILLEGAL_REQUEST;
+                data[7] = 10;
+                data[12..14].copy_from_slice(&ASC_LOGICAL_UNIT_NOT_SUPPORTED.to_be_bytes());
+                data.truncate(alloc_len);
+                ScsiCmdResult::DataIn(data)
+            }
+            _ => ScsiCmdResult::Status(STATUS_CHECK_CONDITION),
+        }
     }
 
     /// Whether the selected target is running a command in the background
@@ -522,5 +574,60 @@ mod tests {
         assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
         assert!(!bus.is_pending());
         assert!(bus.poll().is_none());
+    }
+
+    /// A bus with a CD-ROM at ID 0, selected with this command
+    fn bus_with_command(cmd: &[u8], lun: Option<u8>) -> ScsiBus {
+        let mut bus = ScsiBus::new();
+        bus.attach_cdrom_at(0, None);
+        bus.sel_id = 0;
+        bus.sel_lun = lun;
+        bus.cmdbuf = cmd.to_vec();
+        bus
+    }
+
+    #[test]
+    fn inquiry_of_another_lun_finds_no_device() {
+        // LUN 1 in the CDB, and in an IDENTIFY
+        for (cdb, lun) in [
+            ([0x12, 0x20, 0, 0, 36, 0], None),
+            ([0x12, 0, 0, 0, 36, 0], Some(1)),
+        ] {
+            let mut bus = bus_with_command(&cdb, lun);
+            assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
+            assert_eq!(bus.responsebuf.len(), 36);
+            assert_eq!(bus.responsebuf[0], 0x7F);
+        }
+        // LUN 0 is the target's
+        let mut bus = bus_with_command(&[0x12, 0, 0, 0, 36, 0], Some(0));
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
+        assert_eq!(bus.responsebuf[0], 0x05);
+    }
+
+    #[test]
+    fn the_identify_lun_wins_over_the_cdb_lun() {
+        let mut bus = bus_with_command(&[0x12, 0x20, 0, 0, 36, 0], Some(0));
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
+        assert_eq!(bus.responsebuf[0], 0x05);
+    }
+
+    #[test]
+    fn other_commands_to_another_lun_fail() {
+        let mut bus = bus_with_command(&[0x00, 0x40, 0, 0, 0, 0], None);
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::Status);
+        assert_eq!(bus.status, STATUS_CHECK_CONDITION);
+
+        let mut bus = bus_with_command(&[0x03, 0x40, 0, 0, 18, 0], None);
+        assert_eq!(bus.cmd_run(None).unwrap(), CmdOutcome::DataIn);
+        let sense: Vec<u8> = bus.responsebuf.iter().copied().collect();
+        assert_eq!(sense[2], CC_KEY_ILLEGAL_REQUEST);
+        assert_eq!(sense[12..14], ASC_LOGICAL_UNIT_NOT_SUPPORTED.to_be_bytes());
+    }
+
+    #[test]
+    fn vendor_commands_keep_byte_1() {
+        // A BlueSCSI toolbox command with 1 in byte 1 is for LUN 0
+        let bus = bus_with_command(&[0xD0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0], None);
+        assert_eq!(bus.logical_unit(&bus.cmdbuf), 0);
     }
 }
