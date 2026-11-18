@@ -105,8 +105,12 @@ refused. Services of the host can be reached at its address on its own network.
 
 Snow includes a RARP server that provides the emulated system with a valid IP address, mask, and gateway. To use auto configuration, choose ` Server` to the `Obtain Address` section.
 
-However, there is no DNS emulation, so you still need to configure an external DNS server (e.g. Google or
-Cloudflare DNS). You can also configure the IP manually by following the mini guide below.
+Snow also includes a DHCP and BOOTP server. It gives the emulated system the IP-address 10.0.0.2, the mask
+255.0.0.0, and 10.0.0.1 as router and DNS server. DNS queries sent to 10.0.0.1 go to the DNS server of the host (the
+first one in `/etc/resolv.conf`), and the answers come back from 10.0.0.1. With Open Transport, choose 'Using DHCP
+Server' or 'Using BOOTP Server' in the TCP/IP control panel.
+
+You can also configure the IP manually by following the mini guide below.
 
 To set this up in MacTCP, open the MacTCP control panel, select 'Ethernet Built-In' and click the 'More' button to get
 to the following screen:
@@ -114,7 +118,7 @@ to the following screen:
 ![MacTCP setup 2](../../images/ethernet_mactcp2.png)
 
 In the 'Class' dropdown, select 'A'. Enter 10.0.0.1 as Gateway address in the bottom right input box. Enter DNS
-information to use the DNS server of your choice. Then click 'OK'.
+information: 10.0.0.1 to use the DNS server of the host, or the DNS server of your choice. Then click 'OK'.
 
 ![MacTCP setup 1](../../images/ethernet_mactcp1.png)
 

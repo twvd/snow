@@ -7,14 +7,17 @@
 //!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
-//! Currently only supports TCP and UDP. Broadcasts and multicast stay on the emulated network,
-//! and the host's own addresses (127.0.0.0/8, 0.0.0.0/8) can't be reached through it.
+//! Currently only supports TCP and UDP. The gateway also answers BOOTP and DHCP requests
+//! (dhcp.rs), and passes DNS queries sent to it on to the host's DNS server. Broadcasts and
+//! multicast stay on the emulated network, and the host's own addresses (127.0.0.0/8,
+//! 0.0.0.0/8) can't be reached through it.
 //!
 //! The MacOS TCP/IP stack seems to struggle with ARP requests during already
 //! active TCP sessions which can stall connections and leave smoltcp in a
 //! 'neighbor discovery pending' state. To avoid this, we send unsolicited ARP
 //! replies to smoltcp regularly to keep the neighbor cache entry from being evicted.
 
+mod dhcp;
 #[cfg(feature = "https_stripping")]
 mod https_stripping;
 
@@ -40,6 +43,20 @@ use smoltcp::wire::{
 
 /// A layer 2 Ethernet packet
 pub type Packet = Vec<u8>;
+
+/// UDP port of DNS
+const DNS_PORT: u16 = 53;
+
+/// The host's DNS server: the first one in /etc/resolv.conf
+fn host_dns_server() -> Option<std::net::IpAddr> {
+    let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
+    conf.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next() == Some("nameserver"))
+            .then(|| words.next()?.parse().ok())
+            .flatten()
+    })
+}
 
 const MTU: usize = 1514;
 const SMOLTCP_BUFFER_SIZE: usize = 65536;
@@ -280,7 +297,7 @@ impl VirtualDevice {
 
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
     fn needs_nat(&self, packet: &[u8]) -> bool {
-        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket};
+        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
         // Parse Ethernet frame
         let eth_frame = match EthernetFrame::new_checked(packet) {
@@ -305,10 +322,13 @@ impl VirtualDevice {
             Err(_) => return false,
         };
 
-        // Check if destination is NOT the gateway (i.e., it's being routed)
+        // Check if destination is NOT the gateway (i.e., it's being routed). DNS queries to
+        // the gateway go to the host's DNS server, as routed UDP.
         let dst_ip = ipv4_packet.dst_addr();
         if dst_ip == self.gateway_ip {
-            return false;
+            return ipv4_packet.next_header() == IpProtocol::Udp
+                && UdpPacket::new_checked(ipv4_packet.payload())
+                    .is_ok_and(|udp| udp.dst_port() == DNS_PORT);
         }
 
         match ipv4_packet.next_header() {
@@ -423,6 +443,12 @@ impl Device for VirtualDevice {
             self.stats
                 .filtered_bytes
                 .fetch_add(packet.len(), Ordering::Relaxed);
+            return None;
+        }
+
+        // BOOTP and DHCP requests are for the gateway's own server
+        if dhcp::is_request(&packet) {
+            self.intercepted_packets.push(packet);
             return None;
         }
 
@@ -688,6 +714,12 @@ pub struct NatEngine {
     /// Gateway subnet prefix length (for ICMP Address Mask replies)
     #[cfg(feature = "mactcp_helpers")]
     gateway_subnet: u8,
+
+    /// What the DHCP server hands out
+    lease: dhcp::Lease,
+
+    /// The host's DNS server, where DNS queries to the gateway go
+    host_dns: Option<std::net::IpAddr>,
 }
 
 impl NatEngine {
@@ -748,6 +780,18 @@ impl NatEngine {
 
         let sockets = SocketSet::new(vec![]);
 
+        // The emulated system gets the address after the gateway's, as from RARP
+        let lease = dhcp::Lease {
+            client_ip: Ipv4Address::from(u32::from_be_bytes(gateway_ip) + 1),
+            netmask: Ipv4Address::from(netmask),
+            gateway_ip: gateway_ipv4,
+            gateway_mac: gateway_mac_addr,
+        };
+        let host_dns = host_dns_server();
+        if host_dns.is_none() {
+            log::warn!("NAT: no DNS server in /etc/resolv.conf, DNS queries to the gateway fail");
+        }
+
         Self {
             device,
             iface,
@@ -761,6 +805,8 @@ impl NatEngine {
             https_stripping,
             #[cfg(feature = "mactcp_helpers")]
             gateway_subnet,
+            lease,
+            host_dns,
         }
     }
 
@@ -895,6 +941,10 @@ impl NatEngine {
                         }
                     };
 
+                    if udp_packet.dst_port() == dhcp::SERVER_PORT {
+                        self.handle_dhcp(&packet);
+                        continue;
+                    }
                     if let Err(e) = self.handle_outbound_udp(&ipv4_packet, &udp_packet) {
                         log::error!("Failed to handle outbound UDP: {}", e);
                     }
@@ -963,6 +1013,29 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Answer a BOOTP or DHCP request
+    fn handle_dhcp(&self, packet: &[u8]) {
+        let Some(buf) = dhcp::reply(packet, &self.lease) else {
+            return;
+        };
+        log::info!(
+            "DHCP: {} for {}",
+            self.lease.client_ip,
+            EthernetAddress::from_bytes(&buf[0..6])
+        );
+        let len = buf.len();
+        match self.device.tx.try_send(buf) {
+            Ok(()) => {
+                self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.tx_bytes.fetch_add(len, Ordering::Relaxed);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.stats.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+
     /// Handle an outbound UDP packet that needs NAT
     fn handle_outbound_udp(
         &mut self,
@@ -1000,10 +1073,22 @@ impl NatEngine {
         } else {
             // Create new NAT entry
 
-            let os_socket = UdpSocket::bind("0.0.0.0:0")?;
+            // A DNS query to the gateway goes to the host's DNS server; the answer comes back
+            // from the gateway, since the smoltcp socket is bound to it
+            let remote_addr = if dst_ip == self.device.gateway_ip && dst_port == DNS_PORT {
+                let Some(dns) = self.host_dns else {
+                    return Ok(());
+                };
+                SocketAddr::new(dns, DNS_PORT)
+            } else {
+                SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port)
+            };
+            let os_socket = UdpSocket::bind(if remote_addr.is_ipv6() {
+                "[::]:0"
+            } else {
+                "0.0.0.0:0"
+            })?;
             os_socket.set_nonblocking(true)?;
-
-            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
             os_socket.connect(remote_addr)?;
             os_socket.send(payload)?;
 
