@@ -1,49 +1,23 @@
-# Set RETRO68 to the Retro68 toolchain: export RETRO68=/path/to/Retro68-build/toolchain
-# (not needed for the runner)
-ifneq ($(filter-out runner clean,$(or $(MAKECMDGOALS),all)),)
-ifndef RETRO68
-$(error Set RETRO68 to the Retro68 toolchain root)
-endif
-endif
-CC=$(RETRO68)/bin/m68k-apple-macos-gcc
-REZ=$(RETRO68)/bin/Rez
-CFLAGS=-O2 -Wall -Wno-multichar -Wno-array-bounds
-LDFLAGS=-lRetroConsole
-RINCLUDES=$(RETRO68)/m68k-apple-macos/RIncludes
-REZFLAGS=-I$(RINCLUDES)
+# mac-tests: the guest testers (afp/) and the headless runner that boots them (runner/).
+# The testers need RETRO68 set to the Retro68 toolchain; the runner doesn't.
 
-all: ATalkTest.bin ATalkTest-800k.img
+TESTERS = afp
 
-ATalkTest.bin: ATalkTest.code.bin
-	$(REZ) $(REZFLAGS) \
-		--copy "ATalkTest.code.bin" \
-		"$(RINCLUDES)/Retro68APPL.r" \
-		-t "APPL" -c "????" \
-		-o ATalkTest.bin --cc "._ATalkTest.ad" --cc ATalkTest.dsk
+all: $(TESTERS)
 
-# 800K HFS floppy image with the test program on it
-ATalkTest-800k.img: ATalkTest.bin
-	rm -f $@
-	dd if=/dev/zero of=$@ bs=1024 count=800 status=none
-	hformat -l ATalkTest $@ >/dev/null
-	hcopy -m ATalkTest.bin :
-	humount >/dev/null
+$(TESTERS):
+	$(MAKE) -C $@
 
-ATalkTest.code.bin: atalktest.o atalk_listener.o
-	$(RETRO68)/bin/m68k-apple-macos-g++ $^ -o $@ $(LDFLAGS)
-
-atalktest.o: atalktest.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-atalk_listener.o: atalk_listener.s
-	$(CC) -c $< -o $@
-
-# The headless runner that boots the tester (cargo rebuilds it when
-# snow_core changes)
+# The runner, plain and with the test features of the built-in AppleTalk node. Each has a target
+# directory of its own, so that building one doesn't rebuild snow_core for the other. Cargo
+# rebuilds them when snow_core changes.
 runner:
-	cargo build --release --manifest-path runner/Cargo.toml
+	cargo build --release --manifest-path runner/Cargo.toml --target-dir runner/target/plain
 
-.PHONY: clean runner
+runner-afp:
+	cargo build --release --manifest-path runner/Cargo.toml --target-dir runner/target/afp \
+		--features afp
+
+.PHONY: all clean runner runner-afp $(TESTERS)
 clean:
-	rm -f ATalkTest-800k.img ATalkTest.bin ATalkTest.code.bin \
-		ATalkTest.code.bin.gdb *.o ATalkTest.ad ._ATalkTest.ad ATalkTest.dsk
+	for t in $(TESTERS); do $(MAKE) -C $$t clean; done
