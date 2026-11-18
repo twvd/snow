@@ -302,6 +302,9 @@ impl ScsiController {
             self.reg_bsr.set_irq(true);
         }
         self.bus.sel_id = id;
+        // No message out phase is modelled, so there is no IDENTIFY: the
+        // logical unit comes from the CDB
+        self.bus.sel_lun = None;
         self.sel_atn = self.reg_icr.assert_atn();
         self.set_phase(ScsiBusPhase::Command);
     }

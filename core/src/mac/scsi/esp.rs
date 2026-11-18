@@ -307,6 +307,7 @@ impl Esp {
                 }
                 if self.identify_pending {
                     self.identify_pending = false;
+                    self.identify(val);
                 } else {
                     self.command_byte(val);
                 }
@@ -536,6 +537,7 @@ impl Esp {
     fn select(&mut self, atn: bool, stop: bool) {
         let id = usize::from(self.bus_id & 0b111);
         self.seq = SEQ_0;
+        self.bus.sel_lun = None;
         self.bus.cmdbuf.clear();
         self.dataout_buf.clear();
         self.dma_xfer = false;
@@ -549,14 +551,14 @@ impl Esp {
 
         self.selected = true;
 
-        // The identify message (if any) is consumed here; only LUN 0 is
-        // supported by the targets. Without one in the FIFO it is the first
-        // DMA byte (data sheet p.31).
+        // The identify message (if any) is consumed here. Without one in the
+        // FIFO it is the first DMA byte (data sheet p.31).
         if atn {
             if self.fifo.is_empty() && self.dma {
                 self.identify_pending = true;
             } else {
-                self.fifo_pop();
+                let msg = self.fifo_pop();
+                self.identify(msg);
             }
         }
 
@@ -613,6 +615,14 @@ impl Esp {
         self.stat &= !STAT_PHASE;
         self.intr |= INTR_DC;
         self.raise_irq();
+    }
+
+    /// A message byte from the initiator after selection. An IDENTIFY ([SCSI-2]
+    /// 6.6.7: bit 7 set) names the logical unit of the command.
+    fn identify(&mut self, msg: u8) {
+        if msg & 0x80 != 0 {
+            self.bus.sel_lun = Some(msg & 0b111);
+        }
     }
 
     /// Whether the command buffer holds a complete CDB
@@ -736,7 +746,8 @@ impl Esp {
             PHASE_MSG_OUT => {
                 // Identify message arriving through the FIFO instead of with
                 // the select command
-                self.fifo_pop();
+                let msg = self.fifo_pop();
+                self.identify(msg);
                 self.fifo.clear();
                 self.set_phase(PHASE_COMMAND);
                 self.intr |= INTR_BS;
