@@ -45,6 +45,10 @@ pub(crate) trait SwimBusDevice: DeviceOps + Send {
     /// time of the controller whenever it is called.
     fn tick(&mut self, ticks: Ticks);
 
+    /// The machine was reset. Called by the controller on every device, when the controller
+    /// itself is reset. Nothing by default: a drive keeps its disk and the place of its head.
+    fn reset(&mut self) {}
+
     /// For a floppy drive: its disk, spinning or not, which `FloppyStream::spinning` tells.
     /// Called by the controller on the device it selects, once per tick. None by default: a
     /// device with no stream exchanges whole bytes with the controller.
