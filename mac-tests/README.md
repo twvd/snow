@@ -11,6 +11,7 @@ the model.
 | Tester | What it tests |
 |---|---|
 | [`afp/`](afp/README.md) `ATalkTest` | The built-in AppleTalk node: LAP, DDP, NBP, ASP and the AFP server |
+| [`scsi/`](scsi/README.md) `SCSIExer` | The SCSI path: the File Manager, the SCSI Manager, the controller and the disk targets |
 
 ## Layout
 
@@ -20,7 +21,7 @@ the model.
 - `common/disk.sh`: shell functions for the run scripts: a fresh copy of a base image, a blank
   disk, installing a program in the Startup Items folder, getting a file out of an image.
 - `runner/`: the headless runner, which boots a ROM with SCSI disks for a number of cycles.
-- `afp/`: one folder per tester, with its source, its `Makefile`, its `run.sh` and its
+- `afp/`, `scsi/`: one folder per tester, with its source, its `Makefile`, its `run.sh` and its
   `README.md`.
 - `Makefile`: `make` builds every tester, `make runner` and `make runner-afp` the runner.
 
@@ -31,7 +32,7 @@ the model.
 - hfsutils (`hformat`, `hmount`, `hcopy`, `humount`), and `flock` (util-linux).
 - A ROM, and a bootable disk image with the System the tester needs. They aren't distributed
   with Snow.
-- Rust, for the runner.
+- Rust, for the runner. Some testers' checks use Python 3.
 
 ## The runner
 

@@ -1,7 +1,7 @@
-# mac-tests: the guest testers (afp/) and the headless runner that boots them (runner/).
+# mac-tests: the guest testers (afp/, scsi/) and the headless runner that boots them (runner/).
 # The testers need RETRO68 set to the Retro68 toolchain; the runner doesn't.
 
-TESTERS = afp
+TESTERS = afp scsi
 
 all: $(TESTERS)
 
