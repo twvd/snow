@@ -1878,6 +1878,42 @@ mod tests {
 
     #[cfg(feature = "ethernet")]
     #[test]
+    fn a_daynaport_goes_in_the_pds_of_an_se30() {
+        let dir = TestDir::new("se30_ethernet");
+        let rom = dir.file("video.rom", 0);
+        let mac = new_ethernet_address([0x00, 0x80, 0x19], &[]);
+        let card = DeviceConfig {
+            bus: bus_id::PDS_SE30.into(),
+            slot: "0".into(),
+            model: Some(DeviceModel::DaynaPortEsi30),
+            rom: None,
+            function: FunctionConfig::Ethernet(EthernetConfig {
+                mac: Some(mac),
+                link: EthernetLinkType::Down,
+            }),
+        };
+        let mut devices = video_configs(MacModel::SE30, &rom);
+        devices.push(card.clone());
+        let mut emu = make(MacModel::SE30, devices.clone()).unwrap();
+        assert_eq!(emu.devices(), devices);
+        let device = device_in(&mut emu, bus_id::PDS_SE30, "0").unwrap();
+        assert_eq!(device.name.as_deref(), Some("DaynaPORT E/si30"));
+        let function = emu.device_function(bus_id::PDS_SE30, "0").unwrap();
+        let FunctionStatus::Ethernet(ethernet) = function.status() else {
+            panic!("An Ethernet card has the Ethernet function");
+        };
+        assert_eq!(ethernet.mac, mac);
+
+        // It fits no LC
+        let lc = DeviceConfig {
+            bus: bus_id::PDS_LC.into(),
+            ..card
+        };
+        assert!(machine(MacModel::LC).add_device_to(&lc, true).is_err());
+    }
+
+    #[cfg(feature = "ethernet")]
+    #[test]
     fn an_ethernet_card_goes_in_the_pds_slot_of_an_lc() {
         let mac = new_ethernet_address([0x08, 0x00, 0x07], &[]);
         let card = |model, rom: Option<&Path>| DeviceConfig {

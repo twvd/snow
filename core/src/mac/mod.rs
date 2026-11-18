@@ -422,7 +422,6 @@ impl MacModel {
                 "PDS Slot",
                 &Pds::SLOT_IDS,
             )),
-            // No card fits it yet
             Self::SE30 => buses.push(Bus::new(
                 BusKind::Se30Pds,
                 bus_id::PDS_SE30,

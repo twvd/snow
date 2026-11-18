@@ -23,14 +23,21 @@
 //! needs Dayna's driver. Snow builds the declaration ROM at run time, as in a
 //! dump of the card's ROM.
 
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::low_word_written;
 use super::sonic::Sonic;
 use crate::bus::Address;
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, EthernetInfo, FunctionConfig, FunctionInfo,
+    FunctionMut, MadeDevice, ModelInfo,
+};
+use crate::emulator::EmuContext;
 use crate::mac::declrom::{CAT_BOARD, CAT_NETWORK, DeclRom, Entry, SResource, TYPE_ETHERNET, id};
 use crate::mac::dma::DmaOps;
+use crate::mac::pds::PdsSlot;
 use crate::net::EthernetPort;
 use crate::tickable::Ticks;
 
@@ -40,6 +47,10 @@ const SONIC_REVISION: u16 = 0x0100;
 
 /// The address bits the card decodes, A19-A0: its 1 MB repeats over the slot
 const DECODE_MASK: Address = 0x0F_FFFF;
+
+/// The standard slot space of pseudoslot $9, where the card answers
+const SLOT_SPACE: Address = 0xF900_0000;
+const SLOT_SPACE_MASK: Address = 0x00FF_FFFF;
 
 /// The SONIC registers
 const SONIC_REGS: std::ops::RangeInclusive<Address> = 0x01_0000..=0x01_00FF;
@@ -108,6 +119,9 @@ pub struct DaynaSi30 {
 
     #[serde(skip, default = "decl_rom")]
     rom: Vec<u8>,
+
+    /// The number of ticks in one second, for the ticks that `tick()` counts
+    tick_rate: Ticks,
 }
 
 impl DaynaSi30 {
@@ -115,27 +129,8 @@ impl DaynaSi30 {
         Self {
             sonic: Sonic::new(SONIC_REVISION, port),
             rom: decl_rom(),
+            tick_rate: 1,
         }
-    }
-
-    pub fn port(&self) -> &EthernetPort {
-        self.sonic.port()
-    }
-
-    pub fn port_mut(&mut self) -> &mut EthernetPort {
-        self.sonic.port_mut()
-    }
-
-    pub fn irq(&self) -> bool {
-        self.sonic.irq()
-    }
-
-    pub fn reset(&mut self) {
-        self.sonic.reset();
-    }
-
-    pub fn tick(&mut self, ticks: Ticks, frequency: Ticks, dma: &mut dyn DmaOps) {
-        self.sonic.tick(ticks, frequency, dma);
     }
 
     /// The SONIC register at `offset`, if `offset` is in the low half of a
@@ -181,11 +176,103 @@ impl DaynaSi30 {
     }
 }
 
+#[typetag::serde]
+impl PdsSlot for DaynaSi30 {
+    /// The card answers in the standard slot space of pseudoslot $9 only, the one of its
+    /// interrupt, and decodes A19-A0 within it. The SE/30 gives the slot every pseudoslot and
+    /// the card selects itself (Designing Cards and Drivers for the Macintosh Family, 3rd ed.,
+    /// Table 15-12): a card that answered in $A and $B too would be found three times by the
+    /// Slot Manager. How the real card decodes its select is not documented.
+    fn read(&mut self, addr: Address, size: u32, _map32: bool) -> Option<u32> {
+        if addr & !SLOT_SPACE_MASK != SLOT_SPACE {
+            return None;
+        }
+        Self::read(self, addr & DECODE_MASK, size)
+    }
+
+    fn write(&mut self, addr: Address, size: u32, _map32: bool, val: u32) -> Option<()> {
+        if addr & !SLOT_SPACE_MASK != SLOT_SPACE {
+            return None;
+        }
+        Self::write(self, addr & DECODE_MASK, size, val)
+    }
+
+    fn connected(&mut self, tick_rate: Ticks) {
+        self.tick_rate = tick_rate;
+    }
+
+    /// The SONIC interrupts on the line of the first pseudo-slot, $9
+    fn irqs(&self) -> u8 {
+        self.sonic.irq().into()
+    }
+
+    fn reset(&mut self, _hard: bool) {
+        self.sonic.reset();
+    }
+
+    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext, dma: &mut dyn DmaOps) -> Result<()> {
+        self.sonic.tick(ticks, self.tick_rate, dma);
+        Ok(())
+    }
+}
+
+impl DeviceOps for DaynaSi30 {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Ethernet(self.sonic.port().config())
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(INFO.name.to_string())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        // The Ethernet function of an adapter is that of its port
+        FunctionMut::Ethernet(self.sonic.port_mut())
+    }
+
+    fn debug_properties(&self) -> DebuggableProperties {
+        self.sonic.get_debug_properties()
+    }
+}
+
 impl Debuggable for DaynaSi30 {
     fn get_debug_properties(&self) -> DebuggableProperties {
         self.sonic.get_debug_properties()
     }
 }
+
+/// Makes a card with the address of its config and its link down. The emulator gives an address
+/// to a config that has none, and sets the link once the card is in its slot.
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::Ethernet(ethernet) = &config.function else {
+        bail!("An Ethernet adapter needs an Ethernet adapter's config");
+    };
+    let mac = ethernet
+        .mac
+        .context("An Ethernet adapter needs an Ethernet address")?;
+    let card = DaynaSi30::new(EthernetPort::new(mac));
+    Ok(MadeDevice::Pds(Box::new(card)))
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::DaynaPortEsi30,
+        "DaynaPORT E/si30",
+        BusKind::Se30Pds,
+        FunctionInfo::Ethernet(ETHERNET),
+    )
+};
+
+const ETHERNET: EthernetInfo = EthernetInfo {
+    // Dayna Communications
+    oui: [0x00, 0x80, 0x19],
+};
 
 #[cfg(test)]
 mod tests {
@@ -235,5 +322,16 @@ mod tests {
             .map(|i| c.read(0x100_0000 - len + i, 1).unwrap() as u8)
             .collect();
         assert!(crate::mac::declrom::valid(&image));
+    }
+
+    #[test]
+    fn the_card_answers_in_pseudoslot_9_only() {
+        let mut c = card();
+        let rom_byte = |c: &mut DaynaSi30, addr| PdsSlot::read(c, addr, 1, true);
+        assert_eq!(rom_byte(&mut c, 0xF9FF_FFFF), Some(0x0F));
+        assert_eq!(rom_byte(&mut c, 0xFAFF_FFFF), None);
+        assert_eq!(rom_byte(&mut c, 0xFBFF_FFFF), None);
+        assert_eq!(rom_byte(&mut c, 0x9FFF_FFFF), None);
+        assert_eq!(PdsSlot::write(&mut c, 0xFA01_00AE, 2, true, 0x1234), None);
     }
 }
