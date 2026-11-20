@@ -258,6 +258,8 @@ struct SccChannel {
 
     /// SDLC station address (WR6) - used for LocalTalk node address
     sdlc_address: u8,
+    /// WR7: the sync character or the SDLC flag, which the model doesn't use
+    sync_character: u8,
     /// SDLC address search mode (WR3 bit 2) - hardware destination filter
     sdlc_address_search_mode: bool,
 
@@ -728,6 +730,12 @@ impl Scc {
             6 => {
                 // WR6: SDLC station address - used for LocalTalk node address
                 self.ch[chi].sdlc_address = val;
+            }
+            7 => {
+                // Z8530 manual, WR7: the receive sync character in Monosync, the second
+                // byte of the sync character in Bisync, the flag in SDLC. "WR7 is not used
+                // in Asynchronous mode", and the model makes the SDLC flags itself.
+                self.ch[chi].sync_character = val;
             }
             4 => {
                 // Z8530 manual, WR4: bits 3-2 = 00 select the synchronous
