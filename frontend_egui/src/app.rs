@@ -23,7 +23,7 @@ use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::devices::{
-    DeviceConfig, DisplayHandle, FloppyImages, FunctionConfig, FunctionStatus, bus_id,
+    DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo, FunctionConfig, FunctionStatus, bus_id,
 };
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -229,14 +229,13 @@ pub struct SnowGui {
     cdrom_dialog_idx: usize,
     cdrom_files_dialog: SnowFileDialog,
     cdrom_folder_dialog: SnowFileDialog,
-    floppy_dialog: SnowFileDialog,
-    /// The image pickers of the drives whose images aren't the Mac's, one per kind of image,
-    /// by the label of its files. Each is made the first time a drive's menu asks for it, and
-    /// kept, so that it opens in the folder it was last in.
-    drive_dialogs: HashMap<&'static str, SnowFileDialog>,
-    /// The drive the open picker loads into, by the ids of its bus and slot, whether the
-    /// image is mounted write-protected, and the label of the picker
-    drive_dialog_target: (String, String, bool, &'static str),
+    /// The floppy image pickers, one per kind of image: the Mac's, and one per label of the
+    /// files of the other drives. Each is made the first time a drive asks for it, and kept,
+    /// so that it opens in the folder it was last in.
+    floppy_dialogs: HashMap<&'static str, SnowFileDialog>,
+    /// The kind of image of the open picker, and whether its drive writes to its images
+    floppy_dialog_images: FloppyImages,
+    floppy_dialog_writable: bool,
     /// The Apple IIe Card's joystick input (None without the card)
     iie_joystick: Option<Joystick>,
     /// The Apple IIe joystick mapping window is open
@@ -480,18 +479,9 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom_folder),
-            floppy_dialog: SnowFileDialog::new()
-                .add_filter(
-                    "Floppy images",
-                    &snow_floppy::loaders::ImageType::all_extensions(),
-                )
-                .add_save_extension("Applesauce MOOF", "moof")
-                .default_save_extension("Applesauce MOOF")
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy.clone()),
-            drive_dialogs: HashMap::new(),
-            drive_dialog_target: Default::default(),
+            floppy_dialogs: HashMap::new(),
+            floppy_dialog_images: FloppyImages::Mac,
+            floppy_dialog_writable: true,
             iie_joystick: None,
             joy_mapping_open: false,
             joy_capture: None,
@@ -2411,64 +2401,34 @@ impl SnowGui {
                         ui.separator();
                     }
                     if ui.button("Load image...").clicked() {
-                        match drive.info.images {
-                            FloppyImages::Mac => {
-                                self.floppy_dialog_target =
-                                    FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
-                                self.floppy_dialog_wp = self.floppy_wp_default;
-                                self.floppy_dialog
-                                    .pick_file(self.settings.native_file_dialogs);
-                            }
-                            FloppyImages::Files { label, extensions } => {
+                        self.pick_floppy_image(bus, slot, &drive.info);
+                    }
+                    ui.menu_button("Load recent image", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        let recent = self
+                            .settings
+                            .get_recent_floppy_images_for_display(drive.info.images);
+                        for (idx, path, display_name) in &recent {
+                            if ui.button(format!("{}: {}", idx, display_name)).clicked() {
                                 // A drive that never writes always mounts write-protected
                                 let wp = self.floppy_wp_default || !drive.info.writable;
-                                self.drive_dialog_target =
-                                    (bus.to_string(), slot.to_string(), wp, label);
-                                let storage = &self.settings.fd_floppy;
-                                self.drive_dialogs
-                                    .entry(label)
-                                    .or_insert_with(|| {
-                                        SnowFileDialog::new()
-                                            .add_filter(label, extensions)
-                                            .opening_mode(
-                                                egui_file_dialog::OpeningMode::LastVisitedDir,
-                                            )
-                                            .initial_directory(Self::default_dir())
-                                            .storage(storage.clone())
-                                    })
-                                    .pick_file(self.settings.native_file_dialogs);
+                                self.request_load_floppy(bus, slot, path, drive.info.images, wp);
                             }
                         }
-                    }
-                    // The recent images, the last ejected disk and write-back are the Mac's
-                    if mac_images {
-                        ui.menu_button("Load recent image", |ui| {
-                            ui.set_min_width(Self::SUBMENU_WIDTH);
-                            for (idx, path, display_name) in
-                                self.settings.get_recent_floppy_images_for_display()
-                            {
-                                if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                                    self.request_load_floppy(
-                                        bus,
-                                        slot,
-                                        &path,
-                                        self.floppy_wp_default,
-                                    );
-                                }
-                            }
-                            if self.settings.recent_floppy_images.is_empty() {
-                                ui.weak("No recent images");
-                            }
-                        });
-                        if ui
+                        if recent.is_empty() {
+                            ui.weak("No recent images");
+                        }
+                    });
+                    // The last ejected disk and write-back are the Mac's
+                    if mac_images
+                        && ui
                             .add_enabled(
                                 last_image.is_some(),
                                 egui::Button::new("Re-insert last ejected floppy"),
                             )
                             .clicked()
-                        {
-                            self.emu.reload_floppy(bus, slot);
-                        }
+                    {
+                        self.emu.reload_floppy(bus, slot);
                     }
                     if drive.info.writable {
                         ui.checkbox(&mut self.floppy_wp_default, "Mount write-protected")
@@ -2500,8 +2460,7 @@ impl SnowGui {
                         {
                             self.floppy_dialog_target =
                                 FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
-                            self.floppy_dialog
-                                .save_file(self.settings.native_file_dialogs);
+                            self.save_floppy_image();
                         }
                         if ui
                             .add_enabled(
@@ -2512,8 +2471,7 @@ impl SnowGui {
                             && let Some(img) = last_image
                         {
                             self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                            self.floppy_dialog
-                                .save_file(self.settings.native_file_dialogs);
+                            self.save_floppy_image();
                         }
                     }
                     ui.separator();
@@ -2775,6 +2733,66 @@ impl SnowGui {
         self.error_string = text.to_string();
     }
 
+    /// What the picker of a kind of floppy image calls its files, its key in `floppy_dialogs`
+    const fn floppy_images_label(images: FloppyImages) -> &'static str {
+        match images {
+            FloppyImages::Mac => "Floppy images",
+            FloppyImages::Files { label, .. } => label,
+        }
+    }
+
+    /// The picker of a kind of floppy image, made the first time
+    fn floppy_dialog(&mut self, images: FloppyImages) -> &mut SnowFileDialog {
+        let label = Self::floppy_images_label(images);
+        let storage = &self.settings.fd_floppy;
+        self.floppy_dialogs.entry(label).or_insert_with(|| {
+            let dialog = match images {
+                FloppyImages::Mac => SnowFileDialog::new()
+                    .add_filter(label, &snow_floppy::loaders::ImageType::all_extensions())
+                    .add_save_extension("Applesauce MOOF", "moof")
+                    .default_save_extension("Applesauce MOOF"),
+                FloppyImages::Files { extensions, .. } => {
+                    SnowFileDialog::new().add_filter(label, extensions)
+                }
+            };
+            dialog
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(storage.clone())
+        })
+    }
+
+    /// The write-protect checkbox of a floppy image picker, ticked and greyed when the image
+    /// can only be mounted write-protected
+    fn floppy_wp_checkbox(ui: &mut egui::Ui, wp: &mut bool, locked: bool) {
+        if locked {
+            ui.add_enabled(
+                false,
+                egui::Checkbox::new(&mut true, "Mount write-protected"),
+            );
+        } else {
+            ui.checkbox(wp, "Mount write-protected");
+        }
+    }
+
+    /// Opens the picker of the images a floppy drive takes, to load one into it
+    fn pick_floppy_image(&mut self, bus: &str, slot: &str, info: &FloppyInfo) {
+        self.floppy_dialog_target = FloppyDialogTarget::Drive(bus.to_string(), slot.to_string());
+        self.floppy_dialog_images = info.images;
+        self.floppy_dialog_writable = info.writable;
+        // A drive that never writes always mounts write-protected
+        self.floppy_dialog_wp = self.floppy_wp_default || !info.writable;
+        let native = self.settings.native_file_dialogs;
+        self.floppy_dialog(info.images).pick_file(native);
+    }
+
+    /// Opens the picker of Mac floppy images to save the image of `floppy_dialog_target`
+    fn save_floppy_image(&mut self) {
+        self.floppy_dialog_images = FloppyImages::Mac;
+        let native = self.settings.native_file_dialogs;
+        self.floppy_dialog(FloppyImages::Mac).save_file(native);
+    }
+
     /// If `path` is not already a MOOF and a sibling file with the same
     /// stem and a case-insensitive `.moof` extension exists, returns its
     /// path.
@@ -2798,12 +2816,23 @@ impl SnowGui {
             })
     }
 
-    /// Loads `path` into the drive in a slot. If a sibling `.moof` is found alongside
-    /// a non-MOOF image, prompts the user to choose. If the format has no
-    /// writer but converting to MOOF would succeed, offers to save a
-    /// sibling MOOF.
-    pub fn request_load_floppy(&mut self, bus: &str, slot: &str, path: &Path, wp: bool) {
-        if let Some(moof) = Self::moof_sibling(path) {
+    /// Loads `path`, an image of the kind `images`, into the drive in a slot, and makes it the
+    /// first of the recent images of its kind. For a Mac floppy image: if a sibling `.moof` is
+    /// found alongside a non-MOOF image, prompts the user to choose. If the format has no
+    /// writer but converting to MOOF would succeed, offers to save a sibling MOOF.
+    pub fn request_load_floppy(
+        &mut self,
+        bus: &str,
+        slot: &str,
+        path: &Path,
+        images: FloppyImages,
+        wp: bool,
+    ) {
+        // The other kinds of images have no MOOF version and no write-back
+        if images != FloppyImages::Mac {
+            self.emu.load_floppy(bus, slot, path, wp);
+            self.settings.add_recent_floppy_image(images, path);
+        } else if let Some(moof) = Self::moof_sibling(path) {
             self.pending_confirm = PendingConfirm::MoofVariant {
                 bus: bus.to_string(),
                 slot: slot.to_string(),
@@ -2917,7 +2946,8 @@ impl SnowGui {
 
     fn do_load_floppy(&mut self, bus: &str, slot: &str, path: &Path, wp: bool) {
         self.emu.load_floppy(bus, slot, path, wp);
-        self.settings.add_recent_floppy_image(path);
+        self.settings
+            .add_recent_floppy_image(FloppyImages::Mac, path);
         self.apply_writeback_policy(bus, slot, path);
     }
 
@@ -2992,7 +3022,7 @@ impl SnowGui {
     pub fn request_load_floppy_firstfree(&mut self, path: &Path, wp: bool) -> bool {
         for drive in self.emu.floppy_slots() {
             if drive.takes_mac_images() && drive.status.ejected {
-                self.request_load_floppy(&drive.bus, &drive.slot, path, wp);
+                self.request_load_floppy(&drive.bus, &drive.slot, path, FloppyImages::Mac, wp);
                 return true;
             }
         }
@@ -4362,103 +4392,114 @@ impl eframe::App for SnowGui {
                 ui.allocate_space(ui.available_size());
             });
 
-        // Floppy image picker dialog
+        // Floppy image picker of the kind of image it was opened for. The Mac's shows what the
+        // selected image holds.
+        let images = self.floppy_dialog_images;
+        let writable = self.floppy_dialog_writable;
         let mut last = None;
-        self.floppy_dialog
-            .update_with_right_panel_ui(ctx, frame, &mut |ui, dia| {
-                if dia.selected_entry().is_some() {
-                    last = dia.selected_entry().cloned();
-                    if let Some(img) = &self.floppy_dialog_last_image {
-                        let metadata = img.get_metadata();
-                        egui::Grid::new("floppy_dialog_metadata").show(ui, |ui| {
-                            ui.label(egui::RichText::new("Title").strong());
-                            ui.label(metadata.get("title").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Subtitle").strong());
-                            ui.label(metadata.get("subtitle").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Developer").strong());
-                            ui.label(metadata.get("developer").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Publisher").strong());
-                            ui.label(metadata.get("publisher").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Version").strong());
-                            ui.label(metadata.get("version").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label("");
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Disk name").strong());
-                            ui.label(metadata.get("disk_name").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Disk #").strong());
-                            ui.label(metadata.get("disk_number").map_or("", |v| truncate(v, 20)));
-                            ui.end_row();
-                            ui.separator();
-                            ui.separator();
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Image type").strong());
-                            ui.label(
-                                self.floppy_dialog_last_type
-                                    .map_or("", |i| i.as_friendly_str()),
-                            );
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Floppy type").strong());
-                            ui.label(img.get_type().to_string());
-                            ui.end_row();
-                            ui.label(egui::RichText::new("Tracks (RF/F/B/S)").strong());
-                            ui.label(format!(
-                                "{}/{}/{}/{}",
-                                img.count_original_track_type(OriginalTrackType::RawFlux),
-                                img.count_original_track_type(OriginalTrackType::Flux),
-                                img.count_original_track_type(OriginalTrackType::Bitstream),
-                                img.count_original_track_type(OriginalTrackType::Sector),
-                            ));
-                            ui.end_row();
-                        });
-                        if img.count_original_track_type(OriginalTrackType::RawFlux) > 0 {
-                            egui::Frame::new()
-                                .fill(egui::Color32::ORANGE)
-                                .inner_margin(egui::Margin::same(10))
-                                .outer_margin(egui::Margin::same(5))
-                                .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
-                                .show(ui, |ui| {
+        let mut picked = None;
+        if let Some(dialog) = self
+            .floppy_dialogs
+            .get_mut(Self::floppy_images_label(images))
+        {
+            dialog.update_with_right_panel_ui(ctx, frame, &mut |ui, dia| match images {
+                    FloppyImages::Mac => {
+                        if dia.selected_entry().is_some() {
+                            last = dia.selected_entry().cloned();
+                            if let Some(img) = &self.floppy_dialog_last_image {
+                                let metadata = img.get_metadata();
+                                egui::Grid::new("floppy_dialog_metadata").show(ui, |ui| {
+                                    ui.label(egui::RichText::new("Title").strong());
+                                    ui.label(metadata.get("title").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Subtitle").strong());
+                                    ui.label(metadata.get("subtitle").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Developer").strong());
+                                    ui.label(metadata.get("developer").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Publisher").strong());
+                                    ui.label(metadata.get("publisher").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Version").strong());
+                                    ui.label(metadata.get("version").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label("");
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Disk name").strong());
+                                    ui.label(metadata.get("disk_name").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Disk #").strong());
+                                    ui.label(metadata.get("disk_number").map_or("", |v| truncate(v, 20)));
+                                    ui.end_row();
+                                    ui.separator();
+                                    ui.separator();
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Image type").strong());
                                     ui.label(
-                                        egui::RichText::new(
-                                            "This is a raw flux image format, which is not designed for emulator use.\n\nSnow will load it, but you may encounter issues. It is recommended to convert it to a resolved flux format first (for example: MOOF).",
-                                        )
-                                            .strong()
-                                            .color(egui::Color32::BLACK),
+                                        self.floppy_dialog_last_type
+                                            .map_or("", |i| i.as_friendly_str()),
                                     );
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Floppy type").strong());
+                                    ui.label(img.get_type().to_string());
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("Tracks (RF/F/B/S)").strong());
+                                    ui.label(format!(
+                                        "{}/{}/{}/{}",
+                                        img.count_original_track_type(OriginalTrackType::RawFlux),
+                                        img.count_original_track_type(OriginalTrackType::Flux),
+                                        img.count_original_track_type(OriginalTrackType::Bitstream),
+                                        img.count_original_track_type(OriginalTrackType::Sector),
+                                    ));
+                                    ui.end_row();
                                 });
-                        }
+                                if img.count_original_track_type(OriginalTrackType::RawFlux) > 0 {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::ORANGE)
+                                        .inner_margin(egui::Margin::same(10))
+                                        .outer_margin(egui::Margin::same(5))
+                                        .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "This is a raw flux image format, which is not designed for emulator use.\n\nSnow will load it, but you may encounter issues. It is recommended to convert it to a resolved flux format first (for example: MOOF).",
+                                                )
+                                                    .strong()
+                                                    .color(egui::Color32::BLACK),
+                                            );
+                                        });
+                                }
 
-                        ui.separator();
-                        if img.get_write_protect() {
-                            ui.add_enabled(
-                                false,
-                                egui::Checkbox::new(&mut true, "Mount write-protected"),
-                            );
-                        } else {
-                            ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
+                                ui.separator();
+                                Self::floppy_wp_checkbox(ui, &mut self.floppy_dialog_wp, img.get_write_protect());
+                            }
                         }
                     }
-                }
-            });
-        if last.clone().map(|d| d.to_path_buf())
-            != self.floppy_dialog_last.clone().map(|d| d.to_path_buf())
+                    FloppyImages::Files { .. } => {
+                        Self::floppy_wp_checkbox(ui, &mut self.floppy_dialog_wp, !writable);
+                    }
+                });
+            if let Some(path) = dialog.take_picked() {
+                picked = Some((path, dialog.mode(), dialog.storage_mut().clone()));
+            }
+            self.ui_active &= *dialog.state() != egui_file_dialog::DialogState::Open;
+        }
+        if images == FloppyImages::Mac
+            && last.clone().map(|d: DirectoryEntry| d.to_path_buf())
+                != self.floppy_dialog_last.clone().map(|d| d.to_path_buf())
         {
             let _ = self.floppy_dialog_side_update(last);
         }
-        if let Some(path) = self.floppy_dialog.take_picked() {
-            match self.floppy_dialog.mode() {
+        if let Some((path, mode, storage)) = picked {
+            match mode {
                 DialogMode::PickFile => {
                     let FloppyDialogTarget::Drive(bus, slot) = &self.floppy_dialog_target else {
                         unreachable!()
                     };
                     let wp = self.floppy_dialog_wp;
                     let (bus, slot) = (bus.clone(), slot.clone());
-                    self.request_load_floppy(&bus, &slot, &path, wp);
+                    self.request_load_floppy(&bus, &slot, &path, images, wp);
                 }
                 DialogMode::SaveFile => {
                     if !path
@@ -4487,19 +4528,8 @@ impl eframe::App for SnowGui {
                 _ => unreachable!(),
             }
 
-            self.settings.fd_floppy = self.floppy_dialog.storage_mut().clone();
+            self.settings.fd_floppy = storage;
             self.settings.save();
-        }
-        self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
-
-        // Image picker of a drive whose images aren't the Mac's
-        let (bus, slot, wp, label) = &self.drive_dialog_target;
-        if let Some(dialog) = self.drive_dialogs.get_mut(label) {
-            dialog.update(ctx, frame);
-            if let Some(path) = dialog.take_picked() {
-                self.emu.load_floppy(bus, slot, &path, *wp);
-            }
-            self.ui_active &= *dialog.state() != egui_file_dialog::DialogState::Open;
         }
 
         // HDD image picker dialog

@@ -4,8 +4,9 @@ use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::devices::DeviceModel;
+use snow_core::devices::{DeviceModel, FloppyImages};
 use snow_core::mac::MacModel;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
 
@@ -100,7 +101,11 @@ impl RomDevice {
 #[serde(default)]
 pub struct AppSettings {
     pub recent_workspaces: Vec<PathBuf>,
+    /// The recent Mac floppy images
     pub recent_floppy_images: Vec<PathBuf>,
+    /// The recent images of the floppy drives whose images aren't the Mac's, such as the
+    /// Apple IIe Card's, by the label of their files
+    pub recent_drive_images: BTreeMap<String, Vec<PathBuf>>,
     pub recent_cd_images: Vec<PathBuf>,
     #[serde(deserialize_with = "deserialize_vec_lenient")]
     pub last_roms: Vec<(MacModel, PathBuf)>,
@@ -157,6 +162,7 @@ impl Default for AppSettings {
         Self {
             recent_workspaces: Vec::new(),
             recent_floppy_images: Vec::new(),
+            recent_drive_images: BTreeMap::new(),
             recent_cd_images: Vec::new(),
             last_roms: Vec::new(),
             last_display_roms: Vec::new(),
@@ -265,22 +271,35 @@ impl AppSettings {
             .collect()
     }
 
-    pub fn add_recent_floppy_image(&mut self, path: &Path) {
+    /// The recent images of a kind of floppy image
+    fn recent_floppy_images_mut(&mut self, images: FloppyImages) -> &mut Vec<PathBuf> {
+        match images {
+            FloppyImages::Mac => &mut self.recent_floppy_images,
+            FloppyImages::Files { label, .. } => self
+                .recent_drive_images
+                .entry(label.to_string())
+                .or_default(),
+        }
+    }
+
+    /// Puts a floppy image first in the recent images of its kind
+    pub fn add_recent_floppy_image(&mut self, images: FloppyImages, path: &Path) {
         let path = if let Ok(p) = path.canonicalize() {
             p
         } else {
             path.to_path_buf()
         };
 
-        self.recent_floppy_images.retain(|p| {
+        let recent = self.recent_floppy_images_mut(images);
+        recent.retain(|p| {
             if let Ok(rp) = p.canonicalize() {
                 rp != path
             } else {
                 *p != path
             }
         });
-        self.recent_floppy_images.insert(0, path);
-        self.recent_floppy_images.truncate(MAX_RECENT_IMAGES);
+        recent.insert(0, path);
+        recent.truncate(MAX_RECENT_IMAGES);
         self.save();
     }
 
@@ -343,9 +362,18 @@ impl AppSettings {
         self.save();
     }
 
-    pub fn get_recent_floppy_images_for_display(&self) -> Vec<(usize, PathBuf, String)> {
-        self.recent_floppy_images
-            .iter()
+    /// The recent images of a kind of floppy image, for a menu
+    pub fn get_recent_floppy_images_for_display(
+        &self,
+        images: FloppyImages,
+    ) -> Vec<(usize, PathBuf, String)> {
+        let recent = match images {
+            FloppyImages::Mac => Some(&self.recent_floppy_images),
+            FloppyImages::Files { label, .. } => self.recent_drive_images.get(label),
+        };
+        recent
+            .into_iter()
+            .flatten()
             .enumerate()
             .map(|(i, path)| {
                 let display_name = path

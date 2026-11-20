@@ -215,11 +215,11 @@ pub enum FloppyImages {
 
 | Field | What the Devices menu does with it | Where the drives differ |
 | --- | --- | --- |
-| `images` | Sets which files the file dialog offers | The Mac's drives accept Mac floppy images. The 5.25" drive of an Apple IIe Card accepts `dsk`, `do`, `po`, `2mg` and `woz` files. |
+| `images` | Sets which files the file dialog offers, and the list of recent images: one per kind of file | The Mac's drives accept Mac floppy images. The 5.25" drive of an Apple IIe Card accepts `dsk`, `do`, `po`, `2mg` and `woz` files. |
 | `blank_formats` | Greys the "Insert blank ..." items the drive can't accept | A SuperDrive accepts 400/800K and 1.44 MB blank disks, an 800K drive only the first. |
 | `guest_ejects` | Shows "Force eject" when the guest ejects the disks, "Eject" when the user does | The Mac's drives eject on the guest's order. The Apple IIe Card's drives are ejected by hand. |
 | `rpm_control` | Shows the speed adjustment | Only the 400K drive and the 800K (PWM) drive have it. |
-| `writable` | Offers "Mount write-protected" as a choice; a drive that never writes always mounts so | The 5.25" drive of an Apple IIe Card never writes to its image. |
+| `writable` | Offers "Mount write-protected" as a choice, in the menu and in the file dialog; a drive that never writes always mounts so | The 5.25" drive of an Apple IIe Card never writes to its image. |
 
 So the Devices menu has no code for a given drive: a new floppy drive with its own `FloppyInfo`
 gets the right menu.
@@ -230,9 +230,14 @@ The menu tells two cases apart:
   1.44 MB blank disk on an 800K drive, which accepts other blank disks.
 - **What a drive can never do isn't drawn.** A drive with no `blank_formats` has no "Insert
   blank ..." item. A drive whose image files aren't the Mac's (`FloppyImages::Files`) has none of
-  the items that work on Mac floppy images: the recent images, saving the disk, write-back and
-  putting back the last ejected disk. So a drive of an Apple IIe Card shows "Load image..." and
+  the items that work on Mac floppy images: saving the disk, write-back and putting back the last
+  ejected disk. So a drive of an Apple IIe Card shows "Load image...", "Load recent image" and
   "Eject".
+
+Every floppy drive goes through the same file dialog code, given its kind of image: one dialog
+per kind, kept so that it opens in the folder it was last in, with the "Mount write-protected"
+checkbox (ticked and greyed for a drive that never writes), and one list of recent images per
+kind. The Mac's dialog also shows what the selected image holds, and saves images.
 
 ### The three enums
 
