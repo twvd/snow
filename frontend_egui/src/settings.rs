@@ -1,3 +1,4 @@
+use crate::gamepad::GamepadConfig;
 use crate::joystick::{JoyBindings, default_bindings};
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
@@ -69,6 +70,18 @@ where
     }))
 }
 
+/// The defaults if the saved gamepad mapping cannot be parsed.
+fn deserialize_gamepad_lenient<'de, D>(deserializer: D) -> Result<GamepadConfig, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_else(|e| {
+        log::warn!("Invalid gamepad settings, using the defaults: {}", e);
+        GamepadConfig::default()
+    }))
+}
+
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
@@ -129,6 +142,12 @@ pub struct AppSettings {
     /// The host keys and controller buttons of the Apple IIe joystick
     #[serde(deserialize_with = "deserialize_bindings_lenient")]
     pub iie_joystick_bindings: JoyBindings,
+    /// Host gamepad mapping for the emulated Mac pointer and keyboard
+    #[serde(
+        default = "GamepadConfig::default",
+        deserialize_with = "deserialize_gamepad_lenient"
+    )]
+    pub gamepad: GamepadConfig,
 }
 
 impl Default for AppSettings {
@@ -165,6 +184,7 @@ impl Default for AppSettings {
             cmd_key_mapping: CmdKeyMapping::default(),
             run_on_reset: true,
             iie_joystick_bindings: default_bindings(),
+            gamepad: GamepadConfig::default(),
         }
     }
 }
