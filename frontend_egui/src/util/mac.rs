@@ -28,3 +28,17 @@ pub fn hdd_sanitycheck<P: AsRef<Path>>(p: P) -> Option<&'static str> {
 
     None
 }
+
+/// A warning for a Lisa hard disk image larger than the Lisa's drives report
+pub fn lisa_disk_sizecheck<P: AsRef<Path>>(p: P) -> Option<String> {
+    use snow_core::lisa::profile_sim::{BLOCK_SIZE, MAX_BLOCKS};
+
+    let blocks = std::fs::metadata(p).ok()?.len() / BLOCK_SIZE as u64;
+    (blocks > MAX_BLOCKS as u64).then(|| {
+        format!(
+            "The image has {} blocks: the drive reports {} (about 16 MB), the most the Lisa \
+             Office System takes, and the rest of the image goes unused.",
+            blocks, MAX_BLOCKS
+        )
+    })
+}

@@ -3,7 +3,7 @@
 Snow supports up to 7 SCSI hard drives in every emulated Macintosh model
 except the Macintosh 128K/512K/512Ke (as these models never included SCSI).
 
-To perform actions on a specific SCSI HDD, go to 'Drives > SCSI #n' where
+To perform actions on a specific SCSI HDD, go to 'Devices > SCSI #n' where
 'n' is the SCSI ID of the drive (0 to 6).
 
 ## Creating a blank drive image
@@ -42,7 +42,7 @@ it to be recognized.
 ## Detaching a disk
 
 To detach a mounted disk, use the 'Detach' menu item under a hard drive in
-the 'Drives' menu.
+the 'Devices' menu.
 
 Note that this is the equivalent of pulling the cable on a hard drive so
 if the disk is in use by the emulated operating system, it will likely
@@ -57,4 +57,4 @@ file is closed and Snow will continue working from the newly created copy.
 This function is useful when working with [save states](../savestates.md).
 
 To branch off an image, use the 'Branch off image...' menu item under a
-hard drive in the 'Drives' menu.
+hard drive in the 'Devices' menu.

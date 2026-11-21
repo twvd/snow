@@ -1,20 +1,24 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, EthernetConfig, EthernetFunction, EthernetInfo,
+    EthernetLinkType, EthernetStatus, FunctionConfig, FunctionInfo, FunctionMut, MadeDevice,
+    ModelInfo,
+};
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent};
 use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use binrw::{BinWrite, binrw};
 #[cfg(any(
     feature = "ethernet_raw",
     all(feature = "ethernet_tap", target_os = "linux")
 ))]
 use crossbeam_channel::TrySendError;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ethernet_nat")]
 use snow_nat::NatEngineStats;
@@ -69,40 +73,6 @@ struct PcapPacketHeader {
     ts_usec: u32,
     incl_len: u32,
     orig_len: u32,
-}
-
-/// Link mode for ethernet device
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub enum EthernetLinkType {
-    /// No link
-    Down,
-    /// Userland NAT
-    #[cfg(feature = "ethernet_nat")]
-    NAT,
-    /// Userland NAT with HTTPS stripping
-    #[cfg(feature = "ethernet_nat_https_stripping")]
-    NATHttpsStripping,
-    /// Raw sockets based bridge
-    #[cfg(feature = "ethernet_raw")]
-    Bridge(u32),
-    /// Tap interface based bridge
-    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-    TapBridge(String),
-}
-
-// Clippy is wrong, I don't think you can conditionally tag #[default] on an enum based on features
-#[allow(clippy::derivable_impls)]
-impl Default for EthernetLinkType {
-    fn default() -> Self {
-        #[cfg(feature = "ethernet_nat")]
-        {
-            Self::NAT
-        }
-        #[cfg(not(feature = "ethernet_nat"))]
-        {
-            Self::Down
-        }
-    }
 }
 
 /// Statistics for tap bridge
@@ -200,23 +170,15 @@ impl Drop for ScsiTargetEthernet {
     }
 }
 
-impl Default for ScsiTargetEthernet {
-    fn default() -> Self {
-        let mut rand = rand::rng();
-
+impl ScsiTargetEthernet {
+    /// An adapter with the Ethernet address `macaddress`, and its link down
+    fn new(macaddress: [u8; 6]) -> Self {
         Self {
             common: Default::default(),
-            macaddress: [
-                0x00,
-                0x80,
-                0x19,
-                rand.random(),
-                rand.random(),
-                rand.random(),
-            ],
+            macaddress,
             tx: None,
             rx: None,
-            link: Default::default(),
+            link: EthernetLinkType::Down,
             #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
             enabled: false,
@@ -238,7 +200,7 @@ impl ScsiTargetEthernet {
         if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
             // Initialize link
             let link = self.link.clone();
-            if let Err(e) = self.eth_set_link(link) {
+            if let Err(e) = self.set_link(link) {
                 log::error!("Failed to set ethernet link: {}", e);
             }
         }
@@ -755,10 +717,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         None
     }
 
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Ethernet
-    }
-
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
         Ok(ScsiCmdResult::Status(STATUS_GOOD))
     }
@@ -825,25 +783,6 @@ impl ScsiTarget for ScsiTargetEthernet {
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
-        unreachable!()
-    }
-
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
         unreachable!()
     }
 
@@ -1005,8 +944,72 @@ impl ScsiTarget for ScsiTargetEthernet {
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
         }
     }
+}
 
-    fn eth_set_link(&mut self, link: EthernetLinkType) -> Result<()> {
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::DaynaPortScsiLink,
+        "DaynaPORT SCSI/Link",
+        BusKind::Scsi,
+        FunctionInfo::Ethernet(ETHERNET),
+    )
+};
+
+const ETHERNET: EthernetInfo = EthernetInfo {
+    // Dayna Communications
+    oui: [0x00, 0x80, 0x19],
+};
+
+/// Makes an adapter with its link down. The emulator sets the link of the config once the
+/// adapter is in its slot: a link that can't start doesn't cost the adapter. The emulator gives
+/// an address to a config that has none.
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::Ethernet(ethernet) = &config.function else {
+        anyhow::bail!("An Ethernet adapter needs an Ethernet adapter's config");
+    };
+    let mac = ethernet
+        .mac
+        .context("An Ethernet adapter needs an Ethernet address")?;
+    Ok(MadeDevice::Scsi(Box::new(ScsiTargetEthernet::new(mac))))
+}
+
+impl DeviceOps for ScsiTargetEthernet {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        // The address it was made with, or the random one it got
+        FunctionConfig::Ethernet(EthernetConfig {
+            mac: Some(self.macaddress),
+            link: self.link.clone(),
+        })
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(INFO.name.to_string())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Ethernet(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+}
+
+impl EthernetFunction for ScsiTargetEthernet {
+    fn status(&self) -> EthernetStatus {
+        EthernetStatus {
+            mac: self.macaddress,
+            link: self.link.clone(),
+            capture: self.get_capture_status(),
+        }
+    }
+
+    fn set_link(&mut self, link: EthernetLinkType) -> Result<()> {
         // Terminate active links
         // Dropping the senders will cause the channel to close and the receiver threads to terminate
         self.rx = None;
@@ -1079,6 +1082,9 @@ impl ScsiTarget for ScsiTargetEthernet {
                 });
                 Ok(())
             }
+            // A link this build has no support for
+            #[allow(unreachable_patterns)]
+            _ => Err(anyhow::anyhow!("This build has no support for this link")),
         };
         if let Err(e) = started {
             // A link that fails to start may have set its channels already, and frames sent to
@@ -1091,20 +1097,12 @@ impl ScsiTarget for ScsiTargetEthernet {
         Ok(())
     }
 
-    fn eth_link(&self) -> Option<EthernetLinkType> {
-        Some(self.link.clone())
-    }
-
-    fn eth_start_capture(&mut self, filename: &Path) -> Result<()> {
+    fn start_capture(&mut self, filename: &Path) -> Result<()> {
         self.start_pcap_capture(filename)
     }
 
-    fn eth_stop_capture(&mut self) -> Option<(PathBuf, usize)> {
+    fn stop_capture(&mut self) -> Option<(PathBuf, usize)> {
         self.stop_pcap_capture()
-    }
-
-    fn eth_capture_status(&self) -> Option<EthernetCaptureStatus> {
-        self.get_capture_status()
     }
 }
 
@@ -1270,9 +1268,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn link_shows_in_the_status() {
+        let mut adapter = ScsiTargetEthernet::new([0, 0x80, 0x19, 1, 2, 3]);
+        let mac = adapter.macaddress;
+        let FunctionMut::Ethernet(ethernet) = adapter.function() else {
+            panic!("An Ethernet adapter has the Ethernet function");
+        };
+        ethernet.set_link(EthernetLinkType::Down).unwrap();
+        assert_eq!(
+            ethernet.status(),
+            EthernetStatus {
+                mac,
+                link: EthernetLinkType::Down,
+                capture: None,
+            }
+        );
+    }
+
+    #[test]
     fn test_read_max_8_packets() {
         // Create a ScsiTargetEthernet instance
-        let mut eth = ScsiTargetEthernet::default();
+        let mut eth = ScsiTargetEthernet::new([0, 0x80, 0x19, 1, 2, 3]);
 
         // Create channels for testing
         let (tx, rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);

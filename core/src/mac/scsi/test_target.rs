@@ -1,6 +1,7 @@
 //! Test helpers: a SCSI target whose reads complete in the background, when
 //! the test says so.
 
+#[cfg(feature = "savestates")]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -8,10 +9,10 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
+use crate::devices::{DeviceOps, FunctionConfig, FunctionMut, ModelInfo};
 use crate::emulator::EmuContext;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::mac::scsi::disk_image::DiskImage;
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon};
 use crate::mac::scsi::{STATUS_GOOD, ScsiCmdResult};
 use crate::tickable::Ticks;
 
@@ -51,6 +52,20 @@ impl Debuggable for SlowTarget {
     }
 }
 
+impl DeviceOps for SlowTarget {
+    fn info(&self) -> &'static ModelInfo {
+        &crate::mac::scsi::disk::INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::HardDisk(Default::default())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        unreachable!()
+    }
+}
+
 #[typetag::serde]
 impl ScsiTarget for SlowTarget {
     fn common(&mut self) -> &mut ScsiTargetCommon {
@@ -68,10 +83,6 @@ impl ScsiTarget for SlowTarget {
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
         None
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Disk
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
@@ -96,16 +107,6 @@ impl ScsiTarget for SlowTarget {
 
     fn ms_device_specific(&self) -> u8 {
         0
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
     }
 
     fn blocksize(&self) -> Option<usize> {
@@ -154,22 +155,6 @@ impl ScsiTarget for SlowTarget {
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {}
-
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("not removable")
-    }
-
-    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
-        bail!("not removable")
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("not supported")
-    }
 
     fn specific_cmd(&mut self, _cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         bail!("not supported")

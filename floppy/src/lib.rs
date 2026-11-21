@@ -1,6 +1,7 @@
 pub mod flux;
 pub mod loaders;
 mod macformat;
+pub mod twiggy;
 
 use std::collections::HashMap;
 
@@ -29,6 +30,9 @@ pub enum FloppyType {
     Mac800K,
     /// MFM CAV 3.5", double sided, high density
     Mfm144M,
+    /// Apple FileWare ("Twiggy") 5.25", double sided, of the Lisa 1 and the Twiggy Mac:
+    /// GCR, 46 tracks a side in zones of 22 down to 15 sectors
+    Twiggy,
 }
 
 /// Type of the original track when loaded from the image
@@ -77,6 +81,7 @@ impl FloppyType {
                 _ => unreachable!(),
             },
             Self::Mfm144M => 200000,
+            Self::Twiggy => twiggy::track_bits(track),
         }
     }
 
@@ -96,6 +101,7 @@ impl FloppyType {
             Self::Mac400K => 400 * 1024,
             Self::Mac800K => 800 * 1024,
             Self::Mfm144M => 1440 * 1024,
+            Self::Twiggy => twiggy::SECTORS * 512,
         }
     }
 }
@@ -109,6 +115,7 @@ impl std::fmt::Display for FloppyType {
                 Self::Mac400K => "Macintosh GCR 400KB",
                 Self::Mac800K => "Macintosh GCR 800KB",
                 Self::Mfm144M => "MFM 1.44MB",
+                Self::Twiggy => "Twiggy GCR 851KB",
             }
         )
     }
@@ -342,7 +349,10 @@ impl Floppy for FloppyImage {
     }
 
     fn get_track_count(&self) -> usize {
-        80
+        match self.floppy_type {
+            FloppyType::Twiggy => twiggy::TRACKS,
+            _ => 80,
+        }
     }
 
     fn get_track_bit(&self, side: usize, track: usize, position: usize) -> bool {
@@ -371,6 +381,7 @@ impl Floppy for FloppyImage {
             FloppyType::Mac400K => 1,
             FloppyType::Mac800K => 2,
             FloppyType::Mfm144M => 2,
+            FloppyType::Twiggy => 2,
         }
     }
 

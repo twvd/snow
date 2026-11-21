@@ -1,11 +1,10 @@
 pub mod comm;
+mod devices;
 
 #[cfg(feature = "savestates")]
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::Floppy;
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof, TwoImg};
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -19,51 +18,47 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectRun, InspectableBus};
 use crate::cpu_m68k::bus::InspectView;
-use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
+use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry, is_double_fault};
 use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::devices::{
+    AppleIIeCardFunction, BusOps, DeviceConfig, DisplayHandle, FunctionConfig, FunctionMut,
+    FunctionStatus, RefusedDevice, bus_id, complete_device_configs,
+};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
+use crate::lisa::bus::LisaBus;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
-use crate::mac::maclc::pds_iie::IieCardSettings;
-use crate::mac::maclc::pds_iie::disk::DskOrder;
+use crate::mac::pds::Pds;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
-use crate::mac::swim::drive::DriveType;
-use crate::mac::{
-    AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
-};
+use crate::mac::{AbsoluteMouse, MacModel};
 use crate::renderer::AudioProvider;
-use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use log::*;
 use std::fmt;
 
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
-use crate::mac::rtc::Rtc;
 use crate::mac::scsi::bus::ScsiBus;
-use crate::mac::scsi::disk_image::DiskImage;
-use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange, ScsiTargetStatus,
+    EmulatorStatus, GuestScreen, InputRecording, MemoryNotifierRange,
 };
 
 /// Mouse emulation mode
@@ -116,7 +111,8 @@ macro_rules! dispatch {
             $( fn $mut_call_method:ident(&mut self $(, $mut_arg:ident: $mut_arg_ty:ty)*) -> $mut_call_ret:ty { $($mut_call_target:tt)* } )*
         }
     ) => {
-        #[allow(dead_code)]
+        // `non_snake_case`: a method named after the guest's fields, as display_from_Mac_AuxDCE()
+        #[allow(dead_code, non_snake_case)]
         impl EmulatorConfig {
             // Generate immutable reference methods
             $(
@@ -132,6 +128,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
                         Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
                         Self::Quadra800(inner) => &machine_target!(inner, quadra800, $($ref_target)*),
+                        Self::Lisa(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -150,6 +147,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
                         Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
                         Self::Quadra800(inner) => &mut machine_target!(inner, quadra800_mut, $($mut_ref_target)*),
+                        Self::Lisa(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -168,6 +166,7 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
                         Self::Quadra800(inner) => machine_target!(inner, quadra800, $($immut_call_target)*),
+                        Self::Lisa(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -186,12 +185,16 @@ macro_rules! dispatch {
                         Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
                         Self::Quadra800(inner) => machine_target!(inner, quadra800_mut, $($mut_call_target)*),
+                        Self::Lisa(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
         }
     };
 }
+
+/// How long a Lisa with its power off waits between two looks at its COPS
+const LISA_POWERED_OFF_SLEEP: Duration = Duration::from_millis(50);
 
 /// Low memory globals the absolute mouse mode reads and writes, which are
 /// logical addresses: MTemp, Y coordinate (16 bit, signed)
@@ -204,6 +207,34 @@ const ADDR_RAWMOUSE_Y: Address = 0x082C;
 const ADDR_RAWMOUSE_X: Address = 0x082E;
 /// CrsrNew
 const ADDR_CRSRNEW: Address = 0x08CE;
+
+/// MMU32Bit: true when the guest runs in 32-bit mode (Inside Macintosh V, p. V-592)
+const ADDR_MMU32BIT: Address = 0x0CB2;
+/// Color QuickDraw's list of graphics devices and the main one, handles to GDevice records
+/// (Inside Macintosh: Imaging With QuickDraw, ch. 5)
+const ADDR_DEVICELIST: Address = 0x08A8;
+const ADDR_MAINDEVICE: Address = 0x08A4;
+/// The Device Manager's unit table, of handles to the device control entries of the drivers
+const ADDR_UTABLEBASE: Address = 0x011C;
+/// Offsets in a GDevice record: the reference number of its driver, the flags, the next
+/// device and the bounds (top, left, bottom, right)
+const GD_REFNUM: Address = 0;
+const GD_FLAGS: Address = 20;
+const GD_NEXTGD: Address = 30;
+const GD_RECT: Address = 34;
+/// gdFlags: the device is a screen, and one the guest uses. Without a 'scrn' resource, which
+/// the Monitors control panel makes, only the startup screen is used (Inside Macintosh V,
+/// p. V-126).
+const GD_SCREEN_DEVICE: u16 = 1 << 13;
+const GD_SCREEN_ACTIVE: u16 = 1 << 15;
+/// Offsets in the device control entry of a slot device (AuxDCE): the slot number and the id
+/// of the slot resource (Inside Macintosh: Devices, p. 1-55)
+const DCTL_SLOT: Address = 40;
+const DCTL_SLOTID: Address = 41;
+/// Most graphics devices looked at, against a broken list
+const MAX_GDEVICES: usize = 16;
+/// Time between two looks at where the guest puts the displays
+const SCREENS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Least time between two looks at the memory notifiers while running. Debugging
 /// mostly happens stopped, where each step or stop looks at them regardless.
@@ -288,9 +319,9 @@ fn search_memory(
 #[derive(Serialize, Deserialize)]
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
-    Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
+    Compact(Box<CpuM68000<CompactMacBus>>),
     /// Macintosh Portable
-    Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
+    Portable(Box<CpuM68000<MacPortableBus>>),
     /// Macintosh II, with the AMU or a 68851
     MacII(Box<CpuM68020<MachineBus020>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
@@ -307,17 +338,17 @@ enum EmulatorConfig {
     LC475(Box<CpuM68040<MachineBus040>>),
     /// Macintosh Quadra 800 (68040)
     Quadra800(Box<CpuM68040<MachineBus040>>),
+    /// Apple Lisa
+    Lisa(Box<CpuM68000<LisaBus>>),
 }
 
 dispatch! {
     immutable_refs {
-        fn swim(&self) -> &Swim { bus.swim }
         fn scc(&self) -> &Scc { bus.scc }
         fn cpu_regs(&self) -> &RegisterFile { regs }
     }
 
     mutable_refs {
-        fn swim_mut(&mut self) -> &mut Swim { bus.swim }
         fn scc_mut(&mut self) -> &mut Scc { bus.scc }
         fn cpu_regs_mut(&mut self) -> &mut RegisterFile { regs }
     }
@@ -336,6 +367,8 @@ dispatch! {
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
+        fn mouse_mode(&self) -> MouseMode { bus.mouse_mode() }
+        fn display_from_Mac_AuxDCE(&self, dctl_slot: u8, dctl_slot_id: u8) -> Option<(String, String, usize)> { bus.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id) }
     }
 
     mutable_calls {
@@ -363,7 +396,7 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
-        fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn after_deserialize(&mut self) -> () { bus.after_deserialize() }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
         fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
@@ -378,10 +411,58 @@ dispatch! {
         fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
         fn input_release_all(&mut self) -> () { bus.input_release_all() }
         fn progkey(&mut self) -> () { bus.progkey() }
-        fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
 
-        fn rtc_mut(&mut self) -> &mut Rtc { bus.rtc_mut() }
+        fn bus_ops(&mut self, id: &str) -> Option<&mut dyn BusOps> { bus.bus_ops(id) }
+
+        fn persist_pram(&mut self, path: &Path) -> () { bus.persist_pram(path) }
+        fn set_datetime(&mut self, dt: chrono::NaiveDateTime) -> () { bus.set_datetime(dt) }
     }
+}
+
+/// What a machine is, apart from its devices
+pub struct MachineConfig<'a> {
+    pub model: MacModel,
+    /// The contents of the main ROM
+    pub rom: &'a [u8],
+    /// The contents of a second ROM that some Mac models map next to the main one
+    pub extension_rom: Option<&'a [u8]>,
+    /// The RAM size in bytes. None: the default of the Mac model.
+    pub ram_size: Option<usize>,
+    pub mouse_mode: MouseMode,
+    /// A 68851 in a Macintosh II
+    pub pmmu_enabled: bool,
+    /// A 68882 in an LC family Mac
+    pub fpu_enabled: bool,
+    /// The serial number of the machine, for a machine that has one in a ROM that the core
+    /// makes. None: the core's own.
+    pub serial_number: Option<&'a str>,
+    /// An X/Lisa PFG in the SCC socket of a Lisa, for MacWorks Plus II
+    pub pfg_enabled: bool,
+}
+
+impl<'a> MachineConfig<'a> {
+    /// A machine of this Mac model with this ROM, and the defaults for the rest
+    pub fn new(rom: &'a [u8], model: MacModel) -> Self {
+        Self {
+            model,
+            rom,
+            extension_rom: None,
+            ram_size: None,
+            mouse_mode: MouseMode::default(),
+            pmmu_enabled: false,
+            fpu_enabled: false,
+            serial_number: None,
+            pfg_enabled: false,
+        }
+    }
+}
+
+/// The security jumper of the logic board of an LC, which is among the settings of the Apple
+/// IIe Card
+fn security_jumper(devices: &[DeviceConfig]) -> bool {
+    devices.iter().any(|config| {
+        matches!(&config.function, FunctionConfig::AppleIIeCard(settings) if settings.security_jumper)
+    })
 }
 
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
@@ -414,51 +495,47 @@ pub struct Emulator {
     memory_map_state: Option<MemoryMapState>,
     /// Last look at the memory notifiers
     memory_notify_time: Instant,
+    /// The temporary files a restored state made, which its devices carry on from
+    temp_files: Vec<PathBuf>,
+    /// The list of buses as it was last sent to the frontend
+    buses: Arc<Vec<crate::devices::Bus>>,
+    /// The status last sent of each slot of that list, in its order
+    device_statuses: Vec<Option<FunctionStatus>>,
+    /// The folder for the pages of a printer whose Config names none, once the frontend gave it
+    default_print_dir: Option<PathBuf>,
+    /// The displays of the machine, in the order the frontend was given them: the ids of the
+    /// bus and slot of the device that shows each, and its index among the displays of that
+    /// device
+    displays: Vec<(String, String, usize)>,
+    /// Where the guest puts the displays, at the last look
+    screens: Vec<GuestScreen>,
+    screens_time: Instant,
 }
 
 impl Emulator {
+    /// Makes a machine from its description and from the list of its devices.
+    ///
+    /// Returns the emulator, one handle per display of the machine, and the device configs
+    /// that the machine couldn't use, each with the reason. A machine with no screen isn't
+    /// made.
+    #[allow(clippy::large_stack_frames)]
     pub fn new(
-        rom: &[u8],
-        extra_roms: &[ExtraROMs],
-        model: MacModel,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
-        Self::new_with_extra(
-            rom,
-            extra_roms,
-            model,
-            None,
-            MouseMode::default(),
-            None,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments, clippy::large_stack_frames)]
-    pub fn new_with_extra(
-        rom: &[u8],
-        extra_roms: &[ExtraROMs],
-        model: MacModel,
-        monitor: Option<MacMonitor>,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        override_fdd_type: Option<DriveType>,
-        pmmu_enabled: bool,
-        fpu_enabled: bool,
-        vram_size: Option<usize>,
-        shared_dir: Option<PathBuf>,
-        iie_card: Option<IieCardSettings>,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+        machine: &MachineConfig,
+        devices: Vec<DeviceConfig>,
+    ) -> Result<(Self, Vec<DisplayHandle>, Vec<RefusedDevice>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
 
+        let model = machine.model;
+        let pmmu_enabled = machine.pmmu_enabled;
+        let fpu_enabled = machine.fpu_enabled;
+
+        // The list is checked against what the Mac model has, and gets a device config for
+        // each device that the Mac model has without being asked
+        let (devices, mut refused) = complete_device_configs(model, devices);
+
+        // The logic board, with its built-in devices
         let mut config = match model {
             MacModel::Early128K
             | MacModel::Early512K
@@ -469,22 +546,8 @@ impl Emulator {
             | MacModel::Classic => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU
-                let bus = CompactMacBus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    renderer,
-                    mouse_mode,
-                    ram_size,
-                    override_fdd_type,
-                );
+                let bus = CompactMacBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -493,55 +556,16 @@ impl Emulator {
             MacModel::Portable | MacModel::Portable15MB => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU
-                let bus =
-                    MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
+                let bus = MacPortableBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68000::new(bus, FPU_NONE));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Portable(cpu)
             }
             MacModel::MacII | MacModel::MacIIFDHD => {
-                assert!(override_fdd_type.is_none());
-
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU. A 68851 takes the place of the AMU.
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    &nubus,
-                    extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    !pmmu_enabled,
-                );
+                let bus = MacIIBus::new(machine, &devices)?;
                 let mut cpu = Box::new(CpuM68020::new(MachineBus020::MacII(bus), FPU_M68881));
                 if pmmu_enabled {
                     cpu.add_68851();
@@ -550,80 +574,9 @@ impl Emulator {
 
                 EmulatorConfig::MacII(cpu)
             }
-            MacModel::MacIIx | MacModel::MacIIcx => {
-                assert!(override_fdd_type.is_none());
-
-                // Find display card ROM and the selected card type
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh II requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0x9,
-                    kind,
-                    rom: mdcrom,
-                }];
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
+            MacModel::MacIIx | MacModel::MacIIcx | MacModel::SE30 => {
                 // Initialize bus and CPU
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    &nubus,
-                    extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    false,
-                );
-                let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
-                assert_eq!(cpu.get_type(), model.cpu_type());
-
-                EmulatorConfig::MacII30(cpu)
-            }
-            MacModel::SE30 => {
-                assert!(override_fdd_type.is_none());
-
-                // Find video ROM
-                let Some(ExtraROMs::SE30Video(vrom)) = extra_roms
-                    .iter()
-                    .find(|p| matches!(p, ExtraROMs::SE30Video(_)))
-                else {
-                    bail!("Macintosh SE/30 requires video ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0xE,
-                    kind: NubusDeviceKind::SE30Video,
-                    rom: vrom,
-                }];
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
-                // Initialize bus and CPU
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    &nubus,
-                    extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    false,
-                );
+                let bus = MacIIBus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68030::new(MachineBus020::MacII(bus), FPU_M68882));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -631,100 +584,55 @@ impl Emulator {
             }
             MacModel::LC => {
                 assert!(!pmmu_enabled, "PMMU not available on Macintosh LC");
-                assert!(override_fdd_type.is_none());
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCII => {
-                assert!(override_fdd_type.is_none());
-
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::LCIII => {
-                assert!(override_fdd_type.is_none());
-
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let mut bus = LcIIIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
-                );
-                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
+                let mut bus = LcIIIBus::new(machine, &devices)?;
+                bus.set_security_jumper(security_jumper(&devices));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
             }
             MacModel::Quadra700 => {
-                assert!(override_fdd_type.is_none());
-
-                // Find extension ROM if present
-                let extension_rom = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::ExtensionROM(data) => Some(*data),
-                    _ => None,
-                });
-
                 // Initialize bus and CPU
-                let bus = Quadra700Bus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    renderer,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                );
+                let bus = Quadra700Bus::new(machine, &devices)?;
                 let cpu = Box::new(CpuM68040::new(MachineBus040::Quadra700(bus), FPU_M68040));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Quadra700(cpu)
             }
             MacModel::LC475 => {
-                assert!(override_fdd_type.is_none());
-
-                let bus = Lc475Bus::new(
-                    model,
-                    rom,
-                    renderer,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    vram_size,
-                    iie_card,
-                );
+                let bus = Lc475Bus::new(machine, &devices)?;
                 // The CPU is socketed, and some owners fit a 68040
                 let fpu = if fpu_enabled { FPU_M68040 } else { FPU_NONE };
                 EmulatorConfig::LC475(Box::new(CpuM68040::new(MachineBus040::Lc475(bus), fpu)))
             }
             MacModel::Quadra800 => {
-                assert!(override_fdd_type.is_none());
-
-                let bus = Quadra800Bus::new(
-                    model,
-                    rom,
-                    renderer,
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                    vram_size,
-                );
+                let bus = Quadra800Bus::new(machine, &devices)?;
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
             }
+            MacModel::Lisa1 | MacModel::Lisa25 | MacModel::Lisa210 => {
+                let bus = LisaBus::new(machine, &devices)?;
+                EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
+            }
         };
 
-        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
 
         let mut emu = Self {
@@ -745,7 +653,49 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            temp_files: vec![],
+            buses: Arc::default(),
+            device_statuses: vec![],
+            default_print_dir: None,
+            displays: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
+
+        // Every device that isn't on the logic board is made, in the order of the list. A
+        // device of the logic board was made with the machine: it gets what a Config can
+        // change on a device that exists.
+        for config in devices {
+            let result = if config.bus == bus_id::BUILT_IN {
+                emu.configure_device(&config)
+            } else {
+                emu.add_device_to(&config, true)
+            };
+            if let Err(e) = result {
+                refused.push(RefusedDevice {
+                    config,
+                    reason: format!("{:#}", e),
+                });
+            }
+        }
+        let buses = emu.buses();
+        emu.send_buses(buses)?;
+
+        let displays = emu.take_displays();
+        if displays.is_empty() {
+            // A device config that couldn't be used may be why
+            let reasons: Vec<String> = refused
+                .iter()
+                .map(|r| {
+                    let slot = emu.slot_label(&r.config.bus, &r.config.slot);
+                    format!("\n{}: {}", slot, r.reason)
+                })
+                .collect();
+            bail!(
+                "This machine has no screen: none of its videos has a monitor{}",
+                reasons.concat()
+            );
+        }
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -753,7 +703,13 @@ impl Emulator {
                 .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
         }
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays, refused))
+    }
+
+    /// The temporary files that a restored state made: the images its devices carry on from.
+    /// For the frontend to remove when it is done with the machine.
+    pub fn temp_files(&self) -> &[PathBuf] {
+        &self.temp_files
     }
 
     /// Restores a saved emulator state into a new Emulator instance
@@ -761,11 +717,9 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
+    ) -> Result<(Self, Vec<DisplayHandle>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(0, 0)?;
-        let frame_recv = renderer.get_receiver();
         let time = Instant::now();
 
         let fstr = path
@@ -775,8 +729,8 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f, tmpdir)?;
-        config.after_deserialize(renderer);
+        let (mut config, temp_files) = load_state_from(f, tmpdir)?;
+        config.after_deserialize();
         // The keys and buttons held down when the state was saved are not
         // any more, or we cannot know: release them rather than leave them
         // stuck.
@@ -802,7 +756,17 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            temp_files,
+            buses: Arc::default(),
+            device_statuses: vec![],
+            default_print_dir: None,
+            displays: vec![],
+            screens: vec![],
+            screens_time: Instant::now(),
         };
+        let displays = emu.take_displays();
+        let buses = emu.buses();
+        emu.send_buses(buses)?;
         emu.status_update()?;
 
         for ch in crate::mac::scc::SccCh::iter() {
@@ -817,19 +781,19 @@ impl Emulator {
             time.elapsed()
         );
 
-        Ok((emu, frame_recv))
+        Ok((emu, displays))
     }
 
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
     /// file is created. The PRAM file is continuously updated.
     pub fn persist_pram(&mut self, pram_path: &Path) {
-        self.config.rtc_mut().load_pram(pram_path);
+        self.config.persist_pram(pram_path);
     }
 
     /// Sets the RTC to a specific date/time.
     /// This can be used to test date-dependent software behavior (e.g., easter eggs).
     pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
-        self.config.rtc_mut().set_datetime(dt);
+        self.config.set_datetime(dt);
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {
@@ -840,28 +804,19 @@ impl Emulator {
         self.event_recv.clone()
     }
 
-    /// Whether the Apple IIe Card is in front, on a machine that has one
-    fn iie_card_in_front(&mut self) -> bool {
-        let card = match &mut self.config {
-            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
+    /// The Apple IIe Card of the machine, seen through its function, on a machine that has one
+    fn iie_card(&mut self) -> Option<&mut dyn AppleIIeCardFunction> {
+        match self.function_in(bus_id::PDS_LC, Pds::SLOT_IDS[0]) {
+            Ok(FunctionMut::AppleIIeCard(card)) => Some(card),
             _ => None,
-        };
-        card.is_some_and(|card| card.in_front())
+        }
     }
 
-    fn status_update(&mut self) -> Result<()> {
-        for i in 0..self.config.swim().drives.len() {
-            self.writeback_ejected(i);
-        }
-        for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
-            if let Some(img) = drive.take_ejected_image() {
-                self.event_sender
-                    .send(EmulatorEvent::FloppyEjected(i, img))?;
-            }
-        }
+    /// Sends the frontend the state of the machine and of its devices, as it is now. It is sent
+    /// every 500 ms while the machine runs and after each command. A frontend that calls the
+    /// emulator's methods itself calls this after it changed a device.
+    pub fn status_update(&mut self) -> Result<()> {
+        self.send_ejected_floppies()?;
         for (id, target) in self
             .config
             .scsi_mut()
@@ -873,7 +828,10 @@ impl Emulator {
             match target.take_event() {
                 Some(ScsiTargetEvent::MediaEjected) => {
                     self.event_sender
-                        .send(EmulatorEvent::ScsiMediaEjected(id))
+                        .send(EmulatorEvent::UserMessage(
+                            UserMessageType::Notice,
+                            format!("CD-ROM #{} ejected", id),
+                        ))
                         .unwrap();
                 }
                 Some(ScsiTargetEvent::LoadFailed(msg)) => {
@@ -903,52 +861,13 @@ impl Emulator {
                 running: self.run,
                 breakpoints: self.config.cpu_breakpoints().to_vec(),
                 cycles: self.config.cpu_cycles(),
-                fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.config.swim().drives[i].is_present(),
-                    ejected: !self.config.swim().drives[i].floppy_inserted,
-                    motor: self.config.swim().drives[i].motor,
-                    writing: self.config.swim().drives[i].motor && self.config.swim().is_writing(),
-                    track: self.config.swim().drives[i].track,
-                    image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
-                    dirty: self.config.swim().drives[i].floppy.is_dirty(),
-                    drive_type: self.config.swim().drives[i].drive_type,
-                    writeback_supported: self.config.swim().drives[i].image_path.is_some()
-                        && self.config.swim().drives[i].floppy.supports_writeback(),
-                    writeback_enabled: self.config.swim().drives[i].writeback_enabled,
-                }),
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
-                scsi: core::array::from_fn(|i| {
-                    self.config
-                        .scsi()
-                        .get_target_type(i)
-                        .map(|t| ScsiTargetStatus {
-                            target_type: t,
-                            capacity: self.config.scsi().get_disk_capacity(i),
-                            image: self
-                                .config
-                                .scsi()
-                                .get_disk_imagefn(i)
-                                .map(|p| p.to_path_buf()),
-                            cdrom_folder: self
-                                .config
-                                .scsi()
-                                .get_cdrom_folder(i)
-                                .map(|p| p.to_path_buf()),
-                            #[cfg(feature = "ethernet")]
-                            link_type: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_link()),
-                            #[cfg(feature = "ethernet")]
-                            capture_status: self.config.scsi().targets[i]
-                                .as_ref()
-                                .and_then(|d| d.eth_capture_status()),
-                        })
-                }),
                 speed: self.config.speed(),
                 ram_size: self.config.ram_size(),
                 effective_speed: self.config.effective_speed(),
             })))?;
+        self.devices_update()?;
 
         // Memory notifiers. A stopped machine gets all of them looked at, so that
         // whatever happened without a notice, such as changes in the page tables
@@ -979,9 +898,11 @@ impl Emulator {
 
         // Peripheral debug view
         if self.peripheral_debug {
-            self.event_sender.send(EmulatorEvent::PeripheralDebug(
-                self.config.debug_properties(),
-            ))?;
+            // The chips of the machine, then the devices on its buses
+            let mut properties = self.config.debug_properties();
+            properties.push(self.devices_debug());
+            self.event_sender
+                .send(EmulatorEvent::PeripheralDebug(properties))?;
         }
 
         Ok(())
@@ -1100,10 +1021,142 @@ impl Emulator {
         Ok(())
     }
 
+    /// The displays of the machine, for the frontend. The emulator keeps which device shows
+    /// each. Called once, when the machine is made or restored from a state.
+    fn take_displays(&mut self) -> Vec<DisplayHandle> {
+        let displays = self.displays();
+        let id = |d: &DisplayHandle| (d.bus.clone(), d.slot.clone(), d.index);
+        self.displays = displays.iter().map(id).collect();
+        displays
+    }
+
+    fn inspect_long(&mut self, addr: Address) -> Option<u32> {
+        let high = self.config.cpu_inspect_read_word(addr, false)?;
+        let low = self.config.cpu_inspect_read_word(addr + 2, false)?;
+        Some((u32::from(high) << 16) | u32::from(low))
+    }
+
+    /// A pointer in the guest's memory, as the guest follows it. In 24-bit mode the top byte
+    /// isn't part of the address, and a master pointer keeps the flags of its handle there:
+    /// StripAddress (Inside Macintosh V, p. V-593).
+    fn inspect_pointer(&mut self, addr: Address, mode32: bool) -> Option<Address> {
+        let pointer = self.inspect_long(addr)?;
+        Some(if mode32 {
+            pointer
+        } else {
+            pointer & 0x00FF_FFFF
+        })
+    }
+
+    /// Which display of the machine a screen of the guest is, by the slot number and the id
+    /// of the slot resource of its driver. Those two numbers are the guest's, and only the
+    /// machine knows what they mean.
+    #[allow(non_snake_case)]
+    fn display_from_Mac_AuxDCE(&self, dctl_slot: u8, dctl_slot_id: u8) -> Option<usize> {
+        let display = self
+            .config
+            .display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)?;
+        self.displays.iter().position(|d| *d == display)
+    }
+
+    /// Where the guest puts the displays: the screens of Color QuickDraw's list of devices,
+    /// each with the display that the machine says it is. None if the list can't be read.
+    fn read_screens(&mut self) -> Option<Vec<GuestScreen>> {
+        let mut screens = vec![];
+        let mode32 = self.config.cpu_inspect_read(ADDR_MMU32BIT, false)? != 0;
+        let main = self.inspect_pointer(ADDR_MAINDEVICE, mode32)?;
+        let unit_table = self.inspect_pointer(ADDR_UTABLEBASE, mode32)?;
+        let mut handle = self.inspect_pointer(ADDR_DEVICELIST, mode32)?;
+        for _ in 0..MAX_GDEVICES {
+            if handle == 0 {
+                break;
+            }
+            let gd = self.inspect_pointer(handle, mode32)?;
+            let flags = self.config.cpu_inspect_read_word(gd + GD_FLAGS, false)?;
+            let refnum = self.config.cpu_inspect_read_word(gd + GD_REFNUM, false)? as i16;
+            if flags & GD_SCREEN_DEVICE != 0 && refnum < 0 {
+                // The device control entry of the screen's driver
+                let unit = (-i32::from(refnum) - 1) as Address;
+                let dce_handle = self.inspect_pointer(unit_table + 4 * unit, mode32)?;
+                let dce = self.inspect_pointer(dce_handle, mode32)?;
+                let dctl_slot = self.config.cpu_inspect_read(dce + DCTL_SLOT, false)?;
+                let dctl_slot_id = self.config.cpu_inspect_read(dce + DCTL_SLOTID, false)?;
+                let mut rect = [0; 4];
+                for (i, v) in rect.iter_mut().enumerate() {
+                    let addr = gd + GD_RECT + 2 * i as Address;
+                    *v = self.config.cpu_inspect_read_word(addr, false)? as i16;
+                }
+                let [top, left, bottom, right] = rect;
+                if let Some(display) = self.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)
+                    && right > left
+                    && bottom > top
+                {
+                    screens.push(GuestScreen {
+                        display,
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        main: handle == main,
+                        active: flags & GD_SCREEN_ACTIVE != 0,
+                    });
+                }
+            }
+            handle = self.inspect_pointer(gd + GD_NEXTGD, mode32)?;
+        }
+        Some(screens)
+    }
+
+    /// The guest's screens are only looked at with several displays and the absolute mouse:
+    /// with the relative mouse, the guest may not be Mac OS (A/UX, Linux) and its memory is
+    /// left alone.
+    fn screens_wanted(&self) -> bool {
+        let absolute = self.config.mouse_mode() == MouseMode::Absolute;
+        self.displays.len() > 1 && absolute
+    }
+
+    /// Looks where the guest puts the displays, when there are several, and tells the
+    /// frontend when that changes. Called while the machine runs.
+    fn screens_tick(&mut self) -> Result<()> {
+        if !self.screens_wanted() {
+            if !self.screens.is_empty() {
+                self.screens.clear();
+                self.event_sender.send(EmulatorEvent::Screens(vec![]))?;
+            }
+            return Ok(());
+        }
+        if self.screens_time.elapsed() < SCREENS_INTERVAL {
+            return Ok(());
+        }
+        self.screens_time = Instant::now();
+        if let Some(screens) = self.read_screens()
+            && screens != self.screens
+        {
+            log::info!("Screens: {:?}", screens);
+            self.screens.clone_from(&screens);
+            self.event_sender.send(EmulatorEvent::Screens(screens))?;
+        }
+        Ok(())
+    }
+
     /// Reports a new position of the mouse in absolute mode to the OS, in its
-    /// low memory globals. If they have no translation at the moment, this
-    /// position is skipped.
-    fn mouse_update_abs(&mut self, x: u16, y: u16) {
+    /// low memory globals, from a position on one of the displays. If they
+    /// have no translation at the moment, or the guest doesn't use that
+    /// display, this position is skipped.
+    fn mouse_update_abs(&mut self, display: usize, x: u16, y: u16) {
+        // With several displays, the pixels of a display are where the guest puts it
+        let (x, y) = if self.displays.len() > 1 {
+            let screen = self.screens.iter().find(|s| s.display == display);
+            let Some(screen) = screen.filter(|s| s.active) else {
+                return;
+            };
+            (
+                x.wrapping_add_signed(screen.left),
+                y.wrapping_add_signed(screen.top),
+            )
+        } else {
+            (x, y)
+        };
         let (Some(old_x), Some(old_y)) = (
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_X, false),
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_Y, false),
@@ -1137,7 +1190,7 @@ impl Emulator {
             // As for the reset command: the bus first, for the overlay
             self.config.bus_reset()?;
             self.config.cpu_reset()?;
-            self.config.video_blank()?;
+            self.video_blank()?;
         }
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
@@ -1166,30 +1219,19 @@ impl Emulator {
         Ok(())
     }
 
+    /// Gives the machine the sound output of the host, and each CD-ROM drive too, for audio CDs
     pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) -> Result<()> {
-        self.audio_provider = Some(provider);
         self.config
-            .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
-    }
-
-    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
-    }
-
-    pub fn attach_disk_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        self.config.scsi_mut().attach_disk_image_at(image, scsi_id)
-    }
-
-    pub fn insert_cdrom_image_at(
-        &mut self,
-        image: Box<dyn DiskImage>,
-        scsi_id: usize,
-    ) -> Result<()> {
-        self.config.scsi_mut().insert_cdrom_image_at(image, scsi_id)
+            .set_audio_provider(&mut *provider.lock().unwrap())?;
+        for bus in self.buses() {
+            for slot in &bus.slots {
+                if let Ok(FunctionMut::Cdrom(cdrom)) = self.function_in(&bus.id, &slot.id) {
+                    cdrom.set_audio_provider(&mut *provider.lock().unwrap())?;
+                }
+            }
+        }
+        self.audio_provider = Some(provider);
+        Ok(())
     }
 
     fn user_error(&self, msg: &str) {
@@ -1232,94 +1274,6 @@ impl Emulator {
             ))
             .unwrap();
         info!("{}", msg);
-    }
-
-    /// Saves the floppy in `drive` back to its source file using the writer
-    /// matching its source format. No-op if writeback is not currently armed
-    /// for the drive. Clears the dirty + pending flags on success.
-    fn try_writeback(&mut self, drive: usize) {
-        let drv = &self.config.swim().drives[drive];
-        if !drv.writeback_enabled || !drv.floppy.is_dirty() {
-            return;
-        }
-        let Some(path) = drv.image_path.clone() else {
-            return;
-        };
-
-        let result = crate::util::atomic_write(&path, |f| {
-            snow_floppy::loaders::save_image(&self.config.swim().drives[drive].floppy, f)
-        });
-
-        let display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-
-        match result {
-            Ok(()) => {
-                let drv = &mut self.config.swim_mut().drives[drive];
-                drv.floppy.clear_dirty();
-                drv.pending_writeback = false;
-                log::info!(
-                    "Floppy #{}: writeback auto-saved '{}'",
-                    drive + 1,
-                    display_name
-                );
-            }
-            Err(e) => {
-                self.config.swim_mut().drives[drive].pending_writeback = false;
-                self.user_error(&format!(
-                    "Floppy #{}: writeback to '{}' failed: {:#}",
-                    drive + 1,
-                    display_name,
-                    e
-                ));
-            }
-        }
-    }
-
-    /// Saves a disk ejected by the guest with unsaved writes back to its
-    /// source file. No-op unless the eject armed it.
-    fn writeback_ejected(&mut self, drive: usize) {
-        let drv = &mut self.config.swim_mut().drives[drive];
-        let Some(path) = drv.eject_writeback.take() else {
-            return;
-        };
-        let Some(img) = drv.floppy_ejected.as_deref() else {
-            return;
-        };
-
-        let result = crate::util::atomic_write(&path, |f| snow_floppy::loaders::save_image(img, f));
-        let display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-        match result {
-            Ok(()) => log::info!(
-                "Floppy #{}: writeback saved ejected disk '{}'",
-                drive + 1,
-                display_name
-            ),
-            Err(e) => self.user_error(&format!(
-                "Floppy #{}: writeback of ejected disk to '{}' failed: {:#}",
-                drive + 1,
-                display_name,
-                e
-            )),
-        }
-    }
-
-    /// Drains queued writeback requests across all drives. With `force`,
-    /// ignores [`FloppyDrive::pending_writeback`] and saves any dirty drive
-    /// that has writeback armed.
-    fn flush_pending_writebacks(&mut self, force: bool) {
-        for i in 0..self.config.swim().drives.len() {
-            self.writeback_ejected(i);
-            let drv = &self.config.swim().drives[i];
-            if drv.writeback_enabled && (force || drv.pending_writeback) && drv.floppy.is_dirty() {
-                self.try_writeback(i);
-            }
-        }
     }
 
     fn poll_localtalk_bridge(&mut self) {
@@ -1403,6 +1357,10 @@ impl Emulator {
     }
 
     fn step_failed(&mut self, e: &anyhow::Error) {
+        if matches!(self.config, EmulatorConfig::Lisa(_)) && is_double_fault(e) {
+            self.lisa_halted();
+            return;
+        }
         self.run = false;
         self.user_error(&format!(
             "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
@@ -1416,47 +1374,51 @@ impl Emulator {
         let _ = self.status_update();
     }
 
+    /// A Lisa with its power off runs no instructions: its screen is blank and only its COPS
+    /// runs, which can turn the power on again (a timer). True while the power is off.
+    fn lisa_powered_off(&mut self) -> Result<bool> {
+        let EmulatorConfig::Lisa(lisa) = &mut self.config else {
+            return Ok(false);
+        };
+        if lisa.bus.powered_on() {
+            return Ok(false);
+        }
+        lisa.bus.tick_powered_off(LISA_POWERED_OFF_SLEEP);
+        if lisa.bus.powered_on() {
+            // As the on-off button does with the power off
+            self.config.bus_reset()?;
+            self.config.cpu_reset()?;
+        }
+        self.video_blank()?;
+        Ok(true)
+    }
+
+    /// On the Lisa, CPU halt starts the reset timer. The Office System restarts
+    /// the machine this way: it fills the vector table with -1 and then does a
+    /// CLR.L (-1).
+    fn lisa_halted(&mut self) {
+        let result = match &mut self.config {
+            EmulatorConfig::Lisa(lisa) => lisa.bus.reset(false).map(|_| ()),
+            _ => Ok(()),
+        }
+        .and_then(|()| self.config.cpu_reset())
+        .and_then(|()| self.video_blank());
+        if let Err(e) = result {
+            self.run = false;
+            self.user_error(&format!("Cannot reset after CPU halt: {}", e));
+        }
+    }
+
     pub fn get_cycles(&self) -> Ticks {
         self.config.cpu_cycles()
     }
 
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom(&mut self, id: usize) {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
-        info!("SCSI ID #{}: CD-ROM drive attached", id);
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
-        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
-        self.config
-            .scsi_mut()
-            .attach_cdrom_folder_at(id, dir, audio_provider)?;
-        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
-        Ok(())
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn attach_ethernet(&mut self, id: usize) {
-        self.config.scsi_mut().attach_ethernet_at(id);
-        info!("SCSI ID #{}: Ethernet controller attached", id);
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
-        self.config.scsi_mut().attach_printer_at(id, output_dir);
-        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
-    }
-
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
+    fn save_state(&mut self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config, screenshot)?;
+        save_state_to(&f, &mut self.config, screenshot)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -1484,12 +1446,12 @@ impl Tickable for Emulator {
 
                         self.config.mouse_update_rel(relx, rely, btn);
                     }
-                    EmulatorCommand::MouseUpdateAbsolute { x, y } => {
+                    EmulatorCommand::MouseUpdateAbsolute { x, y, display } => {
                         if let Some(r) = self.record_input.as_mut() {
                             r.push((cycles, cmd));
                         }
 
-                        self.mouse_update_abs(x, y);
+                        self.mouse_update_abs(display, x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
                         log::info!("Mouse mode: {:?}", mode);
@@ -1498,288 +1460,115 @@ impl Tickable for Emulator {
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
                         self.flush_pending_writebacks(true);
-                        self.config.video_blank()?;
+                        self.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(drive, filename, wp) => {
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                if wp {
-                                    img.set_force_wp();
-                                }
-                                let writeback_path =
-                                    img.supports_writeback().then(|| PathBuf::from(&filename));
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                } else {
-                                    let drv = &mut self.config.swim_mut().drives[drive];
-                                    drv.image_path = writeback_path;
-                                    drv.writeback_enabled = false;
-                                    drv.pending_writeback = false;
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {:?}",
-                                    filename, e
-                                ));
+                    EmulatorCommand::LisaOnOffButton => {
+                        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+                            if lisa.bus.powered_on() {
+                                lisa.bus.on_off_button();
+                            } else {
+                                self.config.bus_reset()?;
+                                self.config.cpu_reset()?;
+                                self.video_blank()?;
                             }
                         }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::InsertIieDisk(drive, path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header names the sector order, else
-                                // the extension does
-                                let (bytes, order) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
-                                            (img.data, DskOrder::Prodos)
-                                        }
-                                        Ok(img) => (img.data, DskOrder::Dos),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else if path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
-                                {
-                                    (&bytes[..], DskOrder::Prodos)
-                                } else {
-                                    (&bytes[..], DskOrder::Dos)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
-                                            self.user_error(&format!(
-                                                "Cannot insert IIe disk '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        }
-                        self.status_update()?;
                     }
                     EmulatorCommand::SetIieGamePort(port) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
+                        if let Some(card) = self.iie_card() {
                             card.set_game_port(port);
                         }
                     }
-                    EmulatorCommand::EjectIieDisk(drive) => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
-                            card.eject_disk(drive);
+                    EmulatorCommand::InsertFloppyImage(bus, slot, img, wp) => {
+                        let result = self
+                            .floppy_in(&bus, &slot)
+                            .and_then(|floppy| floppy.insert_image(img, wp));
+                        if let Err(e) = result {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
+                        self.status_update()?;
                     }
-                    EmulatorCommand::InsertIieUniDisk(path) => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // A 2IMG header carries the lock flag; a
-                                // raw image is the blocks alone
-                                let (data, locked) = if TwoImg::detect(&bytes) {
-                                    match TwoImg::parse(&bytes) {
-                                        Ok(img) => (img.data.to_vec(), img.locked),
-                                        Err(e) => {
-                                            self.user_error(&format!(
-                                                "Cannot read '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    (bytes, false)
-                                };
-                                let card = match &mut self.config {
-                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                                    EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                                    _ => None,
-                                };
-                                match card {
-                                    Some(card) => {
-                                        if let Err(e) = card.insert_unidisk(data, locked) {
-                                            self.user_error(&format!(
-                                                "Cannot insert UniDisk 3.5 image '{}': {}",
-                                                path.display(),
-                                                e
-                                            ));
-                                        }
-                                    }
-                                    None => self.user_error("No Apple IIe Card installed"),
-                                }
-                            }
+                    EmulatorCommand::EjectMedia(bus, slot) => {
+                        if let Err(e) = self.eject_media(&bus, &slot) {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::SetFloppyWriteback(bus, slot, enabled) => {
+                        let result = self
+                            .floppy_in(&bus, &slot)
+                            .and_then(|floppy| floppy.set_writeback(enabled));
+                        if let Err(e) = result {
+                            self.user_error(&format!("{:#}", e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::AddDevice(config) => {
+                        if let Err(e) = self.add_device(&config) {
+                            let label = self.slot_label(&config.bus, &config.slot);
+                            self.user_error(&format!("{}: {:#}", label, e));
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::RemoveDevice(bus, slot) => {
+                        match self.remove_device(&bus, &slot) {
+                            Ok(_) => info!("{} #{}: device removed", bus, slot),
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "Cannot read '{}': {}",
-                                    path.display(),
+                                    "{}: {:#}",
+                                    self.slot_label(&bus, &slot),
                                     e
                                 ));
                             }
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::EjectIieUniDisk => {
-                        let card = match &mut self.config {
-                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::MacLCIII(inner) => inner.bus.iie_card_mut(),
-                            EmulatorConfig::LC475(inner) => inner.bus.iie_card_mut(),
-                            _ => None,
-                        };
-                        if let Some(card) = card {
-                            card.eject_unidisk();
-                        }
-                    }
-                    EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
-                        if wp {
-                            img.set_force_wp();
-                        }
-                        if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
-                            self.user_error(&format!("Cannot insert disk: {}", e));
+                    EmulatorCommand::CdromSetFolder(bus, slot, folder) => {
+                        if let Err(e) = self.cdrom_set_folder(&bus, &slot, &folder) {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::EjectFloppy(drive) => {
-                        self.try_writeback(drive);
-                        self.config.swim_mut().drives[drive].eject();
-                    }
-                    EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
-                        let ok = {
-                            let drv = &mut self.config.swim_mut().drives[drive];
-                            if enabled
-                                && (drv.image_path.is_none() || !drv.floppy.supports_writeback())
-                            {
-                                false
-                            } else {
-                                drv.writeback_enabled = enabled;
-                                drv.pending_writeback = false;
-                                true
+                    EmulatorCommand::LoadMedia(bus, slot, filename, read_only) => {
+                        match self.load_media(&bus, &slot, &filename, read_only) {
+                            Ok(_) => {
+                                info!("{} #{}: image '{}' loaded", bus, slot, filename.display());
                             }
-                        };
-                        if !ok {
-                            self.user_error(
-                                "Writeback unavailable: image was not loaded from a writeback-capable file",
-                            );
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "{}: {:#}",
+                                    self.slot_label(&bus, &slot),
+                                    e
+                                ));
+                            }
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::ScsiAttachHdd(id, filename) => {
-                        match self.load_hdd_image(&filename, id) {
+                    EmulatorCommand::BranchDisk(bus, slot, filename) => {
+                        match self.branch_disk(&bus, &slot, &filename) {
                             Ok(_) => {
                                 info!(
-                                    "SCSI ID #{}: hard drive attached, image '{}' loaded",
-                                    id,
+                                    "{} #{}: branched to file '{}'",
+                                    bus,
+                                    slot,
                                     filename.display()
                                 );
                             }
                             Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                                self.user_error(&format!(
+                                    "{}: {:#}",
+                                    self.slot_label(&bus, &slot),
+                                    e
+                                ));
                             }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiBranchHdd(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .branch_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: branched to file '{}'", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiLoadMedia(id, filename) => {
-                        match self.config.scsi_mut().targets[id]
-                            .as_mut()
-                            .context("No target attached")?
-                            .load_media(&filename)
-                        {
-                            Ok(_) => {
-                                info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
-                            }
-                            Err(e) => {
-                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
-                            }
-                        };
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdrom(id) => {
-                        self.attach_cdrom(id);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
-                        if let Err(e) = self.attach_cdrom_folder(id, dir) {
-                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
                         }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::ScsiAttachEthernet(id) => {
-                        self.attach_ethernet(id);
-                        self.status_update()?;
-                    }
-                    #[cfg(feature = "printer")]
-                    EmulatorCommand::ScsiAttachPrinter(id, output_dir) => {
-                        self.attach_printer(id, output_dir);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::DetachScsiTarget(id) => {
-                        self.config.scsi_mut().detach_target(id);
-                        info!("SCSI ID #{}: target detached", id);
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::SaveFloppy(drive, filename) => {
-                        if let Err(e) = Moof::save_file(
-                            self.config.swim().get_active_image(drive),
-                            &filename.to_string_lossy(),
-                        ) {
+                    EmulatorCommand::SaveFloppy(bus, slot, filename) => {
+                        let result = self
+                            .floppy_in(&bus, &slot)
+                            .and_then(|floppy| floppy.save(&filename));
+                        if let Err(e) = result {
                             self.user_error(&format!(
                                 "Cannot save file '{}': {}",
                                 filename.file_name().unwrap_or_default().to_string_lossy(),
@@ -1807,7 +1596,7 @@ impl Tickable for Emulator {
                         // otherwise the wrong reset vector is loaded.
                         self.config.bus_reset()?;
                         self.config.cpu_reset()?;
-                        self.config.video_blank()?;
+                        self.video_blank()?;
 
                         info!("Emulator reset");
                         self.status_update()?;
@@ -1988,6 +1777,9 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetSharedDir(path) => {
                         self.config.scsi_mut().set_shared_dir(path);
                     }
+                    EmulatorCommand::SetDefaultPrintDir(dir) => {
+                        self.set_default_print_dir(dir);
+                    }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
                         self.status_update()?;
@@ -2047,65 +1839,57 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
-                        self.config.swim_mut().seed_weak_bits(seed);
+                        self.seed_weak_bits(seed);
                     }
-                    EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
-                        if drive < self.config.swim_mut().drives.len() {
-                            let drv = &mut self.config.swim_mut().drives[drive];
-                            drv.rpm_adjustment = adjustment;
-                            drv.update_ticks_per_bit();
+                    EmulatorCommand::SetFloppyRpmAdjustment(bus, slot, adjustment) => {
+                        let result = self
+                            .floppy_in(&bus, &slot)
+                            .and_then(|floppy| floppy.set_rpm_adjustment(adjustment));
+                        if let Err(e) = result {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetSetLink(idx, link) => {
-                        let target = self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("Setting link on non-ethernet device")?;
-                        if let Err(e) = target.eth_set_link(link) {
-                            self.user_error(&format!("SCSI #{}: {:#}", idx, e));
+                    EmulatorCommand::EthernetSetLink(bus, slot, link) => {
+                        if let Err(e) = self.ethernet_in(&bus, &slot)?.set_link(link) {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStartCapture(idx, filename) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_start_capture(&filename)
-                        {
+                    EmulatorCommand::EthernetStartCapture(bus, slot, filename) => {
+                        match self.ethernet_in(&bus, &slot)?.start_capture(&filename) {
                             Ok(_) => {
                                 self.user_success(&format!(
-                                    "SCSI #{}: Started pcap capture to '{}'",
-                                    idx,
+                                    "{} #{}: Started pcap capture to '{}'",
+                                    bus,
+                                    slot,
                                     filename.display()
                                 ));
                             }
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "SCSI #{}: Failed to start capture: {}",
-                                    idx, e
+                                    "{} #{}: Failed to start capture: {}",
+                                    bus, slot, e
                                 ));
                             }
                         }
                         self.status_update()?;
                     }
-                    #[cfg(feature = "ethernet")]
-                    EmulatorCommand::EthernetStopCapture(idx) => {
-                        match self.config.scsi_mut().targets[idx]
-                            .as_mut()
-                            .context("No ethernet device attached")?
-                            .eth_stop_capture()
-                        {
+                    EmulatorCommand::EthernetStopCapture(bus, slot) => {
+                        match self.ethernet_in(&bus, &slot)?.stop_capture() {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
-                                    "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
-                                    idx,
+                                    "{} #{}: Stopped capture, wrote {} packets to '{}'",
+                                    bus,
+                                    slot,
                                     count,
                                     filename.display()
                                 ));
                             }
                             None => {
-                                self.user_warning(&format!("SCSI #{}: No capture was active", idx));
+                                self.user_warning(&format!(
+                                    "{} #{}: No capture was active",
+                                    bus, slot
+                                ));
                             }
                         }
                         self.status_update()?;
@@ -2120,6 +1904,9 @@ impl Tickable for Emulator {
 
         if !self.memory_notifiers.is_empty() && self.run {
             self.memory_notifiers_tick()?;
+        }
+        if self.run {
+            self.screens_tick()?;
         }
 
         if self.run {
@@ -2206,6 +1993,11 @@ impl Tickable for Emulator {
                 self.replay_input.pop_front().unwrap();
             }
 
+            if self.lisa_powered_off()? {
+                thread::sleep(LISA_POWERED_OFF_SLEEP);
+                return Ok(ticks);
+            }
+
             // Batch 10000 steps for performance reasons
             let mut steps = 10000;
             while steps > 0 && self.run {
@@ -2225,7 +2017,7 @@ impl Tickable for Emulator {
             // (e.g. by the SWIM controller turning a drive motor off).
             self.flush_pending_writebacks(false);
 
-            let iie_in_front = self.iie_card_in_front();
+            let iie_in_front = self.iie_card().is_some_and(|card| card.in_front());
             if iie_in_front != self.iie_in_front {
                 self.iie_in_front = iie_in_front;
                 self.event_sender
