@@ -91,19 +91,25 @@ pub mod unidisk;
 
 use std::cell::RefCell;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::tickable::{Tickable, Ticks};
+use crate::devices::{
+    AppleIIeCardFunction, Bus, BusKind, BusOps, DeviceConfig, DeviceModel, DeviceOps,
+    FunctionConfig, FunctionInfo, FunctionMut, MadeDevice, ModelInfo, bus_id,
+};
+use crate::emulator::EmuContext;
+use crate::mac::dma::DmaOps;
+use crate::mac::pds::PdsSlot;
+use crate::tickable::Ticks;
 #[cfg(feature = "iie-debug")]
 use log::{Level, log_enabled};
 
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
-use disk::{DiskII, DskImage, DskOrder};
-use snow_floppy::loaders::Woz;
+use disk::DiskII;
 
 /// A device on the card's external disk port (the Y-cable's floppy
 /// connector)
@@ -1554,6 +1560,9 @@ impl Bus6502 for PdsIIeBus {
 /// the host register block, and the C16M clock divider.
 #[derive(Serialize, Deserialize)]
 pub struct PdsIIeCard {
+    /// What the card was made with
+    settings: IieCardSettings,
+
     /// The 65C02, which owns the card's bus.
     pub(crate) cpu: Cpu<PdsIIeBus>,
 
@@ -1566,7 +1575,7 @@ pub struct PdsIIeCard {
     /// instruction takes more cycles than the ticks received.
     clock_acc: i64,
     /// C16M ticks with the speaker high, and in all, since the last
-    /// [`Self::take_speaker_level`].
+    /// `sound_pin_value()`.
     speaker_high: Ticks,
     speaker_total: Ticks,
     /// C16M ticks since the host last wrote `$20`, up to `IN_FRONT_TIMEOUT`
@@ -1614,25 +1623,91 @@ const LC_BANK2_AT_C000: bool = false;
 #[cfg(feature = "iie-debug")]
 const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
-impl PdsIIeCard {
-    /// Whether the IIe is in front: its 65C02 runs, and the host keeps writing
+/// Makes the card, with the drives its settings name on its disk port
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::AppleIIeCard(settings) = &config.function else {
+        bail!("Not the Config of an Apple IIe Card");
+    };
+    Ok(MadeDevice::Pds(Box::new(PdsIIeCard::with_settings(
+        settings,
+    )?)))
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    fixed: true,
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::AppleIIePdsCard,
+        "Apple IIe Card",
+        BusKind::LcPds,
+        FunctionInfo::AppleIIeCard,
+    )
+};
+
+impl DeviceOps for PdsIIeCard {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::AppleIIeCard(self.settings)
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::AppleIIeCard(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+
+    /// The card adds its disk port to the buses of the machine.
+    fn extra_buses(&mut self) -> Vec<(Bus, &mut dyn BusOps)> {
+        let port = Bus::new(
+            BusKind::IieDisk,
+            bus_id::IIE_DISK,
+            "Apple IIe disk",
+            &DiskII::SLOT_IDS,
+        );
+        vec![(port, &mut self.cpu.bus.state.get_mut().disk)]
+    }
+}
+
+impl AppleIIeCardFunction for PdsIIeCard {
+    /// The IIe is in front when its 65C02 runs, and the host keeps writing
     /// `$20`
-    pub fn in_front(&self) -> bool {
+    fn in_front(&self) -> bool {
         self.front_time >= IN_FRONT_SETTLE
     }
 
+    /// Sets what the host has on the game port: the paddle positions
+    /// for the next `$C070` and the buttons.
+    fn set_game_port(&mut self, port: GamePort) {
+        let mut s = self.cpu.bus.state.borrow_mut();
+        s.game_port = port;
+        s.stick_kept |= port.keep_stick;
+        s.btn[0] = port.buttons[0];
+        s.btn[1] = port.buttons[1];
+    }
+}
+
+impl PdsIIeCard {
     /// Creates a card with its 65C02 stopped and the default settings.
+    #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_settings(&IieCardSettings::default())
+        Self::with_settings(&IieCardSettings::default()).unwrap()
     }
 
     /// Creates a card with its 65C02 stopped.  The host loads the
     /// firmware and sets control register 2 bit 7 to run it.
-    pub fn with_settings(settings: &IieCardSettings) -> Self {
+    ///
+    /// The card makes the drives of its disk port, each with the create
+    /// function of its device model: a UniDisk 3.5 first if the settings
+    /// have one, then the 5.25" drives.
+    pub fn with_settings(settings: &IieCardSettings) -> Result<Self> {
         let cpu = Cpu::new(PdsIIeBus::new(), Variant::M65C02);
-        cpu.bus.state.borrow_mut().disk =
-            DiskII::new(settings.drives_525(), settings.has_unidisk());
-        Self {
+        let mut card = Self {
+            settings: *settings,
             cpu,
             data_out: 0,
             mem_addr: 0,
@@ -1649,7 +1724,29 @@ impl PdsIIeCard {
             trace_prev_pc: None,
             #[cfg(feature = "iie-debug")]
             trace_file: None,
+        };
+
+        let unidisk = settings.has_unidisk().then_some(DeviceModel::UniDisk35);
+        let drives = std::iter::repeat_n(DeviceModel::Apple525Drive, settings.drives_525());
+        let disk = &mut card.cpu.bus.state.get_mut().disk;
+        for (slot, model) in DiskII::SLOT_IDS
+            .iter()
+            .zip(unidisk.into_iter().chain(drives))
+        {
+            let info = model.info();
+            let create = info
+                .create
+                .with_context(|| format!("{} can't be made", info.name))?;
+            let config = DeviceConfig {
+                bus: bus_id::IIE_DISK.to_string(),
+                slot: slot.to_string(),
+                model: Some(model),
+                rom: None,
+                function: FunctionConfig::Floppy,
+            };
+            disk.attach(slot, create(&config)?)?;
         }
+        Ok(card)
     }
 
     /// Reads one bus cycle of `len` bytes (1 or 2) from the host
@@ -1967,8 +2064,25 @@ impl PdsIIeCard {
         self.cpu.bus.state.borrow().trap.map_or(0, |t| t.addr)
     }
 
+    /// The offset in the card's space of an address on the CPU's bus, if the card answers
+    /// there. In the 32-bit map the card answers in the standard and super slot spaces of slot
+    /// $E, `$FE00 0000`-`$FEFF FFFF` and `$E000 0000`-`$EFFF FFFF`. In the 24-bit map, and in
+    /// the 32-bit map with A31 clear, it answers at `$E0 0000`-`$EF FFFF` (Macintosh LC
+    /// Developer Note, "Addressing guidelines"), and in its window `$FC 0000`-`$FF FFFF` above
+    /// the video RAM, at offset 0: the IIe Startup INIT's `$50FC 0000` base lands there.
+    fn slot_offset(addr: u32, map32: bool) -> Option<u32> {
+        if map32 && addr & 0x8000_0000 != 0 {
+            return matches!(addr >> 24, 0xE0..=0xEF | 0xFE).then_some(addr & 0xFF_FFFF);
+        }
+        match addr & 0xFF_FFFF {
+            addr @ 0xE0_0000..=0xEF_FFFF => Some(addr - 0xE0_0000),
+            addr @ 0xFC_0000..=0xFF_FFFF => Some(addr - 0xFC_0000 + 0x10_0000),
+            _ => None,
+        }
+    }
+
     /// What a `len`-byte read of the slot reads when nothing answers
-    pub fn open_bus(len: u32) -> u32 {
+    fn open_bus(len: u32) -> u32 {
         (0..len).fold(0, |v, _| v << 8 | 0xFF)
     }
 
@@ -1984,7 +2098,7 @@ impl PdsIIeCard {
     /// The card is a 16-bit port: the register block gets one access per
     /// bus cycle (the Slinky transfers once per cycle), and even bytes
     /// of the declaration ROM area read open bus.
-    pub fn slot_read(&mut self, offset: u32, len: u32) -> u32 {
+    fn slot_read(&mut self, offset: u32, len: u32) -> u32 {
         // The declaration ROM: an 8-bit ROM on the odd bytes of the
         // 16-bit port (byte lanes 1+3); even bytes read open bus.
         if (0xF_FC00..=0xF_FFFF).contains(&(offset & 0xF_FFFF)) {
@@ -2020,7 +2134,7 @@ impl PdsIIeCard {
 
     /// A write to the card's register block (see [`Self::slot_read`] for
     /// the address windows).  Bytes outside the block are ignored.
-    pub fn slot_write(&mut self, offset: u32, len: u32, val: u32) {
+    fn slot_write(&mut self, offset: u32, len: u32, val: u32) {
         if offset & 0xF_FFFF < 0x1_0000 {
             self.host_write((offset & 0xFFFF) as u16, len, val);
             #[cfg(feature = "iie-debug")]
@@ -2031,72 +2145,6 @@ impl PdsIIeCard {
             }
         } else {
             iie_debug!("IIe Card write {:06X} ignored", offset);
-        }
-    }
-
-    /// Inserts a WOZ image, or a 16-sector DSK image in `order`, into a
-    /// 5.25" drive (0 or 1).
-    pub fn insert_disk(&mut self, drive: usize, bytes: &[u8], order: DskOrder) -> Result<()> {
-        let img = if Woz::detect(bytes) {
-            DskImage::from_woz(&Woz::parse(bytes)?)?
-        } else {
-            DskImage::load(bytes, order)
-                .ok_or_else(|| anyhow::anyhow!("not a 143 360-byte 16-sector DSK image"))?
-        };
-        if !self
-            .cpu
-            .bus
-            .state
-            .borrow_mut()
-            .disk
-            .insert(drive, Some(img))
-        {
-            bail!("5.25\" drive {} is not connected", drive + 1);
-        }
-        log::debug!(
-            "IIe Card 5.25\" disk inserted in drive {} ({} bytes, {:?})",
-            drive + 1,
-            bytes.len(),
-            order
-        );
-        Ok(())
-    }
-
-    /// Ejects a 5.25" drive's image.
-    pub fn eject_disk(&mut self, drive: usize) {
-        self.cpu.bus.state.borrow_mut().disk.insert(drive, None);
-        log::debug!("IIe Card 5.25\" disk ejected from drive {}", drive + 1);
-    }
-
-    /// Sets what the host has on the game port: the paddle positions
-    /// for the next `$C070` and the buttons.
-    pub fn set_game_port(&mut self, port: GamePort) {
-        let mut s = self.cpu.bus.state.borrow_mut();
-        s.game_port = port;
-        s.stick_kept |= port.keep_stick;
-        s.btn[0] = port.buttons[0];
-        s.btn[1] = port.buttons[1];
-    }
-
-    /// Inserts a 400K or 800K block image (ProDOS order) into the
-    /// UniDisk 3.5.  Writes from the IIe stay in memory.
-    pub fn insert_unidisk(&mut self, data: Vec<u8>, locked: bool) -> Result<()> {
-        let len = data.len();
-        let mut s = self.cpu.bus.state.borrow_mut();
-        let Some(unidisk) = &mut s.disk.unidisk else {
-            bail!("no UniDisk 3.5 is connected");
-        };
-        if !unidisk.insert(data, locked) {
-            bail!("not a 400K or 800K block image ({} bytes)", len);
-        }
-        log::debug!("IIe Card UniDisk 3.5 disk inserted ({} bytes)", len);
-        Ok(())
-    }
-
-    /// Ejects the UniDisk 3.5's disk.
-    pub fn eject_unidisk(&mut self) {
-        if let Some(unidisk) = &mut self.cpu.bus.state.borrow_mut().disk.unidisk {
-            unidisk.eject();
         }
     }
 
@@ -2127,7 +2175,7 @@ impl PdsIIeCard {
     /// Resets the card.  A hard reset also clears the card RAM; either
     /// way the 65C02 is stopped until the host sets control register 2
     /// bit 7.
-    pub fn reset(&mut self, hard: bool) {
+    pub fn reset_card(&mut self, hard: bool) {
         {
             let mut s = self.cpu.bus.state.borrow_mut();
             if hard {
@@ -2145,10 +2193,47 @@ impl PdsIIeCard {
         self.cpu.reset();
     }
 
-    /// The average level of the speaker output since the last call, from 0
-    /// (low) to 1 (high). The card drives the speaker onto the PDS, and the
-    /// LC mixes it into its sound output.
-    pub fn take_speaker_level(&mut self) -> f32 {
+    /// The 65C02 and its bus, for the debugger and tests.
+    pub fn cpu(&self) -> &Cpu<PdsIIeBus> {
+        &self.cpu
+    }
+}
+
+#[typetag::serde]
+impl PdsSlot for PdsIIeCard {
+    /// The card answers every cycle in the slot: what it doesn't decode
+    /// reads open bus.
+    fn read(&mut self, addr: u32, size: u32, map32: bool) -> Option<u32> {
+        let offset = Self::slot_offset(addr, map32)?;
+        Some(self.slot_read(offset, size))
+    }
+
+    fn write(&mut self, addr: u32, size: u32, map32: bool, val: u32) -> Option<()> {
+        let offset = Self::slot_offset(addr, map32)?;
+        self.slot_write(offset, size, val);
+        Some(())
+    }
+
+    /// The card's interrupt to the Mac isn't modelled.
+    fn irqs(&self) -> u8 {
+        0
+    }
+
+    /// The card is an independent computer: only a hard reset (power
+    /// on) resets it.  The host reloads the firmware after.
+    fn reset(&mut self, hard: bool) {
+        if hard {
+            self.reset_card(true);
+        }
+    }
+
+    fn tick(&mut self, ticks: Ticks, _: &dyn EmuContext, _: &mut dyn DmaOps) -> Result<()> {
+        self.run(ticks)
+    }
+
+    /// The card drives the Apple IIe's speaker onto the SNDOUT line of
+    /// the slot.
+    fn sound_pin_value(&mut self) -> f32 {
         let level = if self.speaker_total == 0 {
             0.0
         } else {
@@ -2158,21 +2243,11 @@ impl PdsIIeCard {
         self.speaker_total = 0;
         level
     }
-
-    /// The 65C02 and its bus, for the debugger and tests.
-    pub fn cpu(&self) -> &Cpu<PdsIIeBus> {
-        &self.cpu
-    }
 }
 
-impl Default for PdsIIeCard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Tickable for PdsIIeCard {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+impl PdsIIeCard {
+    /// Runs the card for `ticks` ticks of C16M.
+    fn run(&mut self, ticks: Ticks) -> Result<()> {
         let mut s = self.cpu.bus.state.borrow_mut();
         // `$20` bit 5 asserts the 65C02's IRQ (host-driven).
         s.irq = s.host.ctrl2 & 0x20 != 0;
@@ -2192,7 +2267,7 @@ impl Tickable for PdsIIeCard {
             0
         };
         if !run {
-            return Ok(ticks);
+            return Ok(());
         }
 
         let hz = if fast { FAST_HZ } else { NORMAL_HZ };
@@ -2313,7 +2388,7 @@ impl Tickable for PdsIIeCard {
                 }
             }
         }
-        Ok(ticks)
+        Ok(())
     }
 }
 
@@ -2378,8 +2453,23 @@ mod tests {
     /// Runs the 65C02 for `steps` CPU instructions worth of time.
     fn run(card: &mut PdsIIeCard, steps: usize) {
         for _ in 0..steps * 16 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
+    }
+
+    #[test]
+    fn the_card_provides_its_function_and_its_config() {
+        let settings = IieCardSettings {
+            security_jumper: true,
+            disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
+        };
+        let mut card = PdsIIeCard::with_settings(&settings).unwrap();
+        assert_eq!(card.info().model, DeviceModel::AppleIIePdsCard);
+        assert_eq!(card.config(), FunctionConfig::AppleIIeCard(settings));
+        let FunctionMut::AppleIIeCard(iie) = card.function() else {
+            panic!("The card has another function");
+        };
+        assert!(!iie.in_front());
     }
 
     #[test]
@@ -2474,7 +2564,7 @@ mod tests {
         // Ack through $0C: the CPU halts before the JMP.
         card.host_write(0x0C, 1, 0x00).unwrap();
         assert!(!card.suspended());
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert_eq!(card.cpu.regs.pc, 0x1006);
     }
 
@@ -2742,29 +2832,29 @@ mod tests {
         for _ in 0..20 {
             assert!(!card.in_front());
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
         assert!(card.in_front());
-        card.tick(IN_FRONT_TIMEOUT - step - 1, ()).unwrap();
+        card.run(IN_FRONT_TIMEOUT - step - 1).unwrap();
         assert!(card.in_front());
-        card.tick(1, ()).unwrap();
+        card.run(1).unwrap();
         assert!(!card.in_front());
 
         // A short burst of writes, as the self-test at launch makes
         for _ in 0..2 {
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
-        card.tick(IN_FRONT_TIMEOUT, ()).unwrap();
+        card.run(IN_FRONT_TIMEOUT).unwrap();
         assert!(!card.in_front());
 
         // Stopped
         for _ in 0..20 {
             card.host_write(0x20, 1, 0x88).unwrap();
-            card.tick(step, ()).unwrap();
+            card.run(step).unwrap();
         }
         card.host_write(0x20, 1, 0x08).unwrap();
-        card.tick(1, ()).unwrap();
+        card.run(1).unwrap();
         assert!(!card.in_front());
     }
 
@@ -2786,7 +2876,7 @@ mod tests {
         assert_eq!(card.trap_addr(), 0xC061);
         card.host_write(0x19, 1, 0xFF).unwrap();
         for _ in 0..4 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.regs.c as u8, 0xFF);
         assert_eq!(card.cpu.regs.pc, 0x1003);
@@ -2841,7 +2931,7 @@ mod tests {
             let start = card.cpu.cycles;
             // A tenth of a second
             for _ in 0..C16M_FREQUENCY / 10 {
-                card.tick(1, ()).unwrap();
+                card.run(1).unwrap();
             }
             let cycles = (card.cpu.cycles - start) as i64;
             assert!((cycles - hz / 10).abs() <= 3, "{cycles} cycles at {hz} Hz");
@@ -2928,7 +3018,7 @@ mod tests {
         let [x, y, p2, p3] = timers(&card);
         assert!(x.is_some() && x == y);
         assert_eq!((p2, p3), (None, None), "not on the connector");
-        card.reset(false);
+        card.reset_card(false);
         assert_eq!(timers(&card), [None; 4], "empty again after a reset");
     }
 
@@ -2980,7 +3070,7 @@ mod tests {
         card.host_write(0x19, 1, 0x04).unwrap();
         assert!(!card.suspended());
         for _ in 0..4 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         // The LDA re-executed and consumed the data-out value.
         assert_eq!(card.cpu.regs.c as u8, 0x04);
@@ -3115,7 +3205,7 @@ mod tests {
         // Stopped (bit 7 clear): nothing executes.
         let cycles = card.cpu.cycles;
         for _ in 0..10 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.cycles, cycles);
 
@@ -3123,14 +3213,14 @@ mod tests {
         // ROM image 0.
         hw16(&mut card, 0x20, 0x8800);
         assert_eq!(card.cpu.regs.pc, 0x7A62);
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert!(card.cpu.cycles > 0);
 
         // Clearing bit 7 stops it again.
         hw16(&mut card, 0x20, 0x0000);
         let cycles = card.cpu.cycles;
         for _ in 0..10 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert_eq!(card.cpu.cycles, cycles);
     }
@@ -3222,7 +3312,7 @@ mod tests {
         // Ack through $0C: the CPU resumes past the trapped write.
         card.host_write(0x0C, 1, 0x00).unwrap();
         assert!(!card.suspended());
-        card.tick(16, ()).unwrap();
+        card.run(16).unwrap();
         assert_eq!(card.cpu.regs.pc, 0x2005);
     }
 
@@ -3313,7 +3403,7 @@ mod tests {
         );
         run_program(&mut card, 0x1000);
         for _ in 0..8 {
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         assert!(!card.suspended());
         assert_eq!(card.cpu.regs.pc, 0x1008);
@@ -3390,7 +3480,7 @@ mod tests {
             if card.suspended() {
                 return;
             }
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
         }
         panic!("the 65C02 never trapped");
     }
@@ -4160,7 +4250,7 @@ mod tests {
             if card.suspended() {
                 card.host_write(0x0C, 1, 0x00).unwrap();
             }
-            card.tick(16, ()).unwrap();
+            card.run(16).unwrap();
             if card.cpu.regs.pc == spin {
                 let s = card.cpu.bus.state.borrow();
                 return s.ram[MAIN_RAM + 0x0300] & 0x01 != 0;
@@ -4202,7 +4292,7 @@ mod tests {
                 disk_chain: chain,
                 ..IieCardSettings::default()
             };
-            let mut card = PdsIIeCard::with_settings(&settings);
+            let mut card = PdsIIeCard::with_settings(&settings).unwrap();
             card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
             call_slot5(&mut card, &[], 0xCEC1);
             assert!(
@@ -4216,13 +4306,14 @@ mod tests {
             disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
             ..IieCardSettings::default()
         };
-        let mut card = PdsIIeCard::with_settings(&settings);
+        let mut card = PdsIIeCard::with_settings(&settings).unwrap();
         card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
         let mut img = vec![0u8; 1600 * 512];
         for (i, b) in img.iter_mut().enumerate() {
             *b = (i / 512 + i * 3) as u8;
         }
-        card.insert_unidisk(img.clone(), false).unwrap();
+        let unidisk = card.cpu.bus.state.get_mut().disk.smart_unidisk();
+        assert!(unidisk.insert(img.clone(), false));
 
         // `$CEC1`: the bus reset.  Then INIT for unit 1 ($CE5E–$CE91):
         // command 5, 2 parameters, from the buffer at $0042, 9 bytes.

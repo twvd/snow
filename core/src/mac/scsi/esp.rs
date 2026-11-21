@@ -978,22 +978,9 @@ impl Tickable<&dyn EmuContext> for Esp {
 impl Debuggable for Esp {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_header, dbgprop_nest};
-
-        let mut targets = vec![];
-        for (id, o_t) in self.bus.targets.iter().enumerate() {
-            if let Some(t) = o_t {
-                targets.push(dbgprop_nest!(
-                    format!("ID #{} - {:?}", id, t.target_type()),
-                    t
-                ));
-            } else {
-                targets.push(dbgprop_group!(format!("ID #{} - (no device)", id), vec![]));
-            }
-        }
+        use crate::{dbgprop_group, dbgprop_header};
 
         vec![
-            dbgprop_group!("Targets", targets),
             dbgprop_group!(
                 "Registers",
                 vec![
@@ -1058,6 +1045,10 @@ impl Esp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::{
+        BusOps, DeviceConfig, DeviceModel, FunctionConfig, FunctionMut, HardDiskConfig, MadeDevice,
+        bus_id,
+    };
     use crate::mac::scsi::disk_image::DiskImage;
     use crate::mac::scsi::test_target::{SLOW_BLOCKSIZE, SlowState, SlowTarget, TestContext};
     use std::path::Path;
@@ -1090,13 +1081,31 @@ mod tests {
         }
     }
 
+    /// Puts a disk with this image at ID 0
+    fn attach_disk(esp: &mut Esp, image: Arc<Mutex<Vec<u8>>>) {
+        let config = DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: "0".into(),
+            model: Some(DeviceModel::ScsiHardDisk),
+            rom: None,
+            function: FunctionConfig::HardDisk(HardDiskConfig::default()),
+        };
+        let create = DeviceModel::ScsiHardDisk.info().create.unwrap();
+        let MadeDevice::Scsi(mut disk) = create(&config).unwrap() else {
+            unreachable!()
+        };
+        let FunctionMut::HardDisk(function) = disk.function() else {
+            panic!("A hard disk has the HardDisk function");
+        };
+        function.load_image(Box::new(MemDisk(image))).unwrap();
+        esp.bus_mut().attach("0", MadeDevice::Scsi(disk)).unwrap();
+    }
+
     /// A 53C96 with a disk of 16 blocks full of $AA at ID 0
     fn esp_with_disk() -> (Esp, Arc<Mutex<Vec<u8>>>) {
         let image = Arc::new(Mutex::new(vec![0xAA; 16 * 512]));
         let mut esp = Esp::new(true);
-        esp.bus_mut()
-            .attach_disk_image_at(Box::new(MemDisk(image.clone())), 0)
-            .unwrap();
+        attach_disk(&mut esp, image.clone());
         (esp, image)
     }
 
@@ -1176,9 +1185,7 @@ mod tests {
     fn check_failed_command(esp: &mut Esp, image: Arc<Mutex<Vec<u8>>>) {
         assert_eq!(esp.read(REG_INTR).unwrap(), INTR_DC);
         assert_eq!(esp.fifo_len(), 0);
-        esp.bus_mut()
-            .attach_disk_image_at(Box::new(MemDisk(image)), 0)
-            .unwrap();
+        attach_disk(esp, image);
         // TEST UNIT READY
         select(esp, &[0x00, 0, 0, 0, 0, 0]);
         assert_eq!(phase(esp), PHASE_STATUS);

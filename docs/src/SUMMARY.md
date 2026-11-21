@@ -14,6 +14,7 @@
 - [Working with media](./manual/media/README.md)
     - [Floppies](./manual/media/floppies.md)
     - [Hard drives](./manual/media/harddrives.md)
+    - [HD20 hard drives](./manual/media/hd20.md)
     - [CD-ROM](./manual/media/cdrom.md)
 - [Keyboard/mouse](./manual/input.md)
 - [Workspaces](./manual/workspaces.md)

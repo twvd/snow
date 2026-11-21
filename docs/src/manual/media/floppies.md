@@ -39,7 +39,7 @@ Snow supports saving images to Applesauce MOOF format.
 
 ## Loading a floppy image
 
-To load a floppy image, go to the 'Drives' menu, to the drive you want to use,
+To load a floppy image, go to the 'Devices' menu, to the drive you want to use,
 and select 'Load image' to browse to the image you want to load.
 
 In the image browser you can view the metadata for the selected image on the right
@@ -98,7 +98,7 @@ below).
 When writeback is on for a drive, the floppy icon in the menubar shows
 <span class="material-symbols-rounded">autorenew</span>. You can toggle writeback
 for the currently loaded image at any time via the 'Auto-save changes (writeback)'
-checkbox in the drive's submenu under 'Drives'. The option is disabled when
+checkbox in the drive's submenu under 'Devices'. The option is disabled when
 the loaded image is not a MOOF.
 
 ### Behavior on floppy load
