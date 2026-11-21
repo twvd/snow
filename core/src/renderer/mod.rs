@@ -13,10 +13,10 @@ pub type AudioReceiver = Receiver<AudioBuffer>;
 
 /// Audio channel queue length.
 /// Higher values add latency to audio, but might fix underruns.
-pub const AUDIO_QUEUE_LEN: usize = 4; // TODO: make this configurable?
+pub const AUDIO_QUEUE_LEN: usize = 16; // TODO: make this configurable?
 
 /// Amount of samples in the audio buffer
-pub const AUDIO_BUFFER_SAMPLES: usize = 512;
+pub const AUDIO_BUFFER_SAMPLES: usize = 128;
 
 /// Audio buffer size (total for all channels)
 pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
