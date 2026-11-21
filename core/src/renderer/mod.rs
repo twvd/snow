@@ -1,25 +1,20 @@
+mod audio;
 pub mod channel;
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
 
 use std::ops::{Deref, DerefMut};
+
+pub use audio::{
+    AUDIO_CHUNK_FRAMES, AUDIO_CHUNK_SIZE, AudioFill, AudioPlayer, AudioReceiver, ChannelAudioSink,
+    PacedAudioSink, machine_audio_sink,
+};
 
 /// Audio frame buffer
 pub type AudioBuffer = Box<[f32]>;
 
-/// Audio frame channel receiver
-pub type AudioReceiver = Receiver<AudioBuffer>;
-
-/// Audio channel queue length.
-/// Higher values add latency to audio, but might fix underruns.
-pub const AUDIO_QUEUE_LEN: usize = 16; // TODO: make this configurable?
-
-/// Amount of samples in the audio buffer
+/// Frames the host plays per callback
 pub const AUDIO_BUFFER_SAMPLES: usize = 128;
-
-/// Audio buffer size (total for all channels)
-pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
 
 /// Audio channels
 pub const AUDIO_CHANNELS: usize = 2;
@@ -38,43 +33,6 @@ pub trait AudioSink: Send {
     fn send(&self, buffer: AudioBuffer) -> Result<()>;
     fn is_full(&self) -> bool;
     fn is_empty(&self) -> bool;
-}
-
-/// Crossbeam-backed audio sink
-pub struct ChannelAudioSink {
-    sender: Sender<AudioBuffer>,
-    receiver: Receiver<AudioBuffer>,
-}
-
-impl ChannelAudioSink {
-    pub fn new() -> Self {
-        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
-        Self { sender, receiver }
-    }
-
-    pub fn receiver(&self) -> AudioReceiver {
-        self.receiver.clone()
-    }
-
-    /// Clears/flushes the entire current content in the sink
-    pub fn clear(&self) {
-        while self.receiver.try_recv().is_ok() {}
-    }
-}
-
-impl AudioSink for ChannelAudioSink {
-    fn send(&self, buffer: AudioBuffer) -> Result<()> {
-        self.sender.send(buffer)?;
-        Ok(())
-    }
-
-    fn is_full(&self) -> bool {
-        self.sender.is_full()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.sender.is_empty()
-    }
 }
 
 struct NullAudioSink();

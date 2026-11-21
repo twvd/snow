@@ -1,80 +1,38 @@
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, Stream, StreamConfig};
-use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
-use std::collections::VecDeque;
+use snow_core::renderer::{
+    AudioBuffer, AudioFill, AudioPlayer, AudioProvider, AudioSink, ChannelAudioSink,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 struct CpalAudioCallback {
-    recv: AudioReceiver,
+    player: AudioPlayer,
     exch: Arc<CpalAudioExchange>,
-    /// When true, play silence while waiting for the audio receiver to fill up.
-    /// Prebuffering prevents audio interruptions if the emulator doesn't deliver
-    /// samples in time for playback.
-    prebuffering: bool,
-    /// An extra layer of buffering to solve the problem that users may submit audio
-    /// buffers that don't line up with the host's expected callback length.
-    active_samples: VecDeque<f32>,
 }
 
 impl CpalAudioCallback {
     fn fill(&mut self, out: &mut [f32]) {
-        // Audio samples are already in standard f32 range (-1.0 to 1.0)
-        // The amplitude is reduced from theoretical 1.0 to 0.5 because
-        // if the audio reaches max volume on MacOS hosts with CERTAIN audio outputs, the sound
-        // in the OS will be distorted for as long as the emulator is running.
-        // Reducing the maximum sample amplitude seems to not trigger this, so that
-        // is the workaround for now.
-
-        if self.prebuffering {
-            if self.recv.is_full() {
-                self.prebuffering = false;
-            } else {
-                out.fill(0.0);
-                return;
-            }
+        match self.player.fill(out) {
+            AudioFill::Prebuffering => (),
+            AudioFill::Played => self.exch.underrun.store(false, Ordering::Relaxed),
+            AudioFill::Underrun => self.exch.underrun.store(true, Ordering::Relaxed),
         }
 
-        // Collect audio samples into the active buffer
-        while self.active_samples.len() < out.len() {
-            if let Ok(new_samples) = self.recv.try_recv() {
-                self.active_samples.extend(new_samples.iter().copied());
-            } else {
-                break;
-            }
-        }
-
-        let submit_samples = |out: &mut [f32], active_samples: &mut VecDeque<f32>| {
-            if self.exch.mute.load(Ordering::Relaxed) {
-                // Discard active samples and play silence
-                for out_sample in out.iter_mut() {
-                    *out_sample = 0.0;
-                    active_samples.pop_front();
-                }
-            } else {
-                // Feed active samples to the output
-                for out_sample in out.iter_mut() {
-                    *out_sample = active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
-                }
-            }
-        };
-
-        if self.active_samples.len() >= out.len() {
-            submit_samples(out, &mut self.active_samples);
-            self.exch.underrun.store(false, Ordering::Relaxed);
+        if self.exch.mute.load(Ordering::Relaxed) {
+            out.fill(0.0);
         } else {
-            // log::warn!("Audio buffer underrun. Audio may skip.");
-
-            // Audio is late. Submit any remaining active samples and enter prebuffering mode.
-            let sample_count = self.active_samples.len();
-            submit_samples(&mut out[..sample_count], &mut self.active_samples);
-            out[sample_count..].fill(0.0);
-            self.active_samples.clear();
-
-            self.prebuffering = true;
-            self.exch.underrun.store(true, Ordering::Relaxed);
+            // Samples are already in standard f32 range (-1.0 to 1.0)
+            // The amplitude is reduced from theoretical 1.0 to 0.5 because
+            // if the audio reaches max volume on MacOS hosts with CERTAIN audio outputs, the sound
+            // in the OS will be distorted for as long as the emulator is running.
+            // Reducing the maximum sample amplitude seems to not trigger this, so that
+            // is the workaround for now.
+            for sample in out.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0) * 0.5;
+            }
         }
     }
 }
@@ -120,14 +78,12 @@ impl CpalAudioStream {
             samples
         );
 
-        let channel_sink = ChannelAudioSink::new();
+        let channel_sink = ChannelAudioSink::new(freq, channels);
         let exch = Arc::new(CpalAudioExchange::default());
 
         let mut cb = CpalAudioCallback {
-            recv: channel_sink.receiver(),
+            player: AudioPlayer::new(&channel_sink),
             exch: exch.clone(),
-            prebuffering: true,
-            active_samples: VecDeque::new(),
         };
 
         // cpal goes on reporting an error for as long as the device does,

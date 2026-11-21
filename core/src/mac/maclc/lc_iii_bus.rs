@@ -28,9 +28,7 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::renderer::{AudioProvider, Renderer, machine_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -233,10 +231,10 @@ where
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        // The sample rate is 22.257 kHz, rounded down to a commonly used value
-        let sink = provider
-            .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
-            .unwrap_or_else(|_| null_audio_sink());
+        let sink = machine_audio_sink(
+            provider,
+            C16M_FREQUENCY as f64 / self.sound.sample_period() as f64,
+        );
         self.sound.set_sink(sink);
 
         self.scsi.bus_mut().set_audio_provider(provider)
