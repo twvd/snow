@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use snow_floppy::FloppyImage;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::bus::Address;
@@ -28,6 +29,32 @@ pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 
 pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
+
+/// The latest position of the host pointer over the machine's screen, for the
+/// absolute mouse mode.
+///
+/// The emulator picks it up as it runs rather than through
+/// the command queue, so the OS always sees the freshest position when it draws
+/// the cursor.
+#[derive(Clone, Default)]
+pub struct AbsoluteMouseInput(Arc<AtomicU64>);
+
+impl AbsoluteMouseInput {
+    /// Marks a value that holds a position, so an unset input reads as none
+    const SET: u64 = 1 << 32;
+
+    pub fn set(&self, x: u16, y: u16) {
+        self.0.store(
+            Self::SET | (u64::from(y) << 16) | u64::from(x),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn get(&self) -> Option<(u16, u16)> {
+        let v = self.0.load(Ordering::Relaxed);
+        (v & Self::SET != 0).then_some((v as u16, (v >> 16) as u16))
+    }
+}
 
 /// A command/event that can be sent to the emulator
 #[derive(Serialize, Deserialize, Clone)]

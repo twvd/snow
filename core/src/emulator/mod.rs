@@ -62,8 +62,9 @@ use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
-    Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange, ScsiTargetStatus,
+    AbsoluteMouseInput, Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent,
+    EmulatorEventReceiver, EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange,
+    ScsiTargetStatus,
 };
 
 /// Mouse emulation mode
@@ -414,6 +415,10 @@ pub struct Emulator {
     memory_map_state: Option<MemoryMapState>,
     /// Last look at the memory notifiers
     memory_notify_time: Instant,
+    /// Latest host pointer position in absolute mouse mode
+    abs_mouse_input: AbsoluteMouseInput,
+    /// Last position from abs_mouse_input the OS took
+    abs_mouse_applied: Option<(u16, u16)>,
 }
 
 impl Emulator {
@@ -745,6 +750,8 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            abs_mouse_input: AbsoluteMouseInput::default(),
+            abs_mouse_applied: None,
         };
         emu.status_update()?;
 
@@ -802,6 +809,8 @@ impl Emulator {
             memory_notifiers: BTreeMap::new(),
             memory_map_state: None,
             memory_notify_time: Instant::now(),
+            abs_mouse_input: AbsoluteMouseInput::default(),
+            abs_mouse_applied: None,
         };
         emu.status_update()?;
 
@@ -838,6 +847,11 @@ impl Emulator {
 
     pub fn create_event_recv(&self) -> EmulatorEventReceiver {
         self.event_recv.clone()
+    }
+
+    /// Where the frontend puts the host pointer position in absolute mouse mode
+    pub fn abs_mouse_input(&self) -> AbsoluteMouseInput {
+        self.abs_mouse_input.clone()
     }
 
     /// Whether the Apple IIe Card is in front, on a machine that has one
@@ -1102,16 +1116,16 @@ impl Emulator {
 
     /// Reports a new position of the mouse in absolute mode to the OS, in its
     /// low memory globals. If they have no translation at the moment, this
-    /// position is skipped.
-    fn mouse_update_abs(&mut self, x: u16, y: u16) {
+    /// position is skipped. Returns whether the OS was given the position.
+    fn mouse_update_abs(&mut self, x: u16, y: u16) -> bool {
         let (Some(old_x), Some(old_y)) = (
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_X, false),
             self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_Y, false),
         ) else {
-            return;
+            return false;
         };
         let Some(mouse) = self.config.mouse_update_abs(x, y, (old_x, old_y)) else {
-            return;
+            return false;
         };
         self.config
             .cpu_inspect_write_word(ADDR_MTEMP_X, mouse.mtemp.0, false);
@@ -1122,6 +1136,25 @@ impl Emulator {
         self.config
             .cpu_inspect_write_word(ADDR_RAWMOUSE_Y, mouse.rawmouse.1, false);
         self.config.cpu_inspect_write(ADDR_CRSRNEW, 1, false);
+        true
+    }
+
+    /// Gives the OS the latest host pointer position in absolute mouse mode,
+    /// if it moved. A position the OS cannot take yet is tried again later.
+    fn poll_abs_mouse(&mut self) {
+        let Some((x, y)) = self.abs_mouse_input.get() else {
+            return;
+        };
+        if self.abs_mouse_applied == Some((x, y)) || !self.mouse_update_abs(x, y) {
+            return;
+        }
+        self.abs_mouse_applied = Some((x, y));
+        if let Some(r) = self.record_input.as_mut() {
+            r.push((
+                self.config.cpu_cycles(),
+                EmulatorCommand::MouseUpdateAbsolute { x, y },
+            ));
+        }
     }
 
     /// Steps the emulator by one instruction.
@@ -2206,10 +2239,13 @@ impl Tickable for Emulator {
                 self.replay_input.pop_front().unwrap();
             }
 
-            // Batch 10000 steps for performance reasons
+            // Batch 10000 steps for performance reasons, but look at the
+            // absolute mouse every 1000, around 1.5ms on the slowest machines,
+            // so the OS draws the cursor where the host pointer is now.
             let mut steps = 10000;
             while steps > 0 && self.run {
-                match self.config.cpu_run_steps(steps) {
+                self.poll_abs_mouse();
+                match self.config.cpu_run_steps(steps.min(1000)) {
                     Ok((done, reset)) => {
                         steps -= done;
                         if let Err(e) = self.after_steps(reset) {

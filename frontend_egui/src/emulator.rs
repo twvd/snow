@@ -18,8 +18,8 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
-    UserMessageType,
+    AbsoluteMouseInput, Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus,
+    ScsiTargetStatus, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
@@ -176,6 +176,8 @@ pub struct EmulatorState {
     last_rom: Vec<u8>,
     emuthread: Option<JoinHandle<()>>,
     cmdsender: Option<EmulatorCommandSender>,
+    /// Where the emulator takes the host pointer position from in absolute mouse mode
+    abs_mouse: Option<AbsoluteMouseInput>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
     #[cfg(feature = "audio_sdl2")]
@@ -490,6 +492,7 @@ impl EmulatorState {
         }
 
         self.eventrecv = Some(emulator.create_event_recv());
+        self.abs_mouse = Some(emulator.abs_mouse_input());
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || {
@@ -530,6 +533,7 @@ impl EmulatorState {
                 .unwrap();
             emu_thread.join().unwrap();
             self.cmdsender = None;
+            self.abs_mouse = None;
             self.eventrecv = None;
             self.status = None;
             self.record_input_path = None;
@@ -561,13 +565,8 @@ impl EmulatorState {
 
         match self.mouse_mode {
             MouseMode::Absolute => {
-                if let Some(abs_p) = abs_p {
-                    sender
-                        .send(EmulatorCommand::MouseUpdateAbsolute {
-                            x: abs_p.x as u16,
-                            y: abs_p.y as u16,
-                        })
-                        .unwrap();
+                if let (Some(abs_p), Some(abs_mouse)) = (abs_p, &self.abs_mouse) {
+                    abs_mouse.set(abs_p.x as u16, abs_p.y as u16);
                 }
             }
             MouseMode::RelativeHw => {
