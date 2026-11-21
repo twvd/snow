@@ -19,6 +19,23 @@ mod capped_log;
 mod consts;
 mod dialogs;
 mod emulator;
+#[cfg(target_os = "macos")]
+mod frame_pacer;
+#[cfg(not(target_os = "macos"))]
+mod frame_pacer {
+    /// Elsewhere, vsync paces the redraws
+    pub struct FramePacer;
+
+    impl FramePacer {
+        pub const fn new() -> Option<Self> {
+            None
+        }
+
+        pub const fn try_redraw(&mut self, _window_id: winit::window::WindowId) -> bool {
+            true
+        }
+    }
+}
 mod helpers;
 mod joystick;
 mod keymap;
@@ -150,11 +167,16 @@ fn main() -> eframe::Result {
     // Shared handle to the egui context so the winit wrapper can access egui state.
     let egui_ctx_cell: Rc<OnceCell<egui::Context>> = Rc::new(OnceCell::new());
 
+    // On macOS, a display link paces the redraws instead of vsync, which would
+    // hold up input. See frame_pacer.
+    let frame_pacer = frame_pacer::FramePacer::new();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"))
             .with_inner_size([1000.0, 750.0])
             .with_drag_and_drop(true),
+        vsync: frame_pacer.is_none(),
         ..Default::default()
     };
 
@@ -193,7 +215,24 @@ fn main() -> eframe::Result {
         &'a mut dyn ApplicationHandler<eframe::UserEvent>,
         crossbeam_channel::Sender<winit::event::WindowEvent>,
         Rc<OnceCell<egui::Context>>,
+        Option<frame_pacer::FramePacer>,
+        /// A redraw held back by the frame pacer until the next refresh
+        Option<winit::window::WindowId>,
     );
+
+    impl AppWrapper<'_> {
+        fn redraw(
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+            window_id: winit::window::WindowId,
+        ) {
+            self.0.window_event(
+                event_loop,
+                window_id,
+                winit::event::WindowEvent::RedrawRequested,
+            );
+        }
+    }
 
     impl ApplicationHandler<eframe::UserEvent> for AppWrapper<'_> {
         fn new_events(
@@ -244,6 +283,19 @@ fn main() -> eframe::Result {
                 return;
             }
 
+            if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+                // Without vsync, at most one redraw per refresh of the display.
+                // One asked for sooner is held back, and done in about_to_wait.
+                if let Some(pacer) = self.3.as_mut()
+                    && !pacer.try_redraw(window_id)
+                {
+                    self.4 = Some(window_id);
+                    return;
+                }
+                self.redraw(event_loop, window_id);
+                return;
+            }
+
             self.0.window_event(event_loop, window_id, event);
         }
 
@@ -257,7 +309,25 @@ fn main() -> eframe::Result {
         }
 
         fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+            // A redraw held back by the frame pacer, once the display refreshed
+            if let Some(window_id) = self.4
+                && self
+                    .3
+                    .as_mut()
+                    .is_some_and(|pacer| pacer.try_redraw(window_id))
+            {
+                self.4 = None;
+                self.redraw(event_loop, window_id);
+            }
+
             self.0.about_to_wait(event_loop);
+
+            // Wait for the refresh rather than poll, if a redraw waits for it: the
+            // display link wakes the event loop
+            if self.4.is_some() && event_loop.control_flow() == winit::event_loop::ControlFlow::Poll
+            {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            }
         }
 
         fn suspended(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -273,7 +343,13 @@ fn main() -> eframe::Result {
         }
     }
 
-    event_loop.run_app(&mut AppWrapper(&mut winit_app, s, egui_ctx_cell))?;
+    event_loop.run_app(&mut AppWrapper(
+        &mut winit_app,
+        s,
+        egui_ctx_cell,
+        frame_pacer,
+        None,
+    ))?;
 
     Ok(())
 }

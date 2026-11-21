@@ -74,6 +74,15 @@ winit = { version = "0.30.13", default-features = false, features = ["serde"] }
 # https://github.com/twvd/snow/issues/106
 objc2-app-kit = "0.3.1"
 objc2-foundation = "0.3.1"
+# A display link to pace redraws with (frame_pacer)
+objc2 = "0.6.4"
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "CABase",
+    "CADisplayLink",
+    "CAFrameRateRange",
+] }
 
 [lints]
 workspace = true
