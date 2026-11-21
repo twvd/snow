@@ -14,6 +14,7 @@
 //! macOS 14; on older versions, vsync paces the redraws.
 
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, available, define_class, msg_send, sel};
@@ -21,11 +22,18 @@ use objc2_app_kit::NSWindow;
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes,
 };
-use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
+use objc2_quartz_core::{CACurrentMediaTime, CADisplayLink, CAFrameRateRange};
 
 thread_local! {
     /// Refreshes of the display so far
     static REFRESHES: Cell<u64> = const { Cell::new(0) };
+    /// When the display last refreshed, and how often it does
+    static GRID: Cell<Option<(Instant, Duration)>> = const { Cell::new(None) };
+}
+
+/// When the display last refreshed, and how often it does, once known
+pub fn refresh_grid() -> Option<(Instant, Duration)> {
+    GRID.get()
 }
 
 define_class!(
@@ -39,7 +47,17 @@ define_class!(
 
     impl Target {
         #[unsafe(method(refresh:))]
-        fn refresh(&self, _link: &CADisplayLink) {
+        fn refresh(&self, link: &CADisplayLink) {
+            // The link's times are in seconds of CACurrentMediaTime()
+            let now = Instant::now();
+            let ago = (CACurrentMediaTime() - link.timestamp()).max(0.0);
+            let period = link.targetTimestamp() - link.timestamp();
+            if period > 0.0 {
+                GRID.set(Some((
+                    now - Duration::from_secs_f64(ago),
+                    Duration::from_secs_f64(period),
+                )));
+            }
             REFRESHES.set(REFRESHES.get() + 1);
         }
     }

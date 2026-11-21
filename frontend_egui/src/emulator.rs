@@ -32,7 +32,7 @@ use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
-use snow_core::renderer::DisplayBuffer;
+use snow_core::renderer::{DisplayBuffer, DisplayLock};
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -42,6 +42,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
@@ -178,6 +179,8 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     /// Where the emulator takes the host pointer position from in absolute mouse mode
     abs_mouse: Option<AbsoluteMouseInput>,
+    /// Locks the machine's frames to the display's refresh
+    display_lock: Option<DisplayLock>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
     #[cfg(feature = "audio_sdl2")]
@@ -493,6 +496,7 @@ impl EmulatorState {
 
         self.eventrecv = Some(emulator.create_event_recv());
         self.abs_mouse = Some(emulator.abs_mouse_input());
+        self.display_lock = Some(DisplayLock::new(emulator.pace_control()));
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || {
@@ -534,6 +538,7 @@ impl EmulatorState {
             emu_thread.join().unwrap();
             self.cmdsender = None;
             self.abs_mouse = None;
+            self.display_lock = None;
             self.eventrecv = None;
             self.status = None;
             self.record_input_path = None;
@@ -552,6 +557,29 @@ impl EmulatorState {
         if let Some(ref sender) = self.cmdsender {
             sender.send(EmulatorCommand::Reset).unwrap();
         }
+    }
+
+    /// Takes a frame of the machine that was shown: when it was rendered, and
+    /// when the display last refreshed and how often it does. Locks the
+    /// machine's frames to the display's refresh, if `lock` and close enough.
+    pub fn frame_shown(
+        &mut self,
+        rendered: Instant,
+        last_refresh: Instant,
+        refresh_period: Duration,
+        lock: bool,
+    ) {
+        if let Some(display_lock) = self.display_lock.as_mut() {
+            display_lock.set_enabled(lock);
+            display_lock.frame(rendered, last_refresh, refresh_period);
+        }
+    }
+
+    /// Whether the machine's frames are locked to the display's refresh
+    pub fn is_display_locked(&self) -> bool {
+        self.display_lock
+            .as_ref()
+            .is_some_and(DisplayLock::is_locked)
     }
 
     pub fn update_mouse(&self, abs_p: Option<&egui::Pos2>, rel_p: &egui::Pos2) {

@@ -45,8 +45,8 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
 };
-use crate::renderer::AudioProvider;
 use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{AudioProvider, PaceControl};
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -392,6 +392,27 @@ pub trait EmuContext {
 }
 
 /// Emulator runner
+/// Hands the emulator's speed control to the audio streams that pace it
+struct PacedAudioProvider<'a> {
+    inner: &'a mut dyn AudioProvider,
+    pace: PaceControl,
+}
+
+impl AudioProvider for PacedAudioProvider<'_> {
+    fn create_stream(
+        &mut self,
+        freq: i32,
+        channels: u8,
+        samples: u16,
+    ) -> Result<Box<dyn crate::renderer::AudioSink>> {
+        self.inner.create_stream(freq, channels, samples)
+    }
+
+    fn pace_control(&self) -> Option<PaceControl> {
+        Some(self.pace.clone())
+    }
+}
+
 pub struct Emulator {
     config: EmulatorConfig,
     command_recv: crossbeam_channel::Receiver<EmulatorCommand>,
@@ -419,6 +440,8 @@ pub struct Emulator {
     abs_mouse_input: AbsoluteMouseInput,
     /// Last position from abs_mouse_input the OS took
     abs_mouse_applied: Option<(u16, u16)>,
+    /// Speed of the machine relative to the real one, for a display lock
+    pace: PaceControl,
 }
 
 impl Emulator {
@@ -752,6 +775,7 @@ impl Emulator {
             memory_notify_time: Instant::now(),
             abs_mouse_input: AbsoluteMouseInput::default(),
             abs_mouse_applied: None,
+            pace: PaceControl::default(),
         };
         emu.status_update()?;
 
@@ -811,6 +835,7 @@ impl Emulator {
             memory_notify_time: Instant::now(),
             abs_mouse_input: AbsoluteMouseInput::default(),
             abs_mouse_applied: None,
+            pace: PaceControl::default(),
         };
         emu.status_update()?;
 
@@ -852,6 +877,12 @@ impl Emulator {
     /// Where the frontend puts the host pointer position in absolute mouse mode
     pub fn abs_mouse_input(&self) -> AbsoluteMouseInput {
         self.abs_mouse_input.clone()
+    }
+
+    /// Sets the speed of the machine relative to the real one, while it is paced
+    /// by the wall clock. See [`crate::renderer::DisplayLock`].
+    pub fn pace_control(&self) -> PaceControl {
+        self.pace.clone()
     }
 
     /// Whether the Apple IIe Card is in front, on a machine that has one
@@ -1201,8 +1232,11 @@ impl Emulator {
 
     pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) -> Result<()> {
         self.audio_provider = Some(provider);
-        self.config
-            .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
+        let mut provider = self.audio_provider.as_ref().unwrap().lock().unwrap();
+        self.config.set_audio_provider(&mut PacedAudioProvider {
+            inner: &mut *provider,
+            pace: self.pace.clone(),
+        })
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {

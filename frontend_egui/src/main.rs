@@ -35,6 +35,11 @@ mod frame_pacer {
             true
         }
     }
+
+    /// Without a display link, the refreshes are unknown
+    pub const fn refresh_grid() -> Option<(std::time::Instant, std::time::Duration)> {
+        None
+    }
 }
 mod helpers;
 mod joystick;

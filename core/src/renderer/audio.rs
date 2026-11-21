@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -218,47 +218,67 @@ impl AudioPlayer {
     }
 }
 
+/// How fast the machine runs relative to the real one, while paced by the wall
+/// clock.
+///
+/// It is 1.0, unless a frontend locks the machine's frames to the display's
+/// refresh, which takes a speed slightly off (see [`super::DisplayLock`]).
+#[derive(Clone)]
+pub struct PaceControl(Arc<AtomicU64>);
+
+impl Default for PaceControl {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(1.0f64.to_bits())))
+    }
+}
+
+impl PaceControl {
+    pub fn set(&self, speed: f64) {
+        self.0.store(speed.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
 /// Holds the emulator to the speed of the real machine by the wall clock: each
 /// chunk of audio waits until the time it is for has come
 pub struct PacedAudioSink {
     inner: Box<dyn AudioSink>,
     /// Frames per second of the machine's sound
     rate: f64,
-    /// When the first frame was due, and frames since
-    start: Cell<Option<Instant>>,
-    frames: Cell<u64>,
+    pace: Option<PaceControl>,
+    /// When the frames sent so far are due
+    due: Cell<Option<Instant>>,
 }
 
 impl PacedAudioSink {
-    pub fn new(inner: Box<dyn AudioSink>, rate: f64) -> Self {
+    pub fn new(inner: Box<dyn AudioSink>, rate: f64, pace: Option<PaceControl>) -> Self {
         Self {
             inner,
             rate,
-            start: Cell::new(None),
-            frames: Cell::new(0),
+            pace,
+            due: Cell::new(None),
         }
-    }
-
-    fn duration(&self, frames: u64) -> Duration {
-        Duration::from_secs_f64(frames as f64 / self.rate)
     }
 }
 
 impl AudioSink for PacedAudioSink {
     fn send(&self, buffer: AudioBuffer) -> Result<()> {
-        let frames = self.frames.get() + (buffer.len() / AUDIO_CHANNELS) as u64;
-        self.frames.set(frames);
+        let speed = self.pace.as_ref().map_or(1.0, PaceControl::get);
+        let frames = (buffer.len() / AUDIO_CHANNELS) as f64;
         let now = Instant::now();
-        let start = self.start.get().unwrap_or(now);
-        self.start.set(Some(start));
-        let due = start + self.duration(frames);
+        let mut due =
+            self.due.get().unwrap_or(now) + Duration::from_secs_f64(frames / (self.rate * speed));
 
         if due > now {
             thread::sleep(due - now);
         } else if now - due > MAX_BEHIND {
             // Start again from now, rather than run flat out to catch up
-            self.start.set(Some(now - self.duration(frames)));
+            due = now;
         }
+        self.due.set(Some(due));
         self.inner.send(buffer)
     }
 
@@ -279,7 +299,7 @@ pub fn machine_audio_sink(provider: &mut dyn AudioProvider, rate: f64) -> Box<dy
         AUDIO_CHANNELS as u8,
         AUDIO_BUFFER_SAMPLES as u16,
     ) {
-        Ok(sink) => Box::new(PacedAudioSink::new(sink, rate)),
+        Ok(sink) => Box::new(PacedAudioSink::new(sink, rate, provider.pace_control())),
         Err(e) => {
             log::warn!("Cannot open an audio stream: {:#}", e);
             null_audio_sink()
@@ -351,7 +371,7 @@ mod tests {
 
     #[test]
     fn paced_sink_keeps_to_the_clock() {
-        let sink = PacedAudioSink::new(null_audio_sink(), 22050.0);
+        let sink = PacedAudioSink::new(null_audio_sink(), 22050.0, None);
         let start = Instant::now();
         // 50 ms of audio
         for _ in 0..(22050 / 20 / AUDIO_CHUNK_FRAMES) {

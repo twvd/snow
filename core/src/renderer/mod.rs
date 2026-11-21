@@ -1,14 +1,17 @@
 mod audio;
 pub mod channel;
+mod display_lock;
 
 use anyhow::Result;
 
 use std::ops::{Deref, DerefMut};
+use std::time::Instant;
 
 pub use audio::{
     AUDIO_CHUNK_FRAMES, AUDIO_CHUNK_SIZE, AudioFill, AudioPlayer, AudioReceiver, ChannelAudioSink,
-    PacedAudioSink, machine_audio_sink,
+    PaceControl, PacedAudioSink, machine_audio_sink,
 };
+pub use display_lock::DisplayLock;
 
 /// Audio frame buffer
 pub type AudioBuffer = Box<[f32]>;
@@ -26,6 +29,11 @@ pub trait AudioProvider: Send {
         channels: u8,
         samples: u16,
     ) -> Result<Box<dyn AudioSink>>;
+
+    /// The speed control for the streams that pace the emulator, if any
+    fn pace_control(&self) -> Option<PaceControl> {
+        None
+    }
 }
 
 /// Audio sink for produced buffers
@@ -61,6 +69,8 @@ pub struct DisplayBuffer {
     width: usize,
     height: usize,
     frame: Vec<u8>,
+    /// When the frame was done
+    rendered: Option<Instant>,
 }
 
 impl DisplayBuffer {
@@ -72,6 +82,7 @@ impl DisplayBuffer {
             width,
             height,
             frame: Self::allocate_buffer(width, height),
+            rendered: None,
         }
     }
 
@@ -87,7 +98,18 @@ impl DisplayBuffer {
             width: self.width,
             height: self.height,
             frame: Self::allocate_buffer(self.width, self.height),
+            rendered: None,
         }
+    }
+
+    /// Marks the frame done, now
+    pub fn set_rendered(&mut self) {
+        self.rendered = Some(Instant::now());
+    }
+
+    /// When the frame was done, if it is
+    pub const fn rendered(&self) -> Option<Instant> {
+        self.rendered
     }
 
     pub fn width(&self) -> u16 {
