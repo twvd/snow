@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,8 +10,9 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
+use crate::devices::{BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
@@ -18,13 +20,10 @@ use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::audiopath::{AudioPath, Panning, sample16, volume_gain};
 use crate::mac::swim::Swim;
-use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
@@ -65,8 +64,7 @@ enum Region {
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct CompactMacBus<TRenderer: Renderer> {
+pub struct CompactMacBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -76,7 +74,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     pub(crate) scc: Scc,
-    pub(crate) video: Video<TRenderer>,
+    pub(crate) video: Video,
 
     #[serde(skip)]
     pub(crate) audio: AudioPath,
@@ -142,10 +140,10 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     openbus: [Byte; 2],
 }
 
-impl<TRenderer> CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl CompactMacBus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::CompactVideo)];
+
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -153,15 +151,18 @@ where
     /// Size of the sound buffer, in bytes
     const SOUNDBUF_SIZE: usize = 370 * 2;
 
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        extension_rom: Option<&[u8]>,
-        renderer: TRenderer,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        override_fdd_type: Option<DriveType>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, _devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let fb_alt_start = ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_ALT_OFFSET;
@@ -169,12 +170,6 @@ where
             ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
-
-        let fdds = if let Some(override_fdd_type) = override_fdd_type {
-            vec![override_fdd_type; model.fdd_drives().len()]
-        } else {
-            model.fdd_drives().to_vec()
-        };
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -187,18 +182,14 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             via: Via::new(model),
-            video: Video::new(renderer),
+            video: Video::default(),
             audio: {
                 let mut audio = AudioPath::default();
                 audio.set_gain(volume_gain(0));
                 audio
             },
             scc: Scc::new(RTXC_FREQUENCY),
-            swim: Swim::new(
-                &fdds,
-                model.fdd_hd(),
-                BUS_FREQUENCY * swim_ticks_per_tick(model),
-            ),
+            swim: Swim::new(model.fdd_hd(), BUS_FREQUENCY * swim_ticks_per_tick(model)),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
@@ -235,13 +226,12 @@ where
             bus.via.adb.add_device(AdbKeyboard::new());
         }
 
-        bus
+        Ok(bus)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self) {
         self.map = build_map(self.model);
-        self.video.renderer = Some(renderer);
         // Make sure we have at least the last frame available
         self.video.render().unwrap();
     }
@@ -263,7 +253,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.audio.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Pushes a sample of the sound buffer, the same on both sides
@@ -551,6 +541,21 @@ where
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display that the guest's Slot Manager knows by the slot number and the id of the
+    /// slot resource of its driver's AuxDCE. None: this machine has one display.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        _dctl_slot: u8,
+        _dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        None
+    }
+
     /// Updates the mouse position in absolute mode, given the current value
     /// of RawMouse. Returns what the low memory globals of the OS should hold
     /// for it, if they should change.
@@ -661,8 +666,14 @@ where
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.video.blank()
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI if self.model.has_scsi() => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
+            _ => None,
+        }
     }
 
     fn plusmouse_tick(&mut self) {
@@ -722,12 +733,30 @@ where
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.via.rtc
     }
+
+    /// Sets the file the PRAM is kept in. It is loaded if it exists and created otherwise, then
+    /// kept up to date.
+    pub fn persist_pram(&mut self, path: &Path) {
+        self.rtc_mut().load_pram(path);
+    }
+
+    /// Sets the date and time of the clock
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.rtc_mut().set_datetime(dt);
+    }
 }
 
-impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for CompactMacBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.video),
+            _ => None,
+        }
+    }
+}
+
+impl Bus<Address, Byte> for CompactMacBus {
     type Cpu = Bus68000;
 
     fn get_mask(&self) -> Address {
@@ -812,10 +841,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for CompactMacBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -950,10 +976,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for CompactMacBus {
     fn get_irq(&mut self) -> Option<u8> {
         // Programmer's key
         if self.progkey_pressed.get_clear() {
@@ -976,10 +999,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for CompactMacBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
@@ -1110,10 +1130,7 @@ fn empty_map() -> AddressMap {
     [[Region::None; MAP_BLOCKS]; 2]
 }
 
-impl<TRenderer> Debuggable for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for CompactMacBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;
@@ -1121,7 +1138,6 @@ where
         let mut result = vec![
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA (SY6522)", self.via),
-            dbgprop_nest!("Video circuit", self.video),
         ];
 
         if self.model.has_scsi() {
