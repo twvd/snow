@@ -40,6 +40,10 @@ Currently supported hardware:
 * Macintosh Display Card 8-24 with various monitor types (models with NuBus)
 * Macintosh II "Toby" Display Card with various monitor types (models with NuBus)
 * DaynaPORT SCSI/Link Ethernet adapter
+* Built-in Ethernet of the Quadra 700 (DP83932 SONIC)
+* Apple Ethernet NB Twisted-Pair Card (models with NuBus)
+* Apple Ethernet LC Card and LC Twisted-Pair Card (LC family PDS slot)
+* DaynaPORT E/si30 (SE/30 PDS)
 
 Supported floppy image formats:
 

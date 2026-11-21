@@ -14,10 +14,8 @@ use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
-use crate::mac::maclc::pds_iie::PdsIIeCard;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::quadra::q800_bus::Quadra800Bus;
-use crate::renderer::channel::ChannelRenderer;
 use crate::tickable::{Tickable, Ticks};
 
 macro_rules! machine_bus {
@@ -145,37 +143,16 @@ machine_bus!(
     /// The bus of a machine with a 68020 or a 68030
     MachineBus020,
     Bus68020,
-    MacII(MacIIBus<ChannelRenderer>, macii, macii_mut),
-    LcI(LcIBus<ChannelRenderer>, lc_i, lc_i_mut),
-    LcIII(LcIIIBus<ChannelRenderer>, lc_iii, lc_iii_mut),
+    MacII(MacIIBus, macii, macii_mut),
+    LcI(LcIBus, lc_i, lc_i_mut),
+    LcIII(LcIIIBus, lc_iii, lc_iii_mut),
 );
-
-impl MachineBus020 {
-    /// The Apple IIe Card in the PDS of an LC
-    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
-        match self {
-            Self::MacII(_) => None,
-            Self::LcI(bus) => bus.iie_card_mut(),
-            Self::LcIII(bus) => bus.iie_card_mut(),
-        }
-    }
-}
 
 machine_bus!(
     /// The bus of a machine with a 68040
     MachineBus040,
     Bus68040,
-    Quadra700(Quadra700Bus<ChannelRenderer>, quadra700, quadra700_mut),
-    Lc475(Lc475Bus<ChannelRenderer>, lc475, lc475_mut),
-    Quadra800(Quadra800Bus<ChannelRenderer>, quadra800, quadra800_mut),
+    Quadra700(Quadra700Bus, quadra700, quadra700_mut),
+    Lc475(Lc475Bus, lc475, lc475_mut),
+    Quadra800(Quadra800Bus, quadra800, quadra800_mut),
 );
-
-impl MachineBus040 {
-    /// The Apple IIe Card in the PDS of an LC 475
-    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
-        match self {
-            Self::Quadra700(_) | Self::Quadra800(_) => None,
-            Self::Lc475(bus) => bus.iie_card_mut(),
-        }
-    }
-}

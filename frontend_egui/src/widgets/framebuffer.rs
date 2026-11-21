@@ -11,7 +11,7 @@ use eframe::egui_glow;
 use egui::mutex::Mutex;
 use serde::{Deserialize, Serialize};
 use snow_core::mac::MacModel;
-use snow_core::renderer::DisplayBuffer;
+use snow_core::renderer::{DisplayBuffer, FrameReceiver};
 use std::fmt::Display;
 use std::sync::Arc;
 use strum::EnumIter;
@@ -42,7 +42,7 @@ impl Display for ScalingAlgorithm {
 
 pub struct FramebufferWidget {
     frame: Option<DisplayBuffer>,
-    frame_recv: Option<Arc<std::sync::Mutex<Option<DisplayBuffer>>>>,
+    frame_recv: Option<FrameReceiver>,
     viewport_texture: egui::TextureHandle,
     pub scale: f32,
     pub scaling_algorithm: ScalingAlgorithm,
@@ -58,11 +58,11 @@ pub struct FramebufferWidget {
 }
 
 impl FramebufferWidget {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(egui_ctx: &egui::Context) -> Self {
         Self {
             frame: None,
             frame_recv: None,
-            viewport_texture: cc.egui_ctx.load_texture(
+            viewport_texture: egui_ctx.load_texture(
                 "viewport",
                 egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
@@ -99,7 +99,7 @@ impl FramebufferWidget {
         f32::from(self.display_size[1]) * self.scale
     }
 
-    pub fn connect_receiver(&mut self, recv: Arc<std::sync::Mutex<Option<DisplayBuffer>>>) {
+    pub fn connect_receiver(&mut self, recv: FrameReceiver) {
         self.frame_recv = Some(recv);
     }
 

@@ -9,10 +9,12 @@ use anyhow::{Context, Result};
 use chrono::prelude::*;
 use clap::Parser;
 use log::*;
+use snow_core::devices::bus_id;
 use snow_core::mac::MacModel;
+use snow_core::mac::swim::drive::DriveType;
 use snow_floppy::loaders::FloppyImageLoader;
 
-use snow_floppy::Floppy;
+use snow_floppy::{Floppy, FloppyType};
 use testrunner::{TestFailure, TestReport, TestReportTest, TestResult};
 
 pub mod built_info {
@@ -112,6 +114,18 @@ pub fn version_string() -> String {
     )
 }
 
+/// Whether the first floppy drive of a Mac model takes a disk of this type
+fn first_drive_takes(model: MacModel, floppy_type: FloppyType) -> bool {
+    let buses = model.buses();
+    let drive = buses
+        .iter()
+        .find(|bus| bus.id == bus_id::SWIM)
+        .and_then(|bus| bus.slots.first())
+        .and_then(|slot| slot.device.as_ref())
+        .and_then(|device| DriveType::of_model(device.model));
+    drive.is_some_and(|drive| drive.compatible_floppies().contains(&floppy_type))
+}
+
 fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
@@ -145,10 +159,7 @@ fn main() -> Result<()> {
                 continue;
             };
 
-            if !model.fdd_drives()[0]
-                .compatible_floppies()
-                .contains(&img.get_type())
-            {
+            if !first_drive_takes(model, img.get_type()) {
                 // Floppy image incompatible with drive
                 continue;
             }
