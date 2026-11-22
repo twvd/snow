@@ -497,6 +497,8 @@ impl EmulatorState {
         self.eventrecv = Some(emulator.create_event_recv());
         self.abs_mouse = Some(emulator.abs_mouse_input());
         self.display_lock = Some(DisplayLock::new(emulator.pace_control()));
+        // With VRR, each frame is drawn as it comes
+        emulator.frame_notify().set(crate::vrr::frame_ready);
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || {

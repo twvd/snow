@@ -45,7 +45,7 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::{
     AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
 };
-use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::channel::{ChannelRenderer, FrameNotify};
 use crate::renderer::{AudioProvider, PaceControl};
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
@@ -442,6 +442,8 @@ pub struct Emulator {
     abs_mouse_applied: Option<(u16, u16)>,
     /// Speed of the machine relative to the real one, for a display lock
     pace: PaceControl,
+    /// Tells the frontend when a new frame is ready
+    frame_notify: FrameNotify,
 }
 
 impl Emulator {
@@ -486,6 +488,7 @@ impl Emulator {
         let (statuss, statusr) = crossbeam_channel::unbounded();
         let renderer = ChannelRenderer::new(0, 0)?;
         let frame_recv = renderer.get_receiver();
+        let frame_notify = renderer.frame_notify();
 
         let mut config = match model {
             MacModel::Early128K
@@ -776,6 +779,7 @@ impl Emulator {
             abs_mouse_input: AbsoluteMouseInput::default(),
             abs_mouse_applied: None,
             pace: PaceControl::default(),
+            frame_notify,
         };
         emu.status_update()?;
 
@@ -797,6 +801,7 @@ impl Emulator {
         let (statuss, statusr) = crossbeam_channel::unbounded();
         let renderer = ChannelRenderer::new(0, 0)?;
         let frame_recv = renderer.get_receiver();
+        let frame_notify = renderer.frame_notify();
         let time = Instant::now();
 
         let fstr = path
@@ -836,6 +841,7 @@ impl Emulator {
             abs_mouse_input: AbsoluteMouseInput::default(),
             abs_mouse_applied: None,
             pace: PaceControl::default(),
+            frame_notify,
         };
         emu.status_update()?;
 
@@ -883,6 +889,11 @@ impl Emulator {
     /// by the wall clock. See [`crate::renderer::DisplayLock`].
     pub fn pace_control(&self) -> PaceControl {
         self.pace.clone()
+    }
+
+    /// Where the frontend asks to be told of each new frame
+    pub fn frame_notify(&self) -> FrameNotify {
+        self.frame_notify.clone()
     }
 
     /// Whether the Apple IIe Card is in front, on a machine that has one

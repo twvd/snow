@@ -57,6 +57,7 @@ mod settings;
 mod shader_pipeline;
 mod uniform;
 mod util;
+mod vrr;
 mod widgets;
 mod workspace;
 
@@ -195,6 +196,8 @@ fn main() -> eframe::Result {
     };
 
     let event_loop = winit::event_loop::EventLoop::with_user_event().build()?;
+    // With VRR, each new frame of the machine wakes the event loop
+    vrr::set_proxy(event_loop.create_proxy());
 
     let mut winit_app = eframe::create_native(
         "Snow",
@@ -232,6 +235,9 @@ fn main() -> eframe::Result {
         Option<frame_pacer::FramePacer>,
         /// A redraw held back by the frame pacer until the next refresh
         Option<winit::window::WindowId>,
+        /// With VRR, one redraw per frame of the machine. Not on macOS, where
+        /// the frame pacer keeps the redraws to the display link.
+        Option<vrr::VrrGate>,
     );
 
     impl AppWrapper<'_> {
@@ -266,6 +272,10 @@ fn main() -> eframe::Result {
             event_loop: &winit::event_loop::ActiveEventLoop,
             event: eframe::UserEvent,
         ) {
+            // A new frame of the machine, with VRR: drawn in about_to_wait
+            if vrr::is_wake(&event) {
+                return;
+            }
             self.0.user_event(event_loop, event);
         }
 
@@ -275,6 +285,11 @@ fn main() -> eframe::Result {
             window_id: winit::window::WindowId,
             event: winit::event::WindowEvent,
         ) {
+            // The window to draw the machine's frames in, with VRR
+            if let Some(gate) = self.5.as_mut() {
+                gate.window = Some(window_id);
+            }
+
             // Send the WindowEvent through the channel
             let _ = self.1.send(event.clone());
 
@@ -306,6 +321,13 @@ fn main() -> eframe::Result {
                     self.4 = Some(window_id);
                     return;
                 }
+                // With VRR, one redraw per frame of the machine
+                if let Some(gate) = self.5.as_mut()
+                    && !gate.try_redraw()
+                {
+                    self.4 = Some(window_id);
+                    return;
+                }
                 self.redraw(event_loop, window_id);
                 return;
             }
@@ -333,8 +355,32 @@ fn main() -> eframe::Result {
                 self.4 = None;
                 self.redraw(event_loop, window_id);
             }
+            // With VRR, a new frame of the machine is drawn right away, and a
+            // redraw held back for one goes ahead once the machine is idle
+            let vrr_redraw = self.5.as_mut().and_then(|gate| {
+                let window_id = self.4.or(gate.window)?;
+                let go = gate.new_frame() || (self.4.is_some() && gate.idle_in().is_none());
+                (go && gate.try_redraw()).then_some(window_id)
+            });
+            if let Some(window_id) = vrr_redraw {
+                self.4 = None;
+                self.redraw(event_loop, window_id);
+            }
 
             self.0.about_to_wait(event_loop);
+
+            // With a redraw held back for VRR, wake when the machine counts as
+            // idle, if no frame comes first (which wakes the event loop)
+            if self.4.is_some()
+                && let Some(idle_in) = self.5.as_ref().and_then(vrr::VrrGate::idle_in)
+            {
+                let at = std::time::Instant::now() + idle_in;
+                let at = match event_loop.control_flow() {
+                    winit::event_loop::ControlFlow::WaitUntil(t) => t.min(at),
+                    _ => at,
+                };
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(at));
+            }
 
             // Wait for the refresh rather than poll, if a redraw waits for it: the
             // display link wakes the event loop
@@ -363,6 +409,7 @@ fn main() -> eframe::Result {
         egui_ctx_cell,
         frame_pacer,
         None,
+        cfg!(not(target_os = "macos")).then(vrr::VrrGate::default),
     ))?;
 
     Ok(())

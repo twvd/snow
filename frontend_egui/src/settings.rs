@@ -107,6 +107,10 @@ pub struct AppSettings {
     /// come at a whole number of the display's refreshes, for smooth motion
     #[serde(default = "bool_true")]
     pub display_lock: bool,
+    /// In fullscreen on a variable refresh rate display, redraw once per frame
+    /// of the machine, so the display refreshes at its rate
+    #[serde(default)]
+    pub vrr: bool,
     pub fastforward_limit_enabled: bool,
     pub fastforward_limit: f64,
     pub dynamic_fastforward: bool,
@@ -157,6 +161,7 @@ impl Default for AppSettings {
             native_file_dialogs: false,
             hide_mode_toasts: false,
             display_lock: true,
+            vrr: false,
             fastforward_limit_enabled: false,
             fastforward_limit: 2.0,
             dynamic_fastforward: false,
