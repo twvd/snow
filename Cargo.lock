@@ -5147,6 +5147,7 @@ dependencies = [
  "snow_core",
  "snow_floppy",
  "strum 0.26.3",
+ "windows-sys 0.61.2",
  "winit",
  "winresource",
 ]

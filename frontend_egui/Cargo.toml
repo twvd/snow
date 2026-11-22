@@ -84,5 +84,12 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
     "CAFrameRateRange",
 ] }
 
+[target.'cfg(windows)'.dependencies]
+# The display's refreshes, for the display lock (dwm_timing)
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Graphics_Dwm",
+    "Win32_System_Performance",
+] }
+
 [lints]
 workspace = true

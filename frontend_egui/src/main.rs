@@ -31,16 +31,25 @@ mod frame_pacer {
             None
         }
 
+        // As the macOS frame pacer's
+        #[allow(clippy::needless_pass_by_ref_mut)]
         pub const fn try_redraw(&mut self, _window_id: winit::window::WindowId) -> bool {
             true
         }
     }
 
-    /// Without a display link, the refreshes are unknown
+    /// On Windows, the compositor tells the refreshes
+    #[cfg(windows)]
+    pub use crate::dwm_timing::refresh_grid;
+
+    /// Elsewhere, the refreshes are unknown
+    #[cfg(not(windows))]
     pub const fn refresh_grid() -> Option<(std::time::Instant, std::time::Duration)> {
         None
     }
 }
+#[cfg(windows)]
+mod dwm_timing;
 mod helpers;
 mod joystick;
 mod keymap;
