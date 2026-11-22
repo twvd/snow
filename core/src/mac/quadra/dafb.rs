@@ -806,9 +806,12 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        // At the standard timing of the monitor connected, rather than one
+        // worked out from the timing registers
+        let period = self.monitor.timing().frame_period(ctx.bus_frequency());
         self.vblank_ticks += ticks;
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
+        if self.vblank_ticks >= period {
+            self.vblank_ticks -= period;
 
             if self.renderer.as_ref().unwrap().frame_wanted() {
                 self.render()?;

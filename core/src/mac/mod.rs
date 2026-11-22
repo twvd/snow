@@ -657,6 +657,37 @@ pub enum MacMonitor {
     RGB19,
 }
 
+/// Timing of a video signal: dots per line and lines per frame, blanking
+/// included, and the dot clock
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoTiming {
+    pub h_total: Ticks,
+    pub v_total: Ticks,
+    /// Dots per second
+    pub dot_clock: Ticks,
+}
+
+impl VideoTiming {
+    pub const fn new(h_total: Ticks, v_total: Ticks, dot_clock: Ticks) -> Self {
+        Self {
+            h_total,
+            v_total,
+            dot_clock,
+        }
+    }
+
+    /// Frames per second
+    pub fn refresh_rate(self) -> f64 {
+        self.dot_clock as f64 / (self.h_total * self.v_total) as f64
+    }
+
+    /// Length of a frame in ticks of a clock of `frequency` ticks per second
+    pub const fn frame_period(self, frequency: Ticks) -> Ticks {
+        ((frequency as u128 * self.h_total as u128 * self.v_total as u128) / self.dot_clock as u128)
+            as Ticks
+    }
+}
+
 impl Display for MacMonitor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -721,6 +752,26 @@ impl MacMonitor {
         }
     }
 
+    /// Timing of the video signal the monitor takes
+    pub const fn timing(self) -> VideoTiming {
+        match self {
+            // 640 x 407 dots at 15.6672 MHz (60.15 Hz)
+            Self::RGB12 => VideoTiming::new(640, 407, 15_667_200),
+            // 864 x 525 dots at 30.24 MHz (66.67 Hz)
+            Self::HiRes14 => VideoTiming::new(864, 525, 30_240_000),
+            // 1152 x 667 dots at 57.2832 MHz (74.55 Hz)
+            Self::RGB16 => VideoTiming::new(1152, 667, 57_283_200),
+            // 832 x 918 dots at 57.2832 MHz (75.00 Hz)
+            Self::PortraitBW => VideoTiming::new(832, 918, 57_283_200),
+            // 1456 x 915 dots at 100 MHz (68.68 kHz, 75.06 Hz)
+            Self::RGB21 | Self::TwoPageBW => VideoTiming::new(1456, 915, 100_000_000),
+            // 800 x 525 dots at 25.175 MHz (59.94 Hz)
+            Self::VGA => VideoTiming::new(800, 525, 25_175_000),
+            // 1328 x 804 dots at 80 MHz (60.24 kHz, 74.93 Hz)
+            Self::RGB19 => VideoTiming::new(1328, 804, 80_000_000),
+        }
+    }
+
     pub fn has_color(self) -> bool {
         match self {
             Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB19 | Self::RGB21 | Self::VGA => {
@@ -734,6 +785,37 @@ impl MacMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_refresh_rates() {
+        // The published rates of each monitor
+        for (monitor, hz) in [
+            (MacMonitor::RGB12, 60.15),
+            (MacMonitor::HiRes14, 66.67),
+            (MacMonitor::RGB16, 74.55),
+            (MacMonitor::PortraitBW, 75.0),
+            (MacMonitor::RGB21, 75.06),
+            (MacMonitor::TwoPageBW, 75.06),
+            (MacMonitor::VGA, 59.94),
+            (MacMonitor::RGB19, 74.93),
+        ] {
+            let rate = monitor.timing().refresh_rate();
+            assert!((rate - hz).abs() < 0.01, "{monitor:?}: {rate}");
+        }
+    }
+
+    #[test]
+    fn frame_period_in_ticks() {
+        // As the V8 works it out, in cycles of C16M
+        assert_eq!(
+            MacMonitor::HiRes14.timing().frame_period(15_667_200),
+            864 * 525 * 15_667_200 / 30_240_000
+        );
+        assert_eq!(
+            MacMonitor::RGB12.timing().frame_period(15_667_200),
+            640 * 407
+        );
+    }
 
     #[test]
     fn interleave_early_plus() {

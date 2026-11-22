@@ -338,13 +338,15 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        // The card drives each monitor at its own timing
+        let period = self.monitor.timing().frame_period(ctx.bus_frequency());
         self.vblank_ticks += ticks;
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+        if self.vblank_ticks >= period {
             if self.renderer.as_ref().unwrap().frame_wanted() {
                 self.render()?;
             }
 
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            self.vblank_ticks -= period;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
