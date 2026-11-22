@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
+use crate::mac::{VideoOutput, VideoTiming};
 use crate::renderer::{DisplayBuffer, MONOCHROME_LUT, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -36,6 +36,9 @@ where
 
     /// Visible lines in one frame
     const V_VISIBLE_LINES: usize = 342;
+
+    /// As the compact Macs: 704 x 370 dots at 15.6672 MHz (60.15 Hz)
+    const TIMING: VideoTiming = VideoTiming::new(704, 370, 15_667_200);
 
     /// Total visible dots in one frame.
     const FRAME_VISIBLE_DOTS: usize = Self::H_VISIBLE_DOTS * Self::V_VISIBLE_LINES;
@@ -171,12 +174,13 @@ where
         if !self.vblank_enable {
             self.vblank_irq = false;
         }
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+        let period = Self::TIMING.frame_period(ctx.bus_frequency());
+        if self.vblank_ticks >= period {
             if self.renderer.as_ref().unwrap().frame_wanted() {
                 self.render()?;
             }
 
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            self.vblank_ticks -= period;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
