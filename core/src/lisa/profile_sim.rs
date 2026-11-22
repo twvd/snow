@@ -140,7 +140,8 @@ pub struct ProfileSim {
     kind: HardDiskKind,
     /// The image. A save state holds it with the drive.
     data: Vec<u8>,
-    /// The image the user gave. A restored machine keeps its writes in memory.
+    /// The image the user gave, or branched off to. A restored machine keeps its writes in
+    /// memory until the disk is branched off.
     path: Option<PathBuf>,
     #[serde(skip)]
     file: Option<File>,
@@ -655,8 +656,15 @@ impl HardDiskFunction for ProfileSim {
         }
     }
 
-    fn branch(&mut self, _path: &Path) -> Result<()> {
-        bail!("A Lisa hard disk's image can't be branched off yet")
+    fn branch(&mut self, path: &Path) -> Result<()> {
+        let mut file =
+            File::create(path).with_context(|| format!("Cannot create {}", path.display()))?;
+        file.write_all(&self.data)
+            .with_context(|| format!("Cannot write {}", path.display()))?;
+        self.file = Some(file);
+        self.writable = true;
+        self.path = Some(path.to_path_buf());
+        Ok(())
     }
 
     fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
@@ -997,6 +1005,59 @@ mod tests {
             drive.strobe_write(b);
         }
         handshake(&mut drive, STATE_READY);
+    }
+
+    #[test]
+    fn branch_carries_on_in_a_copy() {
+        let dir = std::env::temp_dir().join(format!("snow-lisa-branch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (original, branch) = (dir.join("original.image"), dir.join("branch.image"));
+        // With a part block at the end, which the copy keeps
+        let mut image = vec![0x11; BLOCKS_5MB * BLOCK_SIZE + 100];
+        std::fs::write(&original, &image).unwrap();
+
+        // As opened, and as restored from a save state, with no file
+        for restored in [false, true] {
+            let mut drive = ProfileSim::open(HardDiskKind::Profile, &original, true).unwrap();
+            if restored {
+                drive.file = None;
+            }
+            drive.set_full_size(true).unwrap();
+            assert!(drive.branch(&dir.join("none").join("b.image")).is_err());
+            assert_eq!(
+                HardDiskFunction::status(&drive).media,
+                Some(original.clone())
+            );
+            drive.branch(&branch).unwrap();
+            assert_eq!(std::fs::read(&branch).unwrap(), image);
+            assert_eq!(
+                drive.config(),
+                FunctionConfig::HardDisk(HardDiskConfig {
+                    media: Some(branch.clone()),
+                    full_size: true,
+                })
+            );
+
+            command(&mut drive, CMD_WRITE, 2);
+            handshake(&mut drive, STATE_WRITE);
+            for _ in 0..BLOCK_SIZE {
+                drive.strobe_write(0x22);
+            }
+            handshake(&mut drive, STATE_WRITTEN);
+            assert_eq!(std::fs::read(&original).unwrap(), image);
+            let mut written = image.clone();
+            written[2 * BLOCK_SIZE..3 * BLOCK_SIZE].fill(0x22);
+            assert_eq!(std::fs::read(&branch).unwrap(), written);
+        }
+
+        // Over its own file, the image as it is
+        let mut drive = ProfileSim::open(HardDiskKind::Widget, &original, true).unwrap();
+        drive.data[0] = 0x33;
+        drive.branch(&original).unwrap();
+        image[0] = 0x33;
+        assert_eq!(std::fs::read(&original).unwrap(), image);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
