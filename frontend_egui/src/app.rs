@@ -739,7 +739,9 @@ impl SnowGui {
             return self.mouse_grabbed;
         }
 
-        self.get_machine_mouse_pos(ctx).is_some()
+        ctx.pointer_latest_pos()
+            .and_then(|p| self.get_machine_mouse_pos(p))
+            .is_some()
             || (self.in_fullscreen && self.emu.is_mouse_relative())
     }
 
@@ -2962,12 +2964,18 @@ impl SnowGui {
         }
     }
 
-    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+    /// Converts a pointer position in window coordinates (egui points) to the
+    /// machine's mouse position in display pixels. Returns `None` if the
+    /// position is outside the framebuffer, or the framebuffer is not hovered.
+    ///
+    /// In `raw_input_hook`, pass the position carried by the event if it has
+    /// one: the hook runs before egui processes the input, so
+    /// `ctx.pointer_latest_pos()` is still the previous frame's position there.
+    fn get_machine_mouse_pos(&self, mouse_pos: egui::Pos2) -> Option<egui::Pos2> {
         if !self.framebuffer.has_pointer() {
             return None;
         }
 
-        let mouse_pos = ctx.pointer_latest_pos()?;
         let display_size = egui::Vec2::from(self.framebuffer.display_size());
         let fbrect = self.framebuffer.rect();
         let scale = self.framebuffer.scaling_factors_actual();
@@ -4846,12 +4854,13 @@ impl eframe::App for SnowGui {
                 egui::Event::PointerButton {
                     button: egui::PointerButton::Primary,
                     pressed,
+                    pos,
                     ..
                 } => {
                     if *pressed {
                         if !self.mouse_grabbed
                             && self.can_grab_mouse()
-                            && (self.get_machine_mouse_pos(ctx).is_some() || self.in_fullscreen)
+                            && (self.get_machine_mouse_pos(*pos).is_some() || self.in_fullscreen)
                         {
                             // Clicking the framebuffer grabs the mouse.
                             // The click that enters capture mode is not passed
@@ -4903,18 +4912,19 @@ impl eframe::App for SnowGui {
                     let abs_p = if self.mouse_grabbed {
                         None
                     } else {
-                        self.get_machine_mouse_pos(ctx)
+                        ctx.pointer_latest_pos()
+                            .and_then(|p| self.get_machine_mouse_pos(p))
                     };
                     self.emu.update_mouse(abs_p.as_ref(), &relpos);
                     self.on_user_input();
                 }
-                egui::Event::PointerMoved(_) => {
+                egui::Event::PointerMoved(pos) => {
                     if !self.mouse_input_active(ctx) {
                         continue;
                     }
 
                     // No relative motion in this event
-                    if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
+                    if let Some(abs_p) = self.get_machine_mouse_pos(*pos) {
                         // Cursor is within framebuffer view area
                         self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
                         self.on_user_input();
