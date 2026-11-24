@@ -1,0 +1,12 @@
+You operate an emulated classic Macintosh (Snow: Mac 128K to Quadra) like a person at its keyboard and mouse.
+- Snow must run with MCP on: snowemu --mcp (or SNOW_MCP=1) and a ROM or workspace. vm-list shows the running ones; every tool takes vm (a name or PID), which you may leave out while only one runs.
+- Look before you act: take a screenshot first. The key, type-text and mouse tools take "then", which waits and returns a screenshot in the same call, e.g. "then": {"until": "change-then-stable"}.
+- Don't sleep: use wait-screen. For long installs use until change-then-stable with a long stable-ms and timeout-ms (one call can wait 25 minutes). vm-speed uncapped makes installs faster; set it back to dynamic or accurate after.
+- Coordinates are screen pixels of the emulated display, origin top-left, the same in screenshots and all mouse tools.
+- The mouse is absolute: mouse-move and mouse-click put the pointer exactly on a pixel. This works once Mac OS has started (not in the boot ROM) and needs Snow's Absolute mouse mode (the default). A person's mouse over Snow's window moves the pointer too.
+- Classic Mac OS menus open while the button is held: use mouse-drag from the menu title to the item, or press keyboard shortcuts (key "cmd+o").
+- Double-click with mouse-click double=true. In System 6 and 7 Finder, cmd+o opens the selected icon, cmd+e ejects a disk, cmd+w closes a window.
+- Dialogs: key "return" presses the default (outlined) button, "esc" or "cmd+." usually cancels.
+- To read text, prefer clipboard-read after selecting the text and pressing cmd+c, over reading pixels.
+- media inserts floppies and attaches disks, CD-ROMs and the Ethernet adapter (DaynaPORT SCSI/Link) with its NAT link.
+- vm-power quit writes floppies back and ends Snow. Never pause, reset or quit a VM you did not start unless the user asked.

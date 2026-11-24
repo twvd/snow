@@ -489,7 +489,19 @@ impl EmulatorState {
             cmd.send(EmulatorCommand::Stop)?;
         }
 
+        let mut frame_recv = frame_recv;
         self.eventrecv = Some(emulator.create_event_recv());
+        if let Some(hub) = crate::mcp::hub() {
+            // The MCP hub sees each frame and event, then passes it on
+            let (frames, events) = hub.attach(
+                cmd.clone(),
+                frame_recv,
+                self.eventrecv.take().unwrap(),
+                self.mouse_mode,
+            );
+            frame_recv = frames;
+            self.eventrecv = Some(events);
+        }
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || {
@@ -512,6 +524,12 @@ impl EmulatorState {
         // GUI status.
         while !self.poll() {}
         while self.poll() {}
+        // With MCP on, events pass through the hub and may come a little later
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.status.is_none() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(1));
+            self.poll();
+        }
 
         // Signal the UI to always update state
         self.force_update.set();
@@ -529,6 +547,9 @@ impl EmulatorState {
                 .send(EmulatorCommand::Quit)
                 .unwrap();
             emu_thread.join().unwrap();
+            if let Some(hub) = crate::mcp::hub() {
+                hub.detach();
+            }
             self.cmdsender = None;
             self.eventrecv = None;
             self.status = None;
@@ -1465,6 +1486,9 @@ impl EmulatorState {
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
         self.mouse_mode = mode;
+        if let Some(hub) = crate::mcp::hub() {
+            hub.set_mouse_mode(mode);
+        }
         if let Some(ref sender) = self.cmdsender {
             let _ = sender.send(EmulatorCommand::SetMouseMode(mode));
         }

@@ -1,0 +1,642 @@
+[
+  {
+    "name": "vm-list",
+    "description": "List the running Snow emulators that have MCP on: name, PID, folder, workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "vm-wait",
+    "description": "Wait until a Snow emulator is running (up) or has ended (gone).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "up",
+            "gone"
+          ],
+          "description": "What to wait for (default: up)"
+        },
+        "timeout-ms": {
+          "type": "integer",
+          "description": "Give up after this long (default: 60000)"
+        }
+      }
+    }
+  },
+  {
+    "name": "vm-info",
+    "description": "Describe the machine: model, run state, speed, RAM, screen size, mouse mode, floppy drives, SCSI targets (disks, CD-ROMs, Ethernet and its link). Use it first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "vm-power",
+    "description": "pause or resume the CPU, reset the machine, or quit Snow (quit first writes the disks back, like the Quit command).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "pause",
+            "resume",
+            "reset",
+            "quit"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "vm-speed",
+    "description": "Set the emulation speed. accurate: real hardware speed. dynamic: real speed while sound plays, else as fast as possible. uncapped: as fast as possible, no sound (good for installs). video: 60 frames a second, no sound. fastforward: up to 'factor' times real speed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "speed": {
+          "type": "string",
+          "enum": [
+            "accurate",
+            "dynamic",
+            "uncapped",
+            "video",
+            "fastforward"
+          ]
+        },
+        "factor": {
+          "type": "number",
+          "description": "For fastforward: the most times real speed (default: 4)"
+        }
+      },
+      "required": [
+        "speed"
+      ]
+    }
+  },
+  {
+    "name": "screenshot",
+    "description": "A PNG of the emulated screen. Coordinates in all tools are screen pixels, origin top-left.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "$ref": "#/$defs/rect",
+          "description": "Crop to this rectangle"
+        },
+        "scale": {
+          "type": "number",
+          "description": "Zoom factor, e.g. 2 for small text (default: 1)"
+        },
+        "pointer": {
+          "type": "boolean",
+          "description": "Mark where the tools last put the mouse pointer with a red cross"
+        }
+      }
+    }
+  },
+  {
+    "name": "wait-screen",
+    "description": "Wait until the screen changes, settles, or both, instead of sleeping. Changes of fewer than min-pixels pixels (a blinking text cursor) do not count. One call can wait up to 25 minutes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "until": {
+          "type": "string",
+          "enum": [
+            "change",
+            "stable",
+            "change-then-stable"
+          ],
+          "description": "Default: change-then-stable"
+        },
+        "stable-ms": {
+          "type": "integer",
+          "description": "How long the screen must stay the same (default: 1000)"
+        },
+        "timeout-ms": {
+          "type": "integer",
+          "description": "Give up after this long (default: 30000, at most 1500000)"
+        },
+        "region": {
+          "$ref": "#/$defs/rect",
+          "description": "Watch only this part of the screen"
+        },
+        "ignore": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rect"
+          },
+          "description": "Parts of the screen to leave out, such as a clock"
+        },
+        "min-pixels": {
+          "type": "integer",
+          "description": "A change must touch more pixels than this (default: 32)"
+        },
+        "screenshot": {
+          "type": "boolean",
+          "description": "Add a screenshot when done (default: true)"
+        },
+        "scale": {
+          "type": "number",
+          "description": "Zoom of that screenshot"
+        }
+      }
+    }
+  },
+  {
+    "name": "key",
+    "description": "Press keys. Each entry is a key or a combination: 'return', 'cmd+o', 'cmd+shift+3', 'option+e', 'tab', 'esc', 'left', 'f1', 'kp5', 'a', '?'. Names: cmd, shift, option, control, capslock, return, enter (keypad), tab, space, delete (backspace), forwarddelete, escape, left, right, up, down, help, home, end, pageup, pagedown, power, f1-f15, clear, kp0-kp9, kp. kp* kp+ kp- kp/ kp=. The Mac's Command key is cmd.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "description": "A key or combination, or a list of them pressed one after another",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "hold-ms": {
+          "type": "integer",
+          "description": "How long to hold each combination (default: 60)"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      },
+      "required": [
+        "keys"
+      ]
+    }
+  },
+  {
+    "name": "type-text",
+    "description": "Type text on the US keyboard layout. \\n types Return, \\t Tab. Characters that are not on the US layout are refused before anything is typed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "delay-ms": {
+          "type": "integer",
+          "description": "Time between keys (default: 30)"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "mouse-move",
+    "description": "Move the mouse pointer to a screen pixel. Needs the Absolute mouse mode (Snow's default) and a booted Mac OS.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ]
+    }
+  },
+  {
+    "name": "mouse-click",
+    "description": "Click (or double-click) the mouse button at a screen pixel. Without x and y it clicks where the pointer is.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "double": {
+          "type": "boolean",
+          "description": "Double-click"
+        },
+        "hold-ms": {
+          "type": "integer",
+          "description": "How long the button stays down (default: 100)"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      }
+    }
+  },
+  {
+    "name": "mouse-drag",
+    "description": "Press the button at one pixel, move to another in steps, and let go. Also for pull-down menus: drag from the menu title to the item.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from-x": {
+          "type": "integer"
+        },
+        "from-y": {
+          "type": "integer"
+        },
+        "to-x": {
+          "type": "integer"
+        },
+        "to-y": {
+          "type": "integer"
+        },
+        "steps": {
+          "type": "integer",
+          "description": "Moves between the two points (default: 12)"
+        },
+        "hold-ms": {
+          "type": "integer",
+          "description": "Wait this long with the button down at the start, e.g. for a menu to open (default: 150)"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      },
+      "required": [
+        "from-x",
+        "from-y",
+        "to-x",
+        "to-y"
+      ]
+    }
+  },
+  {
+    "name": "mouse-button",
+    "description": "Press or release the mouse button, optionally after moving to a pixel. For drags the other tools don't cover.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "down",
+            "up"
+          ]
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "then": {
+          "$ref": "#/$defs/then"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    }
+  },
+  {
+    "name": "media",
+    "description": "Change media. insert-floppy (path, drive, write-protect), eject-floppy (drive), attach-disk (id, path: a hard disk image), attach-cdrom (id, path optional), load-cdrom (id, path), attach-ethernet (id), ethernet-link (id, link: down, nat or nat-https), detach (id). Paths are on the host; relative ones start in Snow's working folder.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "insert-floppy",
+            "eject-floppy",
+            "attach-disk",
+            "attach-cdrom",
+            "load-cdrom",
+            "attach-ethernet",
+            "ethernet-link",
+            "detach"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "drive": {
+          "type": "integer",
+          "description": "Floppy drive 0, 1 or 2 (default: 0)"
+        },
+        "write-protect": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "integer",
+          "description": "SCSI ID 0-6"
+        },
+        "link": {
+          "type": "string",
+          "enum": [
+            "down",
+            "nat",
+            "nat-https"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "clipboard-read",
+    "description": "The text on the Mac's clipboard (the scrap). Copy something in the guest first (cmd+c); a good way to read text without reading pixels.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "serial-write",
+    "description": "Send bytes to a serial port, as if they came over the cable. Port a is the modem port, b the printer port. Has no effect while a serial bridge uses the port.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string",
+          "enum": [
+            "a",
+            "b"
+          ],
+          "description": "Default: a"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "serial-read",
+    "description": "What the Mac sent on a serial port since the last serial-read or serial-expect (or, with all, everything kept).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string",
+          "enum": [
+            "a",
+            "b"
+          ]
+        },
+        "all": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  {
+    "name": "serial-expect",
+    "description": "Wait until the Mac sends some text on a serial port.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string",
+          "enum": [
+            "a",
+            "b"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "timeout-ms": {
+          "type": "integer",
+          "description": "Default: 30000"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "steps",
+    "description": "Run several tool calls in one: [{\"tool\": \"mouse-click\", \"args\": {...}}, ...]. Stops at the first call that fails or at a wait that is not met. Only the last screenshot is returned.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "args": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          }
+        }
+      },
+      "required": [
+        "steps"
+      ]
+    }
+  },
+  {
+    "name": "debug-registers",
+    "description": "The 68k registers and the code at the PC.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "debug-run",
+    "description": "Let the CPU run until a breakpoint (or the until address) is hit, then show the registers. Pause it with vm-power pause.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "until": {
+          "type": "string",
+          "description": "Stop at this address (a breakpoint only for this run)"
+        },
+        "timeout-ms": {
+          "type": "integer",
+          "description": "Default: 10000"
+        }
+      }
+    }
+  },
+  {
+    "name": "debug-step",
+    "description": "Run single instructions while the CPU is stopped: into, over (a subroutine or trap) or out (to the caller).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "into",
+            "over",
+            "out"
+          ]
+        },
+        "count": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  {
+    "name": "debug-break",
+    "description": "Breakpoints: add or remove one at an address or on an A-line trap (by name like _Open or SCSIDispatch, or opcode A000), list, or clear all. When one is hit the CPU stops; debug-registers shows where.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "add",
+            "remove",
+            "list",
+            "clear"
+          ]
+        },
+        "address": {
+          "type": "string",
+          "description": "Hex address, e.g. 4081AFF8"
+        },
+        "trap": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "debug-traps",
+    "description": "Record the Mac OS system traps (A-line calls) the guest makes: start, do the thing, read (the last count, optionally only lines that contain filter), stop.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "read",
+            "stop"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "description": "Default: 100"
+        },
+        "filter": {
+          "type": "string",
+          "description": "Only lines that contain this, e.g. Open or SCSI"
+        }
+      }
+    }
+  },
+  {
+    "name": "memory-read",
+    "description": "Hex dump of guest memory (?? for bytes that can't be read).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Hex address, e.g. 4081AFF8"
+        },
+        "length": {
+          "type": "integer",
+          "description": "Bytes, default 256, at most 65536"
+        },
+        "view": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical",
+            "program"
+          ],
+          "description": "Default: virtual (as the CPU's data reads see it)"
+        }
+      },
+      "required": [
+        "address"
+      ]
+    }
+  },
+  {
+    "name": "memory-write",
+    "description": "Write bytes to guest memory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Hex address, e.g. 4081AFF8"
+        },
+        "hex": {
+          "type": "string",
+          "description": "Bytes in hex, e.g. \"4E71 4E71\""
+        },
+        "physical": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "address",
+        "hex"
+      ]
+    }
+  },
+  {
+    "name": "disassemble",
+    "description": "Disassemble 68k code, with Mac OS trap names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Default: the PC"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Instructions, default 20"
+        }
+      }
+    }
+  }
+]

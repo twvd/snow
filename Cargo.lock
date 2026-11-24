@@ -5125,6 +5125,7 @@ dependencies = [
  "hex",
  "hex-literal",
  "itertools 0.14.0",
+ "libc",
  "log",
  "multi_log",
  "num-derive 0.4.2",
