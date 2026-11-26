@@ -216,6 +216,11 @@ pub trait CpuCaches: Default {
         false
     }
 
+    /// Dirty data words visible to the CPU but not yet written back to memory.
+    fn inspect_dirty_data(&self, _cacr: RegisterCACR) -> Vec<(Address, [u8; 4])> {
+        Vec::new()
+    }
+
     /// Replaces the byte at physical address `paddr` in the caches tagged
     /// with physical addresses that hold it, for the host. This only changes
     /// the data: a line stays as clean or dirty as it is, enabled or not.

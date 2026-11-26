@@ -455,6 +455,26 @@ impl CpuCaches for Caches040 {
             })
     }
 
+    fn inspect_dirty_data(&self, cacr: RegisterCACR) -> Vec<(Address, [u8; 4])> {
+        let mut words = Vec::new();
+        if cacr.de() {
+            for (set, ways) in self.dcache.dirty.iter().enumerate() {
+                for (way, &dirty) in ways.iter().enumerate() {
+                    if dirty == 0 {
+                        continue;
+                    }
+                    let addr = Cache040::line_addr(set, self.dcache.tags[set][way]);
+                    for (entry, long) in self.dcache.data[set][way].iter().enumerate() {
+                        if dirty & (1 << entry) != 0 {
+                            words.push((addr + 4 * entry as Address, long.to_be_bytes()));
+                        }
+                    }
+                }
+            }
+        }
+        words
+    }
+
     fn inspect_phys_write(&mut self, paddr: Address, val: Byte) {
         let set = Cache040::set(paddr);
         let entry = Cache040::entry(paddr);

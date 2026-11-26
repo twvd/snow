@@ -314,6 +314,7 @@ dispatch! {
         fn swim(&self) -> &Swim { bus.swim }
         fn scc(&self) -> &Scc { bus.scc }
         fn cpu_regs(&self) -> &RegisterFile { regs }
+        fn ram(&self) -> &[u8] { bus.ram }
     }
 
     mutable_refs {
@@ -329,6 +330,7 @@ dispatch! {
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
         fn cpu_address_mask(&self) -> Address { address_mask() }
+        fn cpu_inspect_dirty_data(&self) -> Vec<(Address, [u8; 4])> { inspect_dirty_data() }
         fn ram_size(&self) -> usize { bus.ram.len() }
         fn cpu_mmu_generation(&self) -> u32 { mmu_generation() }
         fn bus_inspect_generation(&self) -> u32 { bus.inspect_generation() }
@@ -393,6 +395,7 @@ pub trait EmuContext {
 /// Emulator runner
 pub struct Emulator {
     config: EmulatorConfig,
+    breakpoint_handler: Option<BreakpointHandler>,
     command_recv: crossbeam_channel::Receiver<EmulatorCommand>,
     command_sender: EmulatorCommandSender,
     event_sender: crossbeam_channel::Sender<EmulatorEvent>,
@@ -415,6 +418,15 @@ pub struct Emulator {
     /// Last look at the memory notifiers
     memory_notify_time: Instant,
 }
+
+type BreakpointHandler = Box<
+    dyn FnMut(
+            /* registers */ &RegisterFile,
+            /* ram */ &[u8],
+            /* dirty_data */ Vec<(Address, [u8; 4])>,
+        ) -> Vec<Breakpoint>
+        + Send,
+>;
 
 impl Emulator {
     pub fn new(
@@ -729,6 +741,7 @@ impl Emulator {
 
         let mut emu = Self {
             config,
+            breakpoint_handler: None,
             command_recv: cmdr,
             command_sender: cmds,
             event_sender: statuss,
@@ -754,6 +767,22 @@ impl Emulator {
         }
 
         Ok((emu, frame_recv))
+    }
+
+    /// Handle breakpoint hits synchronously instead of pausing emulation.
+    /// The handler borrows registers and physical RAM, and receives dirty
+    /// data-cache words as (physical address, big-endian bytes), newer than RAM.
+    /// The handler decides how to use them and returns
+    /// the complete replacement breakpoint list. Execution then resumes.
+    pub fn set_breakpoint_handler(
+        &mut self,
+        breakpoints: Vec<Breakpoint>,
+        handler: impl FnMut(&RegisterFile, &[u8], Vec<(Address, [u8; 4])>) -> Vec<Breakpoint>
+        + Send
+        + 'static,
+    ) {
+        *self.config.cpu_breakpoints_mut() = breakpoints;
+        self.breakpoint_handler = Some(Box::new(handler));
     }
 
     /// Restores a saved emulator state into a new Emulator instance
@@ -786,6 +815,7 @@ impl Emulator {
 
         let mut emu = Self {
             config,
+            breakpoint_handler: None,
             command_recv: cmdr,
             command_sender: cmds,
             event_sender: statuss,
@@ -1157,7 +1187,13 @@ impl Emulator {
         //}
 
         if self.run && self.config.cpu_get_clr_breakpoint_hit() {
-            stop_break = true;
+            if let Some(handler) = self.breakpoint_handler.as_mut() {
+                let dirty_data = self.config.cpu_inspect_dirty_data();
+                let breakpoints = handler(self.config.cpu_regs(), self.config.ram(), dirty_data);
+                *self.config.cpu_breakpoints_mut() = breakpoints;
+            } else {
+                stop_break = true;
+            }
         }
         if stop_break {
             self.run = false;
