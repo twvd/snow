@@ -19,7 +19,7 @@ use snow_nat::NatEngineStats;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use pcap::PcapCaptureState;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
@@ -70,6 +70,14 @@ pub struct EthernetPort {
         deserialize_with = "deserialize_flag"
     )]
     rx_enabled: Arc<AtomicBool>,
+
+    /// The address its NAT gateway gave it, 0 for none: the gateway writes it. It is in a save
+    /// state, so that a restored adapter gets the same address back.
+    #[serde(
+        serialize_with = "serialize_lease",
+        deserialize_with = "deserialize_lease"
+    )]
+    lease: Arc<AtomicU32>,
 
     /// Link type
     #[serde(skip)]
@@ -138,6 +146,7 @@ impl SharedNat {
         &self,
         mac: [u8; 6],
         rx_enabled: Arc<AtomicBool>,
+        lease: Arc<AtomicU32>,
         https_stripping: bool,
     ) -> (
         crossbeam_channel::Sender<BasicPacket>,
@@ -153,6 +162,7 @@ impl SharedNat {
         let (tx, rx) = nat.attach(
             mac,
             rx_enabled,
+            lease,
             #[cfg(feature = "ethernet_nat_https_stripping")]
             https_stripping,
         );
@@ -170,6 +180,7 @@ impl EthernetPort {
             tx: None,
             rx: None,
             rx_enabled: Arc::new(AtomicBool::new(true)),
+            lease: Arc::default(),
             link: EthernetLinkType::Down,
             nat: SharedNat::default(),
             #[cfg(feature = "ethernet_nat")]
@@ -367,9 +378,12 @@ impl EthernetPort {
     /// Attaches the port to its NAT gateway
     #[cfg(feature = "ethernet_nat")]
     fn start_nat(&mut self, https_stripping: bool) {
-        let (tx, rx, stats) = self
-            .nat
-            .attach(self.mac, self.rx_enabled.clone(), https_stripping);
+        let (tx, rx, stats) = self.nat.attach(
+            self.mac,
+            self.rx_enabled.clone(),
+            self.lease.clone(),
+            https_stripping,
+        );
         self.tx = Some(tx);
         self.rx = Some(rx);
         self.nat_stats = Some(stats);
@@ -545,6 +559,19 @@ fn deserialize_flag<'de, D: Deserializer<'de>>(
     Ok(Arc::new(AtomicBool::new(bool::deserialize(deserializer)?)))
 }
 
+fn serialize_lease<S: Serializer>(
+    lease: &Arc<AtomicU32>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u32(lease.load(Ordering::Relaxed))
+}
+
+fn deserialize_lease<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Arc<AtomicU32>, D::Error> {
+    Ok(Arc::new(AtomicU32::new(u32::deserialize(deserializer)?)))
+}
+
 /// The Ethernet function of every adapter model is its port: the frontend works on the port
 impl EthernetFunction for EthernetPort {
     fn status(&self) -> EthernetStatus {
@@ -606,6 +633,81 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
         assert_eq!(received, frame);
+    }
+
+    /// A DHCP DISCOVER from `mac`, as a client without an address sends it
+    #[cfg(feature = "ethernet_nat")]
+    fn dhcp_discover(mac: [u8; 6]) -> Vec<u8> {
+        let mut frame = vec![0; 14 + 20 + 8 + 300];
+        frame[0..6].copy_from_slice(&[0xFF; 6]);
+        frame[6..12].copy_from_slice(&mac);
+        frame[12..14].copy_from_slice(&[0x08, 0x00]);
+        let ip = &mut frame[14..34];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&(20u16 + 8 + 300).to_be_bytes());
+        ip[8] = 64;
+        ip[9] = 17;
+        ip[16..20].copy_from_slice(&[255; 4]);
+        let udp = &mut frame[34..42];
+        udp[0..2].copy_from_slice(&68u16.to_be_bytes());
+        udp[2..4].copy_from_slice(&67u16.to_be_bytes());
+        udp[4..6].copy_from_slice(&308u16.to_be_bytes());
+        let bootp = &mut frame[42..];
+        bootp[0..4].copy_from_slice(&[1, 1, 6, 0]);
+        bootp[4..8].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+        bootp[28..34].copy_from_slice(&mac);
+        // RFC 2132: the magic cookie, a DHCP message type of DISCOVER, the end
+        bootp[236..243].copy_from_slice(&[99, 130, 83, 99, 53, 1, 1]);
+        bootp[243] = 255;
+        frame
+    }
+
+    /// The address a port gets from its gateway's DHCP server
+    #[cfg(feature = "ethernet_nat")]
+    fn dhcp_address(port: &mut EthernetPort) -> [u8; 4] {
+        port.send(&dhcp_discover(port.mac()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // The others' requests come too, as broadcasts: a reply is a BOOTREPLY (op 2)
+            if let Some(reply) = port.recv()
+                && reply[14 + 20 + 8] == 2
+            {
+                // yiaddr, in the BOOTP packet after the Ethernet, IP and UDP headers
+                return reply[14 + 20 + 8 + 16..14 + 20 + 8 + 20]
+                    .try_into()
+                    .unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline, "no DHCP reply");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Ports restored from a save state get the addresses they had back from a new gateway,
+    /// whichever asks first
+    #[cfg(feature = "ethernet_nat")]
+    #[test]
+    fn ports_keep_their_addresses_across_a_save() {
+        let nat = SharedNat::default();
+        let mut a = EthernetPort::new([0x08, 0x00, 0x07, 1, 2, 3]);
+        let mut b = EthernetPort::new([0x08, 0x00, 0x07, 4, 5, 6]);
+        a.set_shared_nat(nat.clone());
+        b.set_shared_nat(nat);
+        a.set_link(EthernetLinkType::NAT).unwrap();
+        b.set_link(EthernetLinkType::NAT).unwrap();
+        assert_eq!(dhcp_address(&mut a), [10, 0, 0, 2]);
+        assert_eq!(dhcp_address(&mut b), [10, 0, 0, 3]);
+
+        let saved_a = serde_json::to_string(&a).unwrap();
+        let saved_b = serde_json::to_string(&b).unwrap();
+        let mut a: EthernetPort = serde_json::from_str(&saved_a).unwrap();
+        let mut b: EthernetPort = serde_json::from_str(&saved_b).unwrap();
+        let nat = SharedNat::default();
+        b.set_shared_nat(nat.clone());
+        a.set_shared_nat(nat);
+        b.set_link(EthernetLinkType::NAT).unwrap();
+        a.set_link(EthernetLinkType::NAT).unwrap();
+        assert_eq!(dhcp_address(&mut b), [10, 0, 0, 3]);
+        assert_eq!(dhcp_address(&mut a), [10, 0, 0, 2]);
     }
 
     #[test]

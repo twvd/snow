@@ -31,7 +31,7 @@ mod mactcp_helpers;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -95,6 +95,9 @@ struct GuestPort {
     tx: Sender<Packet>,
     /// Whether its receiver is on: the frames for it are dropped while it is off
     rx_enabled: Arc<AtomicBool>,
+    /// The address the gateway gave it, 0 for none. The adapter keeps it, in save states too,
+    /// and brings it back when it attaches again.
+    lease: Arc<AtomicU32>,
     /// Its connections to port 80 go out as HTTPS (https_stripping.rs)
     #[cfg(feature = "https_stripping")]
     https_stripping: bool,
@@ -114,6 +117,34 @@ impl GuestTx {
         let mut ports = self.ports.lock().unwrap();
         ports.retain(|p| p.mac != port.mac);
         ports.push(port);
+    }
+
+    /// The address that the adapter at `mac` holds, if it holds one, and those that the other
+    /// adapters hold
+    fn leases(&self, mac: EthernetAddress) -> (Option<Ipv4Address>, Vec<Ipv4Address>) {
+        let mut own = None;
+        let mut others = vec![];
+        for port in self.ports.lock().unwrap().iter() {
+            let lease = port.lease.load(Ordering::Relaxed);
+            if lease == 0 {
+                continue;
+            }
+            if port.mac == mac {
+                own = Some(Ipv4Address::from(lease));
+            } else {
+                others.push(Ipv4Address::from(lease));
+            }
+        }
+        (own, others)
+    }
+
+    /// Gives the adapter at `mac` the address `ip`
+    fn set_lease(&self, mac: EthernetAddress, ip: Ipv4Address) {
+        for port in self.ports.lock().unwrap().iter() {
+            if port.mac == mac {
+                port.lease.store(u32::from(ip), Ordering::Relaxed);
+            }
+        }
     }
 
     /// Sends a frame to the adapters it is for, but the one at `except`. Says whether one took
@@ -806,15 +837,15 @@ pub struct NatEngine {
 }
 
 /// The addresses that the gateway hands out (DHCP, BOOTP, RARP): one for each Ethernet address,
-/// always the same, from the address after the gateway's upwards, in the order they are asked
-/// for, as long as the network has room
+/// always the same. An adapter that comes back with the address it had, from a save state, gets
+/// it again if it is still free; the others get the lowest free address after the gateway's.
 struct Addresses {
     /// The first one, after the gateway's
     first: u32,
     /// The last one, before the network's broadcast address
     last: u32,
-    /// Those given, in order
-    given: Vec<EthernetAddress>,
+    /// Those given
+    given: Vec<(EthernetAddress, Ipv4Address)>,
 }
 
 impl Addresses {
@@ -827,22 +858,43 @@ impl Addresses {
         }
     }
 
-    /// The address of the adapter at `mac`; None once the network has none left
-    fn of(&mut self, mac: EthernetAddress) -> Option<Ipv4Address> {
-        let index = self
-            .given
-            .iter()
-            .position(|&given| given == mac)
-            .unwrap_or(self.given.len());
-        let address = self.first.checked_add(u32::try_from(index).ok()?)?;
-        if address > self.last {
-            return None;
+    /// The address of the adapter at `mac`: the one it was given, else `held`, the one it holds
+    /// from before, if that is on the network and free, else the lowest free one. `reserved`
+    /// are those that the other adapters hold. None once the network has none left.
+    fn of(
+        &mut self,
+        mac: EthernetAddress,
+        held: Option<Ipv4Address>,
+        reserved: &[Ipv4Address],
+    ) -> Option<Ipv4Address> {
+        if let Some(&(_, ip)) = self.given.iter().find(|&&(given, _)| given == mac) {
+            return Some(ip);
         }
-        if index == self.given.len() {
-            self.given.push(mac);
-        }
-        Some(Ipv4Address::from(address))
+        let free = |address: u32| {
+            let ip = Ipv4Address::from(address);
+            !self.given.iter().any(|&(_, given)| given == ip) && !reserved.contains(&ip)
+        };
+        let address = held
+            .map(u32::from)
+            .filter(|&address| (self.first..=self.last).contains(&address) && free(address))
+            .or_else(|| (self.first..=self.last).find(|&address| free(address)))?;
+        let ip = Ipv4Address::from(address);
+        self.given.push((mac, ip));
+        Some(ip)
     }
+}
+
+/// The address of the adapter at `mac`, as `Addresses::of()` gives it, with the address it holds
+/// and those of the others from `guests`. The adapter then holds it.
+fn address_of(
+    addresses: &mut Addresses,
+    guests: &GuestTx,
+    mac: EthernetAddress,
+) -> Option<Ipv4Address> {
+    let (held, reserved) = guests.leases(mac);
+    let ip = addresses.of(mac, held, &reserved)?;
+    guests.set_lease(mac, ip);
+    Some(ip)
 }
 
 /// A NAT gateway and its network, which the emulated system's Ethernet adapters attach to.
@@ -889,10 +941,14 @@ impl NatNetwork {
     /// Attaches the adapter with the Ethernet address `mac`, in place of one with the same
     /// address. Returns its channels: of the frames it sends, and of the frames for it, which
     /// are dropped while `rx_enabled` is false. Dropping the second detaches it.
+    ///
+    /// `lease` holds the address the gateway gives the adapter, 0 for none: it asks for the
+    /// address it holds, and gets it again if that is on the network and free.
     pub fn attach(
         &self,
         mac: [u8; 6],
         rx_enabled: Arc<AtomicBool>,
+        lease: Arc<AtomicU32>,
         #[cfg(feature = "https_stripping")] https_stripping: bool,
     ) -> (Sender<Packet>, Receiver<Packet>) {
         let (tx, rx) = crossbeam_channel::bounded(self.queue_size);
@@ -900,6 +956,7 @@ impl NatNetwork {
             mac: EthernetAddress(mac),
             tx,
             rx_enabled,
+            lease,
             #[cfg(feature = "https_stripping")]
             https_stripping,
         });
@@ -1179,9 +1236,10 @@ impl NatEngine {
         let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
 
         let addresses = &mut self.addresses;
+        let guests = &self.device.tx;
         let Some(buf) =
             mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac, |mac| {
-                addresses.of(mac)
+                address_of(addresses, guests, mac)
             })?
         else {
             return Ok(());
@@ -1206,7 +1264,7 @@ impl NatEngine {
         let Some(mac) = dhcp::client_hardware_address(packet) else {
             return;
         };
-        let Some(client_ip) = self.addresses.of(mac) else {
+        let Some(client_ip) = address_of(&mut self.addresses, &self.device.tx, mac) else {
             log::warn!("DHCP: no address left for {}", mac);
             return;
         };
@@ -2225,6 +2283,7 @@ mod tests {
             mac: EthernetAddress(mac),
             tx,
             rx_enabled: Arc::new(AtomicBool::new(true)),
+            lease: Arc::default(),
             #[cfg(feature = "https_stripping")]
             https_stripping: false,
         });
@@ -2428,6 +2487,7 @@ mod tests {
             mac: EthernetAddress(OTHER_MAC),
             tx,
             rx_enabled: Arc::new(AtomicBool::new(true)),
+            lease: Arc::default(),
             https_stripping: true,
         });
         assert!(!guests.strips_https(EthernetAddress(GUEST_MAC)));
@@ -2439,10 +2499,54 @@ mod tests {
         let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
         let a = EthernetAddress(GUEST_MAC);
         let b = EthernetAddress(OTHER_MAC);
-        assert_eq!(addresses.of(a), Some(Ipv4Address::new(10, 0, 0, 2)));
-        assert_eq!(addresses.of(b), Some(Ipv4Address::new(10, 0, 0, 3)));
+        assert_eq!(
+            addresses.of(a, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(
+            addresses.of(b, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 3))
+        );
         // Always the same one
-        assert_eq!(addresses.of(a), Some(Ipv4Address::new(10, 0, 0, 2)));
+        assert_eq!(
+            addresses.of(a, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+    }
+
+    /// An adapter back with the address it held gets it again, even when another asks first;
+    /// one held on another network is forgotten
+    #[test]
+    fn an_adapter_gets_the_address_it_held_back() {
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        let b = EthernetAddress(OTHER_MAC);
+        let held = Ipv4Address::new(10, 0, 0, 3);
+        // b asks first, while a holds .3: b gets .2
+        assert_eq!(
+            addresses.of(b, None, &[held]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(addresses.of(a, Some(held), &[]), Some(held));
+
+        let mut addresses = Addresses::new(Ipv4Address::new(192, 168, 1, 1), 0xFFFF_FF00);
+        assert_eq!(
+            addresses.of(a, Some(held), &[]),
+            Some(Ipv4Address::new(192, 168, 1, 2))
+        );
+    }
+
+    /// The gateway gives an adapter its address through the adapter's lease
+    #[test]
+    fn the_adapter_holds_its_address() {
+        let guests = GuestTx::default();
+        let _rx = attach(&guests, GUEST_MAC);
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        assert_eq!(guests.leases(a), (None, vec![]));
+        let ip = address_of(&mut addresses, &guests, a);
+        assert_eq!(ip, Some(Ipv4Address::new(10, 0, 0, 2)));
+        assert_eq!(guests.leases(a), (ip, vec![]));
     }
 
     #[test]
@@ -2450,11 +2554,11 @@ mod tests {
         // 10.0.0.0/30: the gateway at .1, one address left, .2; .3 is the broadcast address
         let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFFFF_FFFC);
         assert_eq!(
-            addresses.of(EthernetAddress(GUEST_MAC)),
+            addresses.of(EthernetAddress(GUEST_MAC), None, &[]),
             Some(Ipv4Address::new(10, 0, 0, 2))
         );
-        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC)), None);
-        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC)), None);
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
         assert_eq!(addresses.given.len(), 1);
     }
 }
