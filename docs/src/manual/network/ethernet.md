@@ -129,9 +129,10 @@ router and DNS server. DNS queries sent to 10.0.0.1 go to a DNS server of the ho
 
 The DNS server is the one set in the NAT gateway's settings, or, with none set, the host's: on Linux and macOS, the
 first one in `/etc/resolv.conf`; on Windows, the first one of the network adapter that the host's traffic goes out
-through (the one connected, with a gateway and, of those, the lowest metric). The settings dialog shows the host's. On
-macOS, `/etc/resolv.conf` holds the servers of the main network connection only: names that only a VPN's own DNS
-server knows need that server set.
+through (the one connected, with a gateway and, of those, the lowest metric). The settings dialog shows the host's. The
+gateway looks the host's up again for a query when the last lookup is 10 seconds old or more, so that it follows the
+host to another network. On macOS, `/etc/resolv.conf` holds the servers of the main network connection only: names that
+only a VPN's own DNS server knows need that server set.
 
 You can also configure the IP manually by following the mini guide below.
 

@@ -160,6 +160,57 @@ unsafe fn windows_address(
     }
 }
 
+/// How long the host's DNS server, once looked up, is used before the next DNS query looks it up
+/// again: it changes with the host's network, as on a switch to another Wi-Fi network or to a
+/// VPN, but a lookup on every query would cost too much
+const HOST_DNS_LIFETIME: Duration = Duration::from_secs(10);
+
+/// Where DNS queries to the gateway go: the server set, or else the host's, looked up again
+/// at most every HOST_DNS_LIFETIME
+struct DnsServer {
+    /// The server set, if any
+    set: Option<std::net::IpAddr>,
+    /// The host's, as last looked up
+    host: Option<std::net::IpAddr>,
+    /// When the host's was looked up
+    looked_up: Instant,
+}
+
+impl DnsServer {
+    fn new(set: Option<std::net::IpAddr>, now: Instant) -> Self {
+        let host = if set.is_none() {
+            host_dns_server()
+        } else {
+            None
+        };
+        Self {
+            set,
+            host,
+            looked_up: now,
+        }
+    }
+
+    /// The server to use at `now`, with `lookup` to look up the host's
+    fn get(
+        &mut self,
+        now: Instant,
+        lookup: impl FnOnce() -> Option<std::net::IpAddr>,
+    ) -> Option<std::net::IpAddr> {
+        if self.set.is_some() {
+            return self.set;
+        }
+        if now.duration_since(self.looked_up) >= HOST_DNS_LIFETIME {
+            let host = lookup();
+            if host != self.host {
+                log::info!("NAT: the host's DNS server is now {:?}", host);
+            }
+            self.host = host;
+            self.looked_up = now;
+        }
+        self.host
+    }
+}
+
 const MTU: usize = 1514;
 const SMOLTCP_BUFFER_SIZE: usize = 65536;
 
@@ -930,8 +981,8 @@ pub struct NatEngine {
     /// The addresses handed out
     addresses: Addresses,
 
-    /// The host's DNS server, where DNS queries to the gateway go
-    host_dns: Option<std::net::IpAddr>,
+    /// Where DNS queries to the gateway go
+    dns: DnsServer,
 }
 
 /// The addresses that the gateway hands out (DHCP, BOOTP, RARP): one for each Ethernet address,
@@ -1132,8 +1183,8 @@ impl NatEngine {
             gateway_ip: gateway_ipv4,
             gateway_mac: gateway_mac_addr,
         };
-        let host_dns = dns.or_else(host_dns_server);
-        match host_dns {
+        let dns = DnsServer::new(dns, Instant::now());
+        match dns.set.or(dns.host) {
             Some(dns) => log::info!("NAT: DNS queries to the gateway go to {}", dns),
             None => log::warn!(
                 "NAT: no DNS server set, and the host has none: DNS queries to the gateway fail"
@@ -1153,7 +1204,7 @@ impl NatEngine {
             gateway_subnet,
             lease,
             addresses,
-            host_dns,
+            dns,
         }
     }
 
@@ -1435,7 +1486,7 @@ impl NatEngine {
             // A DNS query to the gateway goes to the host's DNS server; the answer comes back
             // from the gateway, since the smoltcp socket is bound to it
             let remote_addr = if dst_ip == self.device.gateway_ip && dst_port == DNS_PORT {
-                let Some(dns) = self.host_dns else {
+                let Some(dns) = self.dns.get(Instant::now(), host_dns_server) else {
                     return Ok(());
                 };
                 SocketAddr::new(dns, DNS_PORT)
@@ -2666,5 +2717,35 @@ mod tests {
         assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
         assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
         assert_eq!(addresses.given.len(), 1);
+    }
+
+    /// The host's DNS server is looked up again for a query once HOST_DNS_LIFETIME has passed,
+    /// not sooner; a server set is used without a lookup
+    #[test]
+    fn the_hosts_dns_server_is_looked_up_again_after_a_while() {
+        let start = Instant::now();
+        let old = Some(std::net::IpAddr::from([192, 168, 1, 1]));
+        let new = Some(std::net::IpAddr::from([10, 1, 1, 1]));
+        let mut dns = DnsServer {
+            set: None,
+            host: old,
+            looked_up: start,
+        };
+        let soon = start + HOST_DNS_LIFETIME / 2;
+        assert_eq!(dns.get(soon, || panic!("looked up too soon")), old);
+        let later = start + HOST_DNS_LIFETIME;
+        assert_eq!(dns.get(later, || new), new);
+        assert_eq!(dns.get(later, || panic!("looked up again at once")), new);
+
+        let set = Some(std::net::IpAddr::from([9, 9, 9, 9]));
+        let mut dns = DnsServer {
+            set,
+            host: None,
+            looked_up: start,
+        };
+        assert_eq!(
+            dns.get(later, || panic!("looked up with a server set")),
+            set
+        );
     }
 }
