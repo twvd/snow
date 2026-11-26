@@ -293,47 +293,12 @@ impl EthernetPort {
             }
             #[cfg(feature = "ethernet_nat")]
             EthernetLinkType::NAT => {
-                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-
-                let mut nat = snow_nat::NatEngine::new(
-                    nat_tx,
-                    self.rx_enabled.clone(),
-                    nat_rx,
-                    NAT_MAC_ADDRESS,
-                    [10, 0, 0, 1],
-                    8,
-                    #[cfg(feature = "ethernet_nat_https_stripping")]
-                    false,
-                );
-                self.rx = Some(emulator_rx);
-                self.tx = Some(emulator_tx);
-                self.nat_stats = Some(nat.stats());
-                std::thread::spawn(move || {
-                    nat.run();
-                });
+                self.start_nat(false);
                 Ok(())
             }
             #[cfg(feature = "ethernet_nat_https_stripping")]
             EthernetLinkType::NATHttpsStripping => {
-                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
-
-                let mut nat = snow_nat::NatEngine::new(
-                    nat_tx,
-                    self.rx_enabled.clone(),
-                    nat_rx,
-                    NAT_MAC_ADDRESS,
-                    [10, 0, 0, 1],
-                    8,
-                    true, // Enable HTTPS stripping
-                );
-                self.rx = Some(emulator_rx);
-                self.tx = Some(emulator_tx);
-                self.nat_stats = Some(nat.stats());
-                std::thread::spawn(move || {
-                    nat.run();
-                });
+                self.start_nat(true);
                 Ok(())
             }
             // A link this build has no support for
@@ -349,6 +314,23 @@ impl EthernetPort {
         }
         self.link = link;
         Ok(())
+    }
+
+    /// Attaches the port to a NAT gateway of its own
+    #[cfg(feature = "ethernet_nat")]
+    fn start_nat(&mut self, https_stripping: bool) {
+        let nat = snow_nat::NatNetwork::start(NAT_MAC_ADDRESS, [10, 0, 0, 1], 8, PACKET_QUEUE_SIZE);
+        let (tx, rx) = nat.attach(
+            self.mac,
+            self.rx_enabled.clone(),
+            #[cfg(feature = "ethernet_nat_https_stripping")]
+            https_stripping,
+        );
+        #[cfg(not(feature = "ethernet_nat_https_stripping"))]
+        let _ = https_stripping;
+        self.tx = Some(tx);
+        self.rx = Some(rx);
+        self.nat_stats = Some(nat.stats());
     }
 
     pub fn debug_properties(&self) -> DebuggableProperties {

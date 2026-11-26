@@ -5,6 +5,10 @@
 //! the emulator via a crossbeam channel, processes them through a NAT
 //! implementation using smoltcp, and sends responses back.
 //!
+//! The gateway's network can hold several Ethernet adapters of the emulated system
+//! (`NatNetwork::attach()`). It switches frames between them and the gateway by their
+//! destination address.
+//!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
 //! Currently only supports TCP and UDP. The gateway also answers BOOTP and DHCP requests
@@ -27,8 +31,8 @@ mod mactcp_helpers;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -83,22 +87,101 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// together with the channel, so they are polled at this interval.
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// The channel to the emulator, closed to packets while the emulated
-/// adapter's receiver is off
-#[derive(Clone)]
-struct GuestTx {
+/// An Ethernet adapter of the emulated system, on the gateway's network
+struct GuestPort {
+    /// Its Ethernet address
+    mac: EthernetAddress,
+    /// The channel of the frames for it
     tx: Sender<Packet>,
+    /// Whether its receiver is on: the frames for it are dropped while it is off
     rx_enabled: Arc<AtomicBool>,
+    /// Its connections to port 80 go out as HTTPS (https_stripping.rs)
+    #[cfg(feature = "https_stripping")]
+    https_stripping: bool,
+}
+
+/// The adapters of the emulated system on the gateway's network, as on a switch: a frame goes
+/// to the adapter of its destination address, a broadcast or multicast frame to all of them.
+/// An adapter that has closed its channel is taken off.
+#[derive(Clone, Default)]
+struct GuestTx {
+    ports: Arc<Mutex<Vec<GuestPort>>>,
 }
 
 impl GuestTx {
-    /// A packet the receiver can't take is dropped, as if the queue were
-    /// full
+    /// Adds an adapter, in place of one with the same address
+    fn attach(&self, port: GuestPort) {
+        let mut ports = self.ports.lock().unwrap();
+        ports.retain(|p| p.mac != port.mac);
+        ports.push(port);
+    }
+
+    /// Sends a frame to the adapters it is for, but the one at `except`. Says whether one took
+    /// it.
+    fn deliver(&self, packet: &[u8], except: Option<EthernetAddress>) -> bool {
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        let dst = eth_frame.dst_addr();
+        let mut taken = false;
+        self.ports.lock().unwrap().retain(|port| {
+            if Some(port.mac) == except
+                || (dst.is_unicast() && dst != port.mac)
+                || !port.rx_enabled.load(Ordering::Relaxed)
+            {
+                return true;
+            }
+            match port.tx.try_send(packet.to_vec()) {
+                Ok(()) => {
+                    taken = true;
+                    true
+                }
+                Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            }
+        });
+        taken
+    }
+
+    /// Sends a frame from the gateway. A frame that no adapter takes is dropped, as if the
+    /// queue were full.
     fn try_send(&self, packet: Packet) -> std::result::Result<(), TrySendError<Packet>> {
-        if !self.rx_enabled.load(Ordering::Relaxed) {
-            return Err(TrySendError::Full(packet));
+        if self.deliver(&packet, None) {
+            Ok(())
+        } else {
+            Err(TrySendError::Full(packet))
         }
-        self.tx.try_send(packet)
+    }
+
+    /// Passes a frame from an adapter to the others. A frame for another adapter goes to it
+    /// alone, and that is said; a broadcast or multicast frame goes to the others, and on to
+    /// the gateway too.
+    fn forward(&self, packet: &[u8]) -> bool {
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        let dst = eth_frame.dst_addr();
+        let to_guest = dst.is_unicast()
+            && self
+                .ports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|port| port.mac == dst);
+        if to_guest || !dst.is_unicast() {
+            self.deliver(packet, Some(eth_frame.src_addr()));
+        }
+        to_guest
+    }
+
+    /// Whether the adapter at `mac` strips HTTPS
+    #[cfg(feature = "https_stripping")]
+    fn strips_https(&self, mac: EthernetAddress) -> bool {
+        self.ports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|port| port.mac == mac && port.https_stripping)
     }
 }
 
@@ -115,8 +198,8 @@ struct VirtualDevice {
     gateway_ip: Ipv4Address,
     /// The broadcast address of the gateway's subnet
     subnet_broadcast: Ipv4Address,
-    /// Learned local node (for gratuitous ARP)
-    local_node: Option<(EthernetAddress, Ipv4Address)>,
+    /// Learned local nodes (for gratuitous ARP): one address per adapter
+    local_nodes: Vec<(EthernetAddress, Ipv4Address)>,
     /// Next time gratuitous ARP should be sent
     next_gratuitous_arp: Instant,
     /// Packets received from the emulator while waiting in `wait_for_packet()`,
@@ -142,7 +225,7 @@ impl VirtualDevice {
             smoltcp_queue: Vec::new(),
             gateway_ip,
             subnet_broadcast,
-            local_node: None,
+            local_nodes: Vec::new(),
             next_gratuitous_arp: Instant::now(),
             pending: VecDeque::new(),
             disconnected: false,
@@ -363,23 +446,11 @@ impl Device for VirtualDevice {
         &mut self,
         _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        // First, check if we have packets queued for smoltcp (e.g., TCP SYN after creating listening socket)
-        if let Some(packet) = self.smoltcp_queue.pop() {
-            return Some((
-                VirtualRxToken { buffer: packet },
-                VirtualTxToken {
-                    tx: self.tx.clone(),
-                    stats: self.stats.clone(),
-                },
-            ));
-        }
-
-        // Check if it is time to send gratuitous ARP
-        if let Some((local_mac, local_ip)) = self.local_node {
-            let now = Instant::now();
-            if self.next_gratuitous_arp < now {
-                self.next_gratuitous_arp = now + GRATUITOUS_ARP_INTERVAL;
-
+        // Check if it is time to send gratuitous ARP: one for each local node, queued for smoltcp
+        let now = Instant::now();
+        if !self.local_nodes.is_empty() && self.next_gratuitous_arp < now {
+            self.next_gratuitous_arp = now + GRATUITOUS_ARP_INTERVAL;
+            for &(local_mac, local_ip) in &self.local_nodes {
                 let mut buffer = vec![0; 42];
                 let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer);
                 eth_frame.set_src_addr(local_mac);
@@ -399,15 +470,19 @@ impl Device for VirtualDevice {
                 };
 
                 arp_repr.emit(&mut arp_packet);
-
-                return Some((
-                    VirtualRxToken { buffer },
-                    VirtualTxToken {
-                        tx: self.tx.clone(),
-                        stats: self.stats.clone(),
-                    },
-                ));
+                self.smoltcp_queue.push(buffer);
             }
+        }
+
+        // First, check if we have packets queued for smoltcp (e.g., TCP SYN after creating listening socket)
+        if let Some(packet) = self.smoltcp_queue.pop() {
+            return Some((
+                VirtualRxToken { buffer: packet },
+                VirtualTxToken {
+                    tx: self.tx.clone(),
+                    stats: self.stats.clone(),
+                },
+            ));
         }
 
         // Receive new packet from Ethernet adapter channel. This must not block:
@@ -429,6 +504,12 @@ impl Device for VirtualDevice {
         self.stats
             .rx_bytes
             .fetch_add(packet.len(), Ordering::Relaxed);
+
+        // A frame for another adapter of the emulated system goes to it alone; broadcast and
+        // multicast go to the others as well
+        if self.tx.forward(&packet) {
+            return None;
+        }
 
         // The host's own addresses are no way out: TCP gets a reset, the rest is dropped
         if Self::to_host_only_address(&packet) {
@@ -488,11 +569,14 @@ impl Device for VirtualDevice {
             .and_then(|p| ArpRepr::parse(&p))
             && operation == ArpOperation::Request
             && target_protocol_addr == self.gateway_ip
-            && self
-                .local_node
-                .is_none_or(|(mac, ip)| mac != source_hardware_addr || ip != source_protocol_addr)
+            && !self
+                .local_nodes
+                .contains(&(source_hardware_addr, source_protocol_addr))
         {
-            self.local_node = Some((source_hardware_addr, source_protocol_addr));
+            self.local_nodes
+                .retain(|&(mac, _)| mac != source_hardware_addr);
+            self.local_nodes
+                .push((source_hardware_addr, source_protocol_addr));
             self.next_gratuitous_arp = Instant::now() + GRATUITOUS_ARP_INTERVAL;
             log::debug!(
                 "Learned local MAC address {} - IP address: {}",
@@ -707,10 +791,6 @@ pub struct NatEngine {
     /// Statistics
     stats: Arc<NatEngineStats>,
 
-    /// Whether to enable HTTPS stripping
-    #[cfg(feature = "https_stripping")]
-    https_stripping: bool,
-
     /// Gateway subnet prefix length (for ICMP Address Mask replies)
     #[cfg(feature = "mactcp_helpers")]
     gateway_subnet: u8,
@@ -722,25 +802,87 @@ pub struct NatEngine {
     host_dns: Option<std::net::IpAddr>,
 }
 
-impl NatEngine {
-    /// Creates a new NAT engine instance with the given TX/RX channels
-    ///
-    /// * `tx` - Sender channel for packets going to the emulator
-    /// * `rx_enabled` - Whether the emulated adapter takes packets; they
-    ///   are dropped while it is false
-    /// * `rx` - Receiver channel for packets coming from the emulator
-    /// * `gateway_mac` - MAC address of the NAT gateway
-    /// * `gateway_ip` - IP address of the NAT gateway
-    /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
-    /// * `https_stripping` - Whether to enable HTTPS stripping
-    pub fn new(
-        tx: Sender<Packet>,
-        rx_enabled: Arc<AtomicBool>,
-        rx: Receiver<Packet>,
+/// A NAT gateway and its network, which the emulated system's Ethernet adapters attach to.
+/// The gateway runs on a thread of its own as long as the network or one of its adapters is
+/// there.
+pub struct NatNetwork {
+    /// The channel of the frames from the adapters, which all share it
+    to_gateway: Sender<Packet>,
+    /// The adapters
+    guests: GuestTx,
+    stats: Arc<NatEngineStats>,
+    /// The length of an adapter's queue
+    queue_size: usize,
+}
+
+impl NatNetwork {
+    /// Starts a gateway at `gateway_ip`, on a network of `gateway_subnet` bits, with the
+    /// Ethernet address `gateway_mac`. Each queue of frames holds `queue_size` frames.
+    pub fn start(
         gateway_mac: [u8; 6],
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
+        queue_size: usize,
+    ) -> Self {
+        let (to_gateway, from_guests) = crossbeam_channel::bounded(queue_size);
+        let guests = GuestTx::default();
+        let mut engine = NatEngine::new(
+            from_guests,
+            guests.clone(),
+            gateway_mac,
+            gateway_ip,
+            gateway_subnet,
+        );
+        let stats = engine.stats();
+        std::thread::spawn(move || engine.run());
+        Self {
+            to_gateway,
+            guests,
+            stats,
+            queue_size,
+        }
+    }
+
+    /// Attaches the adapter with the Ethernet address `mac`, in place of one with the same
+    /// address. Returns its channels: of the frames it sends, and of the frames for it, which
+    /// are dropped while `rx_enabled` is false. Dropping the second detaches it.
+    pub fn attach(
+        &self,
+        mac: [u8; 6],
+        rx_enabled: Arc<AtomicBool>,
         #[cfg(feature = "https_stripping")] https_stripping: bool,
+    ) -> (Sender<Packet>, Receiver<Packet>) {
+        let (tx, rx) = crossbeam_channel::bounded(self.queue_size);
+        self.guests.attach(GuestPort {
+            mac: EthernetAddress(mac),
+            tx,
+            rx_enabled,
+            #[cfg(feature = "https_stripping")]
+            https_stripping,
+        });
+        (self.to_gateway.clone(), rx)
+    }
+
+    /// The statistics of the gateway
+    pub fn stats(&self) -> Arc<NatEngineStats> {
+        self.stats.clone()
+    }
+}
+
+impl NatEngine {
+    /// Creates a new NAT engine instance
+    ///
+    /// * `rx` - Receiver channel for packets coming from the emulator's adapters
+    /// * `tx` - The adapters, where packets for the emulator go
+    /// * `gateway_mac` - MAC address of the NAT gateway
+    /// * `gateway_ip` - IP address of the NAT gateway
+    /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
+    fn new(
+        rx: Receiver<Packet>,
+        tx: GuestTx,
+        gateway_mac: [u8; 6],
+        gateway_ip: [u8; 4],
+        gateway_subnet: u8,
     ) -> Self {
         let stats = Arc::new(NatEngineStats::default());
         let gateway_mac_addr = EthernetAddress(gateway_mac);
@@ -748,7 +890,6 @@ impl NatEngine {
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
         let gateway_ipv4 = Ipv4Address::from(gateway_ip);
-        let tx = GuestTx { tx, rx_enabled };
         let netmask = u32::MAX
             .checked_shl(32 - u32::from(gateway_subnet))
             .unwrap_or(0);
@@ -801,8 +942,6 @@ impl NatEngine {
             nat_table: HashMap::new(),
             recv_buffer: vec![0u8; SMOLTCP_BUFFER_SIZE],
             stats,
-            #[cfg(feature = "https_stripping")]
-            https_stripping,
             #[cfg(feature = "mactcp_helpers")]
             gateway_subnet,
             lease,
@@ -1192,7 +1331,8 @@ impl NatEngine {
 
         // Check if this is a port 80 connection and HTTPS stripping is enabled
         #[cfg(feature = "https_stripping")]
-        let use_https_stripping = self.https_stripping && dst_port == 80;
+        let use_https_stripping =
+            dst_port == 80 && self.device.tx.strips_https(_eth_frame.src_addr());
         #[cfg(not(feature = "https_stripping"))]
         let use_https_stripping = false;
 
@@ -2022,14 +2162,25 @@ mod tests {
     const GUEST_MAC: [u8; 6] = [0x08, 0x00, 0x07, 0x12, 0x34, 0x56];
     const GUEST_IP: [u8; 4] = [10, 0, 0, 2];
 
-    /// The device of a gateway at 10.0.0.1/8, and the guest's ends of its channels
-    fn device() -> (VirtualDevice, Sender<Packet>, Receiver<Packet>) {
-        let (to_guest, from_nat) = crossbeam_channel::unbounded();
-        let (to_nat, from_guest) = crossbeam_channel::unbounded();
-        let tx = GuestTx {
-            tx: to_guest,
+    /// An adapter at `mac` on `guests`, and its end of the channel of the frames for it
+    fn attach(guests: &GuestTx, mac: [u8; 6]) -> Receiver<Packet> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        guests.attach(GuestPort {
+            mac: EthernetAddress(mac),
+            tx,
             rx_enabled: Arc::new(AtomicBool::new(true)),
-        };
+            #[cfg(feature = "https_stripping")]
+            https_stripping: false,
+        });
+        rx
+    }
+
+    /// The device of a gateway at 10.0.0.1/8 with the guest's adapter at GUEST_MAC, and the
+    /// guest's ends of its channels
+    fn device() -> (VirtualDevice, Sender<Packet>, Receiver<Packet>) {
+        let (to_nat, from_guest) = crossbeam_channel::unbounded();
+        let tx = GuestTx::default();
+        let from_nat = attach(&tx, GUEST_MAC);
         let device = VirtualDevice::new(
             tx,
             from_guest,
@@ -2151,5 +2302,79 @@ mod tests {
         assert_eq!(tcp.seq_number(), TcpSeqNumber(0));
         // The SYN counts for one
         assert_eq!(tcp.ack_number(), TcpSeqNumber(1001));
+    }
+
+    const OTHER_MAC: [u8; 6] = [0x08, 0x00, 0x07, 0xAB, 0xCD, 0xEF];
+
+    /// A frame from `src` to `dst`, of no particular protocol
+    fn raw_frame(dst: [u8; 6], src: [u8; 6]) -> Packet {
+        let mut f = vec![0; 60];
+        let mut eth = EthernetFrame::new_unchecked(&mut f[..]);
+        eth.set_dst_addr(EthernetAddress(dst));
+        eth.set_src_addr(EthernetAddress(src));
+        eth.set_ethertype(EthernetProtocol::Unknown(0x88B5));
+        f
+    }
+
+    #[test]
+    fn a_frame_between_two_adapters_goes_to_the_other_alone() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame(OTHER_MAC, GUEST_MAC);
+        assert!(guests.forward(&frame));
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+    }
+
+    #[test]
+    fn a_broadcast_goes_to_the_other_adapters_and_on_to_the_gateway() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame([0xFF; 6], GUEST_MAC);
+        assert!(!guests.forward(&frame));
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+
+        // A frame for an address that isn't an adapter's is for the gateway
+        assert!(!guests.forward(&raw_frame(GATEWAY_MAC, GUEST_MAC)));
+        assert!(to_guest.is_empty() && to_other.is_empty());
+    }
+
+    #[test]
+    fn a_frame_from_the_gateway_goes_to_its_adapter() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame(OTHER_MAC, GATEWAY_MAC);
+        assert!(guests.try_send(frame.clone()).is_ok());
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+        // No adapter there: dropped
+        assert!(guests.try_send(raw_frame([0x02; 6], GATEWAY_MAC)).is_err());
+        // An adapter that has gone is taken off
+        drop(to_other);
+        assert!(guests.try_send(raw_frame(OTHER_MAC, GATEWAY_MAC)).is_err());
+        assert_eq!(guests.ports.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "https_stripping")]
+    #[test]
+    fn https_stripping_is_for_each_adapter() {
+        let guests = GuestTx::default();
+        let _to_guest = attach(&guests, GUEST_MAC);
+        let (tx, _to_other) = crossbeam_channel::unbounded();
+        guests.attach(GuestPort {
+            mac: EthernetAddress(OTHER_MAC),
+            tx,
+            rx_enabled: Arc::new(AtomicBool::new(true)),
+            https_stripping: true,
+        });
+        assert!(!guests.strips_https(EthernetAddress(GUEST_MAC)));
+        assert!(guests.strips_https(EthernetAddress(OTHER_MAC)));
     }
 }
