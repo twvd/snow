@@ -391,6 +391,10 @@ where
         self.mmu_generation
     }
 
+    pub(crate) fn inspect_dirty_data(&self) -> Vec<(Address, [u8; 4])> {
+        self.caches.inspect_dirty_data(self.regs.cacr)
+    }
+
     /// Triggers data access breakpoints
     fn data_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
         let kind = if write {
