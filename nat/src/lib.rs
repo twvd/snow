@@ -52,6 +52,7 @@ pub type Packet = Vec<u8>;
 const DNS_PORT: u16 = 53;
 
 /// The host's DNS server: the first one in /etc/resolv.conf
+#[cfg(not(windows))]
 fn host_dns_server() -> Option<std::net::IpAddr> {
     let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
     conf.lines().find_map(|line| {
@@ -60,6 +61,103 @@ fn host_dns_server() -> Option<std::net::IpAddr> {
             .then(|| words.next()?.parse().ok())
             .flatten()
     })
+}
+
+/// The host's DNS server: the first one of the network adapter that is up, has a gateway and,
+/// of those, the lowest metric, the one that the host's traffic goes out through
+#[cfg(windows)]
+fn host_dns_server() -> Option<std::net::IpAddr> {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME,
+        GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses,
+        IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::AF_UNSPEC;
+
+    let flags = GAA_FLAG_SKIP_UNICAST
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_FRIENDLY_NAME
+        | GAA_FLAG_INCLUDE_GATEWAYS;
+    // Of u64s, for the alignment of the adapters' structures; 16 KB as Microsoft advises, and
+    // more if that is too little
+    let mut buffer: Vec<u64> = vec![0; 2048];
+    loop {
+        let mut size = u32::try_from(buffer.len() * 8).ok()?;
+        // SAFETY: the buffer holds `size` bytes, aligned for IP_ADAPTER_ADDRESSES_LH
+        let result = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC.0),
+                flags,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                &raw mut size,
+            )
+        };
+        if result == ERROR_BUFFER_OVERFLOW.0 {
+            buffer.resize(size as usize / 8 + 1, 0);
+        } else if result == 0 {
+            break;
+        } else {
+            return None;
+        }
+    }
+
+    let mut best: Option<(u32, std::net::IpAddr)> = None;
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    // SAFETY: GetAdaptersAddresses filled the buffer with a list of adapters, each with its
+    // list of DNS servers, which live as long as the buffer
+    while let Some(a) = unsafe { adapter.as_ref() } {
+        if a.OperStatus == IfOperStatusUp
+            && !a.FirstGatewayAddress.is_null()
+            && best.is_none_or(|(metric, _)| a.Ipv4Metric < metric)
+        {
+            let mut server = a.FirstDnsServerAddress;
+            // SAFETY: as above
+            while let Some(s) = unsafe { server.as_ref() } {
+                // SAFETY: as above
+                if let Some(dns) = unsafe { windows_address(s.Address.lpSockaddr) } {
+                    best = Some((a.Ipv4Metric, dns));
+                    break;
+                }
+                server = s.Next;
+            }
+        }
+        adapter = a.Next;
+    }
+    best.map(|(_, dns)| dns)
+}
+
+/// The address of a socket address of Windows, if it is one that a socket can reach without
+/// more: not IPv6 link-local, which needs the interface too, nor IPv6 site-local, deprecated
+/// (RFC 3879), which Windows lists as fec0:0:0:ffff::1 to 3 when the adapter has no IPv6 DNS
+/// server
+///
+/// # Safety
+/// `address` is null or points to a SOCKADDR_IN or SOCKADDR_IN6 as its family says
+#[cfg(windows)]
+unsafe fn windows_address(
+    address: *const windows::Win32::Networking::WinSock::SOCKADDR,
+) -> Option<std::net::IpAddr> {
+    use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6};
+
+    // SAFETY: by the caller
+    let family = unsafe { address.as_ref()? }.sa_family;
+    if family == AF_INET {
+        // SAFETY: by the caller; S_addr is in network order, as are its bytes in memory
+        let ip = unsafe { (*address.cast::<SOCKADDR_IN>()).sin_addr.S_un.S_addr };
+        Some(std::net::Ipv4Addr::from(ip.to_ne_bytes()).into())
+    } else if family == AF_INET6 {
+        // SAFETY: by the caller
+        let ip =
+            std::net::Ipv6Addr::from(unsafe { (*address.cast::<SOCKADDR_IN6>()).sin6_addr.u.Byte });
+        let prefix = ip.segments()[0] & 0xffc0;
+        (prefix != 0xfe80 && prefix != 0xfec0).then_some(ip.into())
+    } else {
+        None
+    }
 }
 
 const MTU: usize = 1514;
@@ -1038,7 +1136,7 @@ impl NatEngine {
         match host_dns {
             Some(dns) => log::info!("NAT: DNS queries to the gateway go to {}", dns),
             None => log::warn!(
-                "NAT: no DNS server set, and none in /etc/resolv.conf: DNS queries to the gateway fail"
+                "NAT: no DNS server set, and the host has none: DNS queries to the gateway fail"
             ),
         }
 

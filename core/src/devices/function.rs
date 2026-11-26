@@ -337,8 +337,9 @@ pub struct NatConfig {
     /// The length of the network prefix, in bits: 8 for a class A network, 16 for class B,
     /// 24 for class C
     pub prefix_len: u8,
-    /// The DNS server that DNS queries to the gateway go to. None: the host's, the first one
-    /// in /etc/resolv.conf.
+    /// The DNS server that DNS queries to the gateway go to. None: the host's (the first one
+    /// in /etc/resolv.conf, or on Windows the first one of the adapter the host's traffic goes
+    /// out through).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns: Option<std::net::IpAddr>,
 }

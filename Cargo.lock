@@ -5159,6 +5159,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pki-types",
  "smoltcp",
+ "windows 0.62.2",
 ]
 
 [[package]]
