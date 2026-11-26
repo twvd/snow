@@ -53,7 +53,7 @@ const DNS_PORT: u16 = 53;
 
 /// The host's DNS server: the first one in /etc/resolv.conf
 #[cfg(not(windows))]
-fn host_dns_server() -> Option<std::net::IpAddr> {
+pub fn host_dns_server() -> Option<std::net::IpAddr> {
     let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
     conf.lines().find_map(|line| {
         let mut words = line.split_whitespace();
@@ -66,7 +66,7 @@ fn host_dns_server() -> Option<std::net::IpAddr> {
 /// The host's DNS server: the first one of the network adapter that is up, has a gateway and,
 /// of those, the lowest metric, the one that the host's traffic goes out through
 #[cfg(windows)]
-fn host_dns_server() -> Option<std::net::IpAddr> {
+pub fn host_dns_server() -> Option<std::net::IpAddr> {
     use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
     use windows::Win32::NetworkManagement::IpHelper::{
         GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME,

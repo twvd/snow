@@ -21,7 +21,7 @@ use snow_core::debuggable::DebuggableProperties;
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
     Bus, BusKind, CdromConfig, Device, DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo,
-    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, bus_id,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, NatConfig, bus_id,
     device_configs, models_for,
 };
 #[cfg(feature = "ethernet")]
@@ -253,6 +253,7 @@ impl EmulatorState {
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
+        nat: NatConfig,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let extension_rom = if let Some(filename) = extension_rom_path {
@@ -269,6 +270,7 @@ impl EmulatorState {
             model,
             shared_dir,
             custom_datetime,
+            nat,
         )
     }
 
@@ -284,6 +286,7 @@ impl EmulatorState {
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
+        nat: NatConfig,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -314,7 +317,7 @@ impl EmulatorState {
             mouse_mode,
             pmmu_enabled: args.pmmu_enabled,
             fpu_enabled: args.fpu_enabled,
-            nat: Default::default(),
+            nat,
         };
         let (mut emulator, displays, refused) = Emulator::new(&machine, devices)?;
 
@@ -1629,6 +1632,14 @@ impl EmulatorState {
             FunctionInfo::Printer,
             FunctionConfig::Printer(PrinterConfig::default()),
         );
+    }
+
+    /// Gives the NAT gateway another network
+    pub fn set_nat_config(&self, config: NatConfig) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SetNatConfig(config)).unwrap();
     }
 
     #[cfg(feature = "ethernet")]

@@ -4,7 +4,7 @@ use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::devices::{DeviceModel, FloppyImages};
+use snow_core::devices::{DeviceModel, FloppyImages, NatConfig};
 use snow_core::mac::MacModel;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -155,6 +155,9 @@ pub struct AppSettings {
     /// The host keys and controller buttons of the Apple IIe joystick
     #[serde(deserialize_with = "deserialize_bindings_lenient")]
     pub iie_joystick_bindings: JoyBindings,
+    /// The network of the NAT gateway in a workspace that has none of its own, saved with
+    /// "Save as default". None: 10.0.0.1/8.
+    pub nat_network: Option<NatConfig>,
 }
 
 impl Default for AppSettings {
@@ -192,6 +195,7 @@ impl Default for AppSettings {
             cmd_key_mapping: CmdKeyMapping::default(),
             run_on_reset: true,
             iie_joystick_bindings: default_bindings(),
+            nat_network: None,
         }
     }
 }

@@ -97,7 +97,20 @@ You can select the Ethernet link type through the Devices menu: 'Devices' -> 'SC
 ### Configuring the emulated system for NAT
 
 The NAT link emulates a gateway at IP-address 10.0.0.1. Your emulated system needs to have any IP-address in the
-10.0.0.0/8 network.
+10.0.0.0/8 network. The addresses on this page are those of this network, the default.
+
+Each adapter's menu has a 'NAT gateway' section: it shows the gateway's network and the DNS server it uses, and
+'Settings...' changes them for the workspace. The network is the gateway's address and the length of the network's
+prefix (8 for a class A network, mask 255.0.0.0; 16 for class B; 24 for class C); the dialog shows the addresses the
+adapters get. 'Defaults' puts back 10.0.0.1/8 and the host's DNS server. Choose a network
+that none of the host's own networks is part of. For example, if the host is on 10.1.1.0/24, the default network
+holds it, and the emulated system can't reach the computers there: it takes them for its own network and looks for
+them on it. A network such as 192.168.200.1/24 avoids that. The change takes effect at once: the adapters on a NAT link
+move to the new network, and their connections drop.
+
+With 'Save as default', the network is also the default, for the workspaces without a network of their own: new
+ones, and those in which it was never changed, including those saved before Snow had this setting. Without a default,
+they use 10.0.0.1/8.
 
 The Ethernet adapters of a machine that are on a NAT link share the gateway: they are on one network and reach each
 other.
@@ -110,10 +123,15 @@ Snow includes a RARP server that provides the emulated system with a valid IP ad
 
 Snow also includes a DHCP and BOOTP server. It gives each Ethernet adapter of the emulated system an IP-address of
 its own: 10.0.0.2 to the first one that asks, 10.0.0.3 to the next, and so on, and to an adapter always the same one,
-also after a save state is restored. RARP gives the same addresses. It also gives the mask 255.0.0.0, and 10.0.0.1 as router and DNS
-server. DNS queries sent to 10.0.0.1 go to the DNS server of the host (the
-first one in `/etc/resolv.conf`), and the answers come back from 10.0.0.1. With Open Transport, choose 'Using DHCP
-Server' or 'Using BOOTP Server' in the TCP/IP control panel.
+also after a save state is restored. RARP gives the same addresses. It also gives the mask 255.0.0.0, and 10.0.0.1 as
+router and DNS server. DNS queries sent to 10.0.0.1 go to a DNS server of the host, and the answers come back from
+10.0.0.1. With Open Transport, choose 'Using DHCP Server' or 'Using BOOTP Server' in the TCP/IP control panel.
+
+The DNS server is the one set in the NAT gateway's settings, or, with none set, the host's: on Linux and macOS, the
+first one in `/etc/resolv.conf`; on Windows, the first one of the network adapter that the host's traffic goes out
+through (the one connected, with a gateway and, of those, the lowest metric). The settings dialog shows the host's. On
+macOS, `/etc/resolv.conf` holds the servers of the main network connection only: names that only a VPN's own DNS
+server knows need that server set.
 
 You can also configure the IP manually by following the mini guide below.
 

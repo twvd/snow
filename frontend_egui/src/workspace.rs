@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[cfg(feature = "ethernet")]
 use snow_core::devices::EthernetConfig;
 use snow_core::devices::EthernetLinkType;
+use snow_core::devices::NatConfig;
 #[cfg(feature = "printer")]
 use snow_core::devices::PrinterConfig;
 use snow_core::devices::{
@@ -340,6 +341,9 @@ pub struct Workspace {
     #[serde(deserialize_with = "deserialize_bindings_lenient")]
     pub iie_joystick_bindings: Option<JoyBindings>,
 
+    /// The network of the NAT gateway; None to use the default of the settings
+    pub nat_network: Option<NatConfig>,
+
     /// The folder shared by the built-in AppleTalk file server
     #[cfg(feature = "afp_server")]
     pub afp_shared_dir: Option<RelativePath>,
@@ -420,6 +424,7 @@ impl Default for Workspace {
             ethernet_link_type: Lenient::Read(EthernetLinkType::default()),
             serial_bridges: [None, None],
             iie_joystick_bindings: None,
+            nat_network: None,
             #[cfg(feature = "afp_server")]
             afp_shared_dir: None,
             #[cfg(feature = "afp_server")]
@@ -810,6 +815,25 @@ mod tests {
             let workspace: Workspace = serde_json::from_str(saved).unwrap();
             assert!(workspace.serial_bridges[0].is_none());
         }
+    }
+
+    /// A workspace from before the NAT network setting has none of its own; one with its own
+    /// keeps it through a save and a reload
+    #[test]
+    fn workspace_keeps_its_nat_network() {
+        let workspace: Workspace = serde_json::from_str("{}").unwrap();
+        assert_eq!(workspace.nat_network, None);
+
+        let mut workspace = Workspace::default();
+        let network = NatConfig {
+            gateway: [192, 168, 200, 1],
+            prefix_len: 24,
+            dns: Some("192.168.1.53".parse().unwrap()),
+        };
+        workspace.nat_network = Some(network);
+        let saved = serde_json::to_string(&workspace).unwrap();
+        let workspace: Workspace = serde_json::from_str(&saved).unwrap();
+        assert_eq!(workspace.nat_network, Some(network));
     }
 
     /// The shared folder survives a save and a reload, and the empty path

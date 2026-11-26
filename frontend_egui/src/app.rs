@@ -253,6 +253,11 @@ pub struct SnowGui {
     floppy_wp_default: bool,
     floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
+    #[cfg(feature = "ethernet_nat")]
+    nat_dialog: crate::dialogs::nat::NatDialog,
+    /// The host's DNS server, and when it was looked up (see `host_dns()`)
+    #[cfg(feature = "ethernet_nat")]
+    host_dns: (Option<std::time::Instant>, Option<std::net::IpAddr>),
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
     model_dialog_prefill_pending: bool,
@@ -507,6 +512,10 @@ impl SnowGui {
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_workspace),
             create_disk_dialog: Default::default(),
+            #[cfg(feature = "ethernet_nat")]
+            nat_dialog: Default::default(),
+            #[cfg(feature = "ethernet_nat")]
+            host_dns: (None, None),
             model_dialog: Default::default(),
             model_dialog_prefill_pending: false,
             about_dialog: AboutDialog::new(&cc.egui_ctx),
@@ -1648,6 +1657,30 @@ impl SnowGui {
         });
     }
 
+    /// The host's DNS server, looked up again at most every 5 seconds: the Ethernet menus that
+    /// show it are drawn on every frame
+    #[cfg(feature = "ethernet_nat")]
+    fn host_dns(&mut self) -> Option<std::net::IpAddr> {
+        let now = std::time::Instant::now();
+        if self
+            .host_dns
+            .0
+            .is_none_or(|at| now.duration_since(at) > std::time::Duration::from_secs(5))
+        {
+            self.host_dns = (Some(now), snow_core::net::host_dns_server());
+        }
+        self.host_dns.1
+    }
+
+    /// The network of the NAT gateway: the workspace's, else the default of the settings, else
+    /// 10.0.0.1/8
+    fn nat_config(&self) -> snow_core::devices::NatConfig {
+        self.workspace
+            .nat_network
+            .or(self.settings.nat_network)
+            .unwrap_or_default()
+    }
+
     /// The items of the Devices menu for an Ethernet adapter, whatever its bus: its link and
     /// a packet capture
     #[cfg(feature = "ethernet")]
@@ -1712,6 +1745,27 @@ impl SnowGui {
 
         if new_link_type != link_type {
             self.emu.set_eth_link(bus, slot, new_link_type);
+        }
+
+        #[cfg(feature = "ethernet_nat")]
+        {
+            ui.separator();
+            ui.strong("NAT gateway");
+            let nat = self.nat_config();
+            let dns = match nat.dns.or_else(|| self.host_dns()) {
+                Some(dns) => format!("DNS {}", dns),
+                None => "no DNS server".to_string(),
+            };
+            ui.weak(format!(
+                "{}/{} \u{b7} {}",
+                std::net::Ipv4Addr::from(nat.gateway),
+                nat.prefix_len,
+                dns
+            ));
+            if ui.button("Settings...").clicked() {
+                self.nat_dialog.open(nat);
+                ui.close_kind(egui::UiKind::Menu);
+            }
         }
 
         ui.separator();
@@ -3260,6 +3314,7 @@ impl SnowGui {
             model,
             self.workspace.get_shared_dir(),
             custom_datetime,
+            self.nat_config(),
         ) {
             Ok(p) => {
                 self.connect_displays(p.displays);
@@ -3950,6 +4005,8 @@ impl SnowGui {
         ) {
             Ok(p) => {
                 self.connect_displays(p.displays);
+                // The network of the NAT gateway isn't in a save state
+                self.emu.set_nat_config(self.nat_config());
                 // Images created by restoring the state
                 for f in p.temp_files {
                     if !self.temp_files.contains(&f) {
@@ -4295,6 +4352,21 @@ impl eframe::App for SnowGui {
                         self.apply_afp_bridge();
                     }
                 }
+            }
+        }
+
+        // The network of the NAT gateway
+        #[cfg(feature = "ethernet_nat")]
+        {
+            self.nat_dialog.update(ctx);
+            self.ui_active &= !self.nat_dialog.is_open();
+            if let Some(result) = self.nat_dialog.take_result() {
+                self.workspace.nat_network = Some(result.config);
+                if result.save_default {
+                    self.settings.nat_network = Some(result.config);
+                    self.settings.save();
+                }
+                self.emu.set_nat_config(result.config);
             }
         }
 

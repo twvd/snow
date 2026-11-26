@@ -18,6 +18,8 @@ use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "ethernet_nat")]
 use snow_nat::NatEngineStats;
+#[cfg(feature = "ethernet_nat")]
+pub use snow_nat::host_dns_server;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
