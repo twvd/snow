@@ -314,6 +314,7 @@ impl EmulatorState {
             mouse_mode,
             pmmu_enabled: args.pmmu_enabled,
             fpu_enabled: args.fpu_enabled,
+            nat: Default::default(),
         };
         let (mut emulator, displays, refused) = Emulator::new(&machine, devices)?;
 

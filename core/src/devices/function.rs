@@ -326,6 +326,51 @@ pub struct EthernetConfig {
     pub link: EthernetLinkType,
 }
 
+/// The network of the machine's NAT gateway: the gateway's address and the length of its
+/// network's prefix. The adapters on a NAT link get the addresses after the gateway's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NatConfig {
+    /// The gateway's address
+    pub gateway: [u8; 4],
+    /// The length of the network prefix, in bits: 8 for a class A network, 16 for class B,
+    /// 24 for class C
+    pub prefix_len: u8,
+}
+
+impl Default for NatConfig {
+    /// The gateway at 10.0.0.1, on 10.0.0.0/8
+    fn default() -> Self {
+        Self {
+            gateway: [10, 0, 0, 1],
+            prefix_len: 8,
+        }
+    }
+}
+
+impl NatConfig {
+    /// The network mask
+    pub fn netmask(&self) -> [u8; 4] {
+        u32::MAX
+            .checked_shl(32 - u32::from(self.prefix_len))
+            .unwrap_or(0)
+            .to_be_bytes()
+    }
+
+    /// Checks that it is a network with room for adapters: a prefix of 8 to 30 bits, and the
+    /// gateway neither the network's own address nor its broadcast address
+    pub fn check(&self) -> Result<()> {
+        if !(8..=30).contains(&self.prefix_len) {
+            bail!("The network prefix must be 8 to 30 bits long");
+        }
+        let mask = u32::from_be_bytes(self.netmask());
+        let gateway = u32::from_be_bytes(self.gateway);
+        if gateway & !mask == 0 || gateway & !mask == !mask {
+            bail!("The gateway can't be the network's own address or its broadcast address");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetStatus {
     /// The adapter's Ethernet address

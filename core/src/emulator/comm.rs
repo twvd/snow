@@ -10,7 +10,7 @@ use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
-use crate::devices::{Bus, DeviceConfig, EthernetLinkType, FunctionStatus};
+use crate::devices::{Bus, DeviceConfig, EthernetLinkType, FunctionStatus, NatConfig};
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
@@ -60,6 +60,9 @@ pub enum EmulatorCommand {
     /// Gives the CD-ROM drive in a slot a folder of disc images
     CdromSetFolder(String, String, PathBuf),
     EthernetSetLink(String, String, EthernetLinkType),
+    /// Gives the machine's NAT gateway another network. The adapters on a NAT link move to it,
+    /// and their connections drop.
+    SetNatConfig(NatConfig),
     EthernetStartCapture(String, String, PathBuf),
     EthernetStopCapture(String, String),
     /// A position on one of the displays of the machine, in its pixels. `display` is the

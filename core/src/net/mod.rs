@@ -10,7 +10,9 @@ mod raw;
 mod tap;
 
 use crate::debuggable::DebuggableProperties;
-use crate::devices::{EthernetConfig, EthernetFunction, EthernetLinkType, EthernetStatus};
+use crate::devices::{
+    EthernetConfig, EthernetFunction, EthernetLinkType, EthernetStatus, NatConfig,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -135,7 +137,37 @@ pub struct EthernetPort {
 #[derive(Clone, Default)]
 pub struct SharedNat {
     #[cfg(feature = "ethernet_nat")]
-    network: Arc<std::sync::Mutex<Option<snow_nat::NatNetwork>>>,
+    state: Arc<std::sync::Mutex<NatState>>,
+}
+
+/// The network of a gateway, and the gateway once it runs
+#[cfg(feature = "ethernet_nat")]
+#[derive(Default)]
+struct NatState {
+    config: NatConfig,
+    network: Option<snow_nat::NatNetwork>,
+}
+
+impl SharedNat {
+    /// A gateway on this network
+    pub fn new(config: NatConfig) -> Self {
+        let nat = Self::default();
+        nat.configure(config);
+        nat
+    }
+
+    /// Gives the gateway another network. The gateway that runs goes on until its adapters
+    /// attach again (`EthernetFunction::set_shared_nat()`), to a gateway on this network.
+    pub fn configure(&self, config: NatConfig) {
+        #[cfg(feature = "ethernet_nat")]
+        {
+            let mut state = self.state.lock().unwrap();
+            state.config = config;
+            state.network = None;
+        }
+        #[cfg(not(feature = "ethernet_nat"))]
+        let _ = config;
+    }
 }
 
 #[cfg(feature = "ethernet_nat")]
@@ -155,9 +187,15 @@ impl SharedNat {
     ) {
         #[cfg(not(feature = "ethernet_nat_https_stripping"))]
         let _ = https_stripping;
-        let mut network = self.network.lock().unwrap();
-        let nat = network.get_or_insert_with(|| {
-            snow_nat::NatNetwork::start(NAT_MAC_ADDRESS, [10, 0, 0, 1], 8, PACKET_QUEUE_SIZE)
+        let mut state = self.state.lock().unwrap();
+        let config = state.config;
+        let nat = state.network.get_or_insert_with(|| {
+            snow_nat::NatNetwork::start(
+                NAT_MAC_ADDRESS,
+                config.gateway,
+                config.prefix_len,
+                PACKET_QUEUE_SIZE,
+            )
         });
         let (tx, rx) = nat.attach(
             mac,
@@ -167,7 +205,7 @@ impl SharedNat {
             https_stripping,
         );
         let stats = nat.stats();
-        drop(network);
+        drop(state);
         (tx, rx, stats)
     }
 }
@@ -708,6 +746,46 @@ mod tests {
         a.set_link(EthernetLinkType::NAT).unwrap();
         assert_eq!(dhcp_address(&mut b), [10, 0, 0, 3]);
         assert_eq!(dhcp_address(&mut a), [10, 0, 0, 2]);
+    }
+
+    /// A new network for the gateway: the ports on a NAT link move to it when they take the
+    /// gateway again
+    #[cfg(feature = "ethernet_nat")]
+    #[test]
+    fn ports_move_to_a_new_nat_network() {
+        let nat = SharedNat::new(NatConfig::default());
+        let mut a = EthernetPort::new([0x08, 0x00, 0x07, 1, 2, 3]);
+        let mut b = EthernetPort::new([0x08, 0x00, 0x07, 4, 5, 6]);
+        a.set_shared_nat(nat.clone());
+        b.set_shared_nat(nat.clone());
+        a.set_link(EthernetLinkType::NAT).unwrap();
+        b.set_link(EthernetLinkType::NAT).unwrap();
+        assert_eq!(dhcp_address(&mut a), [10, 0, 0, 2]);
+        assert_eq!(dhcp_address(&mut b), [10, 0, 0, 3]);
+
+        nat.configure(NatConfig {
+            gateway: [192, 168, 77, 1],
+            prefix_len: 24,
+        });
+        a.set_shared_nat(nat.clone());
+        b.set_shared_nat(nat);
+        assert_eq!(dhcp_address(&mut b), [192, 168, 77, 2]);
+        assert_eq!(dhcp_address(&mut a), [192, 168, 77, 3]);
+    }
+
+    #[test]
+    fn a_nat_network_must_have_room_for_adapters() {
+        assert!(NatConfig::default().check().is_ok());
+        let config = |gateway, prefix_len| NatConfig {
+            gateway,
+            prefix_len,
+        };
+        assert!(config([192, 168, 1, 254], 24).check().is_ok());
+        assert!(config([192, 168, 1, 0], 24).check().is_err());
+        assert!(config([192, 168, 1, 255], 24).check().is_err());
+        assert!(config([10, 0, 0, 1], 7).check().is_err());
+        assert!(config([10, 0, 0, 1], 31).check().is_err());
+        assert_eq!(config([10, 0, 0, 1], 24).netmask(), [255, 255, 255, 0]);
     }
 
     #[test]

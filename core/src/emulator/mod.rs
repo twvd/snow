@@ -423,6 +423,8 @@ pub struct MachineConfig<'a> {
     pub pmmu_enabled: bool,
     /// A 68882 in an LC family Mac
     pub fpu_enabled: bool,
+    /// The network of the NAT gateway
+    pub nat: crate::devices::NatConfig,
 }
 
 impl<'a> MachineConfig<'a> {
@@ -436,6 +438,7 @@ impl<'a> MachineConfig<'a> {
             mouse_mode: MouseMode::default(),
             pmmu_enabled: false,
             fpu_enabled: false,
+            nat: crate::devices::NatConfig::default(),
         }
     }
 }
@@ -643,7 +646,7 @@ impl Emulator {
             screens: vec![],
             screens_time: Instant::now(),
             #[cfg(feature = "ethernet")]
-            nat: crate::net::SharedNat::default(),
+            nat: crate::net::SharedNat::new(machine.nat),
         };
 
         // The adapters of the logic board share the machine's NAT gateway, before their links
@@ -1791,6 +1794,18 @@ impl Tickable for Emulator {
                         if let Err(e) = result {
                             self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
+                    }
+                    EmulatorCommand::SetNatConfig(config) => {
+                        #[cfg(feature = "ethernet")]
+                        match config.check() {
+                            Ok(()) => {
+                                self.nat.configure(config);
+                                self.share_nat();
+                            }
+                            Err(e) => self.user_error(&format!("NAT network: {:#}", e)),
+                        }
+                        #[cfg(not(feature = "ethernet"))]
+                        let _ = config;
                     }
                     EmulatorCommand::EthernetSetLink(bus, slot, link) => {
                         if let Err(e) = self.ethernet_in(&bus, &slot)?.set_link(link) {
