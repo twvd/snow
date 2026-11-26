@@ -106,6 +106,10 @@ pub trait EthernetFunction {
     fn status(&self) -> EthernetStatus;
     /// Connects the adapter to something else on the host. Called when the user picks a link.
     fn set_link(&mut self, link: EthernetLinkType) -> Result<()>;
+    /// Gives the adapter the machine's NAT gateway, which every adapter on a NAT link shares.
+    /// Called when the machine is made or restored, and when the adapter is added.
+    #[cfg(feature = "ethernet")]
+    fn set_shared_nat(&mut self, nat: crate::net::SharedNat);
     // Packet capture to a pcap file. Legacy interfaces: will be removed when Ethernet support
     // is split out of the DaynaPORT.
     fn start_capture(&mut self, filename: &Path) -> Result<()>;

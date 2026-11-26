@@ -493,6 +493,9 @@ pub struct Emulator {
     /// Where the guest puts the displays, at the last look
     screens: Vec<GuestScreen>,
     screens_time: Instant,
+    /// The NAT gateway that the Ethernet adapters on a NAT link share
+    #[cfg(feature = "ethernet")]
+    nat: crate::net::SharedNat,
 }
 
 impl Emulator {
@@ -639,7 +642,14 @@ impl Emulator {
             displays: vec![],
             screens: vec![],
             screens_time: Instant::now(),
+            #[cfg(feature = "ethernet")]
+            nat: crate::net::SharedNat::default(),
         };
+
+        // The adapters of the logic board share the machine's NAT gateway, before their links
+        // start
+        #[cfg(feature = "ethernet")]
+        emu.share_nat();
 
         // Every device that isn't on the logic board is made, in the order of the list. A
         // device of the logic board was made with the machine: it gets what a Config can
@@ -742,8 +752,12 @@ impl Emulator {
             displays: vec![],
             screens: vec![],
             screens_time: Instant::now(),
+            #[cfg(feature = "ethernet")]
+            nat: crate::net::SharedNat::default(),
         };
         let displays = emu.take_displays();
+        #[cfg(feature = "ethernet")]
+        emu.share_nat();
         let buses = emu.buses();
         emu.send_buses(buses)?;
         emu.status_update()?;

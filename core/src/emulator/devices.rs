@@ -141,6 +141,20 @@ impl Emulator {
         Ok(device.function())
     }
 
+    /// Gives every Ethernet adapter of the machine its NAT gateway
+    #[cfg(feature = "ethernet")]
+    pub(super) fn share_nat(&mut self) {
+        let nat = self.nat.clone();
+        for bus in self.buses() {
+            for slot in &bus.slots {
+                if let Ok(FunctionMut::Ethernet(ethernet)) = self.device_function(&bus.id, &slot.id)
+                {
+                    ethernet.set_shared_nat(nat.clone());
+                }
+            }
+        }
+    }
+
     /// The buses of the machine, their slots and the devices in them, as they are now: the
     /// buses of the Mac model, then those that devices add
     pub fn buses(&mut self) -> Vec<Bus> {
@@ -472,6 +486,17 @@ impl Emulator {
         let function = self.device_function(&config.bus, &config.slot)?;
         if let (FunctionMut::Printer(printer), Some(dir)) = (function, default_print_dir) {
             printer.set_default_dir(&dir);
+        }
+
+        // An Ethernet adapter shares the machine's NAT gateway
+        #[cfg(feature = "ethernet")]
+        {
+            let nat = self.nat.clone();
+            if let FunctionMut::Ethernet(ethernet) =
+                self.device_function(&config.bus, &config.slot)?
+            {
+                ethernet.set_shared_nat(nat);
+            }
         }
 
         self.configure_device(config)

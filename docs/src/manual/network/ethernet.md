@@ -99,6 +99,9 @@ You can select the Ethernet link type through the Devices menu: 'Devices' -> 'SC
 The NAT link emulates a gateway at IP-address 10.0.0.1. Your emulated system needs to have any IP-address in the
 10.0.0.0/8 network.
 
+The Ethernet adapters of a machine that are on a NAT link share the gateway: they are on one network and reach each
+other.
+
 The gateway keeps broadcasts and multicast on the emulated network. It doesn't let the emulated system reach the
 host's own loopback addresses (127.0.0.0/8, and 0.0.0.0, which stands for the host itself): a connection to them is
 refused. Services of the host can be reached at its address on its own network.

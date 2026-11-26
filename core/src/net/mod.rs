@@ -75,6 +75,10 @@ pub struct EthernetPort {
     #[serde(skip)]
     link: EthernetLinkType,
 
+    /// The NAT gateway that a NAT link attaches to
+    #[serde(skip)]
+    nat: SharedNat,
+
     /// NAT engine statistics
     #[cfg(feature = "ethernet_nat")]
     #[serde(skip)]
@@ -115,6 +119,49 @@ pub struct EthernetPort {
     pcap_tx: Option<crossbeam_channel::Sender<(std::time::SystemTime, Vec<u8>)>>,
 }
 
+/// The NAT gateway of a machine
+///
+/// Its Ethernet adapters on a NAT link all attach to it, so they are on one network; it starts
+/// with the first of them. A port has one of its own until the machine gives it the machine's
+/// (`EthernetFunction::set_shared_nat()`).
+#[derive(Clone, Default)]
+pub struct SharedNat {
+    #[cfg(feature = "ethernet_nat")]
+    network: Arc<std::sync::Mutex<Option<snow_nat::NatNetwork>>>,
+}
+
+#[cfg(feature = "ethernet_nat")]
+impl SharedNat {
+    /// Attaches an adapter, as `NatNetwork::attach()` does, starting the gateway if it isn't
+    /// yet. Also returns the gateway's statistics.
+    fn attach(
+        &self,
+        mac: [u8; 6],
+        rx_enabled: Arc<AtomicBool>,
+        https_stripping: bool,
+    ) -> (
+        crossbeam_channel::Sender<BasicPacket>,
+        crossbeam_channel::Receiver<BasicPacket>,
+        Arc<NatEngineStats>,
+    ) {
+        #[cfg(not(feature = "ethernet_nat_https_stripping"))]
+        let _ = https_stripping;
+        let mut network = self.network.lock().unwrap();
+        let nat = network.get_or_insert_with(|| {
+            snow_nat::NatNetwork::start(NAT_MAC_ADDRESS, [10, 0, 0, 1], 8, PACKET_QUEUE_SIZE)
+        });
+        let (tx, rx) = nat.attach(
+            mac,
+            rx_enabled,
+            #[cfg(feature = "ethernet_nat_https_stripping")]
+            https_stripping,
+        );
+        let stats = nat.stats();
+        drop(network);
+        (tx, rx, stats)
+    }
+}
+
 impl EthernetPort {
     /// A port with the Ethernet address `mac`, and its link down
     pub fn new(mac: [u8; 6]) -> Self {
@@ -124,6 +171,7 @@ impl EthernetPort {
             rx: None,
             rx_enabled: Arc::new(AtomicBool::new(true)),
             link: EthernetLinkType::Down,
+            nat: SharedNat::default(),
             #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
@@ -316,21 +364,27 @@ impl EthernetPort {
         Ok(())
     }
 
-    /// Attaches the port to a NAT gateway of its own
+    /// Attaches the port to its NAT gateway
     #[cfg(feature = "ethernet_nat")]
     fn start_nat(&mut self, https_stripping: bool) {
-        let nat = snow_nat::NatNetwork::start(NAT_MAC_ADDRESS, [10, 0, 0, 1], 8, PACKET_QUEUE_SIZE);
-        let (tx, rx) = nat.attach(
-            self.mac,
-            self.rx_enabled.clone(),
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            https_stripping,
-        );
-        #[cfg(not(feature = "ethernet_nat_https_stripping"))]
-        let _ = https_stripping;
+        let (tx, rx, stats) = self
+            .nat
+            .attach(self.mac, self.rx_enabled.clone(), https_stripping);
         self.tx = Some(tx);
         self.rx = Some(rx);
-        self.nat_stats = Some(nat.stats());
+        self.nat_stats = Some(stats);
+    }
+
+    /// Takes the machine's NAT gateway: a NAT link in use moves to it
+    pub fn set_shared_nat(&mut self, nat: SharedNat) {
+        self.nat = nat;
+        #[cfg(feature = "ethernet_nat")]
+        if self.nat_stats.is_some() {
+            let link = self.link.clone();
+            if let Err(e) = self.set_link(link) {
+                log::error!("Failed to set ethernet link: {}", e);
+            }
+        }
     }
 
     pub fn debug_properties(&self) -> DebuggableProperties {
@@ -505,6 +559,10 @@ impl EthernetFunction for EthernetPort {
         Self::set_link(self, link)
     }
 
+    fn set_shared_nat(&mut self, nat: SharedNat) {
+        Self::set_shared_nat(self, nat);
+    }
+
     fn start_capture(&mut self, filename: &Path) -> Result<()> {
         Self::start_capture(self, filename)
     }
@@ -517,6 +575,38 @@ impl EthernetFunction for EthernetPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two ports on a NAT link with one gateway are on one network: a frame from one to the
+    /// other gets there
+    #[cfg(feature = "ethernet_nat")]
+    #[test]
+    fn ports_with_one_nat_gateway_reach_each_other() {
+        let nat = SharedNat::default();
+        let mut a = EthernetPort::new([0x08, 0x00, 0x07, 1, 2, 3]);
+        let mut b = EthernetPort::new([0x08, 0x00, 0x07, 4, 5, 6]);
+        a.set_shared_nat(nat.clone());
+        b.set_shared_nat(nat);
+        a.set_link(EthernetLinkType::NAT).unwrap();
+        b.set_link(EthernetLinkType::NAT).unwrap();
+
+        let mut frame = vec![0; 60];
+        frame[0..6].copy_from_slice(&b.mac());
+        frame[6..12].copy_from_slice(&a.mac());
+        frame[12..14].copy_from_slice(&[0x88, 0xB5]);
+        a.send(&frame);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let received = loop {
+            if let Some(received) = b.recv() {
+                break received;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the frame didn't arrive"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!(received, frame);
+    }
 
     #[test]
     fn the_receiver_stays_off_across_a_save() {
