@@ -7,7 +7,7 @@
 //!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
-//! Currently only supports TCP and UDP. Broadcasts stay on the emulated network.
+//! Currently only supports TCP and UDP. Broadcasts and multicast stay on the emulated network.
 //!
 //! The MacOS TCP/IP stack seems to struggle with ARP requests during already
 //! active TCP sessions which can stall connections and leave smoltcp in a
@@ -150,6 +150,7 @@ impl VirtualDevice {
     /// Filters UDP packets that would cause OS bind/connect errors:
     ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
     ///   - broadcasts (255.255.255.255, and to the gateway's subnet)
+    ///   - multicast and reserved addresses (224.0.0.0 and up)
     ///   - UDP src port < 1024 (privileged ports as the emulator is likely running as non-root)
     ///   - UDP dst port == 520 (RIP)
     fn needs_filtering(&self, packet: &[u8]) -> bool {
@@ -178,10 +179,12 @@ impl VirtualDevice {
             Err(_) => return false,
         };
 
-        // Broadcasts, to all networks or to the gateway's subnet, stay on the emulated network
-        if ipv4_packet.dst_addr() == Ipv4Address::BROADCAST
-            || ipv4_packet.dst_addr() == self.subnet_broadcast
-        {
+        // Broadcasts, to all networks or to the gateway's subnet, stay on the emulated network,
+        // and so do multicast groups and the reserved addresses: classes D and E, 224.0.0.0 and
+        // up (RFC 1112, 4). A host socket would send a group's datagrams out on the host's
+        // network, and its own programs would get them too, but never let the answers back in.
+        let dst = ipv4_packet.dst_addr();
+        if dst == Ipv4Address::BROADCAST || dst == self.subnet_broadcast || dst.octets()[0] >= 224 {
             return true;
         }
 
@@ -1900,5 +1903,14 @@ mod tests {
         assert!(device.needs_filtering(&udp_frame([255, 255, 255, 255], 7779)));
         assert!(device.needs_filtering(&udp_frame([10, 255, 255, 255], 7779)));
         assert!(!device.needs_filtering(&udp_frame([10, 1, 1, 13], 7779)));
+    }
+
+    #[test]
+    fn multicast_stays_on_the_emulated_network() {
+        let (device, _to_nat, _from_nat) = device();
+        assert!(device.needs_filtering(&udp_frame([224, 0, 0, 251], 5353)));
+        assert!(device.needs_filtering(&udp_frame([239, 255, 255, 253], 427)));
+        assert!(device.needs_filtering(&udp_frame([240, 0, 0, 1], 7779)));
+        assert!(!device.needs_filtering(&udp_frame([223, 255, 255, 254], 7779)));
     }
 }
