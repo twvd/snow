@@ -99,6 +99,10 @@ You can select the Ethernet link type through the Devices menu: 'Devices' -> 'SC
 The NAT link emulates a gateway at IP-address 10.0.0.1. Your emulated system needs to have any IP-address in the
 10.0.0.0/8 network.
 
+The gateway keeps broadcasts and multicast on the emulated network. It doesn't let the emulated system reach the
+host's own loopback addresses (127.0.0.0/8, and 0.0.0.0, which stands for the host itself): a connection to them is
+refused. Services of the host can be reached at its address on its own network.
+
 Snow includes a RARP server that provides the emulated system with a valid IP address, mask, and gateway. To use auto configuration, choose ` Server` to the `Obtain Address` section.
 
 However, there is no DNS emulation, so you still need to configure an external DNS server (e.g. Google or

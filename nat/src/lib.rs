@@ -7,7 +7,8 @@
 //!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
-//! Currently only supports TCP and UDP. Broadcasts and multicast stay on the emulated network.
+//! Currently only supports TCP and UDP. Broadcasts and multicast stay on the emulated network,
+//! and the host's own addresses (127.0.0.0/8, 0.0.0.0/8) can't be reached through it.
 //!
 //! The MacOS TCP/IP stack seems to struggle with ARP requests during already
 //! active TCP sessions which can stall connections and leave smoltcp in a
@@ -144,6 +145,78 @@ impl VirtualDevice {
     /// Drain routed packets that were intercepted and need NAT handling
     fn drain_intercepted_packets(&mut self) -> Vec<Packet> {
         std::mem::take(&mut self.intercepted_packets)
+    }
+
+    /// Whether a packet is for the host's own addresses, which a gateway must not pass on:
+    /// loopback (127.0.0.0/8) and "this network" (0.0.0.0/8) (RFC 1122, 3.2.1.3). A host
+    /// socket would reach the services of the host itself.
+    fn to_host_only_address(packet: &[u8]) -> bool {
+        use smoltcp::wire::Ipv4Packet;
+
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
+        let Ok(ipv4_packet) = Ipv4Packet::new_checked(eth_frame.payload()) else {
+            return false;
+        };
+        matches!(ipv4_packet.dst_addr().octets()[0], 0 | 127)
+    }
+
+    /// The reset that answers a TCP segment from the guest, as from a host with nothing
+    /// listening (RFC 793, 3.4 "Reset Generation"); None for anything else, and for a reset
+    fn tcp_reset(packet: &[u8]) -> Option<Packet> {
+        use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket, TcpSeqNumber};
+
+        let eth_frame = EthernetFrame::new_checked(packet).ok()?;
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return None;
+        }
+        let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload()).ok()?;
+        if ipv4_packet.next_header() != IpProtocol::Tcp {
+            return None;
+        }
+        let tcp_packet = TcpPacket::new_checked(ipv4_packet.payload()).ok()?;
+        if tcp_packet.rst() {
+            return None;
+        }
+
+        let mut buffer = vec![0; 14 + 20 + 20];
+        let mut eth = EthernetFrame::new_unchecked(&mut buffer[..]);
+        eth.set_dst_addr(eth_frame.src_addr());
+        eth.set_src_addr(eth_frame.dst_addr());
+        eth.set_ethertype(EthernetProtocol::Ipv4);
+        let mut ip = Ipv4Packet::new_unchecked(eth.payload_mut());
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len(40);
+        ip.set_hop_limit(64);
+        ip.set_next_header(IpProtocol::Tcp);
+        ip.set_src_addr(ipv4_packet.dst_addr());
+        ip.set_dst_addr(ipv4_packet.src_addr());
+        ip.fill_checksum();
+        let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
+        tcp.set_src_port(tcp_packet.dst_port());
+        tcp.set_dst_port(tcp_packet.src_port());
+        tcp.set_header_len(20);
+        tcp.clear_flags();
+        tcp.set_rst(true);
+        if tcp_packet.ack() {
+            // The reset takes its sequence number from the segment's acknowledgment
+            tcp.set_seq_number(tcp_packet.ack_number());
+        } else {
+            // Sequence number zero, and the segment acknowledged
+            tcp.set_seq_number(TcpSeqNumber(0));
+            tcp.set_ack(true);
+            tcp.set_ack_number(tcp_packet.seq_number() + tcp_packet.segment_len());
+        }
+        tcp.fill_checksum(
+            &IpAddress::Ipv4(ipv4_packet.dst_addr()),
+            &IpAddress::Ipv4(ipv4_packet.src_addr()),
+        );
+        Some(buffer)
     }
 
     /// Check for IPv4 packets that the NAT gateway should not handle.
@@ -336,6 +409,22 @@ impl Device for VirtualDevice {
         self.stats
             .rx_bytes
             .fetch_add(packet.len(), Ordering::Relaxed);
+
+        // The host's own addresses are no way out: TCP gets a reset, the rest is dropped
+        if Self::to_host_only_address(&packet) {
+            if let Some(reset) = Self::tcp_reset(&packet) {
+                let len = reset.len();
+                if self.tx.try_send(reset).is_ok() {
+                    self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                    self.stats.tx_bytes.fetch_add(len, Ordering::Relaxed);
+                }
+            }
+            self.stats.filtered_packets.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .filtered_bytes
+                .fetch_add(packet.len(), Ordering::Relaxed);
+            return None;
+        }
 
         // Drop packets that would cause OS errors (BOOTP, privileged src ports)
         if self.needs_filtering(&packet) {
@@ -1912,5 +2001,70 @@ mod tests {
         assert!(device.needs_filtering(&udp_frame([239, 255, 255, 253], 427)));
         assert!(device.needs_filtering(&udp_frame([240, 0, 0, 1], 7779)));
         assert!(!device.needs_filtering(&udp_frame([223, 255, 255, 254], 7779)));
+    }
+
+    /// A TCP SYN from the guest's port 40000 to `dst`:`port`, sequence number 1000
+    fn tcp_syn_frame(dst: [u8; 4], port: u16) -> Packet {
+        use smoltcp::wire::{TcpPacket, TcpSeqNumber};
+
+        let mut tcp = vec![0; 20];
+        let mut packet = TcpPacket::new_unchecked(&mut tcp[..]);
+        packet.set_src_port(40000);
+        packet.set_dst_port(port);
+        packet.set_seq_number(TcpSeqNumber(1000));
+        packet.set_header_len(20);
+        packet.clear_flags();
+        packet.set_syn(true);
+        packet.set_window_len(8192);
+        packet.fill_checksum(
+            &IpAddress::Ipv4(Ipv4Address::from(GUEST_IP)),
+            &IpAddress::Ipv4(Ipv4Address::from(dst)),
+        );
+        ipv4_frame(dst, IpProtocol::Tcp, &tcp)
+    }
+
+    /// The device's answer to a frame from the guest: whether it went no further, and what came
+    /// back to the guest
+    fn send(frame: Packet) -> (bool, Vec<Packet>) {
+        let (mut device, to_nat, from_nat) = device();
+        to_nat.send(frame).unwrap();
+        assert!(device.receive(smoltcp::time::Instant::now()).is_none());
+        let stopped = device.intercepted_packets.is_empty();
+        (stopped, from_nat.try_iter().collect())
+    }
+
+    #[test]
+    fn the_hosts_own_addresses_are_no_way_out() {
+        for dst in [[127, 0, 0, 1], [127, 1, 2, 3], [0, 0, 0, 0]] {
+            assert_eq!(send(udp_frame(dst, 7778)), (true, vec![]));
+        }
+        // An address of the host on its own network is a way out like any other
+        assert_eq!(send(udp_frame([10, 1, 1, 13], 7780)), (false, vec![]));
+        assert_eq!(send(tcp_syn_frame([10, 1, 1, 13], 7781)), (false, vec![]));
+    }
+
+    #[test]
+    fn a_connection_to_the_hosts_loopback_is_reset() {
+        use smoltcp::wire::{TcpPacket, TcpSeqNumber};
+
+        let (stopped, answers) = send(tcp_syn_frame([127, 0, 0, 1], 7777));
+        assert!(stopped);
+        assert_eq!(answers.len(), 1);
+        let eth = EthernetFrame::new_checked(&answers[0][..]).unwrap();
+        assert_eq!(eth.dst_addr(), EthernetAddress(GUEST_MAC));
+        let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert!(ip.verify_checksum());
+        assert_eq!(ip.src_addr(), Ipv4Address::new(127, 0, 0, 1));
+        assert_eq!(ip.dst_addr(), Ipv4Address::from(GUEST_IP));
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.verify_checksum(
+            &IpAddress::Ipv4(ip.src_addr()),
+            &IpAddress::Ipv4(ip.dst_addr())
+        ));
+        assert_eq!((tcp.src_port(), tcp.dst_port()), (7777, 40000));
+        assert!(tcp.rst() && tcp.ack() && !tcp.syn());
+        assert_eq!(tcp.seq_number(), TcpSeqNumber(0));
+        // The SYN counts for one
+        assert_eq!(tcp.ack_number(), TcpSeqNumber(1001));
     }
 }
