@@ -795,11 +795,54 @@ pub struct NatEngine {
     #[cfg(feature = "mactcp_helpers")]
     gateway_subnet: u8,
 
-    /// What the DHCP server hands out
+    /// What the DHCP server hands out, but the address
     lease: dhcp::Lease,
+
+    /// The addresses handed out
+    addresses: Addresses,
 
     /// The host's DNS server, where DNS queries to the gateway go
     host_dns: Option<std::net::IpAddr>,
+}
+
+/// The addresses that the gateway hands out (DHCP, BOOTP, RARP): one for each Ethernet address,
+/// always the same, from the address after the gateway's upwards, in the order they are asked
+/// for, as long as the network has room
+struct Addresses {
+    /// The first one, after the gateway's
+    first: u32,
+    /// The last one, before the network's broadcast address
+    last: u32,
+    /// Those given, in order
+    given: Vec<EthernetAddress>,
+}
+
+impl Addresses {
+    fn new(gateway_ip: Ipv4Address, netmask: u32) -> Self {
+        let gateway = u32::from(gateway_ip);
+        Self {
+            first: gateway.wrapping_add(1),
+            last: (gateway | !netmask).wrapping_sub(1),
+            given: vec![],
+        }
+    }
+
+    /// The address of the adapter at `mac`; None once the network has none left
+    fn of(&mut self, mac: EthernetAddress) -> Option<Ipv4Address> {
+        let index = self
+            .given
+            .iter()
+            .position(|&given| given == mac)
+            .unwrap_or(self.given.len());
+        let address = self.first.checked_add(u32::try_from(index).ok()?)?;
+        if address > self.last {
+            return None;
+        }
+        if index == self.given.len() {
+            self.given.push(mac);
+        }
+        Some(Ipv4Address::from(address))
+    }
 }
 
 /// A NAT gateway and its network, which the emulated system's Ethernet adapters attach to.
@@ -921,9 +964,10 @@ impl NatEngine {
 
         let sockets = SocketSet::new(vec![]);
 
-        // The emulated system gets the address after the gateway's, as from RARP
+        // Each adapter gets its own address, from the one after the gateway's
+        let addresses = Addresses::new(gateway_ipv4, netmask);
         let lease = dhcp::Lease {
-            client_ip: Ipv4Address::from(u32::from_be_bytes(gateway_ip) + 1),
+            client_ip: Ipv4Address::UNSPECIFIED,
             netmask: Ipv4Address::from(netmask),
             gateway_ip: gateway_ipv4,
             gateway_mac: gateway_mac_addr,
@@ -945,6 +989,7 @@ impl NatEngine {
             #[cfg(feature = "mactcp_helpers")]
             gateway_subnet,
             lease,
+            addresses,
             host_dns,
         }
     }
@@ -1130,10 +1175,14 @@ impl NatEngine {
 
     /// Handle a RARP request by replying with the assigned IP for the client MAC
     #[cfg(feature = "mactcp_helpers")]
-    fn handle_rarp(&self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
+    fn handle_rarp(&mut self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
         let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
 
-        let Some(buf) = mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac)?
+        let addresses = &mut self.addresses;
+        let Some(buf) =
+            mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac, |mac| {
+                addresses.of(mac)
+            })?
         else {
             return Ok(());
         };
@@ -1152,16 +1201,23 @@ impl NatEngine {
         Ok(())
     }
 
-    /// Answer a BOOTP or DHCP request
-    fn handle_dhcp(&self, packet: &[u8]) {
-        let Some(buf) = dhcp::reply(packet, &self.lease) else {
+    /// Answer a BOOTP or DHCP request, with the address of the adapter that asks
+    fn handle_dhcp(&mut self, packet: &[u8]) {
+        let Some(mac) = dhcp::client_hardware_address(packet) else {
             return;
         };
-        log::info!(
-            "DHCP: {} for {}",
-            self.lease.client_ip,
-            EthernetAddress::from_bytes(&buf[0..6])
-        );
+        let Some(client_ip) = self.addresses.of(mac) else {
+            log::warn!("DHCP: no address left for {}", mac);
+            return;
+        };
+        let lease = dhcp::Lease {
+            client_ip,
+            ..self.lease
+        };
+        let Some(buf) = dhcp::reply(packet, &lease) else {
+            return;
+        };
+        log::info!("DHCP: {} for {}", client_ip, mac);
         let len = buf.len();
         match self.device.tx.try_send(buf) {
             Ok(()) => {
@@ -2376,5 +2432,29 @@ mod tests {
         });
         assert!(!guests.strips_https(EthernetAddress(GUEST_MAC)));
         assert!(guests.strips_https(EthernetAddress(OTHER_MAC)));
+    }
+
+    #[test]
+    fn each_adapter_has_an_address_of_its_own() {
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        let b = EthernetAddress(OTHER_MAC);
+        assert_eq!(addresses.of(a), Some(Ipv4Address::new(10, 0, 0, 2)));
+        assert_eq!(addresses.of(b), Some(Ipv4Address::new(10, 0, 0, 3)));
+        // Always the same one
+        assert_eq!(addresses.of(a), Some(Ipv4Address::new(10, 0, 0, 2)));
+    }
+
+    #[test]
+    fn a_full_network_has_no_address_left() {
+        // 10.0.0.0/30: the gateway at .1, one address left, .2; .3 is the broadcast address
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFFFF_FFFC);
+        assert_eq!(
+            addresses.of(EthernetAddress(GUEST_MAC)),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC)), None);
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC)), None);
+        assert_eq!(addresses.given.len(), 1);
     }
 }

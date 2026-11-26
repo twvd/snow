@@ -36,10 +36,12 @@ pub fn delay_icmp_reply(buffer: &[u8]) {
 }
 
 /// Validate a RARP request and return the reply buffer, or None if not applicable
+/// Answers a RARP request with the address that `address_of` gives the client, if any
 pub fn handle_rarp_request(
     eth_frame: &EthernetFrame<&[u8]>,
     gateway_ip: Ipv4Address,
     gateway_mac: EthernetAddress,
+    address_of: impl FnOnce(EthernetAddress) -> Option<Ipv4Address>,
 ) -> Result<Option<Vec<u8>>> {
     let rarp_packet = ArpPacket::new_checked(eth_frame.payload()).expect("Bad RARP packet");
 
@@ -53,14 +55,12 @@ pub fn handle_rarp_request(
 
     let client_mac = EthernetAddress::from_bytes(rarp_packet.target_hardware_addr());
 
-    // IP will be Gateway IP + 1 (e.g: GW 10.0.0.1 -> Mac 10.0.0.2)
-    let client_ip = Ipv4Address::from(
-        u32::from_be_bytes(gateway_ip.octets())
-            .wrapping_add(1)
-            .to_be_bytes(),
-    );
+    let Some(client_ip) = address_of(client_mac) else {
+        log::warn!("RARP: no address left for {}", client_mac);
+        return Ok(None);
+    };
 
-    let buf = build_rarp_reply(client_mac, gateway_mac, gateway_ip);
+    let buf = build_rarp_reply(client_mac, client_ip, gateway_mac, gateway_ip);
     log::info!("RARP: assigned {} to {}", client_ip, client_mac);
     Ok(Some(buf))
 }
@@ -229,13 +229,10 @@ pub fn build_tcp_rst(
 /// Build a RARP reply frame with the specified IP.
 fn build_rarp_reply(
     client_mac: EthernetAddress,
+    client_ip: Ipv4Address,
     gateway_mac: EthernetAddress,
     gateway_ip: Ipv4Address,
 ) -> Vec<u8> {
-    let client_ip = u32::from_be_bytes(gateway_ip.octets())
-        .wrapping_add(1)
-        .to_be_bytes();
-
     let mut buf = vec![0u8; 42];
 
     let mut frame = EthernetFrame::new_unchecked(&mut buf);
@@ -252,7 +249,7 @@ fn build_rarp_reply(
     reply.set_source_hardware_addr(gateway_mac.as_bytes());
     reply.set_source_protocol_addr(&gateway_ip.octets());
     reply.set_target_hardware_addr(client_mac.as_bytes());
-    reply.set_target_protocol_addr(&client_ip);
+    reply.set_target_protocol_addr(&client_ip.octets());
 
     buf
 }

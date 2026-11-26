@@ -55,6 +55,7 @@ const DHCPINFORM: u8 = 8;
 const LEASE_SECS: u32 = 24 * 60 * 60;
 
 /// What the server hands out
+#[derive(Clone, Copy)]
 pub struct Lease {
     /// The emulated system's address
     pub client_ip: Ipv4Address,
@@ -124,6 +125,18 @@ fn push_option(opts: &mut Vec<u8>, code: u8, value: &[u8]) {
 }
 
 /// The reply to a request, as an Ethernet frame, or None for a request that gets none
+/// The hardware address of the client of a BOOTP or DHCP request (chaddr)
+pub fn client_hardware_address(packet: &[u8]) -> Option<EthernetAddress> {
+    let eth = EthernetFrame::new_checked(packet).ok()?;
+    let ip = Ipv4Packet::new_checked(eth.payload()).ok()?;
+    let udp = UdpPacket::new_checked(ip.payload()).ok()?;
+    let req = udp.payload();
+    if req.len() < FIXED_LEN || req[0] != BOOTREQUEST || req[1] != 1 || req[2] != 6 {
+        return None;
+    }
+    Some(EthernetAddress::from_bytes(&req[28..34]))
+}
+
 pub fn reply(packet: &[u8], lease: &Lease) -> Option<Vec<u8>> {
     let eth = EthernetFrame::new_checked(packet).ok()?;
     let ip = Ipv4Packet::new_checked(eth.payload()).ok()?;

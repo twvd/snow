@@ -108,8 +108,10 @@ refused. Services of the host can be reached at its address on its own network.
 
 Snow includes a RARP server that provides the emulated system with a valid IP address, mask, and gateway. To use auto configuration, choose ` Server` to the `Obtain Address` section.
 
-Snow also includes a DHCP and BOOTP server. It gives the emulated system the IP-address 10.0.0.2, the mask
-255.0.0.0, and 10.0.0.1 as router and DNS server. DNS queries sent to 10.0.0.1 go to the DNS server of the host (the
+Snow also includes a DHCP and BOOTP server. It gives each Ethernet adapter of the emulated system an IP-address of
+its own: 10.0.0.2 to the first one that asks, 10.0.0.3 to the next, and so on, and to an adapter always the same one
+while the machine runs. RARP gives the same addresses. It also gives the mask 255.0.0.0, and 10.0.0.1 as router and DNS
+server. DNS queries sent to 10.0.0.1 go to the DNS server of the host (the
 first one in `/etc/resolv.conf`), and the answers come back from 10.0.0.1. With Open Transport, choose 'Using DHCP
 Server' or 'Using BOOTP Server' in the TCP/IP control panel.
 
