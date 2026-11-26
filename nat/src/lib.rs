@@ -7,7 +7,7 @@
 //!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
-//! Currently only supports TCP and UDP.
+//! Currently only supports TCP and UDP. Broadcasts stay on the emulated network.
 //!
 //! The MacOS TCP/IP stack seems to struggle with ARP requests during already
 //! active TCP sessions which can stall connections and leave smoltcp in a
@@ -95,6 +95,8 @@ struct VirtualDevice {
     smoltcp_queue: Vec<Packet>,
     /// Gateway IP address to detect routed packets
     gateway_ip: Ipv4Address,
+    /// The broadcast address of the gateway's subnet
+    subnet_broadcast: Ipv4Address,
     /// Learned local node (for gratuitous ARP)
     local_node: Option<(EthernetAddress, Ipv4Address)>,
     /// Next time gratuitous ARP should be sent
@@ -112,6 +114,7 @@ impl VirtualDevice {
         rx: Receiver<Packet>,
         stats: Arc<NatEngineStats>,
         gateway_ip: Ipv4Address,
+        subnet_broadcast: Ipv4Address,
     ) -> Self {
         Self {
             rx,
@@ -120,6 +123,7 @@ impl VirtualDevice {
             intercepted_packets: Vec::new(),
             smoltcp_queue: Vec::new(),
             gateway_ip,
+            subnet_broadcast,
             local_node: None,
             next_gratuitous_arp: Instant::now(),
             pending: VecDeque::new(),
@@ -145,7 +149,7 @@ impl VirtualDevice {
     /// Check for IPv4 packets that the NAT gateway should not handle.
     /// Filters UDP packets that would cause OS bind/connect errors:
     ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
-    ///   - broadcasts (255.255.255.255)
+    ///   - broadcasts (255.255.255.255, and to the gateway's subnet)
     ///   - UDP src port < 1024 (privileged ports as the emulator is likely running as non-root)
     ///   - UDP dst port == 520 (RIP)
     fn needs_filtering(&self, packet: &[u8]) -> bool {
@@ -174,7 +178,10 @@ impl VirtualDevice {
             Err(_) => return false,
         };
 
-        if ipv4_packet.dst_addr() == Ipv4Address::BROADCAST {
+        // Broadcasts, to all networks or to the gateway's subnet, stay on the emulated network
+        if ipv4_packet.dst_addr() == Ipv4Address::BROADCAST
+            || ipv4_packet.dst_addr() == self.subnet_broadcast
+        {
             return true;
         }
 
@@ -618,7 +625,11 @@ impl NatEngine {
 
         let gateway_ipv4 = Ipv4Address::from(gateway_ip);
         let tx = GuestTx { tx, rx_enabled };
-        let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
+        let netmask = u32::MAX
+            .checked_shl(32 - u32::from(gateway_subnet))
+            .unwrap_or(0);
+        let subnet_broadcast = Ipv4Address::from(u32::from_be_bytes(gateway_ip) | !netmask);
+        let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4, subnet_broadcast);
 
         let config = Config::new(gateway_mac_addr.into());
         let mut iface = Interface::new(config, &mut device, smoltcp::time::Instant::now());
@@ -1822,5 +1833,72 @@ impl NatEngine {
         }
 
         log::info!("NAT stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::{IpProtocol, Ipv4Packet};
+
+    const GATEWAY_MAC: [u8; 6] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+    const GUEST_MAC: [u8; 6] = [0x08, 0x00, 0x07, 0x12, 0x34, 0x56];
+    const GUEST_IP: [u8; 4] = [10, 0, 0, 2];
+
+    /// The device of a gateway at 10.0.0.1/8, and the guest's ends of its channels
+    fn device() -> (VirtualDevice, Sender<Packet>, Receiver<Packet>) {
+        let (to_guest, from_nat) = crossbeam_channel::unbounded();
+        let (to_nat, from_guest) = crossbeam_channel::unbounded();
+        let tx = GuestTx {
+            tx: to_guest,
+            rx_enabled: Arc::new(AtomicBool::new(true)),
+        };
+        let device = VirtualDevice::new(
+            tx,
+            from_guest,
+            Arc::new(NatEngineStats::default()),
+            Ipv4Address::new(10, 0, 0, 1),
+            Ipv4Address::new(10, 255, 255, 255),
+        );
+        (device, to_nat, from_nat)
+    }
+
+    /// A frame from the guest to the gateway: IPv4 to `dst`, around this transport header
+    /// and payload
+    fn ipv4_frame(dst: [u8; 4], protocol: IpProtocol, transport: &[u8]) -> Packet {
+        let mut f = vec![0; 14 + 20 + transport.len()];
+        let mut eth = EthernetFrame::new_unchecked(&mut f[..]);
+        eth.set_dst_addr(EthernetAddress(GATEWAY_MAC));
+        eth.set_src_addr(EthernetAddress(GUEST_MAC));
+        eth.set_ethertype(EthernetProtocol::Ipv4);
+        let mut ip = Ipv4Packet::new_unchecked(eth.payload_mut());
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len((20 + transport.len()) as u16);
+        ip.set_hop_limit(64);
+        ip.set_next_header(protocol);
+        ip.set_src_addr(Ipv4Address::from(GUEST_IP));
+        ip.set_dst_addr(Ipv4Address::from(dst));
+        ip.fill_checksum();
+        ip.payload_mut().copy_from_slice(transport);
+        f
+    }
+
+    /// A UDP datagram from the guest's port 40000 to `dst`:`port`, without a checksum
+    fn udp_frame(dst: [u8; 4], port: u16) -> Packet {
+        let mut udp = vec![0; 8 + 4];
+        udp[0..2].copy_from_slice(&40000u16.to_be_bytes());
+        udp[2..4].copy_from_slice(&port.to_be_bytes());
+        udp[4..6].copy_from_slice(&12u16.to_be_bytes());
+        udp[8..].copy_from_slice(b"test");
+        ipv4_frame(dst, IpProtocol::Udp, &udp)
+    }
+
+    #[test]
+    fn broadcasts_stay_on_the_emulated_network() {
+        let (device, _to_nat, _from_nat) = device();
+        assert!(device.needs_filtering(&udp_frame([255, 255, 255, 255], 7779)));
+        assert!(device.needs_filtering(&udp_frame([10, 255, 255, 255], 7779)));
+        assert!(!device.needs_filtering(&udp_frame([10, 1, 1, 13], 7779)));
     }
 }
