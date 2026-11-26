@@ -509,7 +509,23 @@ fn the_uam_count_matches_the_list() {
     let at = u16::from_be_bytes([block[4], block[5]]) as usize;
     assert_eq!(block[at], 1);
     assert_eq!(block[at + 1] as usize, b"No User Authent".len());
-    assert_eq!(&block[at + 2..], b"No User Authent");
+    assert_eq!(&block[at + 2..at + 17], b"No User Authent");
+}
+
+#[test]
+fn the_server_info_carries_the_volume_icon() {
+    // AppleShare Client 3.7.4 crashes mounting over AFP 2.2 without one
+    let (s, _) = test_server_writable("icon");
+    let block = s.server_info();
+    let at = u16::from_be_bytes([block[6], block[7]]) as usize;
+    assert_ne!(at, 0);
+    assert_eq!(&block[at..], &super::super::icon::volume_icon()[..]);
+    assert_eq!(block.len() - at, 256);
+    // The top row of the mask, at offset 128, is empty; the next is the Mac's top edge
+    assert_eq!(
+        &block[at + 128 + 4..at + 128 + 8],
+        &[0x0F, 0xFF, 0xFF, 0xF0]
+    );
 }
 
 #[test]

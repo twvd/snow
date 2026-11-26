@@ -26,6 +26,7 @@ pub use crate::dtdb::ScanStatus;
 
 mod desktop;
 mod fork;
+mod icon;
 mod params;
 mod path;
 mod tree;
@@ -432,7 +433,7 @@ impl Afp {
 
     /// The server information block, served as the ASP GetStatus block.
     /// The offsets point at the Machine Type, the AFP version list, the
-    /// UAM list and the (absent) volume icon.
+    /// UAM list and the volume icon.
     pub fn server_info(&self) -> Vec<u8> {
         let mut block = Vec::new();
         // Offsets are filled in below, the fields follow the header
@@ -457,10 +458,19 @@ impl Afp {
         // server has no real authentication) but not advertised, so
         // the Chooser does not offer "Registered User"
 
-        // Offsets: machine type, AFP versions, UAMs, volume icon (none)
+        // The icon is optional, but AppleShare Client 3.7.4 needs it on
+        // AFP 2.2: its Chooser passes the icon's address to the mounter in
+        // A2 (0 without an icon), and the mounter builds FPGetVolParms at
+        // A2 - 42, a bus error at $FFFFFFD6 without one. Found by tracing
+        // the crash; real servers, netatalk among them, send an icon.
+        let icon = block.len() as u16;
+        block.extend_from_slice(&icon::volume_icon());
+
+        // Offsets: machine type, AFP versions, UAMs, volume icon
         block[0..2].copy_from_slice(&machine_type.to_be_bytes());
         block[2..4].copy_from_slice(&versions.to_be_bytes());
         block[4..6].copy_from_slice(&uams.to_be_bytes());
+        block[6..8].copy_from_slice(&icon.to_be_bytes());
         block
     }
 
