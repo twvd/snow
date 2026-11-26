@@ -380,6 +380,10 @@ struct VirtualDevice {
     subnet_broadcast: Ipv4Address,
     /// Learned local nodes (for gratuitous ARP): one address per adapter
     local_nodes: Vec<(EthernetAddress, Ipv4Address)>,
+    /// The address that each Ethernet address on the emulated network uses, the last one its
+    /// ARP packets showed, whether DHCP gave it or it was set by hand: DHCP, BOOTP and RARP hand
+    /// none of them out to another adapter
+    arp_addresses: Vec<(EthernetAddress, Ipv4Address)>,
     /// Next time gratuitous ARP should be sent
     next_gratuitous_arp: Instant,
     /// Packets received from the emulator while waiting in `wait_for_packet()`,
@@ -406,6 +410,7 @@ impl VirtualDevice {
             gateway_ip,
             subnet_broadcast,
             local_nodes: Vec::new(),
+            arp_addresses: Vec::new(),
             next_gratuitous_arp: Instant::now(),
             pending: VecDeque::new(),
             disconnected: false,
@@ -737,6 +742,26 @@ impl Device for VirtualDevice {
             return None;
         }
 
+        // The address an adapter uses, as its ARP packets show it. A probe for an address
+        // (RFC 5227), from 0.0.0.0, doesn't use one yet.
+        if let Ok(eth) = EthernetFrame::new_checked(&packet)
+            && eth.ethertype() == EthernetProtocol::Arp
+            && let Ok(ArpRepr::EthernetIpv4 {
+                source_hardware_addr,
+                source_protocol_addr,
+                ..
+            }) = ArpPacket::new_checked(eth.payload()).and_then(|p| ArpRepr::parse(&p))
+            && !source_protocol_addr.is_unspecified()
+            && !self
+                .arp_addresses
+                .contains(&(source_hardware_addr, source_protocol_addr))
+        {
+            self.arp_addresses
+                .retain(|&(mac, _)| mac != source_hardware_addr);
+            self.arp_addresses
+                .push((source_hardware_addr, source_protocol_addr));
+        }
+
         // Try to learn the emulator's IP address from ARP traffic so we can keep the neighbor cache entry alive
         if let Ok(ArpRepr::EthernetIpv4 {
             operation,
@@ -1033,14 +1058,22 @@ impl Addresses {
     }
 }
 
-/// The address of the adapter at `mac`, as `Addresses::of()` gives it, with the address it holds
-/// and those of the others from `guests`. The adapter then holds it.
+/// The address of the adapter at `mac`, as `Addresses::of()` gives it: with the address it holds,
+/// and keeping out those that the other adapters hold (from `guests`) or use (as `arp_addresses`
+/// saw them). The adapter then holds it.
 fn address_of(
     addresses: &mut Addresses,
     guests: &GuestTx,
+    arp_addresses: &[(EthernetAddress, Ipv4Address)],
     mac: EthernetAddress,
 ) -> Option<Ipv4Address> {
-    let (held, reserved) = guests.leases(mac);
+    let (held, mut reserved) = guests.leases(mac);
+    reserved.extend(
+        arp_addresses
+            .iter()
+            .filter(|&&(other, _)| other != mac)
+            .map(|&(_, ip)| ip),
+    );
     let ip = addresses.of(mac, held, &reserved)?;
     guests.set_lease(mac, ip);
     Some(ip)
@@ -1393,10 +1426,10 @@ impl NatEngine {
         let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
 
         let addresses = &mut self.addresses;
-        let guests = &self.device.tx;
+        let device = &self.device;
         let Some(buf) =
             mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac, |mac| {
-                address_of(addresses, guests, mac)
+                address_of(addresses, &device.tx, &device.arp_addresses, mac)
             })?
         else {
             return Ok(());
@@ -1421,7 +1454,12 @@ impl NatEngine {
         let Some(mac) = dhcp::client_hardware_address(packet) else {
             return;
         };
-        let Some(client_ip) = address_of(&mut self.addresses, &self.device.tx, mac) else {
+        let Some(client_ip) = address_of(
+            &mut self.addresses,
+            &self.device.tx,
+            &self.device.arp_addresses,
+            mac,
+        ) else {
             log::warn!("DHCP: no address left for {}", mac);
             return;
         };
@@ -2701,7 +2739,7 @@ mod tests {
         let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
         let a = EthernetAddress(GUEST_MAC);
         assert_eq!(guests.leases(a), (None, vec![]));
-        let ip = address_of(&mut addresses, &guests, a);
+        let ip = address_of(&mut addresses, &guests, &[], a);
         assert_eq!(ip, Some(Ipv4Address::new(10, 0, 0, 2)));
         assert_eq!(guests.leases(a), (ip, vec![]));
     }
@@ -2746,6 +2784,52 @@ mod tests {
         assert_eq!(
             dns.get(later, || panic!("looked up with a server set")),
             set
+        );
+    }
+
+    /// An address that another adapter uses, as the gateway sees it in that adapter's ARP
+    /// packets, isn't handed out; one being probed for (from 0.0.0.0) is
+    #[test]
+    fn an_address_seen_in_arp_isnt_handed_out() {
+        let arp = |src: [u8; 4]| {
+            let mut buffer = vec![0; 42];
+            let mut eth = EthernetFrame::new_unchecked(&mut buffer);
+            eth.set_src_addr(EthernetAddress(OTHER_MAC));
+            eth.set_dst_addr(EthernetAddress::BROADCAST);
+            eth.set_ethertype(EthernetProtocol::Arp);
+            ArpRepr::EthernetIpv4 {
+                operation: ArpOperation::Request,
+                source_hardware_addr: EthernetAddress(OTHER_MAC),
+                source_protocol_addr: Ipv4Address::from(src),
+                target_hardware_addr: EthernetAddress([0; 6]),
+                target_protocol_addr: Ipv4Address::new(10, 0, 0, 1),
+            }
+            .emit(&mut ArpPacket::new_unchecked(eth.payload_mut()));
+            buffer
+        };
+        let (mut device, to_nat, _from_nat) = device();
+        to_nat.send(arp([0, 0, 0, 0])).unwrap();
+        let _ = device.receive(smoltcp::time::Instant::now());
+        assert!(device.arp_addresses.is_empty());
+        // The other adapter set by hand to 10.0.0.2
+        to_nat.send(arp([10, 0, 0, 2])).unwrap();
+        let _ = device.receive(smoltcp::time::Instant::now());
+
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let guest = EthernetAddress(GUEST_MAC);
+        assert_eq!(
+            address_of(&mut addresses, &device.tx, &device.arp_addresses, guest),
+            Some(Ipv4Address::new(10, 0, 0, 3))
+        );
+        // The adapter that uses it gets it
+        assert_eq!(
+            address_of(
+                &mut addresses,
+                &device.tx,
+                &device.arp_addresses,
+                EthernetAddress(OTHER_MAC)
+            ),
+            Some(Ipv4Address::new(10, 0, 0, 2))
         );
     }
 }

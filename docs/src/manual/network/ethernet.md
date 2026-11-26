@@ -123,9 +123,11 @@ Snow includes a RARP server that provides the emulated system with a valid IP ad
 
 Snow also includes a DHCP and BOOTP server. It gives each Ethernet adapter of the emulated system an IP-address of
 its own: 10.0.0.2 to the first one that asks, 10.0.0.3 to the next, and so on, and to an adapter always the same one,
-also after a save state is restored. RARP gives the same addresses. It also gives the mask 255.0.0.0, and 10.0.0.1 as
-router and DNS server. DNS queries sent to 10.0.0.1 go to a DNS server of the host, and the answers come back from
-10.0.0.1. With Open Transport, choose 'Using DHCP Server' or 'Using BOOTP Server' in the TCP/IP control panel.
+also after a save state is restored. RARP gives the same addresses. It skips an address that another adapter uses,
+set by hand, once the gateway has seen it in that adapter's ARP packets. It also gives the mask 255.0.0.0, and
+10.0.0.1 as router and DNS server. DNS queries sent to 10.0.0.1 go to a DNS server of the host, and the answers come
+back from 10.0.0.1. With Open Transport, choose 'Using DHCP Server' or 'Using BOOTP Server' in the TCP/IP control
+panel.
 
 The DNS server is the one set in the NAT gateway's settings, or, with none set, the host's: on Linux and macOS, the
 first one in `/etc/resolv.conf`; on Windows, the first one of the network adapter that the host's traffic goes out
