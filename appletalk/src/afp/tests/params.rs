@@ -445,21 +445,21 @@ fn test_vol_params_extended_size_bits() {
 
 #[test]
 fn test_server_info_lists_versions_high_first() {
+    // By default, up to 2.1 (see MaxVersion::Max21)
     let (server, _dir) = test_server("versions-info");
     let info = server.server_info();
     let versions_off = u16::from_be_bytes([info[2], info[3]]) as usize;
-    assert_eq!(info[versions_off], 4); // four version strings
-    assert_eq!(&info[versions_off + 1..versions_off + 8], b"\x06AFP2.2");
+    assert_eq!(info[versions_off], 3); // three version strings
     assert_eq!(
-        &info[versions_off + 8..versions_off + 23],
+        &info[versions_off + 1..versions_off + 16],
         b"\x0eAFPVersion 2.1"
     );
     assert_eq!(
-        &info[versions_off + 23..versions_off + 38],
+        &info[versions_off + 16..versions_off + 31],
         b"\x0eAFPVersion 2.0"
     );
     assert_eq!(
-        &info[versions_off + 38..versions_off + 53],
+        &info[versions_off + 31..versions_off + 46],
         b"\x0eAFPVersion 1.1"
     );
 }

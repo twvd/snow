@@ -655,7 +655,7 @@ fn a_delete_leaves_a_same_named_file_elsewhere_reachable() {
 fn exchange_files_swaps_the_data_and_its_modification_date() {
     // The example in the AFP 2.1 specification
     let (mut s, dir) = test_server_writable("exchange");
-    login_ok(&mut s, "AFP2.2");
+    login_ok(&mut s, "AFPVersion 2.1");
     std::fs::write(dir.join("Blue"), b"blue data").unwrap();
     std::fs::write(dir.join("Red"), b"red").unwrap();
     // Finder info and creation dates tell them apart
@@ -702,7 +702,7 @@ fn exchange_files_swaps_the_data_and_its_modification_date() {
 #[test]
 fn exchange_files_with_a_resource_fork_on_one_side() {
     let (mut s, dir) = test_server_writable("exchange-rsrc");
-    login_ok(&mut s, "AFP2.2");
+    login_ok(&mut s, "AFPVersion 2.1");
     std::fs::write(dir.join("a"), b"A").unwrap();
     std::fs::write(dir.join("b"), b"B").unwrap();
     let (_, f) = open(&mut s, "a", true, 3);
@@ -731,7 +731,7 @@ fn exchange_files_errors() {
     // Before 2.1 the call does not exist
     login_ok(&mut s, "AFPVersion 2.0");
     assert_eq!(exchange(&mut s, "a", "b"), ERR_CALL_NOT_SUPPORTED);
-    login_ok(&mut s, "AFP2.2");
+    login_ok(&mut s, "AFPVersion 2.1");
     assert_eq!(exchange(&mut s, "a", "gone"), ERR_OBJECT_NOT_FOUND);
     assert_eq!(exchange(&mut s, "a", "d"), ERR_OBJECT_TYPE);
     assert_eq!(exchange(&mut s, "a", "a"), ERR_SAME_OBJECT);

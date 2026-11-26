@@ -159,12 +159,20 @@ pub enum MaxVersion {
     /// Advertise and accept AFP up to 2.0
     #[serde(alias = "V20Only", alias = "Both20First", alias = "Both")]
     Max20,
-    /// Advertise and accept AFP up to 2.1
+    /// Advertise and accept AFP up to 2.1: the default.
+    ///
+    /// Not 2.2: AppleShare Client 3.7.4, that of Mac OS 8.1, crashes
+    /// the mount of a volume over an AFP 2.2 session. After the FPOpenVol, it
+    /// asks for the 64-bit volume sizes with an FPGetVolParms whose command it
+    /// builds at -42(A2) instead of -42(A6), its stack frame ("ApShare
+    /// Mounter", FSMT 1801 of the AppleShare file, offset $544). From the
+    /// Chooser, A2 is 0: a bus error. Found from an instruction trace of the
+    /// crash and a disassembly of the client.
+    #[default]
     #[serde(alias = "Both21First", alias = "V21Only")]
     Max21,
-    /// Advertise and accept AFP up to 2.2 (without TCP; the default:
-    /// some Mac OS versions only request color icons over 2.2)
-    #[default]
+    /// Advertise and accept AFP up to 2.2 (without TCP): some Mac OS versions
+    /// only request color icons over 2.2
     Max22,
 }
 

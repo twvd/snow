@@ -60,7 +60,7 @@ Files and folders whose names begin with a dot are hidden; **Advanced…** can s
 
 | Setting | |
 |---|---|
-| Maximum AFP version | The newest protocol version the server offers. 2.2 is the default, because some versions of Mac OS only ask for color icons over it. |
+| Maximum AFP version | The newest protocol version the server offers. 2.1 is the default. Some versions of Mac OS only ask for color icons over 2.2, but AppleShare Client 3.7.4, the one in Mac OS 8.1, crashes when it mounts a volume over 2.2: the Chooser quits with an error of type 1. Choose 2.2 only with other clients. |
 | Desktop scan depth, entry cap | Limits for the background scan that finds applications and their icons. |
 | Hidden files | Whether dot-prefixed entries are hidden, shown as invisible, or shown. |
 | Follow symlinks inside the share | Whether the scan follows them. Symbolic links leading out of the shared folder never open. |
