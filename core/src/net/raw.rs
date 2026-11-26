@@ -119,14 +119,12 @@ impl EthernetPort {
                                 if REWRITE_MACS
                                     && ethpacket.get_ethertype()
                                         == pnet::packet::ethernet::EtherTypes::Arp
-                                {
-                                    if let Some(mut arppacket) =
+                                    && let Some(mut arppacket) =
                                         pnet::packet::arp::MutableArpPacket::new(
                                             ethpacket.payload_mut(),
                                         )
-                                    {
-                                        arppacket.set_sender_hw_addr(t_physical_mac);
-                                    }
+                                {
+                                    arppacket.set_sender_hw_addr(t_physical_mac);
                                 }
 
                                 // Minimum frame size
