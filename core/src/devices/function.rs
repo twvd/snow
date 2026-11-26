@@ -326,8 +326,10 @@ pub struct EthernetConfig {
     pub link: EthernetLinkType,
 }
 
-/// The network of the machine's NAT gateway: the gateway's address and the length of its
-/// network's prefix. The adapters on a NAT link get the addresses after the gateway's.
+/// The network of the machine's NAT gateway, and its DNS server
+///
+/// The adapters on a NAT link get the addresses after the gateway's. The gateway passes the DNS
+/// queries sent to it on to the DNS server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NatConfig {
     /// The gateway's address
@@ -335,14 +337,19 @@ pub struct NatConfig {
     /// The length of the network prefix, in bits: 8 for a class A network, 16 for class B,
     /// 24 for class C
     pub prefix_len: u8,
+    /// The DNS server that DNS queries to the gateway go to. None: the host's, the first one
+    /// in /etc/resolv.conf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<std::net::IpAddr>,
 }
 
 impl Default for NatConfig {
-    /// The gateway at 10.0.0.1, on 10.0.0.0/8
+    /// The gateway at 10.0.0.1, on 10.0.0.0/8, and the host's DNS server
     fn default() -> Self {
         Self {
             gateway: [10, 0, 0, 1],
             prefix_len: 8,
+            dns: None,
         }
     }
 }

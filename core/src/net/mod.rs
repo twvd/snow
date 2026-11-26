@@ -194,6 +194,7 @@ impl SharedNat {
                 NAT_MAC_ADDRESS,
                 config.gateway,
                 config.prefix_len,
+                config.dns,
                 PACKET_QUEUE_SIZE,
             )
         });
@@ -766,6 +767,7 @@ mod tests {
         nat.configure(NatConfig {
             gateway: [192, 168, 77, 1],
             prefix_len: 24,
+            dns: None,
         });
         a.set_shared_nat(nat.clone());
         b.set_shared_nat(nat);
@@ -779,6 +781,7 @@ mod tests {
         let config = |gateway, prefix_len| NatConfig {
             gateway,
             prefix_len,
+            dns: None,
         };
         assert!(config([192, 168, 1, 254], 24).check().is_ok());
         assert!(config([192, 168, 1, 0], 24).check().is_err());

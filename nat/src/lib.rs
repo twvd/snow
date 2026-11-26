@@ -912,11 +912,13 @@ pub struct NatNetwork {
 
 impl NatNetwork {
     /// Starts a gateway at `gateway_ip`, on a network of `gateway_subnet` bits, with the
-    /// Ethernet address `gateway_mac`. Each queue of frames holds `queue_size` frames.
+    /// Ethernet address `gateway_mac`. DNS queries to it go to `dns`, or with None to the host's
+    /// DNS server. Each queue of frames holds `queue_size` frames.
     pub fn start(
         gateway_mac: [u8; 6],
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
+        dns: Option<std::net::IpAddr>,
         queue_size: usize,
     ) -> Self {
         let (to_gateway, from_guests) = crossbeam_channel::bounded(queue_size);
@@ -927,6 +929,7 @@ impl NatNetwork {
             gateway_mac,
             gateway_ip,
             gateway_subnet,
+            dns,
         );
         let stats = engine.stats();
         std::thread::spawn(move || engine.run());
@@ -977,12 +980,14 @@ impl NatEngine {
     /// * `gateway_mac` - MAC address of the NAT gateway
     /// * `gateway_ip` - IP address of the NAT gateway
     /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
+    /// * `dns` - The DNS server that DNS queries to the gateway go to; None: the host's
     fn new(
         rx: Receiver<Packet>,
         tx: GuestTx,
         gateway_mac: [u8; 6],
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
+        dns: Option<std::net::IpAddr>,
     ) -> Self {
         let stats = Arc::new(NatEngineStats::default());
         let gateway_mac_addr = EthernetAddress(gateway_mac);
@@ -1029,9 +1034,12 @@ impl NatEngine {
             gateway_ip: gateway_ipv4,
             gateway_mac: gateway_mac_addr,
         };
-        let host_dns = host_dns_server();
-        if host_dns.is_none() {
-            log::warn!("NAT: no DNS server in /etc/resolv.conf, DNS queries to the gateway fail");
+        let host_dns = dns.or_else(host_dns_server);
+        match host_dns {
+            Some(dns) => log::info!("NAT: DNS queries to the gateway go to {}", dns),
+            None => log::warn!(
+                "NAT: no DNS server set, and none in /etc/resolv.conf: DNS queries to the gateway fail"
+            ),
         }
 
         Self {
