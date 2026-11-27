@@ -1078,6 +1078,7 @@ impl Tickable for LcIIIBus {
 }
 
 impl IrqSource for LcIIIBus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);

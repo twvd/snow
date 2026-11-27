@@ -1101,6 +1101,7 @@ impl Tickable for LcIBus {
 }
 
 impl IrqSource for LcIBus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);

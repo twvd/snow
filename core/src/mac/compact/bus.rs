@@ -977,6 +977,7 @@ impl Tickable for CompactMacBus {
 }
 
 impl IrqSource for CompactMacBus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         // Programmer's key
         if self.progkey_pressed.get_clear() {

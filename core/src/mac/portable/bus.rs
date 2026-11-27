@@ -852,6 +852,7 @@ impl Tickable for MacPortableBus {
 }
 
 impl IrqSource for MacPortableBus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(4);

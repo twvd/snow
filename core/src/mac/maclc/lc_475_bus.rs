@@ -1425,6 +1425,7 @@ impl Lc475Bus {
 }
 
 impl IrqSource for Lc475Bus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
