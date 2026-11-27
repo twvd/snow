@@ -119,6 +119,8 @@ pub struct PseudoVia {
     scsi_irq: bool,
     scsi_drq: bool,
     asc_irq: bool,
+    /// The interrupt of the card in the processor-direct slot
+    pds_irq: bool,
 
     /// Monitor sense lines
     sense: u8,
@@ -145,6 +147,7 @@ impl PseudoVia {
             scsi_irq: false,
             scsi_drq: false,
             asc_irq: false,
+            pds_irq: false,
             sense,
             addr_mask,
             vram: 0,
@@ -191,9 +194,20 @@ impl PseudoVia {
         self.asc_irq = level;
     }
 
+    /// The /SLOTIRQ line of the processor-direct slot, which the card holds low to ask for an
+    /// interrupt: a level-2 interrupt when the slot interrupt is enabled (Macintosh LC
+    /// Developer Note, signals of the PDS connector). The LC III names it /SLOTIRQ.E, an
+    /// interrupt "corresponding to a device in NuBus slot $E" (Macintosh LC III Developer
+    /// Note): bit 5 of the slot interrupt register, as in VIA 2 of the Macintosh II (Guide to
+    /// the Macintosh Family Hardware, Table 4-9).
+    pub fn set_pds_irq(&mut self, level: bool) {
+        self.pds_irq = level;
+    }
+
     fn slot_ifr(&self) -> RegisterSlot {
-        // The expansion slot is not implemented
-        RegisterSlot(!0x80).with_vblank(!self.vblank)
+        RegisterSlot(!0x80)
+            .with_vblank(!self.vblank)
+            .with_slot(!self.pds_irq)
     }
 
     /// Interrupt flags, without the summary bit. They all follow their source.
@@ -382,6 +396,20 @@ mod tests {
         v8.write(REG_SLOT_IFR, 0x40);
         assert!(!v8.irq());
         assert_eq!(v8.read(REG_SLOT_IFR), Some(0x7F));
+    }
+
+    #[test]
+    fn slot_e() {
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
+
+        v8.write(REG_SLOT_IER, 0xA0);
+        v8.write(REG_IER, 0x82);
+        v8.set_pds_irq(true);
+        assert_eq!(v8.read(REG_SLOT_IFR), Some(0x5F));
+        assert!(v8.irq());
+        v8.set_pds_irq(false);
+        assert_eq!(v8.read(REG_SLOT_IFR), Some(0x7F));
+        assert!(!v8.irq());
     }
 
     #[test]

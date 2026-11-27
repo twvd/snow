@@ -3,10 +3,13 @@
 Snow can emulate the DaynaPORT SCSI/Link Ethernet adapter which is an ethernet adapter with a SCSI interface. You
 can use this adapter on any emulated Mac model that supports SCSI.
 
+Snow also emulates the Ethernet controller some Macs have on their logic board, and Ethernet cards: see
+[Built-in Ethernet](#built-in-ethernet) and [Ethernet cards](#ethernet-cards).
+
 ## Installation
 
 To attach the emulated Ethernet adapter, use the 'Attach Ethernet adapter' option at any given SCSI ID in the menu:
-'Drives' -> 'SCSI ID #_n_' -> 'Attach Ethernet adapter'.
+'Devices' -> 'SCSI ID #_n_' -> 'Attach Ethernet adapter'.
 
 <div class="warning">
 Known issue: DaynaPORT drivers may not recognize the adapter. If you come across this, try to attach the Ethernet adapter
@@ -38,6 +41,45 @@ Once the drivers are installed, reboot.
 To install MacTCP, simply drag the extension and control panel onto the System folder in your emulated system. Reboot
 afterwards.
 
+## Built-in Ethernet
+
+The Quadra 700 and the Quadra 800 have Ethernet on their logic board, a National Semiconductor DP83932 SONIC, which
+Snow emulates. It is always there: you don't attach it. It is in the menu as 'Devices' -> 'Built-in Ethernet', with
+the same link choices as the DaynaPORT. The guest uses it as the Quadra's built-in Ethernet, with Apple's networking
+software.
+
+## Ethernet cards
+
+An Ethernet card is chosen in the Load ROM dialog, with the emulated Mac, and stays in its slot as long as the
+machine runs. It is in the 'Devices' menu under its name, with the same link choices as the DaynaPORT.
+
+### Apple Ethernet NB Twisted-Pair Card
+
+On the Macintosh II, IIx and IIcx and on the Quadras, a NuBus slot can hold an Apple Ethernet NB Twisted-Pair Card.
+Choose it for a NuBus slot: it needs no ROM file. The emulated system needs Apple's driver for it, 'Apple Ethernet
+NB', which the Network Software Installer installs.
+
+### Apple Ethernet LC Card and LC Twisted-Pair Card
+
+The PDS slot of the Macintosh LC, LC II, LC III and LC 475 can hold one of Apple's Ethernet LC cards, in place of
+the Apple IIe Card: choose it under 'PDS Slot'.
+
+* The Apple Ethernet LC Card needs the image of its ROM, 341-0470 or 341-0842, which holds its driver: browse for it
+  in its ROM row.
+* The Apple Ethernet LC Twisted-Pair Card needs no ROM file, but the emulated system needs Apple's driver for it:
+  the System 7.5 installer has 'EtherTalk for Apple Ethernet LC cards' among its options.
+
+### DaynaPORT E/si30
+
+The PDS of the Macintosh SE/30 can hold a DaynaPORT E/si30: choose it under 'PDS Slot'. It needs no ROM file, but
+the emulated system needs Dayna's driver for it, which the DaynaPORT installer installs.
+
+## MAC address
+
+An Ethernet adapter gets a random MAC address when it is attached. A [workspace](../workspaces.md) keeps
+the address, so the emulated system has the same one every time the workspace is loaded, and the other
+machines on the network see the same machine.
+
 ## Ethernet links
 
 Snow currently supports a NAT-based ethernet link that runs in userland on the host system. This link only supports
@@ -48,7 +90,7 @@ The NAT engine does not translate ICMP, which means you cannot ping through the 
 connections to the same remote host may work.
 </div>
 
-You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI ID #_n_'.
+You can select the Ethernet link type through the Devices menu: 'Devices' -> 'SCSI ID #_n_'.
 
 ![Ethernet link menu](../../images/ethernet_link.png)
 
@@ -117,7 +159,7 @@ For example, to create a tap interface owned by your current user:
 sudo ip tuntap add dev tap0 mode tap user $UID
 ```
 
-Then, you can select the tap interface in Snow through the menu: 'Drives' -> 'SCSI #_n_: Ethernet' -> 'TAP device:
+Then, you can select the tap interface in Snow through the menu: 'Devices' -> 'SCSI #_n_: Ethernet' -> 'TAP device:
 tap_n_'.
 
 ![Selecting tap0 tap device](../../images/ethernet_tap.png)

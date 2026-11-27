@@ -24,7 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -65,10 +65,29 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// together with the channel, so they are polled at this interval.
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// The channel to the emulator, closed to packets while the emulated
+/// adapter's receiver is off
+#[derive(Clone)]
+struct GuestTx {
+    tx: Sender<Packet>,
+    rx_enabled: Arc<AtomicBool>,
+}
+
+impl GuestTx {
+    /// A packet the receiver can't take is dropped, as if the queue were
+    /// full
+    fn try_send(&self, packet: Packet) -> std::result::Result<(), TrySendError<Packet>> {
+        if !self.rx_enabled.load(Ordering::Relaxed) {
+            return Err(TrySendError::Full(packet));
+        }
+        self.tx.try_send(packet)
+    }
+}
+
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
     rx: Receiver<Packet>,
-    tx: Sender<Packet>,
+    tx: GuestTx,
     stats: Arc<NatEngineStats>,
     /// Queue for routed UDP/TCP packets that need NAT handling (intercepted before smoltcp)
     intercepted_packets: Vec<Packet>,
@@ -89,7 +108,7 @@ struct VirtualDevice {
 
 impl VirtualDevice {
     fn new(
-        tx: Sender<Packet>,
+        tx: GuestTx,
         rx: Receiver<Packet>,
         stats: Arc<NatEngineStats>,
         gateway_ip: Ipv4Address,
@@ -412,7 +431,7 @@ impl RxToken for VirtualRxToken {
 }
 
 struct VirtualTxToken {
-    tx: Sender<Packet>,
+    tx: GuestTx,
     stats: Arc<NatEngineStats>,
 }
 
@@ -576,6 +595,8 @@ impl NatEngine {
     /// Creates a new NAT engine instance with the given TX/RX channels
     ///
     /// * `tx` - Sender channel for packets going to the emulator
+    /// * `rx_enabled` - Whether the emulated adapter takes packets; they
+    ///   are dropped while it is false
     /// * `rx` - Receiver channel for packets coming from the emulator
     /// * `gateway_mac` - MAC address of the NAT gateway
     /// * `gateway_ip` - IP address of the NAT gateway
@@ -583,6 +604,7 @@ impl NatEngine {
     /// * `https_stripping` - Whether to enable HTTPS stripping
     pub fn new(
         tx: Sender<Packet>,
+        rx_enabled: Arc<AtomicBool>,
         rx: Receiver<Packet>,
         gateway_mac: [u8; 6],
         gateway_ip: [u8; 4],
@@ -595,6 +617,7 @@ impl NatEngine {
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
         let gateway_ipv4 = Ipv4Address::from(gateway_ip);
+        let tx = GuestTx { tx, rx_enabled };
         let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
 
         let config = Config::new(gateway_mac_addr.into());

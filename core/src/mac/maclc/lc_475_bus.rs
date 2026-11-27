@@ -10,6 +10,7 @@
 //! PrimeTime II (LC 630, Quadra 630) is more or less PrimeTime with ATA, so this
 //! is where those are expected to start from. Only PrimeTime is here for now.
 
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,15 +20,19 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, built_in_display, bus_id,
+};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::cuda::Cuda;
+use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam};
 use crate::mac::macii::via2::Via2;
-use crate::mac::maclc::pds_iie::{IieCardSettings, PdsIIeCard};
 use crate::mac::maclc::via::Via;
-use crate::mac::quadra::dafb::{Dafb, DafbKind};
+use crate::mac::pds::Pds;
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -35,10 +40,8 @@ use crate::mac::sound::dfac2::Dfac2;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -95,9 +98,6 @@ const VIA_RELEASE: Ticks = 15;
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
-
-/// Sizes of video RAM which can be fitted
-pub const VRAM_SIZES: &[usize] = &[512 * 1024, 1024 * 1024];
 
 /// Bytes of the PrimeTime registers kept
 const PRIMETIME_REGS_SIZE: usize = 0x80;
@@ -195,9 +195,68 @@ const MAP: [[Region; 256]; 2] = {
     map
 };
 
+/// Offset in the RAM of an address in the RAM space, with the decode of that space in `ram_map`
+#[inline(always)]
+fn ram_index(ram_map: &[u32], addr: Address) -> Option<usize> {
+    let offset = ram_map[((addr >> RAM_BLOCK_SHIFT) as usize) & (RAM_BLOCKS - 1)];
+    (offset != RAM_BLOCK_NONE)
+        .then(|| offset as usize + (addr as usize & ((1 << RAM_BLOCK_SHIFT) - 1)))
+}
+
+/// The machine's RAM, as a device that masters the bus reaches it. It borrows only the fields
+/// the DMA operations need, so that the bus can lend it while it ticks its card.
+struct Dma<'a> {
+    ram: &'a mut [u8],
+    ram_map: &'a [u32],
+    overlay: bool,
+    writes: &'a mut u32,
+}
+
+impl DmaRam for Dma<'_> {
+    fn ram(&mut self) -> &mut [u8] {
+        self.ram
+    }
+
+    /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
+    fn ram_offset(&self, addr: Address) -> Option<usize> {
+        match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
+            Region::Ram => ram_index(self.ram_map, addr).filter(|&idx| idx < self.ram.len()),
+            _ => None,
+        }
+    }
+
+    /// Those of a single cycle, as `Lc475Bus::memory_waits()` gives them, without the refresh
+    fn ram_timing(&self, write: bool) -> (u32, Ticks) {
+        let (waits, _) = Lc475Bus::memory_waits(Region::Ram, 0, write).unwrap_or_default();
+        (4, waits)
+    }
+}
+
+impl Dma<'_> {
+    /// An outcome with its latency, counted in clocks of the CPU's bus, given in ticks of C16M,
+    /// at which the card is ticked
+    fn in_c16m(outcome: DmaOutcome) -> DmaOutcome {
+        DmaOutcome {
+            latency: (outcome.latency * C16M_FREQUENCY).div_ceil(BUS_FREQUENCY),
+            ..outcome
+        }
+    }
+}
+
+impl DmaOps for Dma<'_> {
+    fn read(&mut self, addr: Address, data: &mut [u8]) -> DmaOutcome {
+        Self::in_c16m(dma::read_ram(self, addr, data))
+    }
+
+    fn write(&mut self, addr: Address, data: &[u8]) -> DmaOutcome {
+        // Counted even when it stops short: what was written until then is in the RAM
+        *self.writes = self.writes.wrapping_add(1);
+        Self::in_c16m(dma::write_ram(self, addr, data))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Lc475Bus<TRenderer: Renderer> {
+pub struct Lc475Bus {
     /// Interrupt level, until a tick of the bus or an access to the I/O area
     #[serde(skip)]
     irq: Option<Option<u8>>,
@@ -268,20 +327,25 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
-    /// Apple IIe Card in the expansion slot, when installed
-    iie_card: Option<PdsIIeCard>,
+    /// The expansion slot, a processor-direct slot
+    pds: Pds,
+
+    /// Counts the writes the card in the slot made to the RAM by itself, which the memory
+    /// views can't see otherwise
+    #[serde(skip)]
+    dma_writes: u32,
 
     /// Built-in video
-    pub(crate) dafb: Dafb<TRenderer>,
+    pub(crate) dafb: Dafb,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::MemcJrVideo)];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -293,16 +357,17 @@ where
     const SCSI_DMA_TIMEOUT: Ticks = 640;
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        renderer: TRenderer,
-        monitor: MacMonitor,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        vram_size: Option<usize>,
-        iie_card: Option<IieCardSettings>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let mut cuda = Cuda::default();
@@ -320,7 +385,7 @@ where
             cuda,
             dfac2: Dfac2::default(),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
-            swim: Swim::new_swim2(model.fdd_drives(), C16M_FREQUENCY),
+            swim: Swim::new_swim2(C16M_FREQUENCY),
             swim_ready: 0,
             // MODE pins strapped for a 16-bit DMA bus, as on the Quadra 700
             scsi: Esp::new(true),
@@ -346,19 +411,15 @@ where
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
-            iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
+            pds: Pds::new(C16M_FREQUENCY),
+            dma_writes: 0,
 
-            dafb: Dafb::new(
-                renderer,
-                monitor,
-                DafbKind::MemcJr,
-                vram_size.unwrap_or(VRAM_SIZES[1]),
-            ),
+            dafb: Dafb::with_config(DeviceModel::MemcJrVideo, &built_in_display(devices)),
             mouse_mode,
         };
         bus.ram_map_update();
         bus.disable_memtest();
-        bus
+        Ok(bus)
     }
 
     /// First MB of a bank in the RAM space
@@ -410,14 +471,11 @@ where
     /// Offset in `ram` of an address in the RAM space
     #[inline(always)]
     fn ram_index(&self, addr: Address) -> Option<usize> {
-        let offset = self.ram_map[((addr >> RAM_BLOCK_SHIFT) as usize) & (RAM_BLOCKS - 1)];
-        (offset != RAM_BLOCK_NONE)
-            .then(|| offset as usize + (addr as usize & ((1 << RAM_BLOCK_SHIFT) - 1)))
+        ram_index(&self.ram_map, addr)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.dafb.render().unwrap();
 
         self.sound.after_deserialize();
@@ -441,7 +499,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.sound.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Wraps a device read result in a mapped region: logs a warning and falls
@@ -744,7 +802,7 @@ where
             DeviceCycle::Access(w) => w,
         };
         let slinky = (0x10..0x12).contains(&(acc.addr & 0xFFFF));
-        let card_waits = if self.iie_card.is_some() && !slinky {
+        let card_waits = if self.pds.card().is_some() && !slinky {
             IIE_CONTROL_WAITS
         } else {
             0
@@ -761,7 +819,7 @@ where
         while a < addr + len {
             // Up to the next 16-bit boundary or the end of the access
             let step = (2 - (a & 1)).min(addr + len - a);
-            val = (val << (8 * step)) | self.slot_port_read(a & 0xFF_FFFF, step)?;
+            val = (val << (8 * step)) | self.slot_port_read(a, step)?;
             a += step;
         }
         Some(val)
@@ -773,28 +831,21 @@ where
             let step = (2 - (a & 1)).min(addr + len - a);
             let shift = 8 * (addr + len - a - step);
             let part = (val >> shift) & ((1 << (8 * step)) - 1);
-            self.slot_port_write(a & 0xFF_FFFF, step, part)?;
+            self.slot_port_write(a, step, part)?;
             a += step;
         }
         Some(())
     }
 
-    /// The Apple IIe card in the slot, if installed
-    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
-        self.iie_card.as_mut()
+    /// One cycle of a card, at the address on the CPU's bus, which the 68040
+    /// always gives in the 32-bit map: without a card nothing answers, which
+    /// is a bus error, as the Slot Manager expects.
+    fn slot_port_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.pds.read(addr, len, true)
     }
 
-    /// One cycle of a card, with the offset in the slot: without a card
-    /// nothing answers, which is a bus error, as the Slot Manager expects.
-    fn slot_port_read(&mut self, offset: Address, len: u32) -> Option<u32> {
-        let card = self.iie_card.as_mut()?;
-        Some(card.slot_read(offset, len))
-    }
-
-    fn slot_port_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
-        let card = self.iie_card.as_mut()?;
-        card.slot_write(offset, len, val);
-        Some(())
+    fn slot_port_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.pds.write(addr, len, true, val)
     }
 
     /// SLOTE_IRQ from a card (schematic: its own pin on PrimeTime)
@@ -808,7 +859,7 @@ where
     /// confirms bit 5 for /SLOTIRQ. Nothing interrupts through this yet, so
     /// whether CA1 follows the line or latches is untested on the real thing.
     fn slot_irq(&self) -> bool {
-        false
+        self.pds.irqs() & 1 != 0
     }
 
     /// A pseudo-DMA access to the 53C96. PrimeTime holds the cycle off until
@@ -953,6 +1004,21 @@ where
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display that the guest's Slot Manager knows by the slot number and the id of the
+    /// slot resource of its driver's AuxDCE. None: this machine has one display.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        _dctl_slot: u8,
+        _dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        None
+    }
+
     /// Updates the mouse position in absolute mode, given the current value
     /// of RawMouse. Returns what the low memory globals of the OS should hold
     /// for it, if they should change.
@@ -1006,8 +1072,15 @@ where
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
+            bus_id::PDS_LC => Some(&mut self.pds),
+            _ => None,
+        }
     }
 
     /// Dispatches a key event to the keyboard
@@ -1023,12 +1096,20 @@ where
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         self.cuda.rtc_mut()
     }
+
+    /// Sets the file the PRAM is kept in. It is loaded if it exists and created otherwise, then
+    /// kept up to date.
+    pub fn persist_pram(&mut self, path: &Path) {
+        self.rtc_mut().load_pram(path);
+    }
+
+    /// Sets the date and time of the clock
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.rtc_mut().set_datetime(dt);
+    }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// MEMCjr): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
@@ -1046,10 +1127,7 @@ where
     }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     /// Catches up with the RAM refreshes, nearly always a single one. Returns
     /// how long an access at this time waits for the last.
     #[cold]
@@ -1072,10 +1150,17 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for Lc475Bus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.dafb),
+            _ => None,
+        }
+    }
+}
+
+impl Bus<Address, Byte> for Lc475Bus {
     type Cpu = Bus68040;
 
     fn get_mask(&self) -> Address {
@@ -1143,11 +1228,8 @@ where
             // The Cuda also goes through its start
             self.cuda.reset();
             self.dfac2.reset();
-            // The card is an independent computer: only power on resets it
-            if let Some(card) = &mut self.iie_card {
-                card.reset(true);
-            }
         }
+        self.pds.reset(hard);
 
         self.via1.reset();
         self.via1 = Via::new(self.model);
@@ -1180,10 +1262,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for Lc475Bus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.irq = None;
         struct BusEmuContext {
@@ -1275,11 +1354,9 @@ where
         self.sound_clock += c16m_ticks;
         while self.sound_clock >= self.sound.sample_period() {
             self.sound_clock -= self.sound.sample_period();
-            // The Apple IIe Card's speaker is mixed in after the DFAC II
-            let speaker = self
-                .iie_card
-                .as_mut()
-                .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
+            // The SNDOUT line of the slot, which has the Apple IIe Card's
+            // speaker, is mixed in after the DFAC II
+            let speaker = self.pds.sound_pin_value() * IIE_SPEAKER_GAIN;
             self.sound
                 .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }
@@ -1310,10 +1387,15 @@ where
             self.via2.clear_irq(IRQ_CA2);
         }
 
-        // The Apple IIe Card runs in its own clock domain, ticked at C16M
-        if let Some(card) = &mut self.iie_card {
-            card.tick(c16m_ticks, ())?;
-        }
+        // The card in the slot is ticked at C16M. It may master the bus, with
+        // the DMA operations.
+        let mut dma = Dma {
+            ram: &mut self.ram,
+            ram_map: &self.ram_map,
+            overlay: self.overlay,
+            writes: &mut self.dma_writes,
+        };
+        self.pds.tick(c16m_ticks, ctx, &mut dma)?;
 
         // The SWIM is on the I/O bus, clocked by C16M
         self.swim.tick(c16m_ticks, ())?;
@@ -1322,10 +1404,7 @@ where
     }
 }
 
-impl<TRenderer> Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Lc475Bus {
     fn compute_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(7);
@@ -1345,10 +1424,8 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for Lc475Bus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
@@ -1359,10 +1436,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for Lc475Bus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1400,18 +1474,14 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        self.ram_map
-            .iter()
-            .fold(u32::from(self.overlay), |h, &block| {
-                h.wrapping_mul(31).wrapping_add(block)
-            })
+        self.ram_map.iter().fold(
+            (self.dma_writes << 1) | u32::from(self.overlay),
+            |h, &block| h.wrapping_mul(31).wrapping_add(block),
+        )
     }
 }
 
-impl<TRenderer> Debuggable for Lc475Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Lc475Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;
@@ -1420,7 +1490,6 @@ where
             dbgprop_nest!("Cuda", self.cuda),
             dbgprop_nest!("DFAC II", self.dfac2),
             dbgprop_nest!("Sound", self.sound),
-            dbgprop_nest!("Built-in video (MEMCjr)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
@@ -1432,29 +1501,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::maclc::pds_iie::DECL_ROM;
-    use crate::renderer::NullRenderer;
+    use crate::devices::MadeDevice;
+    use crate::mac::maclc::pds_iie::{DECL_ROM, PdsIIeCard};
 
-    fn bus_with_card(iie_card: Option<IieCardSettings>) -> Lc475Bus<NullRenderer> {
-        Lc475Bus::new(
-            MacModel::LC475,
-            &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
-            MacMonitor::default(),
-            MouseMode::Disabled,
-            Some(4 * 1024 * 1024),
-            None,
-            iie_card,
-        )
-    }
-
-    fn bus() -> Lc475Bus<NullRenderer> {
-        bus_with_card(None)
+    fn bus() -> Lc475Bus {
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            ram_size: Some(4 * 1024 * 1024),
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LC475)
+        };
+        Lc475Bus::new(&machine, &[]).unwrap()
     }
 
     #[test]
     fn iie_card_answers_in_the_slot() {
-        let mut bus = bus_with_card(Some(IieCardSettings::default()));
+        let mut bus = bus();
+        let card = Box::new(PdsIIeCard::new());
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
         // The declaration ROM ends at the top of the slot, on the odd bytes
         assert_eq!(bus.slot_read(0xFEFF_FFFF, 1), Some(u32::from(DECL_ROM[0])));
         assert_eq!(bus.slot_read(0xFEFF_FFFE, 1), Some(0xFF));
@@ -1474,16 +1538,13 @@ mod tests {
     /// up bases, then moves them together
     #[test]
     fn ram_banks() {
-        let mut bus = Lc475Bus::new(
-            MacModel::LC475,
-            &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
-            MacMonitor::default(),
-            MouseMode::Disabled,
-            Some(12 * 1024 * 1024),
-            None,
-            None,
-        );
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            ram_size: Some(12 * 1024 * 1024),
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::LC475)
+        };
+        let mut bus = Lc475Bus::new(&machine, &[]).unwrap();
         assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));
         assert_eq!(bus.ram_index(0x0040_0000), None);
         assert_eq!(bus.ram_index(0x0400_0000), Some(0x40_0000));
@@ -1525,5 +1586,50 @@ mod tests {
         bus.io_write_byte(0x5000_E007, 0x3F);
         assert_eq!(bus.io_read_byte(0x5000_E007), Some(0));
         assert_eq!(bus.io_read_byte(0x5000_E07F), Some(0x10));
+    }
+
+    /// A card in the slot reads and writes the RAM by itself at its tick
+    #[test]
+    fn a_card_masters_the_bus() {
+        use crate::mac::pds::tests::{DmaCard, PATTERN};
+
+        const FROM: Address = 0x1000;
+        const TO: Address = 0x2000;
+
+        let mut bus = bus();
+        let card = Box::new(DmaCard {
+            from: FROM,
+            to: TO,
+            not_ram: 0x4000_0000,
+        });
+        bus.pds.attach("0", MadeDevice::Pds(card)).unwrap();
+        // The RAM is at its addresses once the boot overlay is off
+        bus.overlay = false;
+        let from = bus.ram_index(FROM).unwrap();
+        let to = bus.ram_index(TO).unwrap();
+        bus.ram[from..from + PATTERN.len()].copy_from_slice(&PATTERN);
+        let generation = bus.inspect_generation();
+
+        bus.tick(1, ()).unwrap();
+        assert_eq!(bus.ram[to..to + PATTERN.len()], PATTERN);
+        // The memory views are told of a write that the CPU didn't make
+        assert_ne!(bus.inspect_generation(), generation);
+    }
+
+    /// The interrupt line of a card is the slot interrupt of slot $E, in VIA 2
+    #[test]
+    fn a_card_interrupts_through_via2() {
+        use crate::mac::pds::tests::IrqCard;
+
+        let mut bus = bus();
+        let card = |irqs| MadeDevice::Pds(Box::new(IrqCard { irqs }));
+        bus.pds.attach("0", card(0)).unwrap();
+        bus.tick(1, ()).unwrap();
+        assert!(bus.via2.a_in.v2irq6());
+
+        bus.pds.detach("0").unwrap();
+        bus.pds.attach("0", card(1)).unwrap();
+        bus.tick(1, ()).unwrap();
+        assert!(!bus.via2.a_in.v2irq6());
     }
 }

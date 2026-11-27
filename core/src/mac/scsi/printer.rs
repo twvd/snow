@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
+use crate::devices::{
+    BusKind, DeviceConfig, DeviceModel, DeviceOps, FunctionConfig, FunctionInfo, FunctionMut,
+    MadeDevice, ModelInfo, PrinterConfig, PrinterFunction, PrinterStatus,
+};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent};
 use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
 #[cfg(feature = "printer")]
@@ -40,8 +44,13 @@ pub(super) struct ScsiTargetPrinter {
     #[serde(skip)]
     viewport_y: u16,
 
-    /// Output directory for PNG files
-    output_dir: PathBuf,
+    /// Output directory for PNG files. None: the default folder.
+    output_dir: Option<PathBuf>,
+
+    /// The default folder, once the frontend gave it. It belongs to the host, and is given
+    /// again after a state is loaded.
+    #[serde(skip)]
+    default_dir: Option<PathBuf>,
 
     /// Page counter for debug or stats
     page_count: u16,
@@ -70,7 +79,8 @@ impl Default for ScsiTargetPrinter {
             page_height: 3300, // ~300 DPI letter height (11")
             viewport_x: 0,
             viewport_y: 0,
-            output_dir: PathBuf::from("/tmp/"),
+            output_dir: None,
+            default_dir: None,
             page_count: 0,
             mask_count: 0,
             pending_event: None,
@@ -81,7 +91,7 @@ impl Default for ScsiTargetPrinter {
 }
 
 impl ScsiTargetPrinter {
-    pub(super) fn new(output_dir: PathBuf) -> Self {
+    fn new(output_dir: Option<PathBuf>) -> Self {
         let env_flag = |name: &str| {
             std::env::var(name)
                 .map(|v| v != "0" && !v.is_empty())
@@ -92,6 +102,15 @@ impl ScsiTargetPrinter {
             trace_flag: env_flag("SNOW_SCSI_TRACE_PRINTER"),
             ..Default::default()
         }
+    }
+
+    /// The folder the pages go to: the one the printer was given, or the default folder, or
+    /// the current directory of the process until a frontend gives a default folder
+    fn output_dir(&self) -> PathBuf {
+        self.output_dir
+            .clone()
+            .or_else(|| self.default_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
     }
 
     // private hexdump-like routine. Only used when SNOW_SCSI_TRACE_PRINTER is set
@@ -196,7 +215,7 @@ impl ScsiTargetPrinter {
     fn render_to_png(&mut self) -> Result<()> {
         let ts = Local::now().format("%Y-%m-%d %H-%M-%S").to_string();
         let filename = format!("Snow print {}.png", ts);
-        let filepath = self.output_dir.join(&filename);
+        let filepath = self.output_dir().join(&filename);
 
         log::info!(
             "LaserWriter: saving page {} to {}",
@@ -222,6 +241,61 @@ impl ScsiTargetPrinter {
     fn render_to_png(&mut self) -> Result<()> {
         log::warn!("PNG rendering not available (printer feature disabled)");
         Ok(())
+    }
+}
+
+pub const INFO: ModelInfo = ModelInfo {
+    create: Some(create),
+    ..ModelInfo::base(
+        DeviceModel::LaserWriterIISC,
+        "LaserWriter IISC",
+        BusKind::Scsi,
+        FunctionInfo::Printer,
+    )
+};
+
+fn create(config: &DeviceConfig) -> Result<MadeDevice> {
+    let FunctionConfig::Printer(printer) = &config.function else {
+        anyhow::bail!("A printer needs a printer's config");
+    };
+    Ok(MadeDevice::Scsi(Box::new(ScsiTargetPrinter::new(
+        printer.output_dir.clone(),
+    ))))
+}
+
+impl DeviceOps for ScsiTargetPrinter {
+    fn info(&self) -> &'static ModelInfo {
+        &INFO
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Printer(PrinterConfig {
+            output_dir: self.output_dir.clone(),
+        })
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(INFO.name.to_string())
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Printer(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+}
+
+impl PrinterFunction for ScsiTargetPrinter {
+    fn status(&self) -> PrinterStatus {
+        PrinterStatus {
+            output_dir: self.output_dir(),
+        }
+    }
+
+    fn set_default_dir(&mut self, dir: &Path) {
+        self.default_dir = Some(dir.to_path_buf());
     }
 }
 
@@ -312,10 +386,6 @@ impl ScsiTarget for ScsiTargetPrinter {
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
         self.pending_event.take()
-    }
-
-    fn target_type(&self) -> ScsiTargetType {
-        ScsiTargetType::Printer
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
@@ -411,25 +481,6 @@ impl ScsiTarget for ScsiTargetPrinter {
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
-        unreachable!()
-    }
-
-    fn image_fn(&self) -> Option<&Path> {
-        None
-    }
-
-    fn load_media(&mut self, _path: &Path) -> Result<()> {
-        unreachable!()
-    }
-
-    fn load_image(
-        &mut self,
-        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
-    ) -> Result<()> {
-        unreachable!()
-    }
-
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
         unreachable!()
     }
 
@@ -573,16 +624,6 @@ impl ScsiTarget for ScsiTargetPrinter {
             }
         }
     }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
-        unreachable!()
-    }
-
-    #[cfg(feature = "ethernet")]
-    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
-        None
-    }
 }
 
 impl Debuggable for ScsiTargetPrinter {
@@ -595,5 +636,35 @@ impl Debuggable for ScsiTargetPrinter {
             dbgprop_str!("Paper size", self.paper_name()),
             dbgprop_udec!("Pages printed", self.page_count),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_shows_in_the_status() {
+        let mut printer = ScsiTargetPrinter::new(Some(PathBuf::from("pages")));
+        let FunctionMut::Printer(function) = printer.function() else {
+            panic!("A printer has the Printer function");
+        };
+        assert_eq!(function.status().output_dir, PathBuf::from("pages"));
+    }
+
+    #[test]
+    fn default_folder_is_for_a_printer_given_none() {
+        let mut printer = ScsiTargetPrinter::new(None);
+        printer.set_default_dir(Path::new("desktop"));
+        assert_eq!(printer.status().output_dir, PathBuf::from("desktop"));
+        // What the printer was made with doesn't change
+        assert_eq!(
+            printer.config(),
+            FunctionConfig::Printer(PrinterConfig { output_dir: None })
+        );
+
+        let mut printer = ScsiTargetPrinter::new(Some(PathBuf::from("pages")));
+        printer.set_default_dir(Path::new("desktop"));
+        assert_eq!(printer.status().output_dir, PathBuf::from("pages"));
     }
 }

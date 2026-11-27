@@ -14,9 +14,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::emulator::EmuContext;
+use crate::mac::MacModel;
 use crate::mac::MacMonitor;
-use crate::renderer::{DisplayBuffer, Renderer, render_packed};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Field32;
 
@@ -30,15 +36,20 @@ pub enum DafbKind {
     MemcJr,
 }
 
+/// Sizes of the video RAM with MEMCjr: 512 KB on the board and sockets for another 512 KB
+/// (Developer Note)
+pub const VRAM_SIZES_MEMCJR: &[usize] = &[512 * 1024, 1024 * 1024];
+
 /// Monitors which the DAFB of the Quadra 700 supports
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::VGA,
+    MacMonitor::PortraitBW,
     MacMonitor::RGB16,
     MacMonitor::RGB21,
-    MacMonitor::PortraitBW,
     MacMonitor::TwoPageBW,
-    MacMonitor::VGA,
+    MacMonitor::NoMonitor,
 ];
 
 /// Monitors which the DAFB II cell of MEMCjr and djMEMC supports, the same and
@@ -46,12 +57,13 @@ pub const MONITORS: &[MacMonitor] = &[
 pub const MONITORS_MEMCJR: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
+    MacMonitor::VGA,
+    MacMonitor::PortraitBW,
     MacMonitor::RGB16,
     MacMonitor::RGB19,
     MacMonitor::RGB21,
-    MacMonitor::PortraitBW,
     MacMonitor::TwoPageBW,
-    MacMonitor::VGA,
+    MacMonitor::NoMonitor,
 ];
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr, Serialize, Deserialize)]
@@ -100,13 +112,18 @@ impl Geometry {
 
 /// Apple DAFB video controller
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Dafb<TRenderer: Renderer> {
+pub struct Dafb {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
+
+    /// The monitor and the VRAM size that were chosen for it, if they were
+    chosen_monitor: Option<MacMonitor>,
+    chosen_vram_size: Option<usize>,
 
     monitor: MacMonitor,
 
+    /// Which video it is: the DAFB's, MEMCjr's or djMEMC's
+    model: DeviceModel,
     kind: DafbKind,
 
     pub vram: Vec<u8>,
@@ -163,10 +180,7 @@ pub struct Dafb<TRenderer: Renderer> {
     vblank_ticks: Ticks,
 }
 
-impl<TRenderer> Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Dafb {
     pub const VRAM_SIZE: usize = 0x20_0000;
 
     /// Value of the version field of the test register
@@ -215,10 +229,41 @@ where
     /// Sense register after reset: no sense line driven
     const SENSE_UNDRIVEN: u32 = 0b111;
 
-    pub fn new(renderer: TRenderer, monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
+    /// The video of the device model `model`, from the Config of its device config
+    pub fn with_config(model: DeviceModel, config: &DisplayConfig) -> Self {
+        let FunctionInfo::Display(info) = model.info().function else {
+            panic!("{:?} is no video", model);
+        };
+        let kind = match model {
+            DeviceModel::DafbVideo => DafbKind::Dafb,
+            _ => DafbKind::MemcJr,
+        };
+        let monitor = config.monitor.or_else(|| info.default_monitor()).unwrap();
+        let vram_size = match kind {
+            DafbKind::Dafb => Self::VRAM_SIZE,
+            DafbKind::MemcJr => config
+                .vram_size
+                .or_else(|| info.default_vram_size())
+                .unwrap(),
+        };
         Self {
-            renderer: Some(renderer),
+            model,
+            chosen_monitor: config.monitor,
+            chosen_vram_size: config.vram_size,
+            ..Self::new(monitor, kind, vram_size)
+        }
+    }
+
+    pub fn new(monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
+        Self {
+            renderer: ChannelRenderer::default(),
+            chosen_monitor: None,
+            chosen_vram_size: None,
             monitor,
+            model: match kind {
+                DafbKind::Dafb => DeviceModel::DafbVideo,
+                DafbKind::MemcJr => DeviceModel::MemcJrVideo,
+            },
             kind,
             vram: vec![0; vram_size],
 
@@ -485,18 +530,12 @@ where
         }
     }
 
-    pub fn blank(&mut self) -> Result<()> {
-        self.vram.fill(0);
-        self.render()?;
-        Ok(())
-    }
-
     pub fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut());
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
         Ok(())
     }
 
@@ -545,10 +584,110 @@ where
     }
 }
 
-impl<TRenderer> BusMember<Address> for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+fn fits_dafb(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::DafbVideo)
+}
+
+fn fits_memcjr(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::MemcJrVideo)
+}
+
+fn fits_djmemc(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::DjMemcVideo)
+}
+
+/// The DAFB of the Quadra 700
+pub const INFO: ModelInfo = ModelInfo {
+    fits: fits_dafb,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::DafbVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            monitors: MONITORS,
+            // The 14" high-res
+            default_monitor: 1,
+            vram_sizes: &[Dafb::VRAM_SIZE],
+            default_vram_size: 0,
+        }),
+    )
+};
+
+/// What the DAFB II cell of MEMCjr and djMEMC can have
+const DISPLAY_MEMCJR: DisplayInfo = DisplayInfo {
+    monitors: MONITORS_MEMCJR,
+    // The 14" high-res
+    default_monitor: 1,
+    vram_sizes: VRAM_SIZES_MEMCJR,
+    // 1 MB
+    default_vram_size: 1,
+};
+
+/// The DAFB II cell of MEMCjr, on the LC 475
+pub const INFO_MEMCJR: ModelInfo = ModelInfo {
+    fits: fits_memcjr,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::MemcJrVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DISPLAY_MEMCJR),
+    )
+};
+
+/// The DAFB II cell of djMEMC, on the Quadra 800
+pub const INFO_DJMEMC: ModelInfo = ModelInfo {
+    fits: fits_djmemc,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::DjMemcVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DISPLAY_MEMCJR),
+    )
+};
+
+impl DeviceOps for Dafb {
+    fn info(&self) -> &'static ModelInfo {
+        self.model.info()
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig {
+            monitor: self.chosen_monitor,
+            vram_size: self.chosen_vram_size,
+        })
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+}
+
+impl DisplayFunction for Dafb {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus {
+            connected: self.monitor != MacMonitor::NoMonitor,
+        }
+    }
+
+    fn blank(&mut self) -> Result<()> {
+        self.vram.fill(0);
+        self.render()?;
+        Ok(())
+    }
+
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
+    }
+}
+
+impl BusMember<Address> for Dafb {
     #[allow(clippy::match_overlapping_arm)]
     fn read(&mut self, addr: Address) -> Option<u8> {
         match addr {
@@ -801,16 +940,13 @@ where
     }
 }
 
-impl<TRenderer> Tickable<&dyn EmuContext> for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable<&dyn EmuContext> for Dafb {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
             self.vblank_ticks -= ctx.bus_frequency() / 60;
 
-            if self.renderer.as_ref().unwrap().frame_wanted() {
+            if self.renderer.frame_wanted() {
                 self.render()?;
             }
 
@@ -827,10 +963,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Dafb {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_byte_bin, dbgprop_enum, dbgprop_group, dbgprop_long};
@@ -880,10 +1013,7 @@ where
     }
 }
 
-impl<TRenderer> Display for Dafb<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Display for Dafb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DAFB video controller")
     }
@@ -892,16 +1022,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
     const PAL_ADDRESS: Address = 0x80_0203;
     const PAL_DATA: Address = 0x80_0213;
     const PBCTRL: Address = 0x80_0223;
     const SENSE: Address = 0x80_001F;
 
-    fn dafb(kind: DafbKind) -> Dafb<NullRenderer> {
-        let renderer = NullRenderer::new(0, 0).unwrap();
-        Dafb::new(renderer, MacMonitor::RGB12, kind, 512 * 1024)
+    fn dafb(kind: DafbKind) -> Dafb {
+        Dafb::new(MacMonitor::RGB12, kind, 512 * 1024)
     }
 
     #[test]
@@ -936,10 +1064,7 @@ mod tests {
         for _ in 0..3 {
             dafb.read(PAL_DATA).unwrap();
         }
-        assert_eq!(
-            dafb.read(PBCTRL),
-            Some(0xA0 | Dafb::<NullRenderer>::ANTELOPE_VERSION)
-        );
+        assert_eq!(dafb.read(PBCTRL), Some(0xA0 | Dafb::ANTELOPE_VERSION));
     }
 
     /// The ROM reads the sense lines before it writes the register. With none
@@ -947,8 +1072,7 @@ mod tests {
     /// register returns inverted.
     #[test]
     fn sense_lines_undriven_after_reset() {
-        let renderer = NullRenderer::new(0, 0).unwrap();
-        let mut dafb = Dafb::new(renderer, MacMonitor::RGB16, DafbKind::Dafb, 512 * 1024);
+        let mut dafb = Dafb::new(MacMonitor::RGB16, DafbKind::Dafb, 512 * 1024);
         assert_eq!(dafb.read(SENSE), Some(0));
         dafb.write(SENSE, 0).unwrap();
         dafb.reset();
@@ -959,7 +1083,7 @@ mod tests {
     /// first from the base, the others from the screen 512 bytes after it
     #[test]
     fn twelve_inch_1bpp_top_line() {
-        type D = Dafb<NullRenderer>;
+        type D = Dafb;
         for kind in [DafbKind::Dafb, DafbKind::MemcJr] {
             let mut dafb = dafb(kind);
             dafb.base_hi = Field32(0xE00 >> 9);
