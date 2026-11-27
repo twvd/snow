@@ -1346,6 +1346,7 @@ impl Quadra800Bus {
 }
 
 impl IrqSource for Quadra800Bus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
