@@ -24,6 +24,12 @@ and browse for the system ROM.
 To emulate the Macintosh II, you also need the ROM of the Macintosh Display
 Card 8-24. This ROM is usually labeled 341-0868.bin.
 
+A Macintosh II can have a video card in each of its NuBus slots. More than
+one display is experimental: the dialog shows a warning. Snow then shows
+every display, arranged as the Monitors control panel of the emulated Mac
+arranges them. A NuBus slot can also hold an Apple Ethernet NB Twisted-Pair
+Card, which needs no ROM file (see [Ethernet](network/ethernet.md)).
+
 Snow will validate whether your ROM file is correct for the selected model
 and the integrity of the file.
 

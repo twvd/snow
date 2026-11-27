@@ -8,6 +8,7 @@ load it:
 
  * The emulated machine type and selected ROMs
  * Attached SCSI devices and disks (note that removal media is not persisted)
+ * The Ethernet link and the MAC address of each Ethernet adapter
  * The open windows, their position and size
  * The configured display scale and whether the viewport is vertically centered
 

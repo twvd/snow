@@ -7,10 +7,11 @@
 //! is on VIA 1 port B, as on the Quadra 700 (schematic sheets 15 and 19).
 //! djMEMC holds the memory timing and the video, which is DAFB compatible.
 //!
-//! The NuBus controller (Kiwi) and its three slots, the PDS and the Ethernet
-//! controller are not there yet. An access to the Ethernet controller is a bus
-//! error, which the ROM takes for a machine without the Ethernet option.
+//! The NuBus controller, Kiwi, has three slots, $C, $D and $E. The PDS is not there yet.
+//! The Ethernet controller is a SONIC. In a build without Ethernet, an access to it is a
+//! bus error, which the ROM takes for a machine without the Ethernet option.
 
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,12 +21,19 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, built_in_display, bus_id,
+};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::dma::{self, DmaOps, DmaOutcome, DmaRam, NubusDma};
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::built_in::BuiltInSonic;
 use crate::mac::macii::via2::Via2;
-use crate::mac::quadra::dafb::{Dafb, DafbKind};
+use crate::mac::nubus::Nubus;
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::esp::{Esp, esp_check};
@@ -33,10 +41,8 @@ use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
-use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -47,6 +53,13 @@ use serde::{Deserialize, Serialize};
 /// Frequency of the bus of the real hardware, without overclocking: the
 /// 33.33 MHz of the 68040 (Developer Note)
 const BUS_FREQUENCY: Ticks = 33_333_333;
+
+/// Wait states of a NuBus transaction, approximate: two cycles of the 10 MHz
+/// NuBus (Developer Note) and the crossing between its clock and the 33 MHz bus
+/// add up to about 9 bus clocks. The 68040's own bus cycle is two of them, so
+/// these are the other seven. Kiwi takes a write in a buffer and lets the CPU go
+/// on before the transaction is done, which isn't modelled.
+const NUBUS_WAITS: Ticks = 7;
 
 /// Long at the end of the I/O space which identifies an IOSB machine: the VIA 1
 /// ID pins tell which one
@@ -91,10 +104,6 @@ const VIA_RELEASE: Ticks = 13;
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
-
-/// Sizes of video RAM which can be fitted: 512 KB on the board and sockets for
-/// another 512 KB (Developer Note)
-pub const VRAM_SIZES: &[usize] = &[512 * 1024, 1024 * 1024];
 
 /// Bytes of the IOSB registers kept
 const IOSB_REGS_SIZE: usize = 0x80;
@@ -158,6 +167,53 @@ enum Region {
     CpuId,
     /// Built-in video (djMEMC), slot $9
     Video,
+    /// NuBus super slots
+    SuperSlot,
+    /// NuBus standard slots
+    Slot,
+}
+
+/// The machine's RAM, as a device that masters the bus reaches it. It borrows only the fields
+/// the DMA operations need, so that the bus can lend it while it ticks its cards.
+struct Dma<'a> {
+    ram: &'a mut [u8],
+    ram_map: &'a [u32],
+    overlay: bool,
+    writes: &'a mut u32,
+}
+
+impl DmaRam for Dma<'_> {
+    fn ram(&mut self) -> &mut [u8] {
+        self.ram
+    }
+
+    fn ram_offset(&self, addr: Address) -> Option<usize> {
+        if self.overlay || MAP[0][(addr >> 24) as usize] != Region::Ram {
+            return None;
+        }
+        let offset = self.ram_map[((addr >> RAM_BLOCK_SHIFT) as usize) & (RAM_BLOCKS - 1)];
+        (offset != RAM_BLOCK_NONE)
+            .then(|| offset as usize + (addr as usize & ((1 << RAM_BLOCK_SHIFT) - 1)))
+    }
+
+    /// Those of a single cycle, as `Quadra800Bus::memory_waits()` gives them, without the
+    /// refresh
+    fn ram_timing(&self, write: bool) -> (u32, Ticks) {
+        let (waits, _) = Quadra800Bus::memory_waits(Region::Ram, 0, write).unwrap_or_default();
+        (4, waits)
+    }
+}
+
+impl DmaOps for Dma<'_> {
+    fn read(&mut self, addr: Address, data: &mut [u8]) -> DmaOutcome {
+        dma::read_ram(self, addr, data)
+    }
+
+    fn write(&mut self, addr: Address, data: &[u8]) -> DmaOutcome {
+        // Counted even when it stops short: what was written until then is in the RAM
+        *self.writes = self.writes.wrapping_add(1);
+        dma::write_ram(self, addr, data)
+    }
 }
 
 /// What holds an access to a device on the I/O bus back after the previous one
@@ -168,8 +224,8 @@ enum Recovery {
     Swim,
 }
 
-/// The NuBus slots $C-$E and the PDS are empty: nothing answers there, which
-/// is a bus error, as the Slot Manager expects.
+/// Where nothing answers, as in an empty NuBus slot, it is a bus error, as the Slot Manager
+/// expects
 const fn region(overlay: bool, block: usize) -> Region {
     match block {
         0x00..=0x3F if overlay => Region::Rom,
@@ -177,7 +233,9 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x40..=0x4F => Region::Rom,
         0x50..=0x53 => Region::Io,
         0x5F => Region::CpuId,
+        0x60..=0xEF => Region::SuperSlot,
         0xF9 => Region::Video,
+        0xF1..=0xFF => Region::Slot,
         _ => Region::None,
     }
 }
@@ -195,8 +253,7 @@ const MAP: [[Region; 256]; 2] = {
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Quadra800Bus<TRenderer: Renderer> {
+pub struct Quadra800Bus {
     /// Interrupt level, until a tick of the bus or an access to the I/O area
     #[serde(skip)]
     irq: Option<Option<u8>>,
@@ -264,16 +321,29 @@ pub struct Quadra800Bus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 
     /// Built-in video
-    pub(crate) dafb: Dafb<TRenderer>,
+    pub(crate) dafb: Dafb,
+
+    /// Built-in Ethernet controller
+    #[cfg(feature = "ethernet")]
+    ethernet: BuiltInSonic,
+
+    /// The cards in the NuBus slots $C to $E
+    nubus: Nubus,
+    /// Writes to the RAM by a device that masters the bus, counted for the views of the memory
+    dma_writes: u32,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[
+        (built_in::VIDEO, DeviceModel::DjMemcVideo),
+        #[cfg(feature = "ethernet")]
+        (built_in::ETHERNET, DeviceModel::BuiltInSonic),
+    ];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -284,15 +354,17 @@ where
     /// error. The length of this timeout is not documented.
     const SCSI_DMA_TIMEOUT: Ticks = 640;
 
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        renderer: TRenderer,
-        monitor: MacMonitor,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-        vram_size: Option<usize>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         let mut bus = Self {
@@ -304,7 +376,7 @@ where
             via1: Via::new(model),
             via2: Via2::new(model),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
-            swim: Swim::new_swim2(model.fdd_drives(), C16M_FREQUENCY),
+            swim: Swim::new_swim2(C16M_FREQUENCY),
             swim_ready: 0,
             scc_ready: 0,
             // MODE pins strapped for a 16-bit DMA bus, as on the LC 475
@@ -331,12 +403,11 @@ where
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
 
-            dafb: Dafb::new(
-                renderer,
-                monitor,
-                DafbKind::MemcJr,
-                vram_size.unwrap_or(VRAM_SIZES[1]),
-            ),
+            dafb: Dafb::with_config(DeviceModel::DjMemcVideo, &built_in_display(devices)),
+            #[cfg(feature = "ethernet")]
+            ethernet: BuiltInSonic::new(devices)?,
+            nubus: Nubus::new(BUS_FREQUENCY, model.nubus_slots()),
+            dma_writes: 0,
             mouse_mode,
         };
 
@@ -345,7 +416,7 @@ where
 
         bus.ram_map_update();
         bus.disable_memtest();
-        bus
+        Ok(bus)
     }
 
     /// Makes the ROM skip its memory test
@@ -421,8 +492,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.dafb.renderer = Some(renderer);
+    pub fn after_deserialize(&mut self) {
         self.dafb.render().unwrap();
 
         self.sound.after_deserialize();
@@ -446,7 +516,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.sound.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Wraps a device read result in a mapped region: logs a warning and falls
@@ -550,6 +620,9 @@ where
             0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
             // VIA 2
             0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
+            // Ethernet address PROM
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_8007 => Some(self.ethernet.prom_byte(addr & Self::IO_MASK)),
             // SCC
             0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
             // djMEMC
@@ -577,6 +650,9 @@ where
             }
             // VIA 2
             0x0000_2000..=0x0000_3FFF => Self::dev_write(addr, val, self.via2.write(addr, val)),
+            // Ethernet address PROM
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_8007 => Some(()),
             // SCC
             0x0000_C000..=0x0000_DFFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
             // djMEMC
@@ -651,6 +727,12 @@ where
             // its reads take the same time at any spacing.
             0x0000_0000..=0x0000_1FFF => self.via_cycle(acc),
             0x0000_2000..=0x0000_3FFF => self.io_bus_cycle(acc, 0, Recovery::None),
+            // Ethernet address PROM ($5000 8000) and SONIC ($5000 A000): Developer Note,
+            // figure 2-4
+            #[cfg(feature = "ethernet")]
+            0x0000_8000..=0x0000_9FFF => self.io_bus_cycle(acc, 0, Recovery::None),
+            #[cfg(feature = "ethernet")]
+            0x0000_A000..=0x0000_BFFF => self.sonic_cycle(acc),
             // SCC
             0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, Recovery::Scc),
             // 53C96 pseudo-DMA
@@ -671,6 +753,29 @@ where
                 }
             },
         }
+    }
+
+    /// An access to the SONIC's registers, 16 bits wide, one per long word, on D15-D0. Its
+    /// data lines are on the CPU bus (Developer Note, figure 2-1), but IOSB decodes it and its
+    /// timing isn't known: it is given that of the devices of the I/O bus.
+    #[cfg(feature = "ethernet")]
+    fn sonic_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let w = self.native_clock.scale_dev_waits(w, IO_BUS_WAITS);
+        bus_access_long(acc, w, self, Self::sonic_read, Self::sonic_write)
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.ethernet.read(addr & Self::IO_MASK, len)
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        self.ethernet.write(addr & Self::IO_MASK, len, val)
     }
 
     /// The VIAs are clocked at C16M / 20, 783.36 kHz, and their accesses are
@@ -916,8 +1021,36 @@ where
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.dafb.blank()
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
+            bus_id::NUBUS => Some(&mut self.nubus),
+            bus_id::BUILT_IN => Some(self),
+            _ => None,
+        }
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display of the machine that the guest's Slot Manager knows by the slot number and
+    /// the id of the slot resource of its driver's AuxDCE (`dCtlSlot` and `dCtlSlotId`): the
+    /// ids of its bus and slot, and its index among the displays of that device. Called by
+    /// the emulator, which reads the guest's list of screens. The driver of the built-in
+    /// video has slot 0; the other videos are NuBus cards.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        dctl_slot: u8,
+        dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        if dctl_slot == 0 {
+            return Some((bus_id::BUILT_IN.into(), built_in::VIDEO.into(), 0));
+        }
+        self.nubus.display_from_Mac_AuxDCE(dctl_slot, dctl_slot_id)
     }
 
     /// Dispatches a key event to the keyboard
@@ -933,12 +1066,20 @@ where
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.via1.rtc
     }
+
+    /// Sets the file the PRAM is kept in. It is loaded if it exists and created otherwise, then
+    /// kept up to date.
+    pub fn persist_pram(&mut self, path: &Path) {
+        self.rtc_mut().load_pram(path);
+    }
+
+    /// Sets the date and time of the clock
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.rtc_mut().set_datetime(dt);
+    }
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// djMEMC): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
@@ -984,10 +1125,19 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for Quadra800Bus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.dafb),
+            #[cfg(feature = "ethernet")]
+            built_in::ETHERNET => Some(&mut self.ethernet),
+            _ => None,
+        }
+    }
+}
+
+impl Bus<Address, Byte> for Quadra800Bus {
     type Cpu = Bus68040;
 
     fn get_mask(&self) -> Address {
@@ -1014,7 +1164,9 @@ where
 
         let mut resp = match region {
             // Everything but RAM and ROM sees the devices up to date, as they are ticked
-            Region::CpuId | Region::Video if acc.pending > 0 => BusResponse::Stall(0),
+            Region::CpuId | Region::Video | Region::SuperSlot | Region::Slot if acc.pending > 0 => {
+                BusResponse::Stall(0)
+            }
             Region::Ram => {
                 let now = self.native_clock.native_ticks() + acc.pending;
                 let waits = waits
@@ -1029,6 +1181,10 @@ where
             Region::Io => self.io_cycle(acc),
             Region::CpuId => bus_access_long(acc, 0, self, Self::cpu_id_read, Self::ignore_write),
             Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
+            Region::SuperSlot | Region::Slot => self
+                .nubus
+                .access(acc, NUBUS_WAITS)
+                .unwrap_or(BusResponse::BusError),
             Region::None => BusResponse::BusError,
         };
 
@@ -1062,6 +1218,9 @@ where
         self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         self.dafb.reset();
+        #[cfg(feature = "ethernet")]
+        self.ethernet.sonic.reset();
+        self.nubus.reset();
         self.sound.reset();
         self.scsi.reset();
         self.scsi_dma_stalled = false;
@@ -1082,10 +1241,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for Quadra800Bus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.irq = None;
         struct BusEmuContext {
@@ -1176,11 +1332,42 @@ where
         let video_irq = self.dafb.get_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
 
+        let mut dma = Dma {
+            ram: &mut self.ram,
+            ram_map: &self.ram_map,
+            overlay: self.overlay,
+            writes: &mut self.dma_writes,
+        };
+
+        // Built-in Ethernet. It reaches the RAM as a bus master of its own, not through a
+        // slot. Its interrupt, ENET_IRQ, goes to IOSB (schematic sheet 15), which has it on
+        // PA0 of VIA 2 with those of the slots, as MAME does and as on the Quadra 700 in its
+        // Macintosh interrupt scheme (Macintosh Quadra 700 Developer Note, table 2-6).
+        #[cfg(feature = "ethernet")]
+        let ethernet_irq = {
+            self.ethernet
+                .sonic
+                .tick(native_ticks, ctx.bus_frequency, &mut dma);
+            self.ethernet.sonic.irq()
+        };
+        #[cfg(not(feature = "ethernet"))]
+        let ethernet_irq = false;
+
+        // The interrupts of slots $C to $E are on PA3 to PA5, as MAME has them
+        let mut nubus_dma = NubusDma {
+            dma: &mut dma,
+            nubus_waits: NUBUS_WAITS,
+        };
+        self.nubus.tick(native_ticks, ctx, &mut nubus_dma)?;
+        let slot_irqs = self.nubus.irqs() | u8::from(ethernet_irq);
+        self.via2.a_in.set_v2irqs(!slot_irqs);
+
         self.scsi.tick(native_ticks, ctx)?;
 
-        // The flags of the slots and of the 53C96 latch the falling edge of
-        // their active low line, as on the LC 475
-        self.via2.set_line(ViaLine::CA1, (!video_irq).into());
+        // The flags of the slots, Ethernet included, and of the 53C96 latch the falling edge
+        // of their active low line, as on the LC 475
+        self.via2
+            .set_line(ViaLine::CA1, (!(video_irq || slot_irqs != 0)).into());
         self.via2
             .set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
 
@@ -1199,10 +1386,7 @@ where
     }
 }
 
-impl<TRenderer> Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Quadra800Bus {
     fn compute_irq(&mut self) -> Option<u8> {
         // The Quadra 700 has a second set of interrupt levels for A/UX, selected
         // by VIA 1 PB6 (its Developer Note, table 2-7). IOSB has only PB0-PB5
@@ -1227,10 +1411,8 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for Quadra800Bus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if let Some(irq) = self.irq {
             return irq;
@@ -1241,10 +1423,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for Quadra800Bus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x4FFFFFFF is safe (RAM/ROM only)
         let val = match MAP[usize::from(self.overlay)][(addr >> 24) as usize] {
@@ -1282,64 +1461,53 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        self.ram_map
-            .iter()
-            .fold(u32::from(self.overlay), |h, &block| {
-                h.wrapping_mul(31).wrapping_add(block)
-            })
+        self.ram_map.iter().fold(
+            (self.dma_writes << 1) | u32::from(self.overlay),
+            |h, &block| h.wrapping_mul(31).wrapping_add(block),
+        )
     }
 }
 
-impl<TRenderer> Debuggable for Quadra800Bus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Quadra800Bus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_nest};
 
-        let mut result = vec![
+        vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Sound", self.sound),
-            dbgprop_nest!("Built-in video (djMEMC)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
-        ];
-
-        for slot in self.model.nubus_slots() {
-            result.push(dbgprop_group!(
-                format!("NuBus slot ${:1X} (empty)", slot),
-                vec![]
-            ));
-        }
-        result
+        ]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
-    fn bus(ram_size: usize) -> Quadra800Bus<NullRenderer> {
-        Quadra800Bus::new(
-            MacModel::Quadra800,
-            &vec![0; 1024 * 1024],
-            NullRenderer::new(0, 0).unwrap(),
-            MacMonitor::default(),
-            MouseMode::Disabled,
-            Some(ram_size),
-            None,
-        )
+    fn bus(ram_size: usize) -> Quadra800Bus {
+        let rom = vec![0; 1024 * 1024];
+        let machine = MachineConfig {
+            ram_size: Some(ram_size),
+            mouse_mode: MouseMode::Disabled,
+            ..MachineConfig::new(&rom, MacModel::Quadra800)
+        };
+        // The SONIC needs the device config that the emulator gives it
+        #[cfg(feature = "ethernet")]
+        let devices = [crate::mac::ethernet::built_in::test_config()];
+        #[cfg(not(feature = "ethernet"))]
+        let devices = [];
+        Quadra800Bus::new(&machine, &devices).unwrap()
     }
 
     const MB: usize = 1024 * 1024;
 
     #[test]
     fn ram_bank_sizes() {
-        let sizes = |ram| Quadra800Bus::<NullRenderer>::ram_bank_sizes(ram * MB);
+        let sizes = |ram| Quadra800Bus::ram_bank_sizes(ram * MB);
         assert_eq!(sizes(8), [4 * MB, 4 * MB, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(sizes(16)[2..5], [4 * MB, 4 * MB, 0]);
         assert_eq!(sizes(24)[2..4], [16 * MB, 0]);
@@ -1391,10 +1559,43 @@ mod tests {
         assert_eq!(bus.io_read_byte(0x5000_1E00).unwrap() & 0x56, 0x12);
     }
 
+    #[cfg(feature = "ethernet")]
+    #[test]
+    fn the_built_in_ethernet_answers_on_the_io_bus() {
+        use crate::mac::ethernet::built_in::SONIC_REVISION;
+
+        let mut bus = bus(8 * MB);
+        // The PROM has the bytes of the address with their bits reversed
+        let prom: Vec<_> = (0..6)
+            .map(|i| bus.io_read_byte(0x50F0_8000 + i).unwrap())
+            .collect();
+        assert_eq!(prom, [0x10, 0x00, 0xE0, 0x48, 0x2C, 0x6A]);
+
+        // A register is the low word of its long: the silicon revision, register $28
+        let resp = bus
+            .access(BusAccess::<Bus68040>::read(0x50F0_A000 + 4 * 0x28, 4, 0))
+            .unwrap();
+        assert!(!matches!(resp, BusResponse::BusError));
+        assert_eq!(
+            bus.sonic_read(0x50F0_A000 + 4 * 0x28, 4),
+            Some(u32::from(SONIC_REVISION))
+        );
+    }
+
     #[test]
     fn empty_slots_are_a_bus_error() {
-        for block in [0x60, 0x90, 0xC0, 0xE0, 0xFC, 0xFD, 0xFE] {
-            assert!(matches!(MAP[0][block], Region::None));
+        let mut bus = bus(8 * MB);
+        for addr in [
+            0x6000_0000,
+            0x9000_0000,
+            0xC000_0000,
+            0xE000_0000,
+            0xFC00_0000,
+            0xFD00_0000,
+            0xFE00_0000,
+        ] {
+            let resp = bus.access(BusAccess::<Bus68040>::read(addr, 4, 0)).unwrap();
+            assert!(matches!(resp, BusResponse::BusError), "{addr:08X}");
         }
         assert!(matches!(MAP[0][0xF9], Region::Video));
     }

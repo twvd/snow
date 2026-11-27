@@ -1,9 +1,12 @@
 use crate::joystick::{JoyBindings, default_bindings};
+use crate::workspace::NubusDeviceKind;
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::mac::{MacModel, NubusDeviceKind};
+use snow_core::devices::{DeviceModel, FloppyImages, NatConfig};
+use snow_core::mac::MacModel;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
 
@@ -76,19 +79,42 @@ fn bool_true() -> bool {
     true
 }
 
+/// A device model with a ROM file, as the settings name it
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RomDevice {
+    Model(DeviceModel),
+    /// Older settings name a card by its kind
+    Card(NubusDeviceKind),
+}
+
+impl RomDevice {
+    fn model(self) -> DeviceModel {
+        match self {
+            Self::Model(model) => model,
+            Self::Card(card) => card.device_model(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AppSettings {
     pub recent_workspaces: Vec<PathBuf>,
+    /// The recent Mac floppy images
     pub recent_floppy_images: Vec<PathBuf>,
+    /// The recent images of the floppy drives whose images aren't the Mac's, such as the
+    /// Apple IIe Card's, by the label of their files
+    pub recent_drive_images: BTreeMap<String, Vec<PathBuf>>,
     pub recent_cd_images: Vec<PathBuf>,
     #[serde(deserialize_with = "deserialize_vec_lenient")]
     pub last_roms: Vec<(MacModel, PathBuf)>,
     // Deprecated; now roms_by_card
     #[serde(skip_serializing)]
     pub last_display_roms: Vec<(MacModel, PathBuf)>,
+    /// The ROM file last used for each device model that needs one
     #[serde(deserialize_with = "deserialize_vec_lenient")]
-    pub roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
+    pub roms_by_card: Vec<(RomDevice, PathBuf)>,
 
     pub fd_hdd: FileDialogStorage,
     pub fd_cdrom: FileDialogStorage,
@@ -129,6 +155,9 @@ pub struct AppSettings {
     /// The host keys and controller buttons of the Apple IIe joystick
     #[serde(deserialize_with = "deserialize_bindings_lenient")]
     pub iie_joystick_bindings: JoyBindings,
+    /// The network of the NAT gateway in a workspace that has none of its own, saved with
+    /// "Save as default". None: 10.0.0.1/8.
+    pub nat_network: Option<NatConfig>,
 }
 
 impl Default for AppSettings {
@@ -136,6 +165,7 @@ impl Default for AppSettings {
         Self {
             recent_workspaces: Vec::new(),
             recent_floppy_images: Vec::new(),
+            recent_drive_images: BTreeMap::new(),
             recent_cd_images: Vec::new(),
             last_roms: Vec::new(),
             last_display_roms: Vec::new(),
@@ -165,6 +195,7 @@ impl Default for AppSettings {
             cmd_key_mapping: CmdKeyMapping::default(),
             run_on_reset: true,
             iie_joystick_bindings: default_bindings(),
+            nat_network: None,
         }
     }
 }
@@ -244,22 +275,35 @@ impl AppSettings {
             .collect()
     }
 
-    pub fn add_recent_floppy_image(&mut self, path: &Path) {
+    /// The recent images of a kind of floppy image
+    fn recent_floppy_images_mut(&mut self, images: FloppyImages) -> &mut Vec<PathBuf> {
+        match images {
+            FloppyImages::Mac => &mut self.recent_floppy_images,
+            FloppyImages::Files { label, .. } => self
+                .recent_drive_images
+                .entry(label.to_string())
+                .or_default(),
+        }
+    }
+
+    /// Puts a floppy image first in the recent images of its kind
+    pub fn add_recent_floppy_image(&mut self, images: FloppyImages, path: &Path) {
         let path = if let Ok(p) = path.canonicalize() {
             p
         } else {
             path.to_path_buf()
         };
 
-        self.recent_floppy_images.retain(|p| {
+        let recent = self.recent_floppy_images_mut(images);
+        recent.retain(|p| {
             if let Ok(rp) = p.canonicalize() {
                 rp != path
             } else {
                 *p != path
             }
         });
-        self.recent_floppy_images.insert(0, path);
-        self.recent_floppy_images.truncate(MAX_RECENT_IMAGES);
+        recent.insert(0, path);
+        recent.truncate(MAX_RECENT_IMAGES);
         self.save();
     }
 
@@ -292,30 +336,48 @@ impl AppSettings {
         self.last_roms.clone()
     }
 
-    pub fn get_last_card_roms(&self) -> Vec<(NubusDeviceKind, PathBuf)> {
-        let mut out: Vec<(NubusDeviceKind, PathBuf)> = Vec::new();
+    pub fn get_last_card_roms(&self) -> Vec<(DeviceModel, PathBuf)> {
+        let mut out: Vec<(DeviceModel, PathBuf)> = Vec::new();
 
         // Migrate deprecated last_display_roms
         if let Some((_, p)) = self.last_display_roms.last() {
-            out.push((NubusDeviceKind::Mdc12, p.clone()));
+            out.push((DeviceModel::DisplayCard824, p.clone()));
         }
 
-        for (c, p) in &self.roms_by_card {
-            out.retain(|(oc, _)| oc != c);
-            out.push((*c, p.clone()));
+        for (device, p) in &self.roms_by_card {
+            let model = device.model();
+            out.retain(|(m, _)| *m != model);
+            out.push((model, p.clone()));
         }
         out
     }
 
-    pub fn set_last_card_rom(&mut self, card: NubusDeviceKind, path: &Path) {
-        self.roms_by_card.retain(|(c, _)| *c != card);
-        self.roms_by_card.push((card, path.to_path_buf()));
+    pub fn set_last_card_rom(&mut self, model: DeviceModel, path: &Path) {
+        if self
+            .get_last_card_roms()
+            .contains(&(model, path.to_path_buf()))
+        {
+            return;
+        }
+        self.roms_by_card
+            .retain(|(device, _)| device.model() != model);
+        self.roms_by_card
+            .push((RomDevice::Model(model), path.to_path_buf()));
         self.save();
     }
 
-    pub fn get_recent_floppy_images_for_display(&self) -> Vec<(usize, PathBuf, String)> {
-        self.recent_floppy_images
-            .iter()
+    /// The recent images of a kind of floppy image, for a menu
+    pub fn get_recent_floppy_images_for_display(
+        &self,
+        images: FloppyImages,
+    ) -> Vec<(usize, PathBuf, String)> {
+        let recent = match images {
+            FloppyImages::Mac => Some(&self.recent_floppy_images),
+            FloppyImages::Files { label, .. } => self.recent_drive_images.get(label),
+        };
+        recent
+            .into_iter()
+            .flatten()
             .enumerate()
             .map(|(i, path)| {
                 let display_name = path
@@ -352,7 +414,8 @@ mod tests {
     fn unknown_models_and_cards_are_skipped() {
         let json = r#"{
             "last_roms": [["Plus", "/a.rom"], ["FutureMac", "/b.rom"], ["SE30", "/c.rom"]],
-            "roms_by_card": [["Toby", "/d.rom"], ["FutureCard", "/e.rom"]],
+            "roms_by_card": [["Toby", "/d.rom"], ["FutureCard", "/e.rom"],
+                             ["DisplayCard824", "/f.rom"], ["Mdc12", "/g.rom"]],
             "hide_mode_toasts": true
         }"#;
         let settings: AppSettings = serde_json::from_str(json).unwrap();
@@ -363,9 +426,14 @@ mod tests {
                 (MacModel::SE30, PathBuf::from("/c.rom"))
             ]
         );
+        // A card is named by its device model, or by its kind in older settings. The last
+        // ROM of a device model is the one that is used.
         assert_eq!(
-            settings.roms_by_card,
-            vec![(NubusDeviceKind::Toby, PathBuf::from("/d.rom"))]
+            settings.get_last_card_roms(),
+            vec![
+                (DeviceModel::MacIIVideoCard, PathBuf::from("/d.rom")),
+                (DeviceModel::DisplayCard824, PathBuf::from("/g.rom"))
+            ]
         );
         assert!(settings.hide_mode_toasts);
     }

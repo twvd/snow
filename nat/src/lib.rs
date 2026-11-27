@@ -5,15 +5,23 @@
 //! the emulator via a crossbeam channel, processes them through a NAT
 //! implementation using smoltcp, and sends responses back.
 //!
+//! The gateway's network can hold several Ethernet adapters of the emulated system
+//! (`NatNetwork::attach()`). It switches frames between them and the gateway by their
+//! destination address.
+//!
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
-//! Currently only supports TCP and UDP.
+//! Currently only supports TCP and UDP. The gateway also answers BOOTP and DHCP requests
+//! (dhcp.rs), and passes DNS queries sent to it on to the host's DNS server. Broadcasts and
+//! multicast stay on the emulated network, and the host's own addresses (127.0.0.0/8,
+//! 0.0.0.0/8) can't be reached through it.
 //!
 //! The MacOS TCP/IP stack seems to struggle with ARP requests during already
 //! active TCP sessions which can stall connections and leave smoltcp in a
 //! 'neighbor discovery pending' state. To avoid this, we send unsolicited ARP
 //! replies to smoltcp regularly to keep the neighbor cache entry from being evicted.
 
+mod dhcp;
 #[cfg(feature = "https_stripping")]
 mod https_stripping;
 
@@ -23,8 +31,8 @@ mod mactcp_helpers;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -39,6 +47,169 @@ use smoltcp::wire::{
 
 /// A layer 2 Ethernet packet
 pub type Packet = Vec<u8>;
+
+/// UDP port of DNS
+const DNS_PORT: u16 = 53;
+
+/// The host's DNS server: the first one in /etc/resolv.conf
+#[cfg(not(windows))]
+pub fn host_dns_server() -> Option<std::net::IpAddr> {
+    let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
+    conf.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next() == Some("nameserver"))
+            .then(|| words.next()?.parse().ok())
+            .flatten()
+    })
+}
+
+/// The host's DNS server: the first one of the network adapter that is up, has a gateway and,
+/// of those, the lowest metric, the one that the host's traffic goes out through
+#[cfg(windows)]
+pub fn host_dns_server() -> Option<std::net::IpAddr> {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME,
+        GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses,
+        IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::AF_UNSPEC;
+
+    let flags = GAA_FLAG_SKIP_UNICAST
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_FRIENDLY_NAME
+        | GAA_FLAG_INCLUDE_GATEWAYS;
+    // Of u64s, for the alignment of the adapters' structures; 16 KB as Microsoft advises, and
+    // more if that is too little
+    let mut buffer: Vec<u64> = vec![0; 2048];
+    loop {
+        let mut size = u32::try_from(buffer.len() * 8).ok()?;
+        // SAFETY: the buffer holds `size` bytes, aligned for IP_ADAPTER_ADDRESSES_LH
+        let result = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC.0),
+                flags,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                &raw mut size,
+            )
+        };
+        if result == ERROR_BUFFER_OVERFLOW.0 {
+            buffer.resize(size as usize / 8 + 1, 0);
+        } else if result == 0 {
+            break;
+        } else {
+            return None;
+        }
+    }
+
+    let mut best: Option<(u32, std::net::IpAddr)> = None;
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    // SAFETY: GetAdaptersAddresses filled the buffer with a list of adapters, each with its
+    // list of DNS servers, which live as long as the buffer
+    while let Some(a) = unsafe { adapter.as_ref() } {
+        if a.OperStatus == IfOperStatusUp
+            && !a.FirstGatewayAddress.is_null()
+            && best.is_none_or(|(metric, _)| a.Ipv4Metric < metric)
+        {
+            let mut server = a.FirstDnsServerAddress;
+            // SAFETY: as above
+            while let Some(s) = unsafe { server.as_ref() } {
+                // SAFETY: as above
+                if let Some(dns) = unsafe { windows_address(s.Address.lpSockaddr) } {
+                    best = Some((a.Ipv4Metric, dns));
+                    break;
+                }
+                server = s.Next;
+            }
+        }
+        adapter = a.Next;
+    }
+    best.map(|(_, dns)| dns)
+}
+
+/// The address of a socket address of Windows, if it is one that a socket can reach without
+/// more: not IPv6 link-local, which needs the interface too, nor IPv6 site-local, deprecated
+/// (RFC 3879), which Windows lists as fec0:0:0:ffff::1 to 3 when the adapter has no IPv6 DNS
+/// server
+///
+/// # Safety
+/// `address` is null or points to a SOCKADDR_IN or SOCKADDR_IN6 as its family says
+#[cfg(windows)]
+unsafe fn windows_address(
+    address: *const windows::Win32::Networking::WinSock::SOCKADDR,
+) -> Option<std::net::IpAddr> {
+    use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6};
+
+    // SAFETY: by the caller
+    let family = unsafe { address.as_ref()? }.sa_family;
+    if family == AF_INET {
+        // SAFETY: by the caller; S_addr is in network order, as are its bytes in memory
+        let ip = unsafe { (*address.cast::<SOCKADDR_IN>()).sin_addr.S_un.S_addr };
+        Some(std::net::Ipv4Addr::from(ip.to_ne_bytes()).into())
+    } else if family == AF_INET6 {
+        // SAFETY: by the caller
+        let ip =
+            std::net::Ipv6Addr::from(unsafe { (*address.cast::<SOCKADDR_IN6>()).sin6_addr.u.Byte });
+        let prefix = ip.segments()[0] & 0xffc0;
+        (prefix != 0xfe80 && prefix != 0xfec0).then_some(ip.into())
+    } else {
+        None
+    }
+}
+
+/// How long the host's DNS server, once looked up, is used before the next DNS query looks it up
+/// again: it changes with the host's network, as on a switch to another Wi-Fi network or to a
+/// VPN, but a lookup on every query would cost too much
+const HOST_DNS_LIFETIME: Duration = Duration::from_secs(10);
+
+/// Where DNS queries to the gateway go: the server set, or else the host's, looked up again
+/// at most every HOST_DNS_LIFETIME
+struct DnsServer {
+    /// The server set, if any
+    set: Option<std::net::IpAddr>,
+    /// The host's, as last looked up
+    host: Option<std::net::IpAddr>,
+    /// When the host's was looked up
+    looked_up: Instant,
+}
+
+impl DnsServer {
+    fn new(set: Option<std::net::IpAddr>, now: Instant) -> Self {
+        let host = if set.is_none() {
+            host_dns_server()
+        } else {
+            None
+        };
+        Self {
+            set,
+            host,
+            looked_up: now,
+        }
+    }
+
+    /// The server to use at `now`, with `lookup` to look up the host's
+    fn get(
+        &mut self,
+        now: Instant,
+        lookup: impl FnOnce() -> Option<std::net::IpAddr>,
+    ) -> Option<std::net::IpAddr> {
+        if self.set.is_some() {
+            return self.set;
+        }
+        if now.duration_since(self.looked_up) >= HOST_DNS_LIFETIME {
+            let host = lookup();
+            if host != self.host {
+                log::info!("NAT: the host's DNS server is now {:?}", host);
+            }
+            self.host = host;
+            self.looked_up = now;
+        }
+        self.host
+    }
+}
 
 const MTU: usize = 1514;
 const SMOLTCP_BUFFER_SIZE: usize = 65536;
@@ -65,10 +236,139 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// together with the channel, so they are polled at this interval.
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// An Ethernet adapter of the emulated system, on the gateway's network
+struct GuestPort {
+    /// Its Ethernet address
+    mac: EthernetAddress,
+    /// The channel of the frames for it
+    tx: Sender<Packet>,
+    /// Whether its receiver is on: the frames for it are dropped while it is off
+    rx_enabled: Arc<AtomicBool>,
+    /// The address the gateway gave it, 0 for none. The adapter keeps it, in save states too,
+    /// and brings it back when it attaches again.
+    lease: Arc<AtomicU32>,
+    /// Its connections to port 80 go out as HTTPS (https_stripping.rs)
+    #[cfg(feature = "https_stripping")]
+    https_stripping: bool,
+}
+
+/// The adapters of the emulated system on the gateway's network, as on a switch: a frame goes
+/// to the adapter of its destination address, a broadcast or multicast frame to all of them.
+/// An adapter that has closed its channel is taken off.
+#[derive(Clone, Default)]
+struct GuestTx {
+    ports: Arc<Mutex<Vec<GuestPort>>>,
+}
+
+impl GuestTx {
+    /// Adds an adapter, in place of one with the same address
+    fn attach(&self, port: GuestPort) {
+        let mut ports = self.ports.lock().unwrap();
+        ports.retain(|p| p.mac != port.mac);
+        ports.push(port);
+    }
+
+    /// The address that the adapter at `mac` holds, if it holds one, and those that the other
+    /// adapters hold
+    fn leases(&self, mac: EthernetAddress) -> (Option<Ipv4Address>, Vec<Ipv4Address>) {
+        let mut own = None;
+        let mut others = vec![];
+        for port in self.ports.lock().unwrap().iter() {
+            let lease = port.lease.load(Ordering::Relaxed);
+            if lease == 0 {
+                continue;
+            }
+            if port.mac == mac {
+                own = Some(Ipv4Address::from(lease));
+            } else {
+                others.push(Ipv4Address::from(lease));
+            }
+        }
+        (own, others)
+    }
+
+    /// Gives the adapter at `mac` the address `ip`
+    fn set_lease(&self, mac: EthernetAddress, ip: Ipv4Address) {
+        for port in self.ports.lock().unwrap().iter() {
+            if port.mac == mac {
+                port.lease.store(u32::from(ip), Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Sends a frame to the adapters it is for, but the one at `except`. Says whether one took
+    /// it.
+    fn deliver(&self, packet: &[u8], except: Option<EthernetAddress>) -> bool {
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        let dst = eth_frame.dst_addr();
+        let mut taken = false;
+        self.ports.lock().unwrap().retain(|port| {
+            if Some(port.mac) == except
+                || (dst.is_unicast() && dst != port.mac)
+                || !port.rx_enabled.load(Ordering::Relaxed)
+            {
+                return true;
+            }
+            match port.tx.try_send(packet.to_vec()) {
+                Ok(()) => {
+                    taken = true;
+                    true
+                }
+                Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            }
+        });
+        taken
+    }
+
+    /// Sends a frame from the gateway. A frame that no adapter takes is dropped, as if the
+    /// queue were full.
+    fn try_send(&self, packet: Packet) -> std::result::Result<(), TrySendError<Packet>> {
+        if self.deliver(&packet, None) {
+            Ok(())
+        } else {
+            Err(TrySendError::Full(packet))
+        }
+    }
+
+    /// Passes a frame from an adapter to the others. A frame for another adapter goes to it
+    /// alone, and that is said; a broadcast or multicast frame goes to the others, and on to
+    /// the gateway too.
+    fn forward(&self, packet: &[u8]) -> bool {
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        let dst = eth_frame.dst_addr();
+        let to_guest = dst.is_unicast()
+            && self
+                .ports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|port| port.mac == dst);
+        if to_guest || !dst.is_unicast() {
+            self.deliver(packet, Some(eth_frame.src_addr()));
+        }
+        to_guest
+    }
+
+    /// Whether the adapter at `mac` strips HTTPS
+    #[cfg(feature = "https_stripping")]
+    fn strips_https(&self, mac: EthernetAddress) -> bool {
+        self.ports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|port| port.mac == mac && port.https_stripping)
+    }
+}
+
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
     rx: Receiver<Packet>,
-    tx: Sender<Packet>,
+    tx: GuestTx,
     stats: Arc<NatEngineStats>,
     /// Queue for routed UDP/TCP packets that need NAT handling (intercepted before smoltcp)
     intercepted_packets: Vec<Packet>,
@@ -76,8 +376,14 @@ struct VirtualDevice {
     smoltcp_queue: Vec<Packet>,
     /// Gateway IP address to detect routed packets
     gateway_ip: Ipv4Address,
-    /// Learned local node (for gratuitous ARP)
-    local_node: Option<(EthernetAddress, Ipv4Address)>,
+    /// The broadcast address of the gateway's subnet
+    subnet_broadcast: Ipv4Address,
+    /// Learned local nodes (for gratuitous ARP): one address per adapter
+    local_nodes: Vec<(EthernetAddress, Ipv4Address)>,
+    /// The address that each Ethernet address on the emulated network uses, the last one its
+    /// ARP packets showed, whether DHCP gave it or it was set by hand: DHCP, BOOTP and RARP hand
+    /// none of them out to another adapter
+    arp_addresses: Vec<(EthernetAddress, Ipv4Address)>,
     /// Next time gratuitous ARP should be sent
     next_gratuitous_arp: Instant,
     /// Packets received from the emulator while waiting in `wait_for_packet()`,
@@ -89,10 +395,11 @@ struct VirtualDevice {
 
 impl VirtualDevice {
     fn new(
-        tx: Sender<Packet>,
+        tx: GuestTx,
         rx: Receiver<Packet>,
         stats: Arc<NatEngineStats>,
         gateway_ip: Ipv4Address,
+        subnet_broadcast: Ipv4Address,
     ) -> Self {
         Self {
             rx,
@@ -101,7 +408,9 @@ impl VirtualDevice {
             intercepted_packets: Vec::new(),
             smoltcp_queue: Vec::new(),
             gateway_ip,
-            local_node: None,
+            subnet_broadcast,
+            local_nodes: Vec::new(),
+            arp_addresses: Vec::new(),
             next_gratuitous_arp: Instant::now(),
             pending: VecDeque::new(),
             disconnected: false,
@@ -123,10 +432,83 @@ impl VirtualDevice {
         std::mem::take(&mut self.intercepted_packets)
     }
 
+    /// Whether a packet is for the host's own addresses, which a gateway must not pass on:
+    /// loopback (127.0.0.0/8) and "this network" (0.0.0.0/8) (RFC 1122, 3.2.1.3). A host
+    /// socket would reach the services of the host itself.
+    fn to_host_only_address(packet: &[u8]) -> bool {
+        use smoltcp::wire::Ipv4Packet;
+
+        let Ok(eth_frame) = EthernetFrame::new_checked(packet) else {
+            return false;
+        };
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
+        let Ok(ipv4_packet) = Ipv4Packet::new_checked(eth_frame.payload()) else {
+            return false;
+        };
+        matches!(ipv4_packet.dst_addr().octets()[0], 0 | 127)
+    }
+
+    /// The reset that answers a TCP segment from the guest, as from a host with nothing
+    /// listening (RFC 793, 3.4 "Reset Generation"); None for anything else, and for a reset
+    fn tcp_reset(packet: &[u8]) -> Option<Packet> {
+        use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket, TcpSeqNumber};
+
+        let eth_frame = EthernetFrame::new_checked(packet).ok()?;
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return None;
+        }
+        let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload()).ok()?;
+        if ipv4_packet.next_header() != IpProtocol::Tcp {
+            return None;
+        }
+        let tcp_packet = TcpPacket::new_checked(ipv4_packet.payload()).ok()?;
+        if tcp_packet.rst() {
+            return None;
+        }
+
+        let mut buffer = vec![0; 14 + 20 + 20];
+        let mut eth = EthernetFrame::new_unchecked(&mut buffer[..]);
+        eth.set_dst_addr(eth_frame.src_addr());
+        eth.set_src_addr(eth_frame.dst_addr());
+        eth.set_ethertype(EthernetProtocol::Ipv4);
+        let mut ip = Ipv4Packet::new_unchecked(eth.payload_mut());
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len(40);
+        ip.set_hop_limit(64);
+        ip.set_next_header(IpProtocol::Tcp);
+        ip.set_src_addr(ipv4_packet.dst_addr());
+        ip.set_dst_addr(ipv4_packet.src_addr());
+        ip.fill_checksum();
+        let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
+        tcp.set_src_port(tcp_packet.dst_port());
+        tcp.set_dst_port(tcp_packet.src_port());
+        tcp.set_header_len(20);
+        tcp.clear_flags();
+        tcp.set_rst(true);
+        if tcp_packet.ack() {
+            // The reset takes its sequence number from the segment's acknowledgment
+            tcp.set_seq_number(tcp_packet.ack_number());
+        } else {
+            // Sequence number zero, and the segment acknowledged
+            tcp.set_seq_number(TcpSeqNumber(0));
+            tcp.set_ack(true);
+            tcp.set_ack_number(tcp_packet.seq_number() + tcp_packet.segment_len());
+        }
+        tcp.fill_checksum(
+            &IpAddress::Ipv4(ipv4_packet.dst_addr()),
+            &IpAddress::Ipv4(ipv4_packet.src_addr()),
+        );
+        Some(buffer)
+    }
+
     /// Check for IPv4 packets that the NAT gateway should not handle.
     /// Filters UDP packets that would cause OS bind/connect errors:
     ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
-    ///   - broadcasts (255.255.255.255)
+    ///   - broadcasts (255.255.255.255, and to the gateway's subnet)
+    ///   - multicast and reserved addresses (224.0.0.0 and up)
     ///   - UDP src port < 1024 (privileged ports as the emulator is likely running as non-root)
     ///   - UDP dst port == 520 (RIP)
     fn needs_filtering(&self, packet: &[u8]) -> bool {
@@ -155,7 +537,12 @@ impl VirtualDevice {
             Err(_) => return false,
         };
 
-        if ipv4_packet.dst_addr() == Ipv4Address::BROADCAST {
+        // Broadcasts, to all networks or to the gateway's subnet, stay on the emulated network,
+        // and so do multicast groups and the reserved addresses: classes D and E, 224.0.0.0 and
+        // up (RFC 1112, 4). A host socket would send a group's datagrams out on the host's
+        // network, and its own programs would get them too, but never let the answers back in.
+        let dst = ipv4_packet.dst_addr();
+        if dst == Ipv4Address::BROADCAST || dst == self.subnet_broadcast || dst.octets()[0] >= 224 {
             return true;
         }
 
@@ -178,7 +565,7 @@ impl VirtualDevice {
 
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
     fn needs_nat(&self, packet: &[u8]) -> bool {
-        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket};
+        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
         // Parse Ethernet frame
         let eth_frame = match EthernetFrame::new_checked(packet) {
@@ -203,10 +590,13 @@ impl VirtualDevice {
             Err(_) => return false,
         };
 
-        // Check if destination is NOT the gateway (i.e., it's being routed)
+        // Check if destination is NOT the gateway (i.e., it's being routed). DNS queries to
+        // the gateway go to the host's DNS server, as routed UDP.
         let dst_ip = ipv4_packet.dst_addr();
         if dst_ip == self.gateway_ip {
-            return false;
+            return ipv4_packet.next_header() == IpProtocol::Udp
+                && UdpPacket::new_checked(ipv4_packet.payload())
+                    .is_ok_and(|udp| udp.dst_port() == DNS_PORT);
         }
 
         match ipv4_packet.next_header() {
@@ -241,23 +631,11 @@ impl Device for VirtualDevice {
         &mut self,
         _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        // First, check if we have packets queued for smoltcp (e.g., TCP SYN after creating listening socket)
-        if let Some(packet) = self.smoltcp_queue.pop() {
-            return Some((
-                VirtualRxToken { buffer: packet },
-                VirtualTxToken {
-                    tx: self.tx.clone(),
-                    stats: self.stats.clone(),
-                },
-            ));
-        }
-
-        // Check if it is time to send gratuitous ARP
-        if let Some((local_mac, local_ip)) = self.local_node {
-            let now = Instant::now();
-            if self.next_gratuitous_arp < now {
-                self.next_gratuitous_arp = now + GRATUITOUS_ARP_INTERVAL;
-
+        // Check if it is time to send gratuitous ARP: one for each local node, queued for smoltcp
+        let now = Instant::now();
+        if !self.local_nodes.is_empty() && self.next_gratuitous_arp < now {
+            self.next_gratuitous_arp = now + GRATUITOUS_ARP_INTERVAL;
+            for &(local_mac, local_ip) in &self.local_nodes {
                 let mut buffer = vec![0; 42];
                 let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer);
                 eth_frame.set_src_addr(local_mac);
@@ -277,15 +655,19 @@ impl Device for VirtualDevice {
                 };
 
                 arp_repr.emit(&mut arp_packet);
-
-                return Some((
-                    VirtualRxToken { buffer },
-                    VirtualTxToken {
-                        tx: self.tx.clone(),
-                        stats: self.stats.clone(),
-                    },
-                ));
+                self.smoltcp_queue.push(buffer);
             }
+        }
+
+        // First, check if we have packets queued for smoltcp (e.g., TCP SYN after creating listening socket)
+        if let Some(packet) = self.smoltcp_queue.pop() {
+            return Some((
+                VirtualRxToken { buffer: packet },
+                VirtualTxToken {
+                    tx: self.tx.clone(),
+                    stats: self.stats.clone(),
+                },
+            ));
         }
 
         // Receive new packet from Ethernet adapter channel. This must not block:
@@ -307,6 +689,34 @@ impl Device for VirtualDevice {
         self.stats
             .rx_bytes
             .fetch_add(packet.len(), Ordering::Relaxed);
+
+        // A frame for another adapter of the emulated system goes to it alone; broadcast and
+        // multicast go to the others as well
+        if self.tx.forward(&packet) {
+            return None;
+        }
+
+        // The host's own addresses are no way out: TCP gets a reset, the rest is dropped
+        if Self::to_host_only_address(&packet) {
+            if let Some(reset) = Self::tcp_reset(&packet) {
+                let len = reset.len();
+                if self.tx.try_send(reset).is_ok() {
+                    self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                    self.stats.tx_bytes.fetch_add(len, Ordering::Relaxed);
+                }
+            }
+            self.stats.filtered_packets.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .filtered_bytes
+                .fetch_add(packet.len(), Ordering::Relaxed);
+            return None;
+        }
+
+        // BOOTP and DHCP requests are for the gateway's own server
+        if dhcp::is_request(&packet) {
+            self.intercepted_packets.push(packet);
+            return None;
+        }
 
         // Drop packets that would cause OS errors (BOOTP, privileged src ports)
         if self.needs_filtering(&packet) {
@@ -332,6 +742,26 @@ impl Device for VirtualDevice {
             return None;
         }
 
+        // The address an adapter uses, as its ARP packets show it. A probe for an address
+        // (RFC 5227), from 0.0.0.0, doesn't use one yet.
+        if let Ok(eth) = EthernetFrame::new_checked(&packet)
+            && eth.ethertype() == EthernetProtocol::Arp
+            && let Ok(ArpRepr::EthernetIpv4 {
+                source_hardware_addr,
+                source_protocol_addr,
+                ..
+            }) = ArpPacket::new_checked(eth.payload()).and_then(|p| ArpRepr::parse(&p))
+            && !source_protocol_addr.is_unspecified()
+            && !self
+                .arp_addresses
+                .contains(&(source_hardware_addr, source_protocol_addr))
+        {
+            self.arp_addresses
+                .retain(|&(mac, _)| mac != source_hardware_addr);
+            self.arp_addresses
+                .push((source_hardware_addr, source_protocol_addr));
+        }
+
         // Try to learn the emulator's IP address from ARP traffic so we can keep the neighbor cache entry alive
         if let Ok(ArpRepr::EthernetIpv4 {
             operation,
@@ -344,11 +774,14 @@ impl Device for VirtualDevice {
             .and_then(|p| ArpRepr::parse(&p))
             && operation == ArpOperation::Request
             && target_protocol_addr == self.gateway_ip
-            && self
-                .local_node
-                .is_none_or(|(mac, ip)| mac != source_hardware_addr || ip != source_protocol_addr)
+            && !self
+                .local_nodes
+                .contains(&(source_hardware_addr, source_protocol_addr))
         {
-            self.local_node = Some((source_hardware_addr, source_protocol_addr));
+            self.local_nodes
+                .retain(|&(mac, _)| mac != source_hardware_addr);
+            self.local_nodes
+                .push((source_hardware_addr, source_protocol_addr));
             self.next_gratuitous_arp = Instant::now() + GRATUITOUS_ARP_INTERVAL;
             log::debug!(
                 "Learned local MAC address {} - IP address: {}",
@@ -412,7 +845,7 @@ impl RxToken for VirtualRxToken {
 }
 
 struct VirtualTxToken {
-    tx: Sender<Packet>,
+    tx: GuestTx,
     stats: Arc<NatEngineStats>,
 }
 
@@ -563,31 +996,180 @@ pub struct NatEngine {
     /// Statistics
     stats: Arc<NatEngineStats>,
 
-    /// Whether to enable HTTPS stripping
-    #[cfg(feature = "https_stripping")]
-    https_stripping: bool,
-
     /// Gateway subnet prefix length (for ICMP Address Mask replies)
     #[cfg(feature = "mactcp_helpers")]
     gateway_subnet: u8,
+
+    /// What the DHCP server hands out, but the address
+    lease: dhcp::Lease,
+
+    /// The addresses handed out
+    addresses: Addresses,
+
+    /// Where DNS queries to the gateway go
+    dns: DnsServer,
 }
 
-impl NatEngine {
-    /// Creates a new NAT engine instance with the given TX/RX channels
-    ///
-    /// * `tx` - Sender channel for packets going to the emulator
-    /// * `rx` - Receiver channel for packets coming from the emulator
-    /// * `gateway_mac` - MAC address of the NAT gateway
-    /// * `gateway_ip` - IP address of the NAT gateway
-    /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
-    /// * `https_stripping` - Whether to enable HTTPS stripping
-    pub fn new(
-        tx: Sender<Packet>,
-        rx: Receiver<Packet>,
+/// The addresses that the gateway hands out (DHCP, BOOTP, RARP): one for each Ethernet address,
+/// always the same. An adapter that comes back with the address it had, from a save state, gets
+/// it again if it is still free; the others get the lowest free address after the gateway's.
+struct Addresses {
+    /// The first one, after the gateway's
+    first: u32,
+    /// The last one, before the network's broadcast address
+    last: u32,
+    /// Those given
+    given: Vec<(EthernetAddress, Ipv4Address)>,
+}
+
+impl Addresses {
+    fn new(gateway_ip: Ipv4Address, netmask: u32) -> Self {
+        let gateway = u32::from(gateway_ip);
+        Self {
+            first: gateway.wrapping_add(1),
+            last: (gateway | !netmask).wrapping_sub(1),
+            given: vec![],
+        }
+    }
+
+    /// The address of the adapter at `mac`: the one it was given, else `held`, the one it holds
+    /// from before, if that is on the network and free, else the lowest free one. `reserved`
+    /// are those that the other adapters hold. None once the network has none left.
+    fn of(
+        &mut self,
+        mac: EthernetAddress,
+        held: Option<Ipv4Address>,
+        reserved: &[Ipv4Address],
+    ) -> Option<Ipv4Address> {
+        if let Some(&(_, ip)) = self.given.iter().find(|&&(given, _)| given == mac) {
+            return Some(ip);
+        }
+        let free = |address: u32| {
+            let ip = Ipv4Address::from(address);
+            !self.given.iter().any(|&(_, given)| given == ip) && !reserved.contains(&ip)
+        };
+        let address = held
+            .map(u32::from)
+            .filter(|&address| (self.first..=self.last).contains(&address) && free(address))
+            .or_else(|| (self.first..=self.last).find(|&address| free(address)))?;
+        let ip = Ipv4Address::from(address);
+        self.given.push((mac, ip));
+        Some(ip)
+    }
+}
+
+/// The address of the adapter at `mac`, as `Addresses::of()` gives it: with the address it holds,
+/// and keeping out those that the other adapters hold (from `guests`) or use (as `arp_addresses`
+/// saw them). The adapter then holds it.
+fn address_of(
+    addresses: &mut Addresses,
+    guests: &GuestTx,
+    arp_addresses: &[(EthernetAddress, Ipv4Address)],
+    mac: EthernetAddress,
+) -> Option<Ipv4Address> {
+    let (held, mut reserved) = guests.leases(mac);
+    reserved.extend(
+        arp_addresses
+            .iter()
+            .filter(|&&(other, _)| other != mac)
+            .map(|&(_, ip)| ip),
+    );
+    let ip = addresses.of(mac, held, &reserved)?;
+    guests.set_lease(mac, ip);
+    Some(ip)
+}
+
+/// A NAT gateway and its network, which the emulated system's Ethernet adapters attach to.
+/// The gateway runs on a thread of its own as long as the network or one of its adapters is
+/// there.
+pub struct NatNetwork {
+    /// The channel of the frames from the adapters, which all share it
+    to_gateway: Sender<Packet>,
+    /// The adapters
+    guests: GuestTx,
+    stats: Arc<NatEngineStats>,
+    /// The length of an adapter's queue
+    queue_size: usize,
+}
+
+impl NatNetwork {
+    /// Starts a gateway at `gateway_ip`, on a network of `gateway_subnet` bits, with the
+    /// Ethernet address `gateway_mac`. DNS queries to it go to `dns`, or with None to the host's
+    /// DNS server. Each queue of frames holds `queue_size` frames.
+    pub fn start(
         gateway_mac: [u8; 6],
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
+        dns: Option<std::net::IpAddr>,
+        queue_size: usize,
+    ) -> Self {
+        let (to_gateway, from_guests) = crossbeam_channel::bounded(queue_size);
+        let guests = GuestTx::default();
+        let mut engine = NatEngine::new(
+            from_guests,
+            guests.clone(),
+            gateway_mac,
+            gateway_ip,
+            gateway_subnet,
+            dns,
+        );
+        let stats = engine.stats();
+        std::thread::spawn(move || engine.run());
+        Self {
+            to_gateway,
+            guests,
+            stats,
+            queue_size,
+        }
+    }
+
+    /// Attaches the adapter with the Ethernet address `mac`, in place of one with the same
+    /// address. Returns its channels: of the frames it sends, and of the frames for it, which
+    /// are dropped while `rx_enabled` is false. Dropping the second detaches it.
+    ///
+    /// `lease` holds the address the gateway gives the adapter, 0 for none: it asks for the
+    /// address it holds, and gets it again if that is on the network and free.
+    pub fn attach(
+        &self,
+        mac: [u8; 6],
+        rx_enabled: Arc<AtomicBool>,
+        lease: Arc<AtomicU32>,
         #[cfg(feature = "https_stripping")] https_stripping: bool,
+    ) -> (Sender<Packet>, Receiver<Packet>) {
+        let (tx, rx) = crossbeam_channel::bounded(self.queue_size);
+        self.guests.attach(GuestPort {
+            mac: EthernetAddress(mac),
+            tx,
+            rx_enabled,
+            lease,
+            #[cfg(feature = "https_stripping")]
+            https_stripping,
+        });
+        (self.to_gateway.clone(), rx)
+    }
+
+    /// The statistics of the gateway
+    pub fn stats(&self) -> Arc<NatEngineStats> {
+        self.stats.clone()
+    }
+}
+
+impl NatEngine {
+    /// Creates a new NAT engine instance
+    ///
+    /// * `rx` - Receiver channel for packets coming from the emulator's adapters
+    /// * `tx` - The adapters, where packets for the emulator go
+    /// * `gateway_mac` - MAC address of the NAT gateway
+    /// * `gateway_ip` - IP address of the NAT gateway
+    /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
+    /// * `dns` - The DNS server that DNS queries to the gateway go to; None: the host's
+    fn new(
+        rx: Receiver<Packet>,
+        tx: GuestTx,
+        gateway_mac: [u8; 6],
+        gateway_ip: [u8; 4],
+        gateway_subnet: u8,
+        dns: Option<std::net::IpAddr>,
     ) -> Self {
         let stats = Arc::new(NatEngineStats::default());
         let gateway_mac_addr = EthernetAddress(gateway_mac);
@@ -595,7 +1177,11 @@ impl NatEngine {
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
         let gateway_ipv4 = Ipv4Address::from(gateway_ip);
-        let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
+        let netmask = u32::MAX
+            .checked_shl(32 - u32::from(gateway_subnet))
+            .unwrap_or(0);
+        let subnet_broadcast = Ipv4Address::from(u32::from_be_bytes(gateway_ip) | !netmask);
+        let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4, subnet_broadcast);
 
         let config = Config::new(gateway_mac_addr.into());
         let mut iface = Interface::new(config, &mut device, smoltcp::time::Instant::now());
@@ -622,6 +1208,22 @@ impl NatEngine {
 
         let sockets = SocketSet::new(vec![]);
 
+        // Each adapter gets its own address, from the one after the gateway's
+        let addresses = Addresses::new(gateway_ipv4, netmask);
+        let lease = dhcp::Lease {
+            client_ip: Ipv4Address::UNSPECIFIED,
+            netmask: Ipv4Address::from(netmask),
+            gateway_ip: gateway_ipv4,
+            gateway_mac: gateway_mac_addr,
+        };
+        let dns = DnsServer::new(dns, Instant::now());
+        match dns.set.or(dns.host) {
+            Some(dns) => log::info!("NAT: DNS queries to the gateway go to {}", dns),
+            None => log::warn!(
+                "NAT: no DNS server set, and the host has none: DNS queries to the gateway fail"
+            ),
+        }
+
         Self {
             device,
             iface,
@@ -631,10 +1233,11 @@ impl NatEngine {
             nat_table: HashMap::new(),
             recv_buffer: vec![0u8; SMOLTCP_BUFFER_SIZE],
             stats,
-            #[cfg(feature = "https_stripping")]
-            https_stripping,
             #[cfg(feature = "mactcp_helpers")]
             gateway_subnet,
+            lease,
+            addresses,
+            dns,
         }
     }
 
@@ -769,6 +1372,10 @@ impl NatEngine {
                         }
                     };
 
+                    if udp_packet.dst_port() == dhcp::SERVER_PORT {
+                        self.handle_dhcp(&packet);
+                        continue;
+                    }
                     if let Err(e) = self.handle_outbound_udp(&ipv4_packet, &udp_packet) {
                         log::error!("Failed to handle outbound UDP: {}", e);
                     }
@@ -815,10 +1422,15 @@ impl NatEngine {
 
     /// Handle a RARP request by replying with the assigned IP for the client MAC
     #[cfg(feature = "mactcp_helpers")]
-    fn handle_rarp(&self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
+    fn handle_rarp(&mut self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
         let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
 
-        let Some(buf) = mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac)?
+        let addresses = &mut self.addresses;
+        let device = &self.device;
+        let Some(buf) =
+            mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac, |mac| {
+                address_of(addresses, &device.tx, &device.arp_addresses, mac)
+            })?
         else {
             return Ok(());
         };
@@ -835,6 +1447,41 @@ impl NatEngine {
         }
 
         Ok(())
+    }
+
+    /// Answer a BOOTP or DHCP request, with the address of the adapter that asks
+    fn handle_dhcp(&mut self, packet: &[u8]) {
+        let Some(mac) = dhcp::client_hardware_address(packet) else {
+            return;
+        };
+        let Some(client_ip) = address_of(
+            &mut self.addresses,
+            &self.device.tx,
+            &self.device.arp_addresses,
+            mac,
+        ) else {
+            log::warn!("DHCP: no address left for {}", mac);
+            return;
+        };
+        let lease = dhcp::Lease {
+            client_ip,
+            ..self.lease
+        };
+        let Some(buf) = dhcp::reply(packet, &lease) else {
+            return;
+        };
+        log::info!("DHCP: {} for {}", client_ip, mac);
+        let len = buf.len();
+        match self.device.tx.try_send(buf) {
+            Ok(()) => {
+                self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.tx_bytes.fetch_add(len, Ordering::Relaxed);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.stats.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
     }
 
     /// Handle an outbound UDP packet that needs NAT
@@ -874,10 +1521,22 @@ impl NatEngine {
         } else {
             // Create new NAT entry
 
-            let os_socket = UdpSocket::bind("0.0.0.0:0")?;
+            // A DNS query to the gateway goes to the host's DNS server; the answer comes back
+            // from the gateway, since the smoltcp socket is bound to it
+            let remote_addr = if dst_ip == self.device.gateway_ip && dst_port == DNS_PORT {
+                let Some(dns) = self.dns.get(Instant::now(), host_dns_server) else {
+                    return Ok(());
+                };
+                SocketAddr::new(dns, DNS_PORT)
+            } else {
+                SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port)
+            };
+            let os_socket = UdpSocket::bind(if remote_addr.is_ipv6() {
+                "[::]:0"
+            } else {
+                "0.0.0.0:0"
+            })?;
             os_socket.set_nonblocking(true)?;
-
-            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
             os_socket.connect(remote_addr)?;
             os_socket.send(payload)?;
 
@@ -981,7 +1640,8 @@ impl NatEngine {
 
         // Check if this is a port 80 connection and HTTPS stripping is enabled
         #[cfg(feature = "https_stripping")]
-        let use_https_stripping = self.https_stripping && dst_port == 80;
+        let use_https_stripping =
+            dst_port == 80 && self.device.tx.strips_https(_eth_frame.src_addr());
         #[cfg(not(feature = "https_stripping"))]
         let use_https_stripping = false;
 
@@ -1799,5 +2459,377 @@ impl NatEngine {
         }
 
         log::info!("NAT stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::{IpProtocol, Ipv4Packet};
+
+    const GATEWAY_MAC: [u8; 6] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+    const GUEST_MAC: [u8; 6] = [0x08, 0x00, 0x07, 0x12, 0x34, 0x56];
+    const GUEST_IP: [u8; 4] = [10, 0, 0, 2];
+
+    /// An adapter at `mac` on `guests`, and its end of the channel of the frames for it
+    fn attach(guests: &GuestTx, mac: [u8; 6]) -> Receiver<Packet> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        guests.attach(GuestPort {
+            mac: EthernetAddress(mac),
+            tx,
+            rx_enabled: Arc::new(AtomicBool::new(true)),
+            lease: Arc::default(),
+            #[cfg(feature = "https_stripping")]
+            https_stripping: false,
+        });
+        rx
+    }
+
+    /// The device of a gateway at 10.0.0.1/8 with the guest's adapter at GUEST_MAC, and the
+    /// guest's ends of its channels
+    fn device() -> (VirtualDevice, Sender<Packet>, Receiver<Packet>) {
+        let (to_nat, from_guest) = crossbeam_channel::unbounded();
+        let tx = GuestTx::default();
+        let from_nat = attach(&tx, GUEST_MAC);
+        let device = VirtualDevice::new(
+            tx,
+            from_guest,
+            Arc::new(NatEngineStats::default()),
+            Ipv4Address::new(10, 0, 0, 1),
+            Ipv4Address::new(10, 255, 255, 255),
+        );
+        (device, to_nat, from_nat)
+    }
+
+    /// A frame from the guest to the gateway: IPv4 to `dst`, around this transport header
+    /// and payload
+    fn ipv4_frame(dst: [u8; 4], protocol: IpProtocol, transport: &[u8]) -> Packet {
+        let mut f = vec![0; 14 + 20 + transport.len()];
+        let mut eth = EthernetFrame::new_unchecked(&mut f[..]);
+        eth.set_dst_addr(EthernetAddress(GATEWAY_MAC));
+        eth.set_src_addr(EthernetAddress(GUEST_MAC));
+        eth.set_ethertype(EthernetProtocol::Ipv4);
+        let mut ip = Ipv4Packet::new_unchecked(eth.payload_mut());
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len((20 + transport.len()) as u16);
+        ip.set_hop_limit(64);
+        ip.set_next_header(protocol);
+        ip.set_src_addr(Ipv4Address::from(GUEST_IP));
+        ip.set_dst_addr(Ipv4Address::from(dst));
+        ip.fill_checksum();
+        ip.payload_mut().copy_from_slice(transport);
+        f
+    }
+
+    /// A UDP datagram from the guest's port 40000 to `dst`:`port`, without a checksum
+    fn udp_frame(dst: [u8; 4], port: u16) -> Packet {
+        let mut udp = vec![0; 8 + 4];
+        udp[0..2].copy_from_slice(&40000u16.to_be_bytes());
+        udp[2..4].copy_from_slice(&port.to_be_bytes());
+        udp[4..6].copy_from_slice(&12u16.to_be_bytes());
+        udp[8..].copy_from_slice(b"test");
+        ipv4_frame(dst, IpProtocol::Udp, &udp)
+    }
+
+    #[test]
+    fn broadcasts_stay_on_the_emulated_network() {
+        let (device, _to_nat, _from_nat) = device();
+        assert!(device.needs_filtering(&udp_frame([255, 255, 255, 255], 7779)));
+        assert!(device.needs_filtering(&udp_frame([10, 255, 255, 255], 7779)));
+        assert!(!device.needs_filtering(&udp_frame([10, 1, 1, 13], 7779)));
+    }
+
+    #[test]
+    fn multicast_stays_on_the_emulated_network() {
+        let (device, _to_nat, _from_nat) = device();
+        assert!(device.needs_filtering(&udp_frame([224, 0, 0, 251], 5353)));
+        assert!(device.needs_filtering(&udp_frame([239, 255, 255, 253], 427)));
+        assert!(device.needs_filtering(&udp_frame([240, 0, 0, 1], 7779)));
+        assert!(!device.needs_filtering(&udp_frame([223, 255, 255, 254], 7779)));
+    }
+
+    /// A TCP SYN from the guest's port 40000 to `dst`:`port`, sequence number 1000
+    fn tcp_syn_frame(dst: [u8; 4], port: u16) -> Packet {
+        use smoltcp::wire::{TcpPacket, TcpSeqNumber};
+
+        let mut tcp = vec![0; 20];
+        let mut packet = TcpPacket::new_unchecked(&mut tcp[..]);
+        packet.set_src_port(40000);
+        packet.set_dst_port(port);
+        packet.set_seq_number(TcpSeqNumber(1000));
+        packet.set_header_len(20);
+        packet.clear_flags();
+        packet.set_syn(true);
+        packet.set_window_len(8192);
+        packet.fill_checksum(
+            &IpAddress::Ipv4(Ipv4Address::from(GUEST_IP)),
+            &IpAddress::Ipv4(Ipv4Address::from(dst)),
+        );
+        ipv4_frame(dst, IpProtocol::Tcp, &tcp)
+    }
+
+    /// The device's answer to a frame from the guest: whether it went no further, and what came
+    /// back to the guest
+    fn send(frame: Packet) -> (bool, Vec<Packet>) {
+        let (mut device, to_nat, from_nat) = device();
+        to_nat.send(frame).unwrap();
+        assert!(device.receive(smoltcp::time::Instant::now()).is_none());
+        let stopped = device.intercepted_packets.is_empty();
+        (stopped, from_nat.try_iter().collect())
+    }
+
+    #[test]
+    fn the_hosts_own_addresses_are_no_way_out() {
+        for dst in [[127, 0, 0, 1], [127, 1, 2, 3], [0, 0, 0, 0]] {
+            assert_eq!(send(udp_frame(dst, 7778)), (true, vec![]));
+        }
+        // An address of the host on its own network is a way out like any other
+        assert_eq!(send(udp_frame([10, 1, 1, 13], 7780)), (false, vec![]));
+        assert_eq!(send(tcp_syn_frame([10, 1, 1, 13], 7781)), (false, vec![]));
+    }
+
+    #[test]
+    fn a_connection_to_the_hosts_loopback_is_reset() {
+        use smoltcp::wire::{TcpPacket, TcpSeqNumber};
+
+        let (stopped, answers) = send(tcp_syn_frame([127, 0, 0, 1], 7777));
+        assert!(stopped);
+        assert_eq!(answers.len(), 1);
+        let eth = EthernetFrame::new_checked(&answers[0][..]).unwrap();
+        assert_eq!(eth.dst_addr(), EthernetAddress(GUEST_MAC));
+        let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert!(ip.verify_checksum());
+        assert_eq!(ip.src_addr(), Ipv4Address::new(127, 0, 0, 1));
+        assert_eq!(ip.dst_addr(), Ipv4Address::from(GUEST_IP));
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.verify_checksum(
+            &IpAddress::Ipv4(ip.src_addr()),
+            &IpAddress::Ipv4(ip.dst_addr())
+        ));
+        assert_eq!((tcp.src_port(), tcp.dst_port()), (7777, 40000));
+        assert!(tcp.rst() && tcp.ack() && !tcp.syn());
+        assert_eq!(tcp.seq_number(), TcpSeqNumber(0));
+        // The SYN counts for one
+        assert_eq!(tcp.ack_number(), TcpSeqNumber(1001));
+    }
+
+    const OTHER_MAC: [u8; 6] = [0x08, 0x00, 0x07, 0xAB, 0xCD, 0xEF];
+
+    /// A frame from `src` to `dst`, of no particular protocol
+    fn raw_frame(dst: [u8; 6], src: [u8; 6]) -> Packet {
+        let mut f = vec![0; 60];
+        let mut eth = EthernetFrame::new_unchecked(&mut f[..]);
+        eth.set_dst_addr(EthernetAddress(dst));
+        eth.set_src_addr(EthernetAddress(src));
+        eth.set_ethertype(EthernetProtocol::Unknown(0x88B5));
+        f
+    }
+
+    #[test]
+    fn a_frame_between_two_adapters_goes_to_the_other_alone() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame(OTHER_MAC, GUEST_MAC);
+        assert!(guests.forward(&frame));
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+    }
+
+    #[test]
+    fn a_broadcast_goes_to_the_other_adapters_and_on_to_the_gateway() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame([0xFF; 6], GUEST_MAC);
+        assert!(!guests.forward(&frame));
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+
+        // A frame for an address that isn't an adapter's is for the gateway
+        assert!(!guests.forward(&raw_frame(GATEWAY_MAC, GUEST_MAC)));
+        assert!(to_guest.is_empty() && to_other.is_empty());
+    }
+
+    #[test]
+    fn a_frame_from_the_gateway_goes_to_its_adapter() {
+        let guests = GuestTx::default();
+        let to_guest = attach(&guests, GUEST_MAC);
+        let to_other = attach(&guests, OTHER_MAC);
+
+        let frame = raw_frame(OTHER_MAC, GATEWAY_MAC);
+        assert!(guests.try_send(frame.clone()).is_ok());
+        assert_eq!(to_other.try_iter().collect::<Vec<_>>(), vec![frame]);
+        assert!(to_guest.is_empty());
+        // No adapter there: dropped
+        assert!(guests.try_send(raw_frame([0x02; 6], GATEWAY_MAC)).is_err());
+        // An adapter that has gone is taken off
+        drop(to_other);
+        assert!(guests.try_send(raw_frame(OTHER_MAC, GATEWAY_MAC)).is_err());
+        assert_eq!(guests.ports.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "https_stripping")]
+    #[test]
+    fn https_stripping_is_for_each_adapter() {
+        let guests = GuestTx::default();
+        let _to_guest = attach(&guests, GUEST_MAC);
+        let (tx, _to_other) = crossbeam_channel::unbounded();
+        guests.attach(GuestPort {
+            mac: EthernetAddress(OTHER_MAC),
+            tx,
+            rx_enabled: Arc::new(AtomicBool::new(true)),
+            lease: Arc::default(),
+            https_stripping: true,
+        });
+        assert!(!guests.strips_https(EthernetAddress(GUEST_MAC)));
+        assert!(guests.strips_https(EthernetAddress(OTHER_MAC)));
+    }
+
+    #[test]
+    fn each_adapter_has_an_address_of_its_own() {
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        let b = EthernetAddress(OTHER_MAC);
+        assert_eq!(
+            addresses.of(a, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(
+            addresses.of(b, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 3))
+        );
+        // Always the same one
+        assert_eq!(
+            addresses.of(a, None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+    }
+
+    /// An adapter back with the address it held gets it again, even when another asks first;
+    /// one held on another network is forgotten
+    #[test]
+    fn an_adapter_gets_the_address_it_held_back() {
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        let b = EthernetAddress(OTHER_MAC);
+        let held = Ipv4Address::new(10, 0, 0, 3);
+        // b asks first, while a holds .3: b gets .2
+        assert_eq!(
+            addresses.of(b, None, &[held]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(addresses.of(a, Some(held), &[]), Some(held));
+
+        let mut addresses = Addresses::new(Ipv4Address::new(192, 168, 1, 1), 0xFFFF_FF00);
+        assert_eq!(
+            addresses.of(a, Some(held), &[]),
+            Some(Ipv4Address::new(192, 168, 1, 2))
+        );
+    }
+
+    /// The gateway gives an adapter its address through the adapter's lease
+    #[test]
+    fn the_adapter_holds_its_address() {
+        let guests = GuestTx::default();
+        let _rx = attach(&guests, GUEST_MAC);
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let a = EthernetAddress(GUEST_MAC);
+        assert_eq!(guests.leases(a), (None, vec![]));
+        let ip = address_of(&mut addresses, &guests, &[], a);
+        assert_eq!(ip, Some(Ipv4Address::new(10, 0, 0, 2)));
+        assert_eq!(guests.leases(a), (ip, vec![]));
+    }
+
+    #[test]
+    fn a_full_network_has_no_address_left() {
+        // 10.0.0.0/30: the gateway at .1, one address left, .2; .3 is the broadcast address
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFFFF_FFFC);
+        assert_eq!(
+            addresses.of(EthernetAddress(GUEST_MAC), None, &[]),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
+        assert_eq!(addresses.of(EthernetAddress(OTHER_MAC), None, &[]), None);
+        assert_eq!(addresses.given.len(), 1);
+    }
+
+    /// The host's DNS server is looked up again for a query once HOST_DNS_LIFETIME has passed,
+    /// not sooner; a server set is used without a lookup
+    #[test]
+    fn the_hosts_dns_server_is_looked_up_again_after_a_while() {
+        let start = Instant::now();
+        let old = Some(std::net::IpAddr::from([192, 168, 1, 1]));
+        let new = Some(std::net::IpAddr::from([10, 1, 1, 1]));
+        let mut dns = DnsServer {
+            set: None,
+            host: old,
+            looked_up: start,
+        };
+        let soon = start + HOST_DNS_LIFETIME / 2;
+        assert_eq!(dns.get(soon, || panic!("looked up too soon")), old);
+        let later = start + HOST_DNS_LIFETIME;
+        assert_eq!(dns.get(later, || new), new);
+        assert_eq!(dns.get(later, || panic!("looked up again at once")), new);
+
+        let set = Some(std::net::IpAddr::from([9, 9, 9, 9]));
+        let mut dns = DnsServer {
+            set,
+            host: None,
+            looked_up: start,
+        };
+        assert_eq!(
+            dns.get(later, || panic!("looked up with a server set")),
+            set
+        );
+    }
+
+    /// An address that another adapter uses, as the gateway sees it in that adapter's ARP
+    /// packets, isn't handed out; one being probed for (from 0.0.0.0) is
+    #[test]
+    fn an_address_seen_in_arp_isnt_handed_out() {
+        let arp = |src: [u8; 4]| {
+            let mut buffer = vec![0; 42];
+            let mut eth = EthernetFrame::new_unchecked(&mut buffer);
+            eth.set_src_addr(EthernetAddress(OTHER_MAC));
+            eth.set_dst_addr(EthernetAddress::BROADCAST);
+            eth.set_ethertype(EthernetProtocol::Arp);
+            ArpRepr::EthernetIpv4 {
+                operation: ArpOperation::Request,
+                source_hardware_addr: EthernetAddress(OTHER_MAC),
+                source_protocol_addr: Ipv4Address::from(src),
+                target_hardware_addr: EthernetAddress([0; 6]),
+                target_protocol_addr: Ipv4Address::new(10, 0, 0, 1),
+            }
+            .emit(&mut ArpPacket::new_unchecked(eth.payload_mut()));
+            buffer
+        };
+        let (mut device, to_nat, _from_nat) = device();
+        to_nat.send(arp([0, 0, 0, 0])).unwrap();
+        let _ = device.receive(smoltcp::time::Instant::now());
+        assert!(device.arp_addresses.is_empty());
+        // The other adapter set by hand to 10.0.0.2
+        to_nat.send(arp([10, 0, 0, 2])).unwrap();
+        let _ = device.receive(smoltcp::time::Instant::now());
+
+        let mut addresses = Addresses::new(Ipv4Address::new(10, 0, 0, 1), 0xFF00_0000);
+        let guest = EthernetAddress(GUEST_MAC);
+        assert_eq!(
+            address_of(&mut addresses, &device.tx, &device.arp_addresses, guest),
+            Some(Ipv4Address::new(10, 0, 0, 3))
+        );
+        // The adapter that uses it gets it
+        assert_eq!(
+            address_of(
+                &mut addresses,
+                &device.tx,
+                &device.arp_addresses,
+                EthernetAddress(OTHER_MAC)
+            ),
+            Some(Ipv4Address::new(10, 0, 0, 2))
+        );
     }
 }

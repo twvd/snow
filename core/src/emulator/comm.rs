@@ -10,14 +10,12 @@ use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
+use crate::devices::{Bus, DeviceConfig, EthernetLinkType, FunctionStatus, NatConfig};
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie::GamePort;
 use crate::mac::scc::SccCh;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::EthernetLinkType;
-use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::tickable::Ticks;
 
@@ -33,51 +31,47 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
-    /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
-    InsertFloppy(usize, String, bool),
-    /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
-    #[serde(skip)]
-    InsertFloppyImage(usize, Box<FloppyImage>, bool),
-    SaveFloppy(usize, PathBuf),
-    EjectFloppy(usize),
-    /// Inserts a 16-sector DSK image into one of the Apple IIe card's
-    /// 5.25" drives (0 or 1).
-    InsertIieDisk(usize, PathBuf),
-    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
-    EjectIieDisk(usize),
     /// Sets the joystick and buttons on the Apple IIe card's game port.
     SetIieGamePort(GamePort),
-    /// Inserts a 400K or 800K ProDOS-order image (raw or 2IMG) into
-    /// the Apple IIe card's UniDisk 3.5.
-    InsertIieUniDisk(PathBuf),
-    /// Ejects the Apple IIe card's UniDisk 3.5.
-    EjectIieUniDisk,
+    // The commands below name a slot by the id of its bus and the id of the slot
+    /// Adds a device to the machine: see `Emulator::add_device()`
+    AddDevice(DeviceConfig),
+    /// Removes the device in a slot
+    RemoveDevice(String, String),
+    /// Loads the image in a file in the drive in a slot: a floppy drive, a CD-ROM drive, or a
+    /// hard disk that takes another image while the machine runs. The last argument asks for
+    /// the image to be write-protected, for a floppy drive that can write.
+    LoadMedia(String, String, PathBuf, bool),
+    /// Ejects the disk of the drive in a slot
+    EjectMedia(String, String),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: bus id, slot id, image, write-protect
+    #[serde(skip)]
+    InsertFloppyImage(String, String, Box<FloppyImage>, bool),
+    /// Saves the disk of the floppy drive in a slot to this file
+    SaveFloppy(String, String, PathBuf),
     /// Toggle automatic writeback for a floppy drive.
-    /// Parameters: drive id, enabled
-    SetFloppyWriteback(usize, bool),
-    ScsiAttachHdd(usize, PathBuf),
-    ScsiBranchHdd(usize, PathBuf),
-    ScsiAttachCdrom(usize),
-    /// Attach a folder-backed ("Toolbox managed") CD-ROM drive whose images are
-    /// swappable by the guest via the BlueSCSI Toolbox CD commands.
-    ScsiAttachCdromFolder(usize, PathBuf),
-    ScsiLoadMedia(usize, PathBuf),
-    #[cfg(feature = "ethernet")]
-    ScsiAttachEthernet(usize),
-    #[cfg(feature = "printer")]
-    ScsiAttachPrinter(usize, std::path::PathBuf),
-    #[cfg(feature = "ethernet")]
-    EthernetSetLink(usize, EthernetLinkType),
-    #[cfg(feature = "ethernet")]
-    EthernetStartCapture(usize, PathBuf),
-    #[cfg(feature = "ethernet")]
-    EthernetStopCapture(usize),
-    DetachScsiTarget(usize),
+    /// Parameters: bus id, slot id, enabled
+    SetFloppyWriteback(String, String, bool),
+    /// Makes the disk of the floppy drive in a slot turn faster or slower, by this many RPM
+    SetFloppyRpmAdjustment(String, String, i32),
+    /// Makes the hard disk in a slot carry on from a copy of its image, in this file
+    BranchDisk(String, String, PathBuf),
+    /// Gives the CD-ROM drive in a slot a folder of disc images
+    CdromSetFolder(String, String, PathBuf),
+    EthernetSetLink(String, String, EthernetLinkType),
+    /// Gives the machine's NAT gateway another network. The adapters on a NAT link move to it,
+    /// and their connections drop.
+    SetNatConfig(NatConfig),
+    EthernetStartCapture(String, String, PathBuf),
+    EthernetStopCapture(String, String),
+    /// A position on one of the displays of the machine, in its pixels. `display` is the
+    /// index of the display in the list that the frontend was given.
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
+        #[serde(default)]
+        display: usize,
     },
     MouseUpdateRelative {
         relx: i16,
@@ -138,10 +132,11 @@ pub enum EmulatorCommand {
     SccReceiveData(SccCh, Vec<u8>),
     SetSystrapHistory(bool),
     SetSharedDir(Option<PathBuf>),
+    /// Gives the folder for the pages of every printer whose Config names none
+    SetDefaultPrintDir(PathBuf),
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
-    SetFloppyRpmAdjustment(usize, i32),
     /// Seeds the floppy noise (weak bits) RNG for deterministic behaviour.
     /// `None` reverts to non-deterministic randomness.
     SetFloppyWeakBitsSeed(Option<u64>),
@@ -176,53 +171,20 @@ pub struct EmulatorStatus {
     pub breakpoints: Vec<Breakpoint>,
     pub cycles: Ticks,
 
-    pub fdd: [FddStatus; 3],
     pub model: MacModel,
     pub has_pmmu: bool,
     pub speed: EmulatorSpeed,
     /// Size of the RAM
     pub ram_size: usize,
     pub effective_speed: f64,
-    pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
-#[cfg(feature = "ethernet")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EthernetCaptureStatus {
     pub active: bool,
     pub filename: Option<PathBuf>,
     pub packet_count: usize,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScsiTargetStatus {
-    pub target_type: ScsiTargetType,
-    pub image: Option<PathBuf>,
-    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
-    pub cdrom_folder: Option<PathBuf>,
-    pub capacity: Option<usize>,
-    #[cfg(feature = "ethernet")]
-    pub link_type: Option<EthernetLinkType>,
-    #[cfg(feature = "ethernet")]
-    pub capture_status: Option<EthernetCaptureStatus>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FddStatus {
-    pub present: bool,
-    pub ejected: bool,
-    pub motor: bool,
-    pub writing: bool,
-    pub track: usize,
-    pub image_title: String,
-    pub dirty: bool,
-    pub drive_type: crate::mac::swim::drive::DriveType,
-    /// True if the loaded image's source format supports writeback and was
-    /// loaded from a file on disk (i.e. writeback is possible).
-    pub writeback_supported: bool,
-    /// True if writeback is currently armed for this drive.
-    pub writeback_enabled: bool,
 }
 
 /// A friendly message ready for display to a user
@@ -250,8 +212,15 @@ pub struct MemoryNotifierRange {
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     UserMessage(UserMessageType, String),
-    FloppyEjected(usize, Box<FloppyImage>),
-    ScsiMediaEjected(usize),
+    /// The guest or the user ejected the disk of the floppy drive in a slot: its image
+    FloppyEjected(String, String, Box<FloppyImage>),
+    /// The buses of the machine, their slots and the devices in them. Sent when the machine is
+    /// made, and again when a device is added, removed or gets another Config. The statuses
+    /// received before it are those of the list before it.
+    Buses(Arc<Vec<Bus>>),
+    /// The status of the device in a slot, by the ids of its bus and of the slot, when it
+    /// differs from the last one sent
+    DeviceStatus(String, String, Option<FunctionStatus>),
     /// What a notifier's range holds, when it has changed. None for what can't
     /// be read.
     MemoryNotify {
@@ -271,4 +240,23 @@ pub enum EmulatorEvent {
     SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
     /// The Apple IIe Card came to the front (true) or left it
     IieInFront(bool),
+    /// Where the guest puts the displays of a machine that has several, when that changes
+    Screens(Vec<GuestScreen>),
+}
+
+/// Where the guest puts one of the displays of the machine on its desktop
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestScreen {
+    /// The index of the display in the list that the frontend was given
+    pub display: usize,
+    /// Its bounds in the guest's global coordinates, where the top left of the main screen is
+    /// (0, 0)
+    pub left: i16,
+    pub top: i16,
+    pub right: i16,
+    pub bottom: i16,
+    /// It has the menu bar
+    pub main: bool,
+    /// The guest uses it: until then, the pointer can't go there
+    pub active: bool,
 }

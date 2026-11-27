@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,9 @@ use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
 use crate::debuggable::Debuggable;
+use crate::devices::{BusOps, DeviceConfig, DeviceModel, DeviceOps, built_in, bus_id};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::{EmuContext, MouseMode};
+use crate::emulator::{EmuContext, MachineConfig, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
@@ -22,9 +24,7 @@ use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, null_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -80,8 +80,7 @@ enum Region {
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct MacPortableBus<TRenderer: Renderer> {
+pub struct MacPortableBus {
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -97,7 +96,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) scc: Scc,
     /// Native time the SCC can be accessed again
     scc_ready: Ticks,
-    pub(crate) video: Video<TRenderer>,
+    pub(crate) video: Video,
     pub(crate) asc: Asc,
     asc_clock: Ticks,
     mouse_ready: bool,
@@ -131,22 +130,26 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer> MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl MacPortableBus {
+    /// The devices on the logic board, by the id of their slot on the `Built-in` bus
+    pub const BUILT_IN: &[(&str, DeviceModel)] = &[(built_in::VIDEO, DeviceModel::PortableVideo)];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
-    pub fn new(
-        model: MacModel,
-        rom: &[u8],
-        extension_rom: Option<&[u8]>,
-        renderer: TRenderer,
-        mouse_mode: MouseMode,
-        ram_size: Option<usize>,
-    ) -> Self {
+    /// The logic board of a machine, with its built-in devices and nothing in its slots.
+    /// `devices` is the list of device configs of the machine: it has what was chosen for a
+    /// built-in device.
+    pub fn new(machine: &MachineConfig, _devices: &[DeviceConfig]) -> Result<Self> {
+        let &MachineConfig {
+            model,
+            rom,
+            extension_rom,
+            ram_size,
+            mouse_mode,
+            ..
+        } = machine;
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         if extension_rom.is_some() {
@@ -181,10 +184,10 @@ where
             ram: vec![0; ram_size],
             via: Via::new(),
             pmgr_clock: NativeClock::new(BUS_FREQUENCY),
-            video: Video::new(renderer),
+            video: Video::default(),
             scc: Scc::new(RTXC_FREQUENCY),
             scc_ready: 0,
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
+            swim: Swim::new(model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,
@@ -207,13 +210,12 @@ where
         bus.pmgr.adb_add_device(AdbMouse::new());
         bus.pmgr.adb_add_device(AdbKeyboard::new());
 
-        bus
+        Ok(bus)
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self) {
         self.map = build_map(self.model);
-        self.video.renderer = Some(renderer);
         self.asc.after_deserialize();
     }
 
@@ -231,7 +233,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.asc.set_sink(sink);
 
-        self.scsi.bus_mut().set_audio_provider(provider)
+        Ok(())
     }
 
     /// Makes the ROM skip its memory test
@@ -591,6 +593,21 @@ where
         self.mouse_mode = mode;
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// The display that the guest's Slot Manager knows by the slot number and the id of the
+    /// slot resource of its driver's AuxDCE. None: this machine has one display.
+    #[allow(non_snake_case)]
+    pub fn display_from_Mac_AuxDCE(
+        &self,
+        _dctl_slot: u8,
+        _dctl_slot_id: u8,
+    ) -> Option<(String, String, usize)> {
+        None
+    }
+
     /// Wait states of a bus cycle
     fn wait_states(&self, region: Region, acc: &BusAccess<Bus68000>) -> Ticks {
         let memory = match region {
@@ -609,8 +626,14 @@ where
         self.progkey_pressed.set();
     }
 
-    pub fn video_blank(&mut self) -> Result<()> {
-        self.video.blank()
+    /// The bus with this id, for the emulator's device code
+    pub(crate) fn bus_ops(&mut self, bus: &str) -> Option<&mut dyn BusOps> {
+        match bus {
+            bus_id::SCSI => Some(self.scsi.bus_mut()),
+            bus_id::SWIM => Some(&mut self.swim),
+            bus_id::BUILT_IN => Some(self),
+            _ => None,
+        }
     }
 
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
@@ -624,12 +647,30 @@ where
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.pmgr.rtc
     }
+
+    /// Sets the file the PRAM is kept in. It is loaded if it exists and created otherwise, then
+    /// kept up to date.
+    pub fn persist_pram(&mut self, path: &Path) {
+        self.rtc_mut().load_pram(path);
+    }
+
+    /// Sets the date and time of the clock
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.rtc_mut().set_datetime(dt);
+    }
 }
 
-impl<TRenderer> Bus<Address, Byte> for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+/// The machine is its `Built-in` bus: a built-in device is one of its fields
+impl BusOps for MacPortableBus {
+    fn device(&mut self, slot: &str) -> Option<&mut dyn DeviceOps> {
+        match slot {
+            built_in::VIDEO => Some(&mut self.video),
+            _ => None,
+        }
+    }
+}
+
+impl Bus<Address, Byte> for MacPortableBus {
     type Cpu = Bus68000;
 
     fn get_mask(&self) -> Address {
@@ -734,10 +775,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Tickable for MacPortableBus {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
@@ -813,10 +851,8 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl IrqSource for MacPortableBus {
+    #[inline]
     fn get_irq(&mut self) -> Option<u8> {
         if self.progkey_pressed.get_clear() {
             return Some(4);
@@ -831,10 +867,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl InspectableBus<Address, Byte> for MacPortableBus {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         if addr >= 0x00F0_0000 {
             return None;
@@ -907,10 +940,7 @@ fn empty_map() -> AddressMap {
     [[Region::None; MAP_BLOCKS]; 2]
 }
 
-impl<TRenderer> Debuggable for MacPortableBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for MacPortableBus {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::dbgprop_nest;
         use crate::debuggable::*;

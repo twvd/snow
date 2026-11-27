@@ -3,24 +3,38 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use swim::drive::DriveType;
-
 use crate::bus::Address;
 use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
+use crate::devices::{Bus, BusKind, Device, DeviceModel, FunctionConfig, Slot, bus_id};
 use crate::keymap::Keymap;
 use crate::tickable::Ticks;
+use compact::bus::CompactMacBus;
+use macii::bus::MacIIBus;
+use maclc::lc_475_bus::Lc475Bus;
+use maclc::lc_i_bus::LcIBus;
+use maclc::lc_iii_bus::LcIIIBus;
+use pds::Pds;
+use portable::bus::MacPortableBus;
+use quadra::bus::Quadra700Bus;
+use quadra::q800_bus::Quadra800Bus;
+use scsi::bus::ScsiBus;
 
 pub mod adb;
 pub mod compact;
 pub mod cuda;
+pub mod declrom;
+pub mod dma;
 pub mod egret;
 pub mod egret_common;
+#[cfg(feature = "ethernet")]
+pub mod ethernet;
 pub mod iic;
 pub mod localtalk_bridge;
 pub mod machine_bus;
 pub mod macii;
 pub mod maclc;
 pub mod nubus;
+pub mod pds;
 pub mod pluskbd;
 pub mod portable;
 pub mod quadra;
@@ -32,15 +46,6 @@ pub mod sound;
 pub mod swim;
 pub mod via;
 pub mod via_common;
-
-/// What the machine sees of a video, built-in or on a card: it owns its renderer
-pub trait VideoOutput<TRenderer> {
-    /// Shows a blank screen, when the machine resets or stops
-    fn blank(&mut self) -> anyhow::Result<()>;
-    /// Gives back the renderer after a state is loaded, which a state doesn't hold, and shows the
-    /// last frame again if it can
-    fn set_renderer(&mut self, renderer: TRenderer) -> anyhow::Result<()>;
-}
 
 /// Warm start signature: the ROM skips its memory test when it finds it
 pub const WARM_START_SIGNATURE: (Address, u32) = (0x000CFC, 0x574C5343);
@@ -313,32 +318,152 @@ impl MacModel {
     }
 
     /// List of FDD drive types and amount
-    pub const fn fdd_drives(self) -> &'static [DriveType] {
+    /// The floppy drives this Mac model has, each with the id of its slot on the `SWIM` bus
+    pub(crate) const fn floppy_drives(self) -> &'static [(&'static str, DeviceModel)] {
+        use DeviceModel::{Mac400KDrive, Mac800KDrive, MacSuperDrive};
+
         match self {
-            Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
-            Self::Early512Ke | Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
+            Self::Early128K | Self::Early512K => &[("1", Mac400KDrive), ("2", Mac400KDrive)],
+            Self::Early512Ke | Self::Plus => &[("1", Mac800KDrive), ("2", Mac800KDrive)],
+            Self::SE => &[
+                ("1", Mac800KDrive),
+                ("2", Mac800KDrive),
+                ("3", Mac800KDrive),
+            ],
             Self::SeFdhd => &[
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
+                ("1", MacSuperDrive),
+                ("2", MacSuperDrive),
+                ("3", MacSuperDrive),
             ],
-            Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
+            Self::Classic => &[("1", MacSuperDrive), ("2", MacSuperDrive)],
             Self::Portable | Self::Portable15MB => &[
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
-                DriveType::SuperDrive,
+                ("1", MacSuperDrive),
+                ("2", MacSuperDrive),
+                ("3", MacSuperDrive),
             ],
-            Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
+            Self::MacII => &[("1", Mac800KDrive), ("2", Mac800KDrive)],
             Self::MacIIFDHD
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30
             | Self::LC
             | Self::LCII
-            | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
-            Self::LCIII | Self::LC475 | Self::Quadra800 => &[DriveType::SuperDrive],
+            | Self::Quadra700 => &[("1", MacSuperDrive), ("2", MacSuperDrive)],
+            Self::LCIII | Self::LC475 | Self::Quadra800 => &[("1", MacSuperDrive)],
         }
+    }
+
+    /// The buses this Mac model has before any optional device is added, with the device each
+    /// slot has without being asked. A description only: no machine needs to exist.
+    pub fn buses(self) -> Vec<Bus> {
+        let mut buses = vec![];
+        if self.has_swim() {
+            buses.push(Bus {
+                kind: BusKind::Swim,
+                id: bus_id::SWIM.to_string(),
+                title: "Floppy".to_string(),
+                slots: self
+                    .floppy_drives()
+                    .iter()
+                    .map(|(slot, model)| Slot {
+                        id: slot.to_string(),
+                        device: Some(Device {
+                            model: *model,
+                            rom: None,
+                            function: FunctionConfig::Floppy,
+                            name: None,
+                        }),
+                    })
+                    .collect(),
+            });
+        }
+        if self.has_scsi() {
+            buses.push(Bus::new(
+                BusKind::Scsi,
+                bus_id::SCSI,
+                "SCSI",
+                &ScsiBus::SLOT_IDS,
+            ));
+        }
+        // The devices on the logic board, before the cards: the built-in video is the first
+        // display of a machine
+        let built_in = self.built_in();
+        if !built_in.is_empty() {
+            buses.push(Bus {
+                kind: BusKind::BuiltIn,
+                id: bus_id::BUILT_IN.to_string(),
+                title: "Built-in".to_string(),
+                slots: built_in
+                    .iter()
+                    .map(|(slot, model)| Slot {
+                        id: slot.to_string(),
+                        device: Some(Device {
+                            model: *model,
+                            rom: None,
+                            function: model.info().function.default_config(),
+                            name: None,
+                        }),
+                    })
+                    .collect(),
+            });
+        }
+        if !self.nubus_slots().is_empty() {
+            buses.push(Bus::new(
+                BusKind::Nubus,
+                bus_id::NUBUS,
+                "NuBus",
+                self.nubus_slots(),
+            ));
+        }
+        match self {
+            Self::LC | Self::LCII | Self::LCIII | Self::LC475 => buses.push(Bus::new(
+                BusKind::LcPds,
+                bus_id::PDS_LC,
+                "PDS Slot",
+                &Pds::SLOT_IDS,
+            )),
+            Self::SE30 => buses.push(Bus::new(
+                BusKind::Se30Pds,
+                bus_id::PDS_SE30,
+                "PDS Slot",
+                &Pds::SLOT_IDS,
+            )),
+            _ => (),
+        }
+        buses
+    }
+
+    /// Whether the machine has the floppy controller of the `SWIM` bus, an IWM or a SWIM.
+    /// Every Mac has one.
+    pub const fn has_swim(self) -> bool {
+        true
+    }
+
+    /// The devices on the logic board of this model, by the id of their slot on the `Built-in`
+    /// bus: the table of its machine
+    fn built_in(self) -> &'static [(&'static str, DeviceModel)] {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => CompactMacBus::BUILT_IN,
+            Self::Portable | Self::Portable15MB => MacPortableBus::BUILT_IN,
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx => &[],
+            Self::SE30 => MacIIBus::BUILT_IN_SE30,
+            Self::LC | Self::LCII => LcIBus::BUILT_IN,
+            Self::LCIII => LcIIIBus::BUILT_IN,
+            Self::LC475 => Lc475Bus::BUILT_IN,
+            Self::Quadra700 => Quadra700Bus::BUILT_IN,
+            Self::Quadra800 => Quadra800Bus::BUILT_IN,
+        }
+    }
+
+    /// Whether this model has a device of a device model on its logic board
+    pub fn has_built_in(self, model: DeviceModel) -> bool {
+        self.built_in().iter().any(|(_, m)| *m == model)
     }
 
     pub const fn has_scsi(self) -> bool {
@@ -426,14 +551,13 @@ impl MacModel {
         }
     }
 
-    /// The NuBus slot numbers ($9-$E) available on this model.
-    pub fn nubus_slots(self) -> &'static [u8] {
+    /// The ids of the NuBus slots of this model that take a card
+    pub fn nubus_slots(self) -> &'static [&'static str] {
         match self {
-            Self::MacII | Self::MacIIFDHD | Self::MacIIx => &[0x9, 0xA, 0xB, 0xC, 0xD, 0xE],
-            Self::MacIIcx => &[0x9, 0xA, 0xB],
-            Self::SE30 => &[0xE],
-            Self::Quadra700 => &[0xD, 0xE],
-            Self::Quadra800 => &[0xC, 0xD, 0xE],
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx => &["9", "A", "B", "C", "D", "E"],
+            Self::MacIIcx => &["9", "A", "B"],
+            Self::Quadra700 => &["D", "E"],
+            Self::Quadra800 => &["C", "D", "E"],
             _ => &[],
         }
     }
@@ -525,105 +649,6 @@ impl Display for MacModel {
     }
 }
 
-/// Extra ROMs required/optional for some models
-pub enum ExtraROMs<'a> {
-    /// Macintosh Display Card 8-24
-    MDC12(&'a [u8]),
-    /// Macintosh II "Toby" video card
-    Toby(&'a [u8]),
-    /// SE/30 video ROM
-    SE30Video(&'a [u8]),
-    /// Extension ROM
-    ExtensionROM(&'a [u8]),
-}
-
-/// A type of card that can occupy a NuBus slot.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    PartialEq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::EnumIter,
-    strum::IntoStaticStr,
-)]
-pub enum NubusDeviceKind {
-    /// Macintosh Display Card 8-24 (MDC12, ROM 341-0868)
-    // The default here is the fallback for workspace files that existed before
-    // NuBus device list was passed to the emulator core and should always remain
-    // on Mdc12.
-    #[default]
-    Mdc12,
-    /// Macintosh II Video Card ("Toby", ROM 342-0008)
-    Toby,
-    /// Macintosh SE/30 onboard video
-    SE30Video,
-}
-
-impl Display for NubusDeviceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Mdc12 => "Macintosh Display Card 8-24",
-                Self::Toby => "Macintosh II Video Card (Toby)",
-                Self::SE30Video => "Macintosh SE/30 onboard video",
-            }
-        )
-    }
-}
-
-/// Card in the PDS slot of the Macintosh LC family
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    Eq,
-    PartialEq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::EnumIter,
-    strum::IntoStaticStr,
-)]
-pub enum PdsCardKind {
-    /// Empty slot
-    #[default]
-    None,
-    /// Apple IIe Card
-    AppleIIe,
-}
-
-impl Display for PdsCardKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::None => "None",
-                Self::AppleIIe => "Apple IIe Card",
-            }
-        )
-    }
-}
-
-/// Configuration for a single NuBus slot: which card, in which slot, with which
-/// declaration ROM.
-pub struct NubusCardConfig<'a> {
-    /// Slot number ($9-$E)
-    pub slot: u8,
-    /// Type of card
-    pub kind: NubusDeviceKind,
-    /// Declaration ROM for the card
-    pub rom: &'a [u8],
-}
-
 /// Definitions of Macintosh monitors
 #[derive(
     Clone,
@@ -655,10 +680,15 @@ pub enum MacMonitor {
     VGA,
     /// Macintosh 19" RGB monitor (1024x768)
     RGB19,
+    /// Nothing on the connector of the video
+    NoMonitor,
 }
 
 impl Display for MacMonitor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Self::NoMonitor {
+            return write!(f, "No monitor");
+        }
         write!(
             f,
             "{} ({}x{})",
@@ -671,6 +701,7 @@ impl Display for MacMonitor {
                 Self::TwoPageBW => "Macintosh 21\" Two-Page monitor",
                 Self::VGA => "VGA monitor",
                 Self::RGB19 => "Macintosh 19\" RGB monitor",
+                Self::NoMonitor => "",
             },
             self.width(),
             self.height()
@@ -692,6 +723,10 @@ impl MacMonitor {
             // ROM only takes with lines 0 and 2 the other way round
             Self::VGA => [7, 1, 1, 6],
             Self::RGB19 => [7, 3, 4, 4],
+            // No line is tied to another or to the ground: 111, then 11 11 11 for the other
+            // two lines while each is driven low (Macintosh LC III Developer Note, monitor
+            // sense codes)
+            Self::NoMonitor => [7, 3, 5, 6],
         }
     }
 
@@ -705,6 +740,7 @@ impl MacMonitor {
             Self::TwoPageBW => 1152,
             Self::VGA => 640,
             Self::RGB19 => 1024,
+            Self::NoMonitor => 0,
         }
     }
 
@@ -718,6 +754,7 @@ impl MacMonitor {
             Self::TwoPageBW => 870,
             Self::VGA => 480,
             Self::RGB19 => 768,
+            Self::NoMonitor => 0,
         }
     }
 
@@ -726,7 +763,7 @@ impl MacMonitor {
             Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB19 | Self::RGB21 | Self::VGA => {
                 true
             }
-            Self::PortraitBW | Self::TwoPageBW => false,
+            Self::PortraitBW | Self::TwoPageBW | Self::NoMonitor => false,
         }
     }
 }

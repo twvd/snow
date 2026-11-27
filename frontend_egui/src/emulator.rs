@@ -17,22 +17,27 @@ use snow_core::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
+#[cfg(feature = "printer")]
+use snow_core::devices::PrinterConfig;
+use snow_core::devices::{
+    Bus, BusKind, CdromConfig, Device, DeviceConfig, DisplayHandle, FloppyImages, FloppyInfo,
+    FloppyStatus, FunctionConfig, FunctionInfo, FunctionStatus, HardDiskConfig, NatConfig, bus_id,
+    device_configs, models_for,
+};
+#[cfg(feature = "ethernet")]
+use snow_core::devices::{EthernetConfig, EthernetLinkType};
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
-    UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, GuestScreen, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
-use snow_core::emulator::{Emulator, MouseMode};
+use snow_core::emulator::{Emulator, MachineConfig, MouseMode};
 use snow_core::keymap::Scancode;
-use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
+use snow_core::mac::MacModel;
+use snow_core::mac::maclc::pds_iie::GamePort;
 use snow_core::mac::scc::SccCh;
-use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
-use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
-use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -45,40 +50,73 @@ use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
-pub type ScsiTargets = [ScsiTarget; 7];
-pub struct ScsiTarget {
-    pub target_type: Option<ScsiTargetType>,
-    pub image_path: Option<PathBuf>,
-    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
-    pub cdrom_folder: Option<PathBuf>,
+/// The folder for the pages of a printer that was given none
+#[cfg(feature = "printer")]
+fn default_print_dir() -> PathBuf {
+    dirs::desktop_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
 }
 
-impl From<ScsiTargetStatus> for ScsiTarget {
-    fn from(value: ScsiTargetStatus) -> Self {
-        Self {
-            target_type: Some(value.target_type),
-            image_path: value.image,
-            cdrom_folder: value.cdrom_folder,
-        }
+/// A slot of the SCSI bus, as the menus show it
+pub struct ScsiSlot {
+    /// The SCSI ID
+    pub id: usize,
+    pub device: Option<Device>,
+    pub status: Option<FunctionStatus>,
+}
+
+impl ScsiSlot {
+    /// The name its device gives for the menus, if it gives one
+    #[cfg(any(feature = "ethernet", feature = "printer"))]
+    pub fn name(&self) -> &str {
+        self.device
+            .as_ref()
+            .and_then(|device| device.name.as_deref())
+            .unwrap_or_default()
     }
 }
 
-impl From<Option<ScsiTargetStatus>> for ScsiTarget {
-    fn from(value: Option<ScsiTargetStatus>) -> Self {
-        match value {
-            None => Self {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Some(v) => v.into(),
-        }
+/// A device of the machine, as the Devices menu shows it
+pub struct DeviceSlot {
+    /// The id of its bus
+    pub bus: String,
+    /// The id of its slot
+    pub slot: String,
+    /// What the menus call the device
+    pub label: String,
+    pub device: Device,
+    pub status: FunctionStatus,
+}
+
+/// A floppy drive of the machine, as the Devices menu shows it
+pub struct FloppySlot {
+    /// The id of its bus
+    pub bus: String,
+    /// The id of its slot
+    pub slot: String,
+    /// What the menus call the drive
+    pub label: String,
+    /// What its device model accepts and can do
+    pub info: FloppyInfo,
+    pub status: FloppyStatus,
+}
+
+impl FloppySlot {
+    /// The drive takes the Mac's floppy images, and not image files of another kind
+    pub fn takes_mac_images(&self) -> bool {
+        self.info.images == FloppyImages::Mac
     }
 }
 
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
-    pub frame_receiver: Arc<Mutex<Option<DisplayBuffer>>>,
+    /// The displays of the machine, at least one, in their order
+    pub displays: Vec<DisplayHandle>,
+    /// The temporary files of a restored state, to remove when done
+    pub temp_files: Vec<PathBuf>,
+    /// The devices that the machine couldn't use, each with the reason, for the user
+    pub refused: Vec<String>,
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -87,9 +125,6 @@ pub struct EmulatorInitResult {
 pub struct EmulatorInitArgs {
     /// Disable audio, synchronize to video
     pub audio_disabled: bool,
-
-    /// Selected monitor (if available)
-    pub monitor: Option<MacMonitor>,
 
     #[serde(skip_serializing)]
     /// Deprecated; now mouse_mode
@@ -104,30 +139,15 @@ pub struct EmulatorInitArgs {
     /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
 
-    /// Override the type of floppy drive (for all drives)
-    pub override_fdd_type: Option<DriveType>,
-
     /// Enable PMMU (Macintosh II only)
     pub pmmu_enabled: bool,
 
     /// Enable FPU (Macintosh LC only)
     pub fpu_enabled: bool,
 
-    /// Configured video RAM size or default if None (Macintosh LC only)
-    pub vram_size: Option<usize>,
-
-    /// Card in the PDS slot (Macintosh LC family)
-    pub pds_card: PdsCardKind,
-
-    /// Apple IIe Card settings (used if it is in the PDS slot)
-    pub iie_card_settings: IieCardSettings,
-
     /// Apple IIe Card controller emulation: host keys can drive the
     /// joystick (used if it is in the PDS slot; on by default)
     pub iie_joystick_emulation: bool,
-
-    /// Selected NuBus video card (if applicable)
-    pub video_card: NubusDeviceKind,
 
     /// Overclock
     pub overclock: Option<u64>,
@@ -143,19 +163,13 @@ impl Default for EmulatorInitArgs {
     fn default() -> Self {
         Self {
             audio_disabled: Default::default(),
-            monitor: Default::default(),
             mouse_disabled: Default::default(),
             mouse_mode: Default::default(),
             start_fastforward: Default::default(),
             ram_size: Default::default(),
-            override_fdd_type: Default::default(),
             pmmu_enabled: Default::default(),
             fpu_enabled: Default::default(),
-            vram_size: Default::default(),
-            pds_card: Default::default(),
-            iie_card_settings: Default::default(),
             iie_joystick_emulation: true,
-            video_card: Default::default(),
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
             vm_pflush_workaround: Default::default(),
@@ -185,7 +199,9 @@ pub struct EmulatorState {
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
-    pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
+    /// The image of the last disk ejected from each floppy drive, by the ids of its bus and of
+    /// its slot
+    pub last_images: RefCell<HashMap<(String, String), Box<FloppyImage>>>,
     /// Memory notifiers as the emulator has them, or will when there is one
     memory_notifiers: HashMap<u32, MemoryNotifierRange>,
     /// Received memory notifications: id, address, contents
@@ -200,10 +216,14 @@ pub struct EmulatorState {
     peripheral_debug: DebuggableProperties,
     scc_tx: [VecDeque<u8>; 2],
     mouse_mode: MouseMode,
-    /// The settings of the Apple IIe Card, if the machine has one
-    iie_card: Option<IieCardSettings>,
+    /// The list of buses, as the emulator last sent it
+    buses: Arc<Vec<Bus>>,
+    /// The status last received of the device in each slot, by the ids of its bus and slot
+    device_status: HashMap<(String, String), FunctionStatus>,
     /// The Apple IIe Card is in front
     iie_in_front: bool,
+    /// Where the guest puts the displays, when the machine has several
+    screens: Vec<GuestScreen>,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -226,21 +246,16 @@ impl EmulatorState {
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
-        display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        scsi_targets: Option<ScsiTargets>,
+        devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
+        nat: NatConfig,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
-        let display_rom = if let Some(filename) = display_rom_path {
-            Some(std::fs::read(filename)?)
-        } else {
-            None
-        };
         let extension_rom = if let Some(filename) = extension_rom_path {
             Some(std::fs::read(filename)?)
         } else {
@@ -248,14 +263,14 @@ impl EmulatorState {
         };
         self.init(
             &rom,
-            display_rom.as_deref(),
             extension_rom.as_deref(),
-            scsi_targets,
+            devices,
             pram,
             args,
             model,
             shared_dir,
             custom_datetime,
+            nat,
         )
     }
 
@@ -264,14 +279,14 @@ impl EmulatorState {
     fn init(
         &mut self,
         rom: &[u8],
-        display_rom: Option<&[u8]>,
         extension_rom: Option<&[u8]>,
-        scsi_targets: Option<ScsiTargets>,
+        devices: Vec<DeviceConfig>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
         custom_datetime: Option<chrono::NaiveDateTime>,
+        nat: NatConfig,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -286,24 +301,6 @@ impl EmulatorState {
             // Fall back to ROM autodetection
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?
         };
-        // Build extra ROMs array
-        let mut extra_roms = Vec::new();
-        if let Some(display_rom) = display_rom {
-            if model == MacModel::SE30 {
-                extra_roms.push(ExtraROMs::SE30Video(display_rom));
-            } else {
-                // Macintosh II family: the card is chosen explicitly
-                match args.video_card {
-                    NubusDeviceKind::Toby => extra_roms.push(ExtraROMs::Toby(display_rom)),
-                    NubusDeviceKind::Mdc12 => extra_roms.push(ExtraROMs::MDC12(display_rom)),
-                    _ => todo!(),
-                }
-            }
-        }
-        if let Some(extension_rom) = extension_rom {
-            extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
-        }
-
         let mouse_mode = if matches!(args.mouse_disabled, Some(true)) {
             // Deprecated mouse_disabled
             MouseMode::Disabled
@@ -311,22 +308,18 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
-        self.iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
-        let (mut emulator, frame_recv) = Emulator::new_with_extra(
-            rom,
-            &extra_roms,
+        let machine = MachineConfig {
             model,
-            args.monitor,
+            rom,
+            extension_rom,
+            ram_size: args.ram_size,
             mouse_mode,
-            args.ram_size,
-            args.override_fdd_type,
-            args.pmmu_enabled,
-            args.fpu_enabled,
-            args.vram_size,
-            shared_dir,
-            self.iie_card,
-        )?;
+            pmmu_enabled: args.pmmu_enabled,
+            fpu_enabled: args.fpu_enabled,
+            nat,
+        };
+        let (mut emulator, displays, refused) = Emulator::new(&machine, devices)?;
 
         let cmd = emulator.create_cmd_sender();
 
@@ -342,84 +335,6 @@ impl EmulatorState {
             args.vm_pflush_workaround,
         ))?;
 
-        if model.has_scsi() {
-            for id in 0..7 {
-                let Some(ref targets) = scsi_targets else {
-                    break;
-                };
-                match &targets[id] {
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: Some(filename),
-                        ..
-                    } => match emulator.load_hdd_image(filename, id) {
-                        Ok(_) => {
-                            info!(
-                                "SCSI ID #{}: loaded image file {}",
-                                id,
-                                filename.to_string_lossy()
-                            );
-                        }
-                        Err(e) => {
-                            error!("SCSI ID #{}: image load failed: {}", id, e);
-                        }
-                    },
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: None,
-                        ..
-                    } => {
-                        // Invalid, ignore
-                        log::error!("SCSI ID #{} is a hard drive but no image was specified", id);
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        cdrom_folder: Some(dir),
-                        ..
-                    } => {
-                        if let Err(e) = emulator.attach_cdrom_folder(id, dir.clone()) {
-                            error!(
-                                "SCSI ID #{}: Toolbox managed CD-ROM folder attach failed: {}",
-                                id, e
-                            );
-                        } else {
-                            info!(
-                                "SCSI ID #{}: attached Toolbox managed CD-ROM folder {}",
-                                id,
-                                dir.to_string_lossy()
-                            );
-                        }
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        ..
-                    } => {
-                        emulator.attach_cdrom(id);
-                    }
-                    #[cfg(feature = "ethernet")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Ethernet),
-                        ..
-                    } => {
-                        emulator.attach_ethernet(id);
-                    }
-                    #[cfg(feature = "printer")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Printer),
-                        ..
-                    } => {
-                        let output_dir = dirs::desktop_dir()
-                            .or_else(|| std::env::current_dir().ok())
-                            .unwrap_or_default();
-                        emulator.attach_printer(id, output_dir);
-                    }
-                    ScsiTarget {
-                        target_type: None, ..
-                    } => (),
-                };
-            }
-        }
-
         if let Some(pram_path) = pram {
             emulator.persist_pram(pram_path);
         }
@@ -429,30 +344,54 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
+        let mut result = self.init_finalize(
+            emulator,
+            displays,
+            cmd,
+            shared_dir,
+            args.audio_disabled,
+            false,
+        )?;
+        for device in refused {
+            let slot = self.slot_label(&device.config.bus, &device.config.slot);
+            result.refused.push(format!("{}: {}", slot, device.reason));
+        }
+        Ok(result)
     }
 
     pub fn init_from_statefile<P: AsRef<Path>>(
         &mut self,
         path: P,
+        shared_dir: Option<PathBuf>,
         pause: bool,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
 
-        let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
+        let (emulator, displays) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd, false, pause)
+        let temp_files = emulator.temp_files().to_vec();
+        let mut result = self.init_finalize(emulator, displays, cmd, shared_dir, false, pause)?;
+        result.temp_files = temp_files;
+        Ok(result)
     }
 
     fn init_finalize(
         &mut self,
         mut emulator: Emulator,
-        frame_recv: Arc<Mutex<Option<DisplayBuffer>>>,
+        displays: Vec<DisplayHandle>,
         cmd: EmulatorCommandSender,
+        shared_dir: Option<PathBuf>,
         audio_disabled: bool,
         pause: bool,
     ) -> Result<EmulatorInitResult> {
+        self.screens.clear();
+
+        // The folders of the host, for a new machine and for one restored from a state alike
+        cmd.send(EmulatorCommand::SetSharedDir(shared_dir))?;
+        #[cfg(feature = "printer")]
+        cmd.send(EmulatorCommand::SetDefaultPrintDir(default_print_dir()))?;
+
         // Initialize audio
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
@@ -517,7 +456,9 @@ impl EmulatorState {
         self.force_update.set();
 
         Ok(EmulatorInitResult {
-            frame_receiver: frame_recv,
+            displays,
+            temp_files: vec![],
+            refused: vec![],
         })
     }
 
@@ -532,6 +473,8 @@ impl EmulatorState {
             self.cmdsender = None;
             self.eventrecv = None;
             self.status = None;
+            self.buses = Arc::default();
+            self.device_status.clear();
             self.record_input_path = None;
             self.iie_in_front = false;
         }
@@ -550,7 +493,8 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse(&self, abs_p: Option<&egui::Pos2>, rel_p: &egui::Pos2) {
+    /// `abs_p`: the display under the pointer, by its index, and where in its pixels
+    pub fn update_mouse(&self, abs_p: Option<(usize, egui::Pos2)>, rel_p: &egui::Pos2) {
         if !self.is_running() {
             return;
         }
@@ -561,11 +505,12 @@ impl EmulatorState {
 
         match self.mouse_mode {
             MouseMode::Absolute => {
-                if let Some(abs_p) = abs_p {
+                if let Some((display, abs_p)) = abs_p {
                     sender
                         .send(EmulatorCommand::MouseUpdateAbsolute {
                             x: abs_p.x as u16,
                             y: abs_p.y as u16,
+                            display,
                         })
                         .unwrap();
                 }
@@ -647,16 +592,27 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
-                EmulatorEvent::FloppyEjected(idx, img) => {
+                EmulatorEvent::FloppyEjected(bus, slot, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
-                        format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                        format!(
+                            "{} ejected ({})",
+                            self.slot_label(&bus, &slot),
+                            img.get_title()
+                        ),
                     ));
-                    *self.last_images[idx].borrow_mut() = Some(img);
+                    self.last_images.borrow_mut().insert((bus, slot), img);
                 }
-                EmulatorEvent::ScsiMediaEjected(id) => {
-                    self.messages
-                        .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
+                EmulatorEvent::Buses(buses) => {
+                    // The statuses that follow are those of the new list
+                    self.buses = buses;
+                    self.device_status.clear();
+                }
+                EmulatorEvent::DeviceStatus(bus, slot, status) => {
+                    match status {
+                        Some(status) => self.device_status.insert((bus, slot), status),
+                        None => self.device_status.remove(&(bus, slot)),
+                    };
                 }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
                 EmulatorEvent::MemoryNotify { id, addr, data } => {
@@ -693,6 +649,7 @@ impl EmulatorState {
                     self.serial_bridge_status[ch.to_usize().unwrap()] = status;
                 }
                 EmulatorEvent::IieInFront(in_front) => self.iie_in_front = in_front,
+                EmulatorEvent::Screens(screens) => self.screens = screens,
             }
         }
 
@@ -813,31 +770,102 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// Returns a reference to floppy drive status for the requested drive.
-    pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
-        let status = self.status.as_ref()?;
-        if status.fdd.len() < drive {
-            return None;
-        }
-        if !status.fdd[drive].present {
-            return None;
-        }
-        Some(&status.fdd[drive])
+    /// What the menus and the messages call a slot: the name its device gives, or the title
+    /// of its bus and the id of the slot
+    pub fn slot_label(&self, bus: &str, slot: &str) -> String {
+        let bus_of = self.buses.iter().find(|b| b.id == bus);
+        let name = bus_of
+            .and_then(|b| b.slots.iter().find(|s| s.id == slot))
+            .and_then(|s| s.device.as_ref())
+            .and_then(|device| device.name.clone());
+        let title = bus_of.map_or(bus, |b| b.title.as_str());
+        name.unwrap_or_else(|| format!("{} #{}", title, slot))
     }
 
-    /// Gets a reference to the active SCSI target array.
-    pub fn get_scsi_target_status(&self) -> Option<&[Option<ScsiTargetStatus>]> {
-        let status = self.status.as_ref()?;
-        if !status.model.has_scsi() {
-            return None;
+    /// The devices of the buses other than SCSI, which aren't floppy drives, in the order of
+    /// the list of buses: for the sections of the Devices menu
+    pub fn other_devices(&self) -> Vec<DeviceSlot> {
+        let mut devices = vec![];
+        for bus in self.buses.iter().filter(|bus| bus.kind != BusKind::Scsi) {
+            for slot in &bus.slots {
+                let Some(device) = &slot.device else {
+                    continue;
+                };
+                if matches!(device.model.info().function, FunctionInfo::Floppy(_)) {
+                    continue;
+                }
+                let Some(status) = self.device_status(&bus.id, &slot.id) else {
+                    continue;
+                };
+                devices.push(DeviceSlot {
+                    bus: bus.id.clone(),
+                    slot: slot.id.clone(),
+                    label: self.slot_label(&bus.id, &slot.id),
+                    device: device.clone(),
+                    status: status.clone(),
+                });
+            }
         }
-        Some(&status.scsi)
+        devices
     }
 
-    /// Gets a copy of SCSI targets and loaded media
-    pub fn get_scsi_targets(&self) -> Option<ScsiTargets> {
-        let status = self.get_scsi_target_status()?;
-        Some(core::array::from_fn(|id| status[id].clone().into()))
+    /// The floppy drives of the machine, in the order of the list of buses: the Mac's own,
+    /// then those on a bus that a device adds, such as the drives of the Apple IIe Card
+    pub fn floppy_slots(&self) -> Vec<FloppySlot> {
+        let mut drives = vec![];
+        for bus in self.buses.iter() {
+            for slot in &bus.slots {
+                let Some(device) = &slot.device else {
+                    continue;
+                };
+                let FunctionInfo::Floppy(info) = device.model.info().function else {
+                    continue;
+                };
+                let Some(FunctionStatus::Floppy(status)) = self.device_status(&bus.id, &slot.id)
+                else {
+                    continue;
+                };
+                drives.push(FloppySlot {
+                    bus: bus.id.clone(),
+                    slot: slot.id.clone(),
+                    label: self.slot_label(&bus.id, &slot.id),
+                    info,
+                    status: status.clone(),
+                });
+            }
+        }
+        drives
+    }
+
+    /// The status of the device in a slot, by the ids of its bus and of the slot
+    pub fn device_status(&self, bus: &str, slot: &str) -> Option<&FunctionStatus> {
+        self.device_status.get(&(bus.to_string(), slot.to_string()))
+    }
+
+    /// The machine, as the list of device configs it can be made from again
+    pub fn devices(&self) -> Vec<DeviceConfig> {
+        match self.status.as_ref() {
+            Some(status) => device_configs(&self.buses, status.model),
+            None => vec![],
+        }
+    }
+
+    /// The slots of the SCSI bus, if the machine has one. The id of a SCSI slot is the SCSI
+    /// ID, in decimal.
+    pub fn scsi_slots(&self) -> Option<Vec<ScsiSlot>> {
+        let bus = self.buses.iter().find(|bus| bus.id == bus_id::SCSI)?;
+        Some(
+            bus.slots
+                .iter()
+                .filter_map(|slot| {
+                    Some(ScsiSlot {
+                        id: slot.id.parse().ok()?,
+                        device: slot.device.clone(),
+                        status: self.device_status(&bus.id, &slot.id).cloned(),
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.
@@ -855,33 +883,18 @@ impl EmulatorState {
     }
 
     /// Loads a floppy image from the specified path.
-    pub fn load_floppy(&self, driveidx: usize, path: &Path, wp: bool) {
+    pub fn load_floppy(&self, bus: &str, slot: &str, path: &Path, wp: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::InsertFloppy(
-                driveidx,
-                path.to_string_lossy().to_string(),
+            .send(EmulatorCommand::LoadMedia(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
                 wp,
             ))
-            .unwrap();
-    }
-
-    /// The number of 5.25" drives connected to the Apple IIe Card.
-    pub fn iie_drives_525(&self) -> usize {
-        self.iie_card.map_or(0, |s| s.drives_525())
-    }
-
-    /// Loads an Apple II 5.25" DSK image into one of the IIe card's
-    /// drives (0 or 1).
-    pub fn load_iie_disk(&self, drive: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender
-            .send(EmulatorCommand::InsertIieDisk(drive, path.to_path_buf()))
             .unwrap();
     }
 
@@ -893,38 +906,6 @@ impl EmulatorState {
         sender.send(EmulatorCommand::SetIieGamePort(port)).unwrap();
     }
 
-    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
-    pub fn eject_iie_disk(&self, drive: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender.send(EmulatorCommand::EjectIieDisk(drive)).unwrap();
-    }
-
-    /// Whether a UniDisk 3.5 is connected to the Apple IIe Card.
-    pub fn iie_has_unidisk(&self) -> bool {
-        self.iie_card.is_some_and(|s| s.has_unidisk())
-    }
-
-    /// Loads an 800K (or 400K) ProDOS-order image into the IIe card's
-    /// UniDisk 3.5.
-    pub fn load_iie_unidisk(&self, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender
-            .send(EmulatorCommand::InsertIieUniDisk(path.to_path_buf()))
-            .unwrap();
-    }
-
-    /// Ejects the IIe card's UniDisk 3.5.
-    pub fn eject_iie_unidisk(&self) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        sender.send(EmulatorCommand::EjectIieUniDisk).unwrap();
-    }
-
     /// Loads the included toolbox floppy.
     pub fn load_toolbox_floppy(&self) -> bool {
         let Some(ref sender) = self.cmdsender else {
@@ -932,11 +913,12 @@ impl EmulatorState {
         };
 
         // Find a free floppy drive
-        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
-            if d.present && d.ejected {
+        for drive in self.floppy_slots() {
+            if drive.takes_mac_images() && drive.status.ejected {
                 sender
                     .send(EmulatorCommand::InsertFloppyImage(
-                        i,
+                        drive.bus,
+                        drive.slot,
                         Box::new(
                             snow_floppy::loaders::Moof::load(
                                 include_bytes!("../assets/BlueSCSI Toolbox.moof"),
@@ -954,29 +936,38 @@ impl EmulatorState {
     }
 
     /// Reloads last ejected floppy
-    pub fn reload_floppy(&self, driveidx: usize) {
+    pub fn reload_floppy(&self, bus: &str, slot: &str) {
         let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        let key = (bus.to_string(), slot.to_string());
+        let Some(image) = self.last_images.borrow_mut().remove(&key) else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
-                self.last_images[driveidx].borrow_mut().take().unwrap(),
-                false,
+                key.0, key.1, image, false,
             ))
             .unwrap();
     }
 
+    /// The image of the last disk ejected from a floppy drive
+    pub fn last_image(&self, bus: &str, slot: &str) -> Option<Box<FloppyImage>> {
+        let key = (bus.to_string(), slot.to_string());
+        self.last_images.borrow().get(&key).cloned()
+    }
+
     /// Inserts a blank floppy
-    pub fn insert_blank_floppy(&self, driveidx: usize, t: FloppyType) {
+    pub fn insert_blank_floppy(&self, bus: &str, slot: &str, t: FloppyType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
+                bus.to_string(),
+                slot.to_string(),
                 Box::new(FloppyImage::new(t, "Blank")),
                 false,
             ))
@@ -984,84 +975,150 @@ impl EmulatorState {
     }
 
     /// Saves a floppy image to the specified path.
-    pub fn save_floppy(&self, driveidx: usize, path: &Path) {
+    pub fn save_floppy(&self, bus: &str, slot: &str, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SaveFloppy(driveidx, path.to_path_buf()))
+            .send(EmulatorCommand::SaveFloppy(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
+            ))
             .unwrap();
     }
 
     /// Toggles automatic writeback of a floppy drive's image to its source file.
-    pub fn set_floppy_writeback(&self, driveidx: usize, enabled: bool) {
+    pub fn set_floppy_writeback(&self, bus: &str, slot: &str, enabled: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SetFloppyWriteback(driveidx, enabled))
+            .send(EmulatorCommand::SetFloppyWriteback(
+                bus.to_string(),
+                slot.to_string(),
+                enabled,
+            ))
+            .unwrap();
+    }
+
+    /// Adds a SCSI device, of the device model with this function that the SCSI bus takes
+    fn scsi_add_device(&self, id: usize, function: FunctionInfo, config: FunctionConfig) {
+        let (Some(sender), Some(status)) = (self.cmdsender.as_ref(), self.status.as_ref()) else {
+            return;
+        };
+        let Some(info) = models_for(BusKind::Scsi, status.model).find(|i| i.function == function)
+        else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::AddDevice(DeviceConfig {
+                bus: bus_id::SCSI.into(),
+                slot: id.to_string(),
+                model: Some(info.model),
+                rom: None,
+                function: config,
+            }))
             .unwrap();
     }
 
     /// Loads a SCSI HDD image from the specified path.
     pub fn scsi_attach_hdd(&self, id: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachHdd(id, path.to_path_buf()))
-            .unwrap();
+        self.scsi_add_device(
+            id,
+            FunctionInfo::HardDisk,
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(path.to_path_buf()),
+            }),
+        );
     }
 
     /// Loads a SCSI HDD image from the specified path into the first free SCSI slot
     pub fn scsi_attach_hdd_firstfree(&self, path: &Path) -> bool {
-        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+        let Some(slots) = self.scsi_slots() else {
             return false;
         };
 
         // Find first free SCSI slot
-        let Some((id, _)) = targets.iter().enumerate().find(|(_, t)| t.is_none()) else {
+        let Some(slot) = slots.iter().find(|slot| slot.device.is_none()) else {
             return false;
         };
 
-        self.scsi_attach_hdd(id, path);
+        self.scsi_attach_hdd(slot.id, path);
         true
     }
 
-    /// Branches off a SCSI HDD image to the specified path.
-    pub fn scsi_branch_hdd(&self, id: usize, path: &Path) {
+    /// Makes the hard disk in a slot carry on from a copy of its image, in this file
+    pub fn branch_disk(&self, bus: &str, slot: &str, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::ScsiBranchHdd(id, path.to_path_buf()))
+            .send(EmulatorCommand::BranchDisk(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
+            ))
+            .unwrap();
+    }
+
+    /// Gives the hard disk in a slot, one that can't be removed while the machine runs, the
+    /// image in this file
+    pub fn load_hard_disk(&self, bus: &str, slot: &str, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::LoadMedia(
+                bus.to_string(),
+                slot.to_string(),
+                path.to_path_buf(),
+                false,
+            ))
             .unwrap();
     }
 
     /// Attaches a CD-ROM drive at the given ID
     pub fn scsi_attach_cdrom(&self, id: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender.send(EmulatorCommand::ScsiAttachCdrom(id)).unwrap();
+        self.scsi_add_device(
+            id,
+            FunctionInfo::Cdrom,
+            FunctionConfig::Cdrom(CdromConfig::default()),
+        );
     }
 
     /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given ID.
     /// The folder's images are swappable by the guest via the BlueSCSI Toolbox
     /// CD commands.
+    /// Gives a folder of disc images to the CD-ROM drive at `id`, or to a new drive there if
+    /// the SCSI ID is free
     pub fn scsi_attach_cdrom_folder(&self, id: usize, path: PathBuf) {
-        let Some(ref sender) = self.cmdsender else {
+        let slot = id.to_string();
+        if matches!(
+            self.device_status(bus_id::SCSI, &slot),
+            Some(FunctionStatus::Cdrom(_))
+        ) {
+            if let Some(sender) = self.cmdsender.as_ref() {
+                sender
+                    .send(EmulatorCommand::CdromSetFolder(
+                        bus_id::SCSI.into(),
+                        slot,
+                        path,
+                    ))
+                    .unwrap();
+            }
             return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachCdromFolder(id, path))
-            .unwrap();
+        }
+        self.scsi_add_device(
+            id,
+            FunctionInfo::Cdrom,
+            FunctionConfig::Cdrom(CdromConfig { folder: Some(path) }),
+        );
     }
 
     /// Loads CD-ROM media into the specified SCSI target
@@ -1071,35 +1128,33 @@ impl EmulatorState {
             return;
         };
 
-        if let Some(status) = self.status.as_ref()
-            && !matches!(
-                status.scsi[id],
-                Some(ScsiTargetStatus {
-                    target_type: ScsiTargetType::Cdrom,
-                    ..
-                })
-            )
-        {
+        let slot = id.to_string();
+        if !matches!(
+            self.device_status(bus_id::SCSI, &slot),
+            Some(FunctionStatus::Cdrom(_))
+        ) {
             self.scsi_attach_cdrom(id);
         }
         sender
-            .send(EmulatorCommand::ScsiLoadMedia(id, path.to_path_buf()))
+            .send(EmulatorCommand::LoadMedia(
+                bus_id::SCSI.into(),
+                slot,
+                path.to_path_buf(),
+                false,
+            ))
             .unwrap();
     }
 
     /// Loads CD-ROM media into the first free SCSI CD-ROM drive
     pub fn scsi_load_cdrom_firstfree(&self, path: &Path) -> bool {
-        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+        let Some(slots) = self.scsi_slots() else {
             return false;
         };
 
         // Find free CD-ROM drive
-        for (i, t) in targets.iter().enumerate() {
-            let Some(t) = t else {
-                continue;
-            };
-            if t.target_type == ScsiTargetType::Cdrom && t.image.is_none() {
-                self.scsi_load_cdrom(i, path);
+        for slot in slots {
+            if matches!(slot.status, Some(FunctionStatus::Cdrom(cdrom)) if cdrom.image.is_none()) {
+                self.scsi_load_cdrom(slot.id, path);
                 return true;
             }
         }
@@ -1108,17 +1163,27 @@ impl EmulatorState {
 
     /// Detach a target from a SCSI ID
     pub fn scsi_detach_target(&mut self, id: usize) {
+        self.remove_device(bus_id::SCSI, &id.to_string());
+    }
+
+    /// Takes the device in a slot out of the machine
+    pub fn remove_device(&mut self, bus: &str, slot: &str) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::DetachScsiTarget(id))
+            .send(EmulatorCommand::RemoveDevice(
+                bus.to_string(),
+                slot.to_string(),
+            ))
             .unwrap();
+        let device = if bus == bus_id::SCSI {
+            format!("SCSI device at #{}", slot)
+        } else {
+            self.slot_label(bus, slot)
+        };
         self.messages.push_back((
             UserMessageType::Notice,
-            format!(
-                "SCSI device at #{} detached. System should be restarted.",
-                id
-            ),
+            format!("{} detached. System should be restarted.", device),
         ));
     }
 
@@ -1241,11 +1306,14 @@ impl EmulatorState {
         self.messages.pop_front()
     }
 
-    pub fn force_eject(&self, driveidx: usize) {
+    pub fn force_eject(&self, bus: &str, slot: &str) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::EjectFloppy(driveidx))
+            .send(EmulatorCommand::EjectMedia(
+                bus.to_string(),
+                slot.to_string(),
+            ))
             .unwrap();
     }
 
@@ -1455,6 +1523,11 @@ impl EmulatorState {
         self.iie_in_front
     }
 
+    /// Where the guest puts the displays, when the machine has several
+    pub fn screens(&self) -> &[GuestScreen] {
+        &self.screens
+    }
+
     pub fn is_mouse_relative(&self) -> bool {
         self.mouse_mode == MouseMode::RelativeHw
     }
@@ -1496,12 +1569,16 @@ impl EmulatorState {
         self.debug_framebuffers = v;
     }
 
-    pub fn set_floppy_rpm_adjustment(&self, drive: usize, adjustment: i32) {
+    pub fn set_floppy_rpm_adjustment(&self, bus: &str, slot: &str, adjustment: i32) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
         sender
-            .send(EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment))
+            .send(EmulatorCommand::SetFloppyRpmAdjustment(
+                bus.to_string(),
+                slot.to_string(),
+                adjustment,
+            ))
             .unwrap();
     }
 
@@ -1527,64 +1604,90 @@ impl EmulatorState {
         self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
     }
 
+    /// Attaches an Ethernet adapter. The core gives it an Ethernet address no other adapter has.
     #[cfg(feature = "ethernet")]
     pub fn scsi_attach_ethernet(&self, id: usize) {
-        let Some(ref sender) = self.cmdsender else {
+        let Some(status) = self.status.as_ref() else {
             return;
         };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachEthernet(id))
-            .unwrap();
+        let Some(info) = models_for(BusKind::Scsi, status.model)
+            .find(|info| matches!(info.function, FunctionInfo::Ethernet(_)))
+        else {
+            return;
+        };
+        self.scsi_add_device(
+            id,
+            info.function,
+            FunctionConfig::Ethernet(EthernetConfig {
+                mac: None,
+                link: EthernetLinkType::default(),
+            }),
+        );
     }
 
     #[cfg(feature = "printer")]
     pub fn scsi_attach_printer(&self, id: usize) {
+        self.scsi_add_device(
+            id,
+            FunctionInfo::Printer,
+            FunctionConfig::Printer(PrinterConfig::default()),
+        );
+    }
+
+    /// Gives the NAT gateway another network
+    pub fn set_nat_config(&self, config: NatConfig) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SetNatConfig(config)).unwrap();
+    }
+
+    #[cfg(feature = "ethernet")]
+    pub fn set_eth_link(&self, bus: &str, slot: &str, link: EthernetLinkType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
-        let output_dir = dirs::desktop_dir()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
         sender
-            .send(EmulatorCommand::ScsiAttachPrinter(id, output_dir))
+            .send(EmulatorCommand::EthernetSetLink(
+                bus.to_string(),
+                slot.to_string(),
+                link,
+            ))
             .unwrap();
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn set_eth_link(&self, id: usize, link: snow_core::mac::scsi::ethernet::EthernetLinkType) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::EthernetSetLink(id, link))
-            .unwrap();
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(&self, scsi_id: usize, filename: P) {
+    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(
+        &self,
+        bus: &str,
+        slot: &str,
+        filename: P,
+    ) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::EthernetStartCapture(
-                scsi_id,
+                bus.to_string(),
+                slot.to_string(),
                 filename.as_ref().to_path_buf(),
             ))
             .unwrap();
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn stop_ethernet_capture(&self, scsi_id: usize) {
+    pub fn stop_ethernet_capture(&self, bus: &str, slot: &str) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::EthernetStopCapture(scsi_id))
+            .send(EmulatorCommand::EthernetStopCapture(
+                bus.to_string(),
+                slot.to_string(),
+            ))
             .unwrap();
     }
 
