@@ -25,6 +25,7 @@ use crate::cpu_m68k::{
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
+use super::breakpoints::Breakpoints;
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
     MovecCtrlReg, MulxExtWord,
@@ -520,7 +521,7 @@ where
     pub trace_mask: bool,
 
     /// Active breakpoints
-    pub(in crate::cpu_m68k) breakpoints: Vec<Breakpoint>,
+    pub(in crate::cpu_m68k) breakpoints: Breakpoints,
 
     /// Breakpoint hit latch
     #[serde(skip)]
@@ -692,7 +693,7 @@ where
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
-            breakpoints: vec![],
+            breakpoints: Breakpoints::default(),
             breakpoint_hit: LatchingEvent::default(),
             step_over_addr: None,
             history: VecDeque::with_capacity(Self::HISTORY_SIZE),
@@ -774,9 +775,13 @@ where
         &self.breakpoints
     }
 
-    /// Reads the active breakpoints (mutable)
-    pub fn breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> {
-        &mut self.breakpoints
+    pub fn replace_breakpoints(&mut self, breakpoints: Vec<Breakpoint>) {
+        self.breakpoints = breakpoints.into();
+    }
+
+    pub fn clear_step_breakpoints(&mut self) {
+        self.breakpoints
+            .retain(|bp| !matches!(bp, Breakpoint::StepOut(_) | Breakpoint::StepOver(_)));
     }
 
     /// Sets a breakpoint
@@ -1043,7 +1048,7 @@ where
             }
         }
 
-        if !self.breakpoints.is_empty() {
+        if self.breakpoints.may_match_pc(self.regs.pc) {
             self.test_pc_breakpoints();
         }
 
@@ -1299,6 +1304,9 @@ where
 
     /// Tests if we should stop due to 'step out' debugger action
     fn test_step_out(&mut self) {
+        if !self.breakpoints.has_step_out() {
+            return;
+        }
         let mut bp_hit = false;
         let sp = self.regs.read_a::<Address>(7);
         self.breakpoints.retain(|bp| {

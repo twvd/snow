@@ -65,6 +65,7 @@ macro_rules! account_040_time {
 }
 
 pub mod alu;
+mod breakpoints;
 pub mod bus;
 mod bus_transaction;
 mod cache;

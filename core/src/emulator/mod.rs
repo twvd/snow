@@ -349,7 +349,8 @@ dispatch! {
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks, ()) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
-        fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> { breakpoints_mut() }
+        fn cpu_replace_breakpoints(&mut self, breakpoints: Vec<Breakpoint>) -> () { replace_breakpoints(breakpoints) }
+        fn cpu_clear_step_breakpoints(&mut self) -> () { clear_step_breakpoints() }
         fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) -> () { clear_breakpoint(bp) }
         fn cpu_enable_history(&mut self, v: bool) -> () { enable_history(v) }
         fn cpu_enable_systrap_history(&mut self, v: bool) -> () { enable_systrap_history(v) }
@@ -781,7 +782,7 @@ impl Emulator {
         + Send
         + 'static,
     ) {
-        *self.config.cpu_breakpoints_mut() = breakpoints;
+        self.config.cpu_replace_breakpoints(breakpoints);
         self.breakpoint_handler = Some(Box::new(handler));
     }
 
@@ -1190,7 +1191,7 @@ impl Emulator {
             if let Some(handler) = self.breakpoint_handler.as_mut() {
                 let dirty_data = self.config.cpu_inspect_dirty_data();
                 let breakpoints = handler(self.config.cpu_regs(), self.config.ram(), dirty_data);
-                *self.config.cpu_breakpoints_mut() = breakpoints;
+                self.config.cpu_replace_breakpoints(breakpoints);
             } else {
                 stop_break = true;
             }
@@ -1833,9 +1834,7 @@ impl Tickable for Emulator {
                         info!("Running");
                         self.run = true;
                         self.config.cpu_get_clr_breakpoint_hit();
-                        self.config.cpu_breakpoints_mut().retain(|bp| {
-                            !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
-                        });
+                        self.config.cpu_clear_step_breakpoints();
                         self.status_update()?;
                     }
                     EmulatorCommand::Reset => {
@@ -1851,9 +1850,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::Stop => {
                         info!("Stopped");
                         self.run = false;
-                        self.config.cpu_breakpoints_mut().retain(|bp| {
-                            !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
-                        });
+                        self.config.cpu_clear_step_breakpoints();
                         self.status_update()?;
                     }
                     EmulatorCommand::Step => {
