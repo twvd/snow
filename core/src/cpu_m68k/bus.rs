@@ -480,8 +480,8 @@ where
     }
 
     /// Runs a read from logically tagged caches, before translation, if
-    /// they hold it: see CpuCaches::read_hit(). Data breakpoints need the
-    /// physical address: data reads skip this when any is set.
+    /// they hold it: see CpuCaches::read_hit(). Read breakpoints need the
+    /// physical address, so data reads skip this when one is set.
     #[inline(always)]
     fn read_hit(
         &mut self,
@@ -491,7 +491,7 @@ where
         size: u32,
         ticks: &mut Ticks,
     ) -> Option<(Long, u32)> {
-        if kind != AccessKind::Fetch && !self.breakpoints.is_empty() {
+        if kind != AccessKind::Fetch && self.breakpoints.has_reads() {
             return None;
         }
         if CPU_TYPE >= M68040 {
@@ -574,7 +574,11 @@ where
 
         // Data breakpoints, on the physical address of the access. They
         // are about data: instruction fetches don't trigger them.
-        if !self.breakpoints.is_empty() && acc.kind != AccessKind::Fetch {
+        if acc.kind != AccessKind::Fetch
+            && self
+                .breakpoints
+                .may_match_data_access(acc.fault.write, paddr, len)
+        {
             for i in 0..len {
                 let val = match acc.wdata {
                     Some(d) => d >> (8 * (acc.size - 1 - i)),
@@ -628,7 +632,10 @@ where
         }
 
         // Data breakpoints, on the physical address of the access
-        if !self.breakpoints.is_empty() {
+        if self
+            .breakpoints
+            .may_match_data_access(acc.fault.write, paddr, 16)
+        {
             let data = wline.unwrap_or(&line);
             for i in 0..16 {
                 let val = (data[i / 4] >> (8 * (3 - i % 4))) as u8;
@@ -900,17 +907,15 @@ where
         size: u32,
         value: Long,
     ) -> bool {
-        if kind == AccessKind::Physical
-            || !self.pmmu
-            || !self.breakpoints.is_empty()
-            || self.watch_active
-        {
+        if kind == AccessKind::Physical || !self.pmmu || self.watch_active {
             return false;
         }
         let Some(tr) = self.last_translation_find(LAST_TRANSLATION_WRITE, fc, laddr) else {
             return false;
         };
-        if tr.cache != CacheMode::CopyBack {
+        if tr.cache != CacheMode::CopyBack
+            || self.breakpoints.may_match_data_access(true, tr.paddr, size)
+        {
             return false;
         }
         if !self
