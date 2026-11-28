@@ -19,6 +19,7 @@ mod capped_log;
 mod consts;
 mod dialogs;
 mod emulator;
+mod gamepad;
 mod helpers;
 mod joystick;
 mod keymap;

@@ -5,6 +5,10 @@ use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_MEMORY, NOTIFIER_WATCHPOINTS};
+use crate::gamepad::{
+    ButtonAction, GamepadHub, GamepadInjectOpts, GamepadInjection, GamepadPointer, PadSnapshot,
+    StickMode, map_gamepad, plan_gamepad_injection,
+};
 use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
@@ -171,6 +175,33 @@ impl Snowflake {
     }
 }
 
+/// Screen size for models whose display does not follow a monitor choice.
+/// Modular Macs get their size from the framebuffer, or from the selected
+/// monitor before the first frame.
+fn fixed_mac_display(model: MacModel) -> Option<(u16, u16)> {
+    match model {
+        MacModel::Early128K
+        | MacModel::Early512K
+        | MacModel::Early512Ke
+        | MacModel::Plus
+        | MacModel::SE
+        | MacModel::SeFdhd
+        | MacModel::Classic
+        | MacModel::SE30 => Some((512, 342)),
+        MacModel::Portable | MacModel::Portable15MB => Some((640, 400)),
+        MacModel::MacII
+        | MacModel::MacIIFDHD
+        | MacModel::MacIIx
+        | MacModel::MacIIcx
+        | MacModel::LC
+        | MacModel::LCII
+        | MacModel::LCIII
+        | MacModel::LC475
+        | MacModel::Quadra700
+        | MacModel::Quadra800 => None,
+    }
+}
+
 pub struct SnowGui {
     workspace: Workspace,
     workspace_file: Option<PathBuf>,
@@ -218,6 +249,16 @@ pub struct SnowGui {
     iie_disk_dialog: SnowFileDialog,
     /// The Apple IIe Card's joystick input (None without the card)
     iie_joystick: Option<Joystick>,
+    /// The one gilrs context, shared with the Apple IIe joystick
+    gamepad_hub: GamepadHub,
+    /// Previous sample, so [`map_gamepad`] can see edges
+    gamepad_prev: PadSnapshot,
+    /// Latest sample, for the Input menu
+    gamepad_now: PadSnapshot,
+    /// Guest cursor and the keys or mouse button this pad is holding
+    gamepad_pointer: GamepadPointer,
+    /// Button row waiting for the next host key in the Gamepad menu
+    gamepad_key_capture: Option<usize>,
     /// The Apple IIe joystick mapping window is open
     joy_mapping_open: bool,
     /// The binding being assigned in the mapping window: the next key or
@@ -475,6 +516,11 @@ impl SnowGui {
                 .storage(settings.fd_floppy.clone()),
             iie_disk_image: [None, None],
             iie_joystick: None,
+            gamepad_hub: GamepadHub::new(),
+            gamepad_prev: PadSnapshot::default(),
+            gamepad_now: PadSnapshot::default(),
+            gamepad_pointer: GamepadPointer::default(),
+            gamepad_key_capture: None,
             joy_mapping_open: false,
             joy_capture: None,
             iie_disk_dialog_drive: 0,
@@ -1291,6 +1337,15 @@ impl SnowGui {
                         .changed()
                     {
                         self.settings.save();
+                    }
+                    let gamepad_menu_open = ui
+                        .menu_button("Gamepad", |ui| {
+                            self.draw_gamepad_menu(ui);
+                        })
+                        .inner
+                        .is_some();
+                    if !gamepad_menu_open {
+                        self.gamepad_key_capture = None;
                     }
                     ui.menu_button("Map alternate Cmd key", |ui| {
                         let prev = self.settings.cmd_key_mapping;
@@ -2940,6 +2995,18 @@ impl SnowGui {
                         continue;
                     }
 
+                    if let Some(idx) = self.gamepad_key_capture
+                        && state.is_pressed()
+                    {
+                        if kc != egui_winit::winit::keyboard::KeyCode::Escape {
+                            self.settings.gamepad.buttons[idx].1 = ButtonAction::Key(kc);
+                            self.rearm_gamepad();
+                            self.settings.save();
+                        }
+                        self.gamepad_key_capture = None;
+                        continue;
+                    }
+
                     if ctx.wants_keyboard_input() {
                         continue;
                     }
@@ -2985,6 +3052,212 @@ impl SnowGui {
             None
         } else {
             Some(egui::Pos2::from([x, y]))
+        }
+    }
+
+    /// Guest pixels of the emulated display. The framebuffer wins once a frame
+    /// has arrived. Before that, models with a fixed screen use that size, and
+    /// modular Macs use the monitor chosen for the workspace.
+    fn emulated_display_pixels(&self) -> Option<(u16, u16)> {
+        let size: [u16; 2] = self.framebuffer.display_size();
+        if size[0] > 0 && size[1] > 0 {
+            return Some(size.into());
+        }
+        if let Some(model) = self.emu.get_model().or(self.workspace.model)
+            && let Some(fixed) = fixed_mac_display(model)
+        {
+            return Some(fixed);
+        }
+        let monitor = self.workspace.init_args.monitor?;
+        let width = u16::try_from(monitor.width()).ok()?;
+        let height = u16::try_from(monitor.height()).ok()?;
+        (width > 0 && height > 0).then_some((width, height))
+    }
+
+    /// Options > Input > Gamepad.
+    fn draw_gamepad_menu(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(520.0);
+        let mut rearm = ui
+            .checkbox(&mut self.settings.gamepad.enabled, "Enable gamepad")
+            .on_hover_text("Drive the emulated mouse and keyboard from a game controller")
+            .changed();
+
+        let previous_mode = self.settings.gamepad.stick_mode;
+        ui.radio_value(
+            &mut self.settings.gamepad.stick_mode,
+            StickMode::Mouse,
+            "Mouse movement",
+        );
+        ui.radio_value(
+            &mut self.settings.gamepad.stick_mode,
+            StickMode::ArrowKeys,
+            "Arrow keys",
+        );
+        if self.settings.gamepad.stick_mode != previous_mode {
+            rearm = true;
+        }
+        if self.settings.gamepad.stick_mode == StickMode::Mouse {
+            ui.label("Speed");
+            if ui
+                .add(egui::Slider::new(&mut self.settings.gamepad.speed, 1.0..=40.0).step_by(1.0))
+                .on_hover_text("Pointer pixels per poll at full stick deflection")
+                .changed()
+            {
+                self.settings.save();
+            }
+        }
+
+        ui.separator();
+        ui.label("Set key, then press a key (Esc cancels).");
+        let capture = self.gamepad_key_capture;
+        let button_count = self.settings.gamepad.buttons.len();
+        for idx in 0..button_count {
+            if self.draw_gamepad_button_row(ui, idx, capture) {
+                rearm = true;
+            }
+        }
+
+        ui.separator();
+        if self.gamepad_now.connected {
+            let name = if self.gamepad_now.name.is_empty() {
+                "Controller".to_string()
+            } else {
+                self.gamepad_now.name.clone()
+            };
+            ui.label(name);
+        } else {
+            ui.label("No controller");
+        }
+
+        if rearm {
+            self.rearm_gamepad();
+            self.settings.save();
+        }
+    }
+
+    /// One mapped controller button. Returns true when the action changed.
+    fn draw_gamepad_button_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        idx: usize,
+        capture: Option<usize>,
+    ) -> bool {
+        let (button, action) = self.settings.gamepad.buttons[idx];
+        let mut rearm = false;
+        ui.horizontal(|ui| {
+            ui.label(format!("{button:?}"));
+            if ui.radio(action == ButtonAction::None, "None").clicked()
+                && action != ButtonAction::None
+            {
+                self.settings.gamepad.buttons[idx].1 = ButtonAction::None;
+                if self.gamepad_key_capture == Some(idx) {
+                    self.gamepad_key_capture = None;
+                }
+                rearm = true;
+            }
+            if ui
+                .radio(action == ButtonAction::MouseButton, "Mouse button")
+                .clicked()
+                && action != ButtonAction::MouseButton
+            {
+                self.settings.gamepad.buttons[idx].1 = ButtonAction::MouseButton;
+                if self.gamepad_key_capture == Some(idx) {
+                    self.gamepad_key_capture = None;
+                }
+                rearm = true;
+            }
+            let key_label = if capture == Some(idx) {
+                "Press a key...".to_string()
+            } else if let ButtonAction::Key(key) = action {
+                format!("{key:?}")
+            } else {
+                "Key".to_string()
+            };
+            let key_selected = matches!(action, ButtonAction::Key(_));
+            if ui.radio(key_selected, key_label).clicked() && !key_selected {
+                self.gamepad_key_capture = Some(idx);
+            }
+            if ui.button("Set key").clicked() {
+                self.gamepad_key_capture = Some(idx);
+            }
+        });
+        rearm
+    }
+
+    /// Drop what this pad injected and treat the next sample as a fresh connect.
+    fn rearm_gamepad(&mut self) {
+        self.release_gamepad_inputs();
+        self.gamepad_prev = PadSnapshot::default();
+    }
+
+    /// Key-up and mouse-button release for inputs this pad is holding.
+    fn release_gamepad_inputs(&mut self) {
+        let keys = std::mem::take(&mut self.gamepad_pointer.held_keys);
+        let mouse_down = self.gamepad_pointer.mouse_down;
+        self.gamepad_pointer.mouse_down = false;
+        let mapping = self.settings.cmd_key_mapping;
+        for key in keys {
+            if let Some(scancode) = map_winit_keycode(key, mapping) {
+                self.emu.update_key(scancode, false);
+            }
+        }
+        if mouse_down && self.emu.mouse_mode() != MouseMode::Disabled {
+            self.emu.update_mouse_button(false);
+        }
+    }
+
+    /// Apply the gamepad to the emulated Mac after the IIe game port update.
+    fn apply_host_gamepad(
+        &mut self,
+        ctx: &egui::Context,
+        now: &PadSnapshot,
+        binding_capture: bool,
+    ) {
+        let enabled = self.settings.gamepad.enabled;
+        let mut actions = map_gamepad(&self.gamepad_prev, now, &self.settings.gamepad);
+        let suppress_keys = binding_capture || ctx.wants_keyboard_input() || !self.ui_active;
+        if !suppress_keys {
+            let mapping = self.settings.cmd_key_mapping;
+            actions
+                .keys
+                .retain(|(key, _)| map_winit_keycode(*key, mapping).is_some());
+        }
+        let opts = GamepadInjectOpts {
+            mouse_mode: self.emu.mouse_mode(),
+            display: self.emulated_display_pixels(),
+            move_mouse: self.ui_active,
+            suppress_keys,
+            suppress_mouse_button: binding_capture || !self.ui_active,
+            enabled,
+        };
+        let injection = plan_gamepad_injection(&mut self.gamepad_pointer, &actions, &opts);
+        self.gamepad_prev = now.clone();
+        self.gamepad_now = now.clone();
+        self.emit_gamepad_injection(&injection);
+    }
+
+    fn emit_gamepad_injection(&mut self, injection: &GamepadInjection) {
+        if let Some(abs) = injection.mouse_abs {
+            self.emu.update_mouse(Some(&abs), &egui::pos2(0.0, 0.0));
+            self.on_user_input();
+        } else if let Some(rel) = injection.mouse_rel {
+            self.emu.update_mouse(None, &rel);
+            self.on_user_input();
+        }
+        if let Some(down) = injection.mouse_button {
+            self.emu.update_mouse_button(down);
+            if down {
+                self.on_user_input();
+            }
+        }
+        let mapping = self.settings.cmd_key_mapping;
+        for &(key, down) in &injection.keys {
+            if let Some(scancode) = map_winit_keycode(key, mapping) {
+                self.emu.update_key(scancode, down);
+                if down {
+                    self.on_user_input();
+                }
+            }
         }
     }
 
@@ -3853,18 +4126,23 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        let pad = self.gamepad_hub.poll().clone();
         if self.emu.is_initialized()
             && let Some(joy) = &mut self.iie_joystick
-            && let Some(port) = joy.poll()
+            && let Some(port) = joy.poll_with(Some(&pad))
         {
             self.emu.set_iie_game_port(port);
         }
-        if let Some(joy) = &mut self.iie_joystick
-            && let Some(button) = joy.take_pressed_button()
+        // Read the capture flag before `take` clears it, so the click that
+        // finishes an Apple IIe binding is not also a Macintosh click.
+        let binding_capture = self.joy_capture.is_some() || self.gamepad_key_capture.is_some();
+        if let Some(button) = self.gamepad_hub.take_pressed_button()
+            && self.iie_joystick.is_some()
             && let Some((input, slot)) = self.joy_capture.take()
         {
             self.assign_joy_binding(input, slot, JoyBinding::Pad(button));
         }
+        self.apply_host_gamepad(ctx, &pad, binding_capture);
         self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
 
@@ -4933,6 +5211,10 @@ impl eframe::App for SnowGui {
                 egui::Event::WindowFocused(false) => {
                     self.emu.release_all_inputs();
                     self.mouse_button_down = false;
+                    // The guest already dropped every key. Forget the pad's
+                    // holds so a later edge does not key-up the real keyboard.
+                    self.gamepad_pointer.held_keys.clear();
+                    self.gamepad_pointer.mouse_down = false;
                     self.release_mouse_grab();
                 }
                 _ => (),

@@ -6,9 +6,13 @@
 //! on: they move it, and a real controller takes priority over them. When
 //! they are switched off it stays, centred, until the IIe is reset
 //! (`GamePort::keep_stick`).
+//!
+//! The controller is a [`crate::gamepad::PadSnapshot`] from the shared
+//! [`crate::gamepad::GamepadHub`]. This type does not open gilrs.
 
+use crate::gamepad::PadSnapshot;
 use egui_winit::winit::keyboard::KeyCode;
-use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
+use gilrs::Button;
 use serde::{Deserialize, Serialize};
 use snow_core::mac::maclc::pds_iie::GamePort;
 use std::fmt;
@@ -170,10 +174,6 @@ fn keys_to_paddle(low: bool, high: bool) -> u8 {
 pub struct Joystick {
     /// Controller emulation: the keys can drive the joystick
     emulation: bool,
-    /// The controller library (None if it failed to start)
-    gilrs: Option<Gilrs>,
-    /// The controller that last sent an event
-    gamepad: Option<GamepadId>,
     /// The joystick keys are switched on (controller emulation only)
     keys_on: bool,
     /// The keys and controller buttons of each input
@@ -182,8 +182,6 @@ pub struct Joystick {
     held: [[bool; JOY_CHOICES]; 6],
     /// The game port as last sent to the emulator
     sent: Option<GamePort>,
-    /// The controller button last pressed, for the mapping dialog
-    pressed_button: Option<Button>,
 }
 
 /// Joystick axes (0 to 255) and buttons
@@ -191,26 +189,12 @@ type JoyState = ([u8; 2], [bool; 2]);
 
 impl Joystick {
     pub fn new(emulation: bool) -> Self {
-        let gilrs = match Gilrs::new() {
-            Ok(g) => Some(g),
-            Err(e) => {
-                log::error!("Cannot open game controllers: {}", e);
-                None
-            }
-        };
-        Self::with_gilrs(emulation, gilrs)
-    }
-
-    fn with_gilrs(emulation: bool, gilrs: Option<Gilrs>) -> Self {
         Self {
             emulation,
-            gilrs,
-            gamepad: None,
             keys_on: false,
             bindings: default_bindings(),
             held: [[false; JOY_CHOICES]; 6],
             sent: None,
-            pressed_button: None,
         }
     }
 
@@ -218,11 +202,6 @@ impl Joystick {
     pub fn set_bindings(&mut self, bindings: JoyBindings) {
         self.bindings = bindings;
         self.held = [[false; JOY_CHOICES]; 6];
-    }
-
-    /// The controller button pressed since the last call, if any
-    pub fn take_pressed_button(&mut self) -> Option<Button> {
-        self.pressed_button.take()
     }
 
     /// What the joystick keys are, for the menu and toolbar
@@ -310,26 +289,14 @@ impl Joystick {
     }
 
     /// The joystick from the host's game controller, or None if none is
-    /// connected
-    fn controller_state(&mut self) -> Option<JoyState> {
-        let gilrs = self.gilrs.as_mut()?;
-        while let Some(ev) = gilrs.next_event() {
-            self.gamepad = Some(ev.id);
-            if let EventType::ButtonPressed(button, _) = ev.event {
-                self.pressed_button = Some(button);
-            }
-        }
-        // With no controller event yet, take the first connected
-        let id = self
-            .gamepad
-            .filter(|&id| gilrs.connected_gamepad(id).is_some())
-            .or_else(|| gilrs.gamepads().next().map(|(id, _)| id))?;
-        let pad = gilrs.connected_gamepad(id)?;
+    /// connected. `None` and a disconnected snapshot are no controller.
+    fn controller_state(&self, pad: Option<&PadSnapshot>) -> Option<JoyState> {
+        let pad = pad.filter(|pad| pad.connected)?;
         // A controller button bound to `input` is down
         let input = |input: JoyInput| {
             self.bindings[input as usize]
                 .iter()
-                .any(|b| matches!(b, Some(JoyBinding::Pad(button)) if pad.is_pressed(*button)))
+                .any(|b| matches!(b, Some(JoyBinding::Pad(button)) if pad.button_pressed(*button)))
         };
         // The bound buttons (the D-pad by default) override the left stick
         let x = keys_to_paddle(input(JoyInput::Left), input(JoyInput::Right));
@@ -339,13 +306,13 @@ impl Joystick {
                 if x != CENTRE {
                     x
                 } else {
-                    axis_to_paddle(pad.value(Axis::LeftStickX))
+                    axis_to_paddle(pad.left_x)
                 },
                 // The stick's up is positive, the IIe's is 0
                 if y != CENTRE {
                     y
                 } else {
-                    axis_to_paddle(-pad.value(Axis::LeftStickY))
+                    axis_to_paddle(-pad.left_y)
                 },
             ],
             [input(JoyInput::Button0), input(JoyInput::Button1)],
@@ -353,15 +320,22 @@ impl Joystick {
     }
 
     /// The game port: the host's controller and the keys, merged
-    fn game_port(&mut self) -> GamePort {
-        let pad = self.controller_state();
-        game_port_from(self.keys_on, pad, self.keys_state())
+    fn game_port(&self, pad: Option<&PadSnapshot>) -> GamePort {
+        game_port_from(self.keys_on, self.controller_state(pad), self.keys_state())
     }
 
-    /// Polls the source. Returns the game port if it changed since it was
-    /// last sent.
+    /// Polls the keyboard side with no controller attached.
+    /// Returns the game port if it changed since it was last sent.
+    /// The emulator loop uses [`Self::poll_with`]; tests call this.
+    #[allow(dead_code)]
     pub fn poll(&mut self) -> Option<GamePort> {
-        let port = self.game_port();
+        self.poll_with(None)
+    }
+
+    /// Polls with a controller snapshot from [`crate::gamepad::GamepadHub`].
+    /// Returns the game port if it changed since it was last sent.
+    pub fn poll_with(&mut self, pad: Option<&PadSnapshot>) -> Option<GamePort> {
+        let port = self.game_port(pad);
         if self.sent == Some(port) {
             return None;
         }
@@ -384,7 +358,7 @@ mod tests {
 
     #[test]
     fn keyboard_joystick() {
-        let mut joy = Joystick::with_gilrs(true, None);
+        let mut joy = Joystick::new(true);
         assert!(!joy.key(KeyCode::ArrowLeft, true), "keys off");
         joy.set_keys_on(true);
         assert!(joy.key(KeyCode::ArrowLeft, true));
@@ -405,7 +379,7 @@ mod tests {
 
     #[test]
     fn keypad_and_buttons() {
-        let mut joy = Joystick::with_gilrs(true, None);
+        let mut joy = Joystick::new(true);
         assert!(joy.key(KeyCode::ScrollLock, true));
         assert!(joy.key(KeyCode::ScrollLock, false));
         assert!(joy.keys_on());
@@ -468,7 +442,7 @@ mod tests {
 
     #[test]
     fn rebound_key() {
-        let mut joy = Joystick::with_gilrs(true, None);
+        let mut joy = Joystick::new(true);
         let mut b = default_bindings();
         assign(&mut b, JoyInput::Button0, 0, JoyBinding::Key(KeyCode::KeyQ));
         joy.set_bindings(b);
@@ -480,7 +454,7 @@ mod tests {
 
     #[test]
     fn toggle_key_only_with_emulation() {
-        let mut joy = Joystick::with_gilrs(false, None);
+        let mut joy = Joystick::new(false);
         assert!(!joy.key(KeyCode::ScrollLock, true));
         assert!(!joy.keys_on());
     }
@@ -505,5 +479,54 @@ mod tests {
         let port = game_port_from(true, Some(([200, CENTRE], [false, true])), keys);
         assert_eq!(port.paddles, [Some(200), Some(255)]);
         assert_eq!(port.buttons, [true, true]);
+    }
+
+    #[test]
+    fn controller_snapshot_merges_with_keys() {
+        let mut joy = Joystick::new(true);
+        joy.set_keys_on(true);
+
+        let mut pad = PadSnapshot {
+            connected: true,
+            left_x: 1.0,
+            left_y: 1.0,
+            ..PadSnapshot::default()
+        };
+        assert_eq!(
+            joy.poll_with(Some(&pad)).unwrap().paddles,
+            [Some(255), Some(0)],
+            "stick up is positive and becomes the IIe's 0"
+        );
+
+        pad.buttons.push(Button::DPadLeft);
+        assert_eq!(
+            joy.poll_with(Some(&pad)).unwrap().paddles,
+            [Some(0), Some(0)],
+            "d-pad button overrides the stick"
+        );
+
+        pad.buttons.push(Button::West);
+        joy.key(KeyCode::AltLeft, true);
+        assert_eq!(
+            joy.poll_with(Some(&pad)).unwrap().buttons,
+            [true, true],
+            "controller and keys OR"
+        );
+
+        joy.key(KeyCode::ArrowRight, true);
+        assert_eq!(
+            joy.poll_with(Some(&pad)),
+            None,
+            "off-centre controller wins over the keys"
+        );
+
+        let port = joy.poll_with(None).unwrap();
+        assert_eq!(port.paddles, [Some(255), Some(CENTRE)]);
+        assert_eq!(port.buttons, [true, false]);
+        assert_eq!(
+            joy.poll_with(Some(&PadSnapshot::default())),
+            None,
+            "a disconnected snapshot is no controller"
+        );
     }
 }
