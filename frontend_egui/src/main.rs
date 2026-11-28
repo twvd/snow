@@ -22,6 +22,7 @@ mod emulator;
 mod helpers;
 mod joystick;
 mod keymap;
+mod mcp;
 mod settings;
 mod shader_pipeline;
 mod uniform;
@@ -85,6 +86,16 @@ struct Args {
     /// multiple times)
     #[arg(long)]
     floppy_wp: Vec<String>,
+
+    /// Let AI agents drive the emulator over MCP (also SNOW_MCP=1).
+    /// Agents connect with `snowemu --mcp-bridge`.
+    #[arg(long)]
+    mcp: bool,
+
+    /// Run the MCP server for agents on stdin/stdout. It passes tool calls
+    /// to the running Snows that have MCP on.
+    #[arg(long, exclusive = true)]
+    mcp_bridge: bool,
 }
 
 /// Returns the images given with --floppy and --floppy-wp in command line
@@ -113,6 +124,9 @@ fn floppies_in_order(args: &Args, matches: &ArgMatches) -> Vec<(String, bool)> {
 fn main() -> eframe::Result {
     let matches = Args::command().get_matches();
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    if args.mcp_bridge {
+        mcp::run_bridge();
+    }
     let floppies = floppies_in_order(&args, &matches);
 
     let mut env_logger = env_logger::builder();
@@ -141,6 +155,12 @@ fn main() -> eframe::Result {
         snow_core::built_info::PROFILE,
         built_info::FEATURES.join(", "),
     );
+
+    if (args.mcp || mcp::enabled_by_env())
+        && let Err(e) = mcp::start(args.filename.as_deref())
+    {
+        log::error!("Cannot start the MCP server: {:?}", e);
+    }
 
     // egui/eframe does not expose all the keys we need, so we capture raw keyboard events
     // and pass them through a channel.

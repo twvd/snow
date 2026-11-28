@@ -75,5 +75,8 @@ winit = { version = "0.30.13", default-features = false, features = ["serde"] }
 objc2-app-kit = "0.3.1"
 objc2-foundation = "0.3.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

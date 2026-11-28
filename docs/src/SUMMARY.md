@@ -25,6 +25,7 @@
     - [Built-in file server](./manual/network/fileserver.md)
 - [Printing](./manual/printing.md)
 - [Fullscreen and Zen mode](./manual/fullscreen.md)
+- [AI agents (MCP)](./manual/mcp.md)
 - [Save states](./manual/savestates.md)
 - [Debugging](./manual/debugging/README.md)
     - [Breakpoints](./manual/debugging/breakpoints.md)
