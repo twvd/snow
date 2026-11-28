@@ -313,6 +313,9 @@ impl SnowGui {
     const MODE_TOAST_KIND: u32 = 0;
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
+    /// Whether the variable refresh rate option is offered. Not on macOS, where
+    /// a display link paces the redraws (frame_pacer).
+    const VRR_AVAILABLE: bool = cfg!(not(target_os = "macos"));
     const DYNAMIC_FF_RESUME_MS: u64 = 500;
 
     /// Returns the target fast-forward speed based on current limit settings.
@@ -1233,6 +1236,45 @@ impl SnowGui {
                         "Hide fullscreen/zen mode toasts",
                     )
                     .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.settings.display_lock,
+                        if self.emu.is_display_locked() {
+                            "Lock to display refresh (active)"
+                        } else {
+                            "Lock to display refresh"
+                        },
+                    )
+                    .on_hover_text(
+                        "Smooth motion by showing each frame for the same number of display \
+                        refreshes. When the machine's frame rate is close to the display's, \
+                        such as 60.15 Hz on a 60 or 120 Hz display, it then runs up to 0.5% \
+                        off its real speed.",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if Self::VRR_AVAILABLE
+                    && ui
+                        .checkbox(
+                            &mut self.settings.vrr,
+                            if crate::vrr::active() {
+                                "Variable refresh rate in fullscreen (active)"
+                            } else {
+                                "Variable refresh rate in fullscreen"
+                            },
+                        )
+                        .on_hover_text(
+                            "On a variable refresh rate (FreeSync, G-Sync) display, show each \
+                            frame as the machine makes it, so the display refreshes at the \
+                            machine's own rate, such as 66.67 or 75 Hz. Only in fullscreen, \
+                            where it takes the place of the lock to the display's refresh.",
+                        )
+                        .clicked()
                 {
                     self.settings.save();
                 }
@@ -4826,6 +4868,23 @@ impl eframe::App for SnowGui {
         // grabbed, so it is clear that clicking is what hands the mouse to the machine.
         if self.ui_active && self.emu.is_running() && self.mouse_input_active(ctx) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
+
+        // With VRR, in fullscreen only: on Windows, a windowed OpenGL app is
+        // composed by the desktop window manager at the display's fixed rate
+        crate::vrr::set_active(Self::VRR_AVAILABLE && self.settings.vrr && self.in_fullscreen);
+
+        // Lock the machine's frames to the display's refresh, given a new frame.
+        // Not with VRR, where the display keeps to the frames.
+        if let Some(rendered) = self.framebuffer.take_new_frame_rendered()
+            && let Some((last_refresh, period)) = crate::frame_pacer::refresh_grid()
+        {
+            self.emu.frame_shown(
+                rendered,
+                last_refresh,
+                period,
+                self.settings.display_lock && !crate::vrr::active(),
+            );
         }
 
         // Re-render to keep the display updating, but cap the repaint interval so the

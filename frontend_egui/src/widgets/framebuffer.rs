@@ -43,6 +43,8 @@ impl Display for ScalingAlgorithm {
 pub struct FramebufferWidget {
     frame: Option<DisplayBuffer>,
     frame_recv: Option<Arc<std::sync::Mutex<Option<DisplayBuffer>>>>,
+    /// When the newest frame was rendered, until taken by take_new_frame_rendered()
+    new_frame_rendered: Option<std::time::Instant>,
     viewport_texture: egui::TextureHandle,
     pub scale: f32,
     pub scaling_algorithm: ScalingAlgorithm,
@@ -62,6 +64,7 @@ impl FramebufferWidget {
         Self {
             frame: None,
             frame_recv: None,
+            new_frame_rendered: None,
             viewport_texture: cc.egui_ctx.load_texture(
                 "viewport",
                 egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
@@ -99,6 +102,11 @@ impl FramebufferWidget {
         f32::from(self.display_size[1]) * self.scale
     }
 
+    /// When the newest frame drawn was rendered, once per frame
+    pub const fn take_new_frame_rendered(&mut self) -> Option<std::time::Instant> {
+        self.new_frame_rendered.take()
+    }
+
     pub fn connect_receiver(&mut self, recv: Arc<std::sync::Mutex<Option<DisplayBuffer>>>) {
         self.frame_recv = Some(recv);
     }
@@ -110,6 +118,7 @@ impl FramebufferWidget {
                 lock.take()
             }
         {
+            self.new_frame_rendered = frame.rendered();
             self.display_size = [frame.width(), frame.height()];
             self.viewport_texture.set(
                 egui::ColorImage::new(

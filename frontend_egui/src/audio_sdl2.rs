@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow};
 use sdl2::Sdl;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
-use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
+use snow_core::renderer::{
+    AudioBuffer, AudioFill, AudioPlayer, AudioProvider, AudioSink, ChannelAudioSink,
+};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,16 +23,8 @@ thread_local! {
 }
 
 struct SDLAudioCallback {
-    recv: AudioReceiver,
+    player: AudioPlayer,
     exch: Arc<SDLAudioExchange>,
-    /// When true, play silence while waiting for the audio receiver to fill up.
-    /// Prebuffering prevents audio interruptions if the emulator doesn't deliver
-    /// samples in time for playback.
-    prebuffering: bool,
-    /// An extra layer of buffering to solve these problems:
-    /// - SDL audio buffers must have a power-of-2 length
-    /// - Users may submit audio buffers that exceed SDL's expected length
-    active_samples: VecDeque<f32>,
 }
 
 /// Exchanges state between the SDLAudioCallback and SDLAudioProvider
@@ -73,53 +66,18 @@ impl AudioCallback for SDLAudioCallback {
         //
         // Last tested on MacOS Sequoia, SDL 2.32.8.
 
-        if self.prebuffering {
-            if self.recv.is_full() {
-                self.prebuffering = false;
-            } else {
-                out.fill(0.0);
-                return;
-            }
+        match self.player.fill(out) {
+            AudioFill::Prebuffering => (),
+            AudioFill::Played => self.exch.underrun.store(false, Ordering::Relaxed),
+            AudioFill::Underrun => self.exch.underrun.store(true, Ordering::Relaxed),
         }
 
-        // Collect audio samples into the active buffer
-        while self.active_samples.len() < out.len() {
-            if let Ok(new_samples) = self.recv.try_recv() {
-                self.active_samples.extend(&new_samples);
-            } else {
-                break;
-            }
-        }
-
-        let submit_samples = |out: &mut [f32], active_samples: &mut VecDeque<f32>| {
-            if self.exch.mute.load(Ordering::Relaxed) {
-                // Discard active samples and play silence
-                for out_sample in out.iter_mut() {
-                    *out_sample = 0.0;
-                    active_samples.pop_front();
-                }
-            } else {
-                // Feed active samples to the SDL output
-                for out_sample in out.iter_mut() {
-                    *out_sample = active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
-                }
-            }
-        };
-
-        if self.active_samples.len() >= out.len() {
-            submit_samples(out, &mut self.active_samples);
-            self.exch.underrun.store(false, Ordering::Relaxed);
+        if self.exch.mute.load(Ordering::Relaxed) {
+            out.fill(0.0);
         } else {
-            // log::warn!("Audio buffer underrun. Audio may skip.");
-
-            // Audio is late. Submit any remaining active samples and enter prebuffering mode.
-            let sample_count = self.active_samples.len();
-            submit_samples(&mut out[..sample_count], &mut self.active_samples);
-            out[sample_count..].fill(0.0);
-            self.active_samples.clear();
-
-            self.prebuffering = true;
-            self.exch.underrun.store(true, Ordering::Relaxed);
+            for sample in out.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0) * 0.5;
+            }
         }
     }
 }
@@ -128,7 +86,7 @@ impl SDLAudioStream {
     /// Creates a new audio provider
     pub fn new(freq: i32, channels: u8, samples: u16) -> Result<Self> {
         SDL.with(|cell| {
-            let channel_sink = ChannelAudioSink::new();
+            let channel_sink = ChannelAudioSink::new(freq, channels);
 
             let sdls = cell.borrow_mut();
             let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
@@ -144,10 +102,8 @@ impl SDLAudioStream {
                 .open_playback(None, &spec, |spec| {
                     log::debug!("Audio spec: {:?}", spec);
                     SDLAudioCallback {
-                        recv: channel_sink.receiver(),
+                        player: AudioPlayer::new(&channel_sink),
                         exch: exch.clone(),
-                        prebuffering: true,
-                        active_samples: Default::default(),
                     }
                 })
                 .map_err(|e| anyhow!(e))?;

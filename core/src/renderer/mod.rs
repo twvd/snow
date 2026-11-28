@@ -1,25 +1,23 @@
+mod audio;
 pub mod channel;
+mod display_lock;
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
 
 use std::ops::{Deref, DerefMut};
+use std::time::Instant;
+
+pub use audio::{
+    AUDIO_CHUNK_FRAMES, AUDIO_CHUNK_SIZE, AudioFill, AudioPlayer, AudioReceiver, ChannelAudioSink,
+    PaceControl, PacedAudioSink, machine_audio_sink,
+};
+pub use display_lock::DisplayLock;
 
 /// Audio frame buffer
 pub type AudioBuffer = Box<[f32]>;
 
-/// Audio frame channel receiver
-pub type AudioReceiver = Receiver<AudioBuffer>;
-
-/// Audio channel queue length.
-/// Higher values add latency to audio, but might fix underruns.
-pub const AUDIO_QUEUE_LEN: usize = 4; // TODO: make this configurable?
-
-/// Amount of samples in the audio buffer
-pub const AUDIO_BUFFER_SAMPLES: usize = 512;
-
-/// Audio buffer size (total for all channels)
-pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
+/// Frames the host plays per callback
+pub const AUDIO_BUFFER_SAMPLES: usize = 128;
 
 /// Audio channels
 pub const AUDIO_CHANNELS: usize = 2;
@@ -31,6 +29,11 @@ pub trait AudioProvider: Send {
         channels: u8,
         samples: u16,
     ) -> Result<Box<dyn AudioSink>>;
+
+    /// The speed control for the streams that pace the emulator, if any
+    fn pace_control(&self) -> Option<PaceControl> {
+        None
+    }
 }
 
 /// Audio sink for produced buffers
@@ -38,43 +41,6 @@ pub trait AudioSink: Send {
     fn send(&self, buffer: AudioBuffer) -> Result<()>;
     fn is_full(&self) -> bool;
     fn is_empty(&self) -> bool;
-}
-
-/// Crossbeam-backed audio sink
-pub struct ChannelAudioSink {
-    sender: Sender<AudioBuffer>,
-    receiver: Receiver<AudioBuffer>,
-}
-
-impl ChannelAudioSink {
-    pub fn new() -> Self {
-        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
-        Self { sender, receiver }
-    }
-
-    pub fn receiver(&self) -> AudioReceiver {
-        self.receiver.clone()
-    }
-
-    /// Clears/flushes the entire current content in the sink
-    pub fn clear(&self) {
-        while self.receiver.try_recv().is_ok() {}
-    }
-}
-
-impl AudioSink for ChannelAudioSink {
-    fn send(&self, buffer: AudioBuffer) -> Result<()> {
-        self.sender.send(buffer)?;
-        Ok(())
-    }
-
-    fn is_full(&self) -> bool {
-        self.sender.is_full()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.sender.is_empty()
-    }
 }
 
 struct NullAudioSink();
@@ -103,6 +69,8 @@ pub struct DisplayBuffer {
     width: usize,
     height: usize,
     frame: Vec<u8>,
+    /// When the frame was done
+    rendered: Option<Instant>,
 }
 
 impl DisplayBuffer {
@@ -114,6 +82,7 @@ impl DisplayBuffer {
             width,
             height,
             frame: Self::allocate_buffer(width, height),
+            rendered: None,
         }
     }
 
@@ -129,7 +98,18 @@ impl DisplayBuffer {
             width: self.width,
             height: self.height,
             frame: Self::allocate_buffer(self.width, self.height),
+            rendered: None,
         }
+    }
+
+    /// Marks the frame done, now
+    pub fn set_rendered(&mut self) {
+        self.rendered = Some(Instant::now());
+    }
+
+    /// When the frame was done, if it is
+    pub const fn rendered(&self) -> Option<Instant> {
+        self.rendered
     }
 
     pub fn width(&self) -> u16 {

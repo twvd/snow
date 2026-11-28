@@ -7,7 +7,7 @@ use super::{NubusSlot, bus_long, lanes, standard_offset};
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
-use crate::mac::VideoOutput;
+use crate::mac::{VideoOutput, VideoTiming};
 use crate::renderer::{DisplayBuffer, Renderer, render_packed};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -55,6 +55,9 @@ where
     const H_VISIBLE: usize = 640;
     /// Visible lines in one frame
     const V_VISIBLE: usize = 480;
+    /// The card drives Apple's 640x480 monitors only: 864 x 525 dots at
+    /// 30.24 MHz (66.67 Hz)
+    const TIMING: VideoTiming = VideoTiming::new(864, 525, 30_240_000);
     /// Amount of VRAM present
     const VRAM_SIZE: usize = 0x8_0000;
     /// Default framebuffer base offset
@@ -275,17 +278,19 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        let period = Self::TIMING.frame_period(ctx.bus_frequency());
         self.vblank_ticks += ticks;
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+        if self.vblank_ticks >= period {
             if self.renderer.as_ref().unwrap().frame_wanted() {
                 self.render()?;
             }
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            self.vblank_ticks -= period;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
         }
-        self.in_vblank = self.vblank_ticks >= ctx.bus_frequency() / 60 * 480 / 525;
+        self.in_vblank =
+            self.vblank_ticks >= period * Self::V_VISIBLE as Ticks / Self::TIMING.v_total;
         Ok(ticks)
     }
 }
