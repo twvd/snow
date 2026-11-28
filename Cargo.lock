@@ -3724,6 +3724,7 @@ checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
  "bitflags 2.11.1",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -5129,8 +5130,10 @@ dependencies = [
  "multi_log",
  "num-derive 0.4.2",
  "num-traits",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "once_cell",
  "pathdiff",
  "pnet",
@@ -5144,6 +5147,7 @@ dependencies = [
  "snow_core",
  "snow_floppy",
  "strum 0.26.3",
+ "windows-sys 0.61.2",
  "winit",
  "winresource",
 ]

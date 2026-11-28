@@ -3,7 +3,7 @@
 //! to the audio sink
 
 use crate::audio_filter::AudioFilter;
-use crate::renderer::{AUDIO_BUFFER_SIZE, AudioSink, null_audio_sink};
+use crate::renderer::{AUDIO_CHUNK_SIZE, AudioSink, null_audio_sink};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -106,7 +106,7 @@ impl Default for AudioPath {
             gain: GAIN_ONE,
             last: [0; 2],
             changed: false,
-            buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
+            buffer: Vec::with_capacity(AUDIO_CHUNK_SIZE),
             silent: true,
             filter: AudioFilter::new(),
         }
@@ -152,8 +152,8 @@ impl AudioPath {
         self.buffer.push(filtered_l);
         self.buffer.push(filtered_r);
         // Assuming we're always aligned to 2 here
-        if self.buffer.len() >= AUDIO_BUFFER_SIZE {
-            let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
+        if self.buffer.len() >= AUDIO_CHUNK_SIZE {
+            let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_CHUNK_SIZE));
             self.silent = !self.changed;
             self.changed = false;
             self.sink.send(buffer.into_boxed_slice())?;

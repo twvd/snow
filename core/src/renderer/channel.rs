@@ -36,7 +36,8 @@ impl Renderer for ChannelRenderer {
     /// Renders changes to screen
     fn update(&mut self) -> Result<()> {
         let new_buffer = self.displaybuffer.new_from_this();
-        let buffer = std::mem::replace(&mut self.displaybuffer, new_buffer);
+        let mut buffer = std::mem::replace(&mut self.displaybuffer, new_buffer);
+        buffer.set_rendered();
         *self.channel.lock().unwrap() = Some(buffer);
         Ok(())
     }

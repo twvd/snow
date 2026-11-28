@@ -1236,6 +1236,25 @@ impl SnowGui {
                 {
                     self.settings.save();
                 }
+                if ui
+                    .checkbox(
+                        &mut self.settings.display_lock,
+                        if self.emu.is_display_locked() {
+                            "Lock to display refresh (active)"
+                        } else {
+                            "Lock to display refresh"
+                        },
+                    )
+                    .on_hover_text(
+                        "Smooth motion by showing each frame for the same number of display \
+                        refreshes. When the machine's frame rate is close to the display's, \
+                        such as 60.15 Hz on a 60 or 120 Hz display, it then runs up to 0.5% \
+                        off its real speed.",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
                 ui.separator();
                 ui.menu_button("Input", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -4826,6 +4845,14 @@ impl eframe::App for SnowGui {
         // grabbed, so it is clear that clicking is what hands the mouse to the machine.
         if self.ui_active && self.emu.is_running() && self.mouse_input_active(ctx) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
+
+        // Lock the machine's frames to the display's refresh, given a new frame
+        if let Some(rendered) = self.framebuffer.take_new_frame_rendered()
+            && let Some((last_refresh, period)) = crate::frame_pacer::refresh_grid()
+        {
+            self.emu
+                .frame_shown(rendered, last_refresh, period, self.settings.display_lock);
         }
 
         // Re-render to keep the display updating, but cap the repaint interval so the

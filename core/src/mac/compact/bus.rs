@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
+use crate::bus::native_clock::{C8M_PER_VIA, C16M_FREQUENCY, DeviceCycle, NativeClock};
 use crate::bus::{
     Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
 };
@@ -22,9 +22,7 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{AbsoluteMouse, MacModel, WARM_START_SIGNATURE};
-use crate::renderer::{
-    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
-};
+use crate::renderer::{AudioProvider, Renderer, machine_audio_sink};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
@@ -255,12 +253,8 @@ where
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        // Audio sample frequency is tied to monitor's horizontal sync
-        // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
-        // Round down to a safe commonly used value (22050), 0.9% off
-        let sink = provider
-            .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
-            .unwrap_or_else(|_| null_audio_sink());
+        // A sample per scanline: 704 dots of the 15.6672 MHz pixel clock, 22.2545 kHz
+        let sink = machine_audio_sink(provider, C16M_FREQUENCY as f64 / 704.0);
         self.audio.set_sink(sink);
 
         self.scsi.bus_mut().set_audio_provider(provider)
