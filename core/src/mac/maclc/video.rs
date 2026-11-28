@@ -12,36 +12,18 @@
 use super::{sonora, v8};
 use crate::bus::native_clock::C16M_FREQUENCY;
 use crate::debuggable::Debuggable;
+use crate::devices::{
+    BusKind, DeviceModel, DeviceOps, DisplayConfig, DisplayFunction, DisplayInfo, DisplayStatus,
+    FunctionConfig, FunctionInfo, FunctionMut, ModelInfo,
+};
 use crate::mac::{MacModel, MacMonitor};
-use crate::renderer::{DisplayBuffer, Renderer, render_packed};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, FrameReceiver, render_packed};
 use crate::tickable::Ticks;
 use crate::types::Byte;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-/// Monitors which can be connected to a model
-pub fn monitors(model: MacModel) -> &'static [MacMonitor] {
-    if model == MacModel::LCIII {
-        sonora::MONITORS
-    } else {
-        v8::MONITORS
-    }
-}
-
-/// Sizes of video RAM which can be fitted to a model
-pub fn vram_sizes(model: MacModel) -> &'static [usize] {
-    if model == MacModel::LCIII {
-        sonora::VRAM_SIZES
-    } else {
-        v8::VRAM_SIZES
-    }
-}
-
-/// The largest size
-pub fn vram_size_default(model: MacModel) -> usize {
-    *vram_sizes(model).last().unwrap()
-}
 
 /// Depth of 16 bits per pixel
 const DEPTH_16BPP: u8 = 4;
@@ -139,10 +121,15 @@ impl Ramdac {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct Video<TRenderer: Renderer> {
+pub struct Video {
     #[serde(skip)]
-    pub renderer: Option<TRenderer>,
+    renderer: ChannelRenderer,
+
+    /// Which video it is: the V8's or the Sonora's
+    model: DeviceModel,
+    /// The monitor and the VRAM size that were chosen for it, if they were
+    chosen_monitor: Option<MacMonitor>,
+    chosen_vram_size: Option<usize>,
 
     monitor: MacMonitor,
     vram: Vec<u8>,
@@ -157,13 +144,104 @@ pub struct Video<TRenderer: Renderer> {
     shown: Option<(usize, usize, u8)>,
 }
 
-impl<TRenderer> Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
-    pub fn new(renderer: TRenderer, monitor: MacMonitor, vram_size: usize) -> Self {
+fn fits_v8(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::V8Video)
+}
+
+fn fits_sonora(mac: MacModel) -> bool {
+    mac.has_built_in(DeviceModel::SonoraVideo)
+}
+
+/// The video of the V8 gate array, on the LC and the LC II
+pub const INFO: ModelInfo = ModelInfo {
+    fits: fits_v8,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::V8Video,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            monitors: v8::MONITORS,
+            // The 14" high-res
+            default_monitor: 1,
+            vram_sizes: v8::VRAM_SIZES,
+            // 512 KB
+            default_vram_size: 1,
+        }),
+    )
+};
+
+/// The video of the Sonora gate array, on the LC III
+pub const INFO_SONORA: ModelInfo = ModelInfo {
+    fits: fits_sonora,
+    fixed: true,
+    ..ModelInfo::base(
+        DeviceModel::SonoraVideo,
+        "Built-in video",
+        BusKind::BuiltIn,
+        FunctionInfo::Display(DisplayInfo {
+            monitors: sonora::MONITORS,
+            // The 14" high-res
+            default_monitor: 1,
+            vram_sizes: sonora::VRAM_SIZES,
+            // 768 KB
+            default_vram_size: 1,
+        }),
+    )
+};
+
+impl DeviceOps for Video {
+    fn info(&self) -> &'static ModelInfo {
+        self.model.info()
+    }
+
+    fn config(&self) -> FunctionConfig {
+        FunctionConfig::Display(DisplayConfig {
+            monitor: self.chosen_monitor,
+            vram_size: self.chosen_vram_size,
+        })
+    }
+
+    fn function(&mut self) -> FunctionMut<'_> {
+        FunctionMut::Display(self)
+    }
+
+    fn debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        self.get_debug_properties()
+    }
+}
+
+impl Video {
+    /// The video of the device model `model`, from the Config of its device config. A
+    /// monitor or a VRAM size that this video can't have gives the default one.
+    pub fn with_config(model: DeviceModel, config: &DisplayConfig) -> Self {
+        let FunctionInfo::Display(info) = model.info().function else {
+            panic!("{:?} is no video", model);
+        };
+        let monitor = config
+            .monitor
+            .filter(|m| info.monitors.contains(m))
+            .or_else(|| info.default_monitor())
+            .unwrap();
+        let vram_size = config
+            .vram_size
+            .filter(|s| info.vram_sizes.contains(s))
+            .or_else(|| info.default_vram_size())
+            .unwrap();
         Self {
-            renderer: Some(renderer),
+            model,
+            chosen_monitor: config.monitor,
+            chosen_vram_size: config.vram_size,
+            ..Self::new(monitor, vram_size)
+        }
+    }
+
+    pub fn new(monitor: MacMonitor, vram_size: usize) -> Self {
+        Self {
+            renderer: ChannelRenderer::default(),
+            model: DeviceModel::V8Video,
+            chosen_monitor: None,
+            chosen_vram_size: None,
             monitor,
             vram: vec![0; vram_size],
             ramdac: Ramdac::new(),
@@ -318,19 +396,32 @@ where
             self.shown = shown;
         }
         // We have to move the renderer so we don't upset the borrow checker.
-        let mut renderer = self.renderer.take().unwrap();
+        let mut renderer = std::mem::take(&mut self.renderer);
         self.render_to(renderer.buffer_mut(), mode);
-        self.renderer = Some(renderer);
-        self.renderer.as_mut().unwrap().update()?;
+        self.renderer = renderer;
+        self.renderer.update()?;
         Ok(())
     }
 
+    /// False while the last frame has not been picked up yet
+    pub fn frame_wanted(&self) -> bool {
+        self.renderer.frame_wanted()
+    }
+}
+
+impl DisplayFunction for Video {
+    fn status(&self) -> DisplayStatus {
+        DisplayStatus {
+            connected: self.monitor != MacMonitor::NoMonitor,
+        }
+    }
+
     /// Shows a black screen
-    pub fn blank(&mut self) -> Result<()> {
+    fn blank(&mut self) -> Result<()> {
         if self.shown.take().is_some() {
             log::debug!("Video blanked");
         }
-        let renderer = self.renderer.as_mut().unwrap();
+        let renderer = &mut self.renderer;
         let buf = renderer.buffer_mut();
         buf.set_size(self.monitor.width(), self.monitor.height());
         for pixel in buf.chunks_exact_mut(4) {
@@ -339,12 +430,13 @@ where
         renderer.update()?;
         Ok(())
     }
+
+    fn frames(&self) -> FrameReceiver {
+        self.renderer.get_receiver()
+    }
 }
 
-impl<TRenderer> Debuggable for Video<TRenderer>
-where
-    TRenderer: Renderer,
-{
+impl Debuggable for Video {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_byte, dbgprop_string, dbgprop_udec};
@@ -363,13 +455,36 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::NullRenderer;
 
-    fn video(monitor: MacMonitor, vram_size: usize) -> Video<NullRenderer> {
-        Video::new(NullRenderer::new(0, 0).unwrap(), monitor, vram_size)
+    fn video(monitor: MacMonitor, vram_size: usize) -> Video {
+        Video::new(monitor, vram_size)
     }
 
-    fn mode(video: &Video<NullRenderer>, depth: u8, row_bytes: usize) -> Mode {
+    #[test]
+    fn a_choice_the_video_cannot_have_gives_the_default() {
+        // The V8 has no portrait monitor, and no 768 KB of VRAM
+        let config = DisplayConfig {
+            monitor: Some(MacMonitor::PortraitBW),
+            vram_size: Some(768 * 1024),
+        };
+        let mut v8 = Video::with_config(DeviceModel::V8Video, &config);
+        assert_eq!(v8.monitor(), MacMonitor::default());
+        assert_eq!(v8.vram_size(), 512 * 1024);
+        // What was chosen is still what the video reports
+        assert_eq!(v8.config(), FunctionConfig::Display(config));
+
+        // The Sonora has both
+        let sonora = Video::with_config(DeviceModel::SonoraVideo, &config);
+        assert_eq!(sonora.monitor(), MacMonitor::PortraitBW);
+        assert_eq!(sonora.vram_size(), 768 * 1024);
+        assert_eq!(sonora.info().model, DeviceModel::SonoraVideo);
+        let FunctionMut::Display(display) = v8.function() else {
+            panic!("The video has another function");
+        };
+        assert!(display.status().connected);
+    }
+
+    fn mode(video: &Video, depth: u8, row_bytes: usize) -> Mode {
         Mode {
             width: video.monitor().width(),
             height: video.monitor().height(),
@@ -379,7 +494,7 @@ mod tests {
         }
     }
 
-    fn set_colour(video: &mut Video<NullRenderer>, address: u8, rgb: [u8; 3]) {
+    fn set_colour(video: &mut Video, address: u8, rgb: [u8; 3]) {
         video.write_ramdac(RAMDAC_ADDRESS, address);
         for c in rgb {
             video.write_ramdac(RAMDAC_DATA, c);
