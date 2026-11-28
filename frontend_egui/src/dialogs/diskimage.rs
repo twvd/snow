@@ -4,13 +4,27 @@ use eframe::egui;
 
 use crate::{dialogs::filedialog::SnowFileDialog, settings::AppSettings};
 
+/// The size limit checkbox of a Lisa hard disk, the same in its menus and in its dialogs
+pub fn lisa_disk_limit_checkbox(ui: &mut egui::Ui, limited: &mut bool) -> egui::Response {
+    ui.checkbox(limited, "Report at most 16 MB").on_hover_text(
+        "The Lisa Office System takes a disk that reports more than 30000 blocks for one of \
+         5 MB. MacWorks Plus II may use more. Set this before the guest initializes the disk: \
+         a volume keeps the size it was initialized with.",
+    )
+}
+
 /// Dialog to create a blank HDD image
 #[derive(Default)]
 pub struct DiskImageDialog {
     open: bool,
     current_fn: String,
     current_size: f64,
-    scsi_id: usize,
+    bus: String,
+    slot: String,
+    /// Where the new disk goes, for the text of the dialog: "SCSI ID #3"
+    place: String,
+    /// For a hard disk of a Lisa, whether it reports at most 16 MB. None: no such checkbox.
+    limited: Option<bool>,
 
     browse_dialog: SnowFileDialog,
     result: Option<DiskImageDialogResult>,
@@ -19,7 +33,11 @@ pub struct DiskImageDialog {
 pub struct DiskImageDialogResult {
     pub filename: PathBuf,
     pub size: usize,
-    pub scsi_id: usize,
+    /// The bus and the slot the new disk goes in
+    pub bus: String,
+    pub slot: String,
+    /// The size limit checkbox, if the dialog had one
+    pub limited: Option<bool>,
 }
 
 impl DiskImageDialog {
@@ -55,12 +73,15 @@ impl DiskImageDialog {
                 ui.add(egui::Slider::new(&mut self.current_size, 1.0..=1024.0).step_by(0.5));
                 ui.end_row();
             });
+            if let Some(limited) = &mut self.limited {
+                lisa_disk_limit_checkbox(ui, limited);
+            }
 
             ui.separator();
             ui.label(format!(
-                "{} The new disk will be attached at SCSI ID #{}.",
+                "{} The new disk will be attached at {}.",
                 egui_material_icons::icons::ICON_INFO,
-                self.scsi_id
+                self.place
             ));
             ui.label("Machine should be reset after attaching new drives!");
             ui.separator();
@@ -75,7 +96,9 @@ impl DiskImageDialog {
                         self.result = Some(DiskImageDialogResult {
                             filename: PathBuf::from(&self.current_fn),
                             size,
-                            scsi_id: self.scsi_id,
+                            bus: self.bus.clone(),
+                            slot: self.slot.clone(),
+                            limited: self.limited,
                         });
                         self.open = false;
                     }
@@ -87,10 +110,20 @@ impl DiskImageDialog {
         });
     }
 
-    pub fn open(&mut self, scsi_id: usize, initial_path: &Path) {
-        let filename = format!("hdd{}.img", scsi_id);
+    pub fn open(
+        &mut self,
+        bus: &str,
+        slot: &str,
+        place: String,
+        limited: Option<bool>,
+        initial_path: &Path,
+    ) {
+        let filename = format!("hdd{}.img", slot);
         let full_path = initial_path.join(&filename);
-        self.scsi_id = scsi_id;
+        self.bus = bus.to_string();
+        self.slot = slot.to_string();
+        self.place = place;
+        self.limited = limited;
         self.open = true;
         self.current_fn = full_path.to_string_lossy().into();
         self.current_size = 20.0;

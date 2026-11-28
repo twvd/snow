@@ -3,19 +3,28 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::emulator::{EmulatorInitArgs, ScsiTarget};
+use crate::emulator::EmulatorInitArgs;
 use crate::joystick::JoyBindings;
 use crate::shader_pipeline::ShaderConfig;
 use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
-use snow_core::mac::scsi::ethernet::EthernetLinkType;
-use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::devices::EthernetConfig;
+use snow_core::devices::EthernetLinkType;
+#[cfg(feature = "printer")]
+use snow_core::devices::PrinterConfig;
+use snow_core::devices::{
+    CdromConfig, DeviceConfig, DeviceModel, DisplayConfig, FunctionConfig, HardDiskConfig,
+    built_in, bus_id,
+};
+use snow_core::mac::maclc::pds_iie::IieCardSettings;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::swim::drive::DriveType;
+use snow_core::mac::{MacModel, MacMonitor};
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
 fn deserialize_shader_configs_lenient<'de, D>(
@@ -47,172 +56,178 @@ pub enum FramebufferMode {
     Detached,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub enum WorkspaceScsiTarget {
-    #[default]
+/// A value of the file that is read on its own: one that can't be read doesn't cost the rest
+/// of the file
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+enum Lenient<T> {
+    Read(T),
+    Unread(serde_json::Value),
+}
+
+/// A SCSI target of an older workspace. Read, never written.
+#[derive(Deserialize, Debug, Clone)]
+enum OldScsiTarget {
     None,
-    Disk(RelativePath),
+    Disk(PathBuf),
     Cdrom,
     /// Folder-backed ("Toolbox managed") CD-ROM: the guest swaps between the
     /// images in this folder via the BlueSCSI Toolbox CD commands.
-    CdromFolder(RelativePath),
-    // Do not feature gate Ethernet here to avoid problems with loading
-    // workspaces on builds without the ethernet feature
+    CdromFolder(PathBuf),
     Ethernet,
     Printer,
 }
 
-impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
-    type Error = ();
-
-    fn try_from(value: ScsiTarget) -> std::result::Result<Self, Self::Error> {
-        Ok(match value.target_type.ok_or(())? {
-            ScsiTargetType::Disk => {
-                Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
-            }
-            ScsiTargetType::Cdrom => match value.cdrom_folder {
-                Some(dir) => Self::CdromFolder(RelativePath::from_absolute(&dir)),
-                None => Self::Cdrom,
-            },
-            #[cfg(feature = "ethernet")]
-            ScsiTargetType::Ethernet => Self::Ethernet,
-            #[cfg(feature = "printer")]
-            ScsiTargetType::Printer => Self::Printer,
-        })
-    }
+/// The video card of an older workspace, and of older settings
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NubusDeviceKind {
+    /// Macintosh Display Card 8-24
+    // The card of the workspaces from before there was a choice
+    #[default]
+    Mdc12,
+    /// Macintosh II Video Card
+    Toby,
+    /// The video of an SE/30, in older settings
+    SE30Video,
 }
 
-impl TryFrom<Option<ScsiTarget>> for WorkspaceScsiTarget {
-    type Error = ();
-
-    fn try_from(value: Option<ScsiTarget>) -> std::result::Result<Self, Self::Error> {
-        match value {
-            None => Ok(Self::None),
-            Some(v) => Self::try_from(v),
-        }
-    }
-}
-
-// The opposite is not infallible
-#[allow(clippy::from_over_into)]
-impl Into<ScsiTarget> for WorkspaceScsiTarget {
-    fn into(self) -> ScsiTarget {
+impl NubusDeviceKind {
+    /// The device model of this kind of card
+    pub const fn device_model(self) -> DeviceModel {
         match self {
-            Self::None => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::Cdrom => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::CdromFolder(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: Some(p.get_absolute()),
-            },
-            Self::Disk(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Disk),
-                image_path: Some(p.get_absolute()),
-                cdrom_folder: None,
-            },
-            #[cfg(feature = "ethernet")]
-            Self::Ethernet => ScsiTarget {
-                target_type: Some(ScsiTargetType::Ethernet),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(not(feature = "ethernet"))]
-            Self::Ethernet => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(feature = "printer")]
-            Self::Printer => ScsiTarget {
-                target_type: Some(ScsiTargetType::Printer),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            #[cfg(not(feature = "printer"))]
-            Self::Printer => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
+            Self::Mdc12 => DeviceModel::DisplayCard824,
+            Self::Toby => DeviceModel::MacIIVideoCard,
+            Self::SE30Video => DeviceModel::SE30Video,
         }
     }
 }
 
-/// Workspace variant of link mode for ethernet device
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub enum WorkspaceEthernetLinkType {
-    /// Userland NAT
-    #[cfg(feature = "ethernet_nat")]
-    NAT,
-    /// Userland NAT with HTTPS stripping
-    #[cfg(feature = "ethernet_nat_https_stripping")]
-    NATHttpsStripping,
-    /// Raw sockets based bridge
-    #[cfg(feature = "ethernet_raw")]
-    Bridge(u32),
-    /// Tap interface based bridge
-    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-    TapBridge(String),
-    /// No link
-    #[serde(other)]
-    Down,
+/// The card in the PDS slot of an older workspace
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PdsCardKind {
+    #[default]
+    None,
+    AppleIIe,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for WorkspaceEthernetLinkType {
-    fn default() -> Self {
-        #[cfg(feature = "ethernet_nat")]
+/// What an older workspace says of the devices of its machine, among the arguments of the
+/// Load ROM dialog (`init_args`). Read, never written: a workspace saved since has them as
+/// device configs.
+#[derive(Debug, Default)]
+struct OldInitArgs {
+    monitor: Option<MacMonitor>,
+    vram_size: Option<usize>,
+    video_card: NubusDeviceKind,
+    pds_card: PdsCardKind,
+    iie_card_settings: IieCardSettings,
+    override_fdd_type: Option<DriveType>,
+}
+
+impl OldInitArgs {
+    /// The devices that these fields describe, as device configs: the video card of a
+    /// Macintosh II, the ROM of the video of an SE/30, what was chosen for a built-in video,
+    /// the card of the processor-direct slot, and floppy drives of another type than the Mac
+    /// model's. `display_rom` is the workspace's ROM file of the video card, or of the video
+    /// of an SE/30. A workspace saved since has none of this, and gets no device config.
+    fn device_configs(&self, model: MacModel, display_rom: Option<&Path>) -> Vec<DeviceConfig> {
+        let buses = model.buses();
+        let bus = |id: &str| buses.iter().find(|bus| bus.id == id);
+        let mut configs = vec![];
+
+        if let Some(nubus) = bus(bus_id::NUBUS) {
+            // The video card, in the first slot
+            if let Some(rom) = display_rom {
+                configs.push(DeviceConfig {
+                    bus: nubus.id.clone(),
+                    slot: nubus.slots[0].id.clone(),
+                    model: Some(self.video_card.device_model()),
+                    rom: Some(rom.to_path_buf()),
+                    function: FunctionConfig::Display(DisplayConfig {
+                        monitor: self.monitor,
+                        vram_size: None,
+                    }),
+                });
+            }
+        } else if bus(bus_id::BUILT_IN).is_some()
+            && (display_rom.is_some() || self.monitor.is_some() || self.vram_size.is_some())
         {
-            Self::NAT
+            configs.push(DeviceConfig {
+                bus: bus_id::BUILT_IN.into(),
+                slot: built_in::VIDEO.into(),
+                model: None,
+                rom: display_rom.map(Path::to_path_buf),
+                function: FunctionConfig::Display(DisplayConfig {
+                    monitor: self.monitor,
+                    vram_size: self.vram_size,
+                }),
+            });
         }
-        #[cfg(not(feature = "ethernet_nat"))]
+
+        if self.pds_card == PdsCardKind::AppleIIe
+            && let Some(pds) = bus(bus_id::PDS_LC)
         {
-            Self::Down
+            configs.push(DeviceConfig {
+                bus: pds.id.clone(),
+                slot: pds.slots[0].id.clone(),
+                model: Some(DeviceModel::AppleIIePdsCard),
+                rom: None,
+                function: FunctionConfig::AppleIIeCard(self.iie_card_settings),
+            });
         }
+
+        if let Some(drive_type) = self.override_fdd_type
+            && let Some(swim) = bus(bus_id::SWIM)
+        {
+            for slot in &swim.slots {
+                configs.push(DeviceConfig {
+                    bus: swim.id.clone(),
+                    slot: slot.id.clone(),
+                    model: Some(drive_type.device_model()),
+                    rom: None,
+                    function: FunctionConfig::Floppy,
+                });
+            }
+        }
+        configs
     }
 }
 
-#[cfg(feature = "ethernet")]
-impl From<EthernetLinkType> for WorkspaceEthernetLinkType {
-    fn from(ty: EthernetLinkType) -> Self {
-        match ty {
-            EthernetLinkType::Down => Self::Down,
-            #[cfg(feature = "ethernet_nat")]
-            EthernetLinkType::NAT => Self::NAT,
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            EthernetLinkType::NATHttpsStripping => Self::NATHttpsStripping,
-            #[cfg(feature = "ethernet_raw")]
-            EthernetLinkType::Bridge(i) => Self::Bridge(i),
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            EthernetLinkType::TapBridge(s) => Self::TapBridge(s),
-        }
-    }
+/// One field of an older workspace, read on its own: its default if the file doesn't have it,
+/// or if it can't be read, which is noted for the user
+fn old_field<T: DeserializeOwned + Default>(
+    object: &serde_json::Value,
+    key: &str,
+    what: &str,
+    unread: &mut Vec<String>,
+) -> T {
+    let Some(value) = object.get(key) else {
+        return T::default();
+    };
+    serde_json::from_value(value.clone()).unwrap_or_else(|_| {
+        unread.push(format!("{} can't be read ({})", what, value));
+        T::default()
+    })
 }
 
-#[cfg(feature = "ethernet")]
-impl From<WorkspaceEthernetLinkType> for EthernetLinkType {
-    fn from(ty: WorkspaceEthernetLinkType) -> Self {
-        match ty {
-            WorkspaceEthernetLinkType::Down => Self::Down,
-            #[cfg(feature = "ethernet_nat")]
-            WorkspaceEthernetLinkType::NAT => Self::NAT,
-            #[cfg(feature = "ethernet_nat_https_stripping")]
-            WorkspaceEthernetLinkType::NATHttpsStripping => Self::NATHttpsStripping,
-            #[cfg(feature = "ethernet_raw")]
-            WorkspaceEthernetLinkType::Bridge(i) => Self::Bridge(i),
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            WorkspaceEthernetLinkType::TapBridge(s) => Self::TapBridge(s),
-        }
-    }
+/// What can't be read of the file, for the user: the entry of a list, by its place in it
+fn unread_entry(list: &str, index: usize, value: &serde_json::Value) -> String {
+    format!("{} #{}: can't be read ({})", list, index, value)
+}
+
+/// A path of the workspace file, which is relative to the folder of the file
+fn absolute_path(parent: &Path, path: &Path) -> PathBuf {
+    let joined = parent.join(path);
+    joined.canonicalize().unwrap_or(joined)
+}
+
+fn relative_path(parent: &Path, path: &Path) -> PathBuf {
+    pathdiff::diff_paths(path, parent).unwrap_or_else(|| {
+        log::info!(
+            "Cannot get relative path for {}, saving absolute path",
+            path.display()
+        );
+        path.to_path_buf()
+    })
 }
 
 /// A workspace representation which contains:
@@ -247,6 +262,7 @@ pub struct Workspace {
     rom_path: Option<RelativePath>,
 
     /// Last opened Display Card ROM
+    #[serde(skip_serializing)]
     display_card_rom_path: Option<RelativePath>,
 
     /// Last specified PRAM path
@@ -256,12 +272,21 @@ pub struct Workspace {
     extension_rom_path: Option<RelativePath>,
 
     /// Last loaded disks
-    /// Deprecated; now scsi_targets
-    #[serde(skip_serializing)]
-    disks: [Option<RelativePath>; 7],
+    /// The devices of the machine, as device configs. Their paths are absolute here, and
+    /// relative to the workspace file in the file.
+    devices: Vec<Lenient<DeviceConfig>>,
 
-    /// Configured SCSI targets
-    scsi_targets: [WorkspaceScsiTarget; 7],
+    /// What the file had that couldn't be read, for the user
+    #[serde(skip)]
+    unread: Vec<String>,
+
+    /// Deprecated; now devices
+    #[serde(skip_serializing)]
+    disks: Vec<Lenient<Option<PathBuf>>>,
+
+    /// Deprecated; now devices
+    #[serde(skip_serializing)]
+    scsi_targets: Vec<Lenient<OldScsiTarget>>,
 
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
@@ -304,8 +329,9 @@ pub struct Workspace {
     #[serde(deserialize_with = "deserialize_shader_configs_lenient")]
     pub shader_configs: Vec<ShaderConfig>,
 
-    /// Ethernet link type
-    pub ethernet_link_type: WorkspaceEthernetLinkType,
+    /// Deprecated; now the link of each Ethernet adapter in devices
+    #[serde(skip_serializing)]
+    ethernet_link_type: Lenient<EthernetLinkType>,
 
     /// Serial bridges per SCC channel (index 0 = Channel A, index 1 = Channel B)
     pub serial_bridges: [Option<SerialBridgeConfig>; 2],
@@ -374,8 +400,10 @@ impl Default for Workspace {
             display_card_rom_path: None,
             pram_path: None,
             extension_rom_path: None,
-            disks: Default::default(),
-            scsi_targets: Default::default(),
+            devices: Vec::new(),
+            unread: Vec::new(),
+            disks: Vec::new(),
+            scsi_targets: Vec::new(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -389,7 +417,7 @@ impl Default for Workspace {
             framebuffer_mode: FramebufferMode::default(),
             shader_enabled: false,
             shader_configs: Vec::new(),
-            ethernet_link_type: WorkspaceEthernetLinkType::default(),
+            ethernet_link_type: Lenient::Read(EthernetLinkType::default()),
             serial_bridges: [None, None],
             iie_joystick_bindings: None,
             #[cfg(feature = "afp_server")]
@@ -423,7 +451,9 @@ impl Workspace {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
-        let mut result: Self = serde_json::from_reader(reader)?;
+        // The file as it is, for the fields of older workspaces that are read one by one
+        let file: serde_json::Value = serde_json::from_reader(reader)?;
+        let mut result: Self = serde_json::from_value(file.clone())?;
 
         let parent = path.parent().context("Cannot resolve parent path")?;
         // Default to the current working directory if the input path has no parent. It could be
@@ -458,26 +488,27 @@ impl Workspace {
         if let Some(p) = result.afp_shared_dir.as_mut() {
             p.after_deserialize(parent)?;
         }
-        for d in &mut result.scsi_targets {
-            match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
-                    p.after_deserialize(parent)?;
-                }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
-            }
-        }
-        for (i, d) in result.disks.iter_mut().enumerate() {
-            if let Some(p) = d.as_mut() {
-                p.after_deserialize(parent)?;
-
-                // Migrate
-                result.scsi_targets[i] = WorkspaceScsiTarget::Disk(p.clone());
-            }
-        }
-        result.disks = core::array::from_fn(|_| None);
+        let args = &file["init_args"];
+        let unread = &mut result.unread;
+        let old = OldInitArgs {
+            monitor: old_field(args, "monitor", "The monitor", unread),
+            vram_size: old_field(args, "vram_size", "The video RAM size", unread),
+            video_card: old_field(args, "video_card", "The video card", unread),
+            pds_card: old_field(args, "pds_card", "The PDS card", unread),
+            iie_card_settings: old_field(
+                args,
+                "iie_card_settings",
+                "The settings of the Apple IIe Card",
+                unread,
+            ),
+            override_fdd_type: old_field(
+                args,
+                "override_fdd_type",
+                "The type of the floppy drives",
+                unread,
+            ),
+        };
+        result.read_devices(parent, &old);
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
@@ -510,9 +541,6 @@ impl Workspace {
         if let Some(p) = self.rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
-        if let Some(p) = self.display_card_rom_path.as_mut() {
-            p.before_serialize(parent)?;
-        }
         if let Some(p) = self.pram_path.as_mut() {
             p.before_serialize(parent)?;
         }
@@ -526,32 +554,171 @@ impl Workspace {
         if let Some(p) = self.afp_shared_dir.as_mut() {
             p.before_serialize(parent)?;
         }
-        // disks is deprecated
-        for d in &mut self.scsi_targets {
-            match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
-                    p.before_serialize(parent)?;
-                }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
-            }
-        }
         for p in &mut self.floppy_images {
             p.before_serialize(parent)?;
         }
 
-        let file = File::create(path)?;
-        Ok(serde_json::to_writer_pretty(file, self)?)
+        // The paths of the devices are relative in the file
+        let devices = self.devices.clone();
+        for device in &mut self.devices {
+            if let Lenient::Read(config) = device {
+                config.convert_paths(|path| relative_path(parent, path));
+            }
+        }
+        let written = File::create(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|file| Ok(serde_json::to_writer_pretty(file, self)?));
+        self.devices = devices;
+        written
     }
 
-    pub fn scsi_targets(&self) -> [ScsiTarget; 7] {
-        core::array::from_fn(|i| self.scsi_targets[i].clone().into())
+    /// Makes the list of devices of a workspace that was just read: the device configs of the
+    /// file that can be read, then those made from the fields of older workspaces, with their
+    /// paths made absolute. What can't be read is noted for the user.
+    fn read_devices(&mut self, parent: &Path, old: &OldInitArgs) {
+        let mut devices = vec![];
+        for (i, device) in std::mem::take(&mut self.devices).into_iter().enumerate() {
+            match device {
+                Lenient::Read(config) => devices.push(config),
+                Lenient::Unread(value) => self.unread.push(unread_entry("Device", i, &value)),
+            }
+        }
+        self.convert_old_fields(&mut devices, old);
+        for config in &mut devices {
+            config.convert_paths(|path| absolute_path(parent, path));
+        }
+        self.devices = devices.into_iter().map(Lenient::Read).collect();
     }
 
-    pub fn set_scsi_target(&mut self, id: usize, target: impl Into<ScsiTarget>) {
-        self.scsi_targets[id] = target.into().try_into().unwrap_or_default();
+    /// Turns the fields of older workspaces into device configs. A file saved since has none
+    /// of them. The id of a SCSI slot is the SCSI ID, in decimal.
+    fn convert_old_fields(&mut self, devices: &mut Vec<DeviceConfig>, old: &OldInitArgs) {
+        // The targets, by SCSI ID
+        let mut targets = vec![];
+        for (id, target) in std::mem::take(&mut self.scsi_targets)
+            .into_iter()
+            .enumerate()
+        {
+            targets.push(match target {
+                Lenient::Read(target) => target,
+                Lenient::Unread(value) => {
+                    self.unread.push(unread_entry("SCSI", id, &value));
+                    OldScsiTarget::None
+                }
+            });
+        }
+        // `disks` came before `scsi_targets`, and only had the images of hard disks
+        for (id, disk) in std::mem::take(&mut self.disks).into_iter().enumerate() {
+            let disk = match disk {
+                Lenient::Read(Some(path)) => OldScsiTarget::Disk(path),
+                Lenient::Read(None) => continue,
+                Lenient::Unread(value) => {
+                    self.unread.push(unread_entry("SCSI", id, &value));
+                    continue;
+                }
+            };
+            if targets.len() <= id {
+                targets.resize(id + 1, OldScsiTarget::None);
+            }
+            targets[id] = disk;
+        }
+
+        #[cfg(feature = "ethernet")]
+        let link = match &self.ethernet_link_type {
+            Lenient::Read(link) => link.clone(),
+            Lenient::Unread(value) => {
+                self.unread
+                    .push(format!("The Ethernet link can't be read ({})", value));
+                EthernetLinkType::Down
+            }
+        };
+        for (id, target) in targets.into_iter().enumerate() {
+            let (model, function) = match target {
+                OldScsiTarget::None => continue,
+                OldScsiTarget::Disk(path) => (
+                    DeviceModel::ScsiHardDisk,
+                    FunctionConfig::HardDisk(HardDiskConfig {
+                        media: Some(path),
+                        ..Default::default()
+                    }),
+                ),
+                OldScsiTarget::Cdrom => (
+                    DeviceModel::ScsiCdrom,
+                    FunctionConfig::Cdrom(CdromConfig::default()),
+                ),
+                OldScsiTarget::CdromFolder(path) => (
+                    DeviceModel::ScsiCdrom,
+                    FunctionConfig::Cdrom(CdromConfig { folder: Some(path) }),
+                ),
+                #[cfg(feature = "ethernet")]
+                // The workspace kept no address: the adapter gets a random one
+                OldScsiTarget::Ethernet => (
+                    DeviceModel::DaynaPortScsiLink,
+                    FunctionConfig::Ethernet(EthernetConfig {
+                        mac: None,
+                        link: link.clone(),
+                    }),
+                ),
+                #[cfg(feature = "printer")]
+                OldScsiTarget::Printer => (
+                    DeviceModel::LaserWriterIISC,
+                    FunctionConfig::Printer(PrinterConfig::default()),
+                ),
+                // A device this build doesn't have
+                #[cfg(not(feature = "ethernet"))]
+                OldScsiTarget::Ethernet => {
+                    self.unread
+                        .push(format!("SCSI #{}: this build has no Ethernet adapter", id));
+                    continue;
+                }
+                #[cfg(not(feature = "printer"))]
+                OldScsiTarget::Printer => {
+                    self.unread
+                        .push(format!("SCSI #{}: this build has no printer", id));
+                    continue;
+                }
+            };
+            devices.push(DeviceConfig {
+                bus: bus_id::SCSI.into(),
+                slot: id.to_string(),
+                model: Some(model),
+                rom: None,
+                function,
+            });
+        }
+
+        // The devices that older workspaces described with the arguments of the machine and
+        // with the ROM of its video. They take the place of a device config of the list for
+        // the same slot.
+        let detect = || MacModel::detect_from_rom(&std::fs::read(self.get_rom_path()?).ok()?);
+        if let Some(model) = self.model.or_else(detect) {
+            let display_rom = self.display_card_rom_path.take().map(|p| p.get_absolute());
+            for config in old.device_configs(model, display_rom.as_deref()) {
+                devices.retain(|d| d.bus != config.bus || d.slot != config.slot);
+                devices.push(config);
+            }
+        }
+    }
+
+    /// The devices of the workspace, as device configs
+    pub fn devices(&self) -> Vec<DeviceConfig> {
+        self.devices
+            .iter()
+            .filter_map(|device| match device {
+                Lenient::Read(config) => Some(config.clone()),
+                Lenient::Unread(_) => None,
+            })
+            .collect()
+    }
+
+    /// Takes the devices of a machine, to be saved
+    pub fn set_devices(&mut self, devices: Vec<DeviceConfig>) {
+        self.devices = devices.into_iter().map(Lenient::Read).collect();
+    }
+
+    /// What the file had that couldn't be read, to show the user once
+    pub fn take_unread(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unread)
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {
@@ -568,14 +735,6 @@ impl Workspace {
 
     pub fn get_extension_rom_path(&self) -> Option<PathBuf> {
         self.extension_rom_path.clone().map(|d| d.get_absolute())
-    }
-
-    pub fn set_display_card_rom_path(&mut self, p: Option<&Path>) {
-        self.display_card_rom_path = p.map(RelativePath::from_absolute);
-    }
-
-    pub fn get_display_card_rom_path(&self) -> Option<PathBuf> {
-        self.display_card_rom_path.clone().map(|d| d.get_absolute())
     }
 
     pub fn set_pram_path(&mut self, p: Option<&Path>) {
@@ -611,16 +770,6 @@ impl Workspace {
             .iter()
             .map(|p| p.get_absolute())
             .collect()
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn get_ethernet_link_type(&self) -> EthernetLinkType {
-        self.ethernet_link_type.clone().into()
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn set_ethernet_link_type(&mut self, ethernet_link_type: EthernetLinkType) {
-        self.ethernet_link_type = ethernet_link_type.into();
     }
 
     /// Persists a window location
@@ -690,5 +839,307 @@ mod tests {
         assert_eq!(loaded.get_afp_shared_dir(), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A folder of its own for a test, removed when the test is done
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "snow_workspace_{}_{}",
+                name,
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir.canonicalize().unwrap())
+        }
+
+        /// The workspace of a file with these contents
+        fn load(&self, contents: &str) -> Workspace {
+            let path = self.0.join("test.snoww");
+            std::fs::write(&path, contents).unwrap();
+            Workspace::from_file(&path).unwrap()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scsi(slot: &str, model: DeviceModel, function: FunctionConfig) -> DeviceConfig {
+        DeviceConfig {
+            bus: bus_id::SCSI.into(),
+            slot: slot.into(),
+            model: Some(model),
+            rom: None,
+            function,
+        }
+    }
+
+    fn disk(slot: &str, media: PathBuf) -> DeviceConfig {
+        scsi(
+            slot,
+            DeviceModel::ScsiHardDisk,
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(media),
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn cdrom(slot: &str, folder: Option<PathBuf>) -> DeviceConfig {
+        scsi(
+            slot,
+            DeviceModel::ScsiCdrom,
+            FunctionConfig::Cdrom(CdromConfig { folder }),
+        )
+    }
+
+    #[test]
+    fn the_old_fields_of_a_machine_describe_devices() {
+        let args = OldInitArgs {
+            monitor: Some(MacMonitor::RGB12),
+            vram_size: Some(512 * 1024),
+            pds_card: PdsCardKind::AppleIIe,
+            video_card: NubusDeviceKind::Toby,
+            override_fdd_type: Some(DriveType::GCR800KPWM),
+            ..Default::default()
+        };
+        let places = |model, rom| -> Vec<(String, String, Option<DeviceModel>)> {
+            args.device_configs(model, rom)
+                .into_iter()
+                .map(|config| (config.bus, config.slot, config.model))
+                .collect()
+        };
+        let place = |bus: &str, slot: &str, model| (bus.to_string(), slot.to_string(), model);
+        let drive = Some(DeviceModel::Mac800KPwmDrive);
+
+        // An LC: its video, the card of its slot, its two drives
+        let configs = args.device_configs(MacModel::LC, None);
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: Some(512 * 1024),
+            })
+        );
+        assert_eq!(
+            places(MacModel::LC, None),
+            [
+                place(bus_id::BUILT_IN, built_in::VIDEO, None),
+                place(bus_id::PDS_LC, "0", Some(DeviceModel::AppleIIePdsCard)),
+                place(bus_id::SWIM, "1", drive),
+                place(bus_id::SWIM, "2", drive),
+            ]
+        );
+
+        // A Macintosh II: the card that was chosen, with its ROM file and the monitor
+        let rom = Path::new("card.rom");
+        let configs = args.device_configs(MacModel::MacII, Some(rom));
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
+        assert_eq!(
+            configs[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: None,
+            })
+        );
+        assert_eq!(
+            places(MacModel::MacII, Some(rom))[0],
+            place(bus_id::NUBUS, "9", Some(DeviceModel::MacIIVideoCard))
+        );
+
+        // An SE/30: the ROM file is that of its video
+        let configs = args.device_configs(MacModel::SE30, Some(rom));
+        assert_eq!(configs[0].bus, bus_id::BUILT_IN);
+        assert_eq!(configs[0].rom.as_deref(), Some(rom));
+
+        // A workspace saved since has none of these fields, and nothing is made from them
+        let args = OldInitArgs::default();
+        for model in [MacModel::LC, MacModel::MacII, MacModel::SE30] {
+            assert_eq!(args.device_configs(model, None), []);
+        }
+    }
+
+    #[test]
+    fn an_old_field_that_cannot_be_read_does_not_cost_the_workspace() {
+        let dir = TestDir::new("old_unread");
+        let mut workspace = dir.load(
+            r#"{"model":"LC","viewport_scale":3.0,
+                "init_args":{"monitor":"SomeFutureMonitor","vram_size":262144,
+                             "pds_card":"SomeFutureCard","ram_size":4194304}}"#,
+        );
+        // The rest of the file is read, the fields that can be read too
+        assert_eq!(workspace.viewport_scale, 3.0);
+        assert_eq!(workspace.init_args.ram_size, Some(4194304));
+        let devices = workspace.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(
+            devices[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: None,
+                vram_size: Some(262144),
+            })
+        );
+        assert_eq!(
+            workspace.take_unread(),
+            [
+                "The monitor can't be read (\"SomeFutureMonitor\")",
+                "The PDS card can't be read (\"SomeFutureCard\")",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_machine_of_an_older_workspace_becomes_device_configs() {
+        let dir = TestDir::new("old_machine");
+        std::fs::write(dir.0.join("card.rom"), []).unwrap();
+        // A Macintosh II: the video card, its ROM file and its monitor
+        let mut workspace = dir.load(
+            r#"{"model":"MacII","display_card_rom_path":"card.rom",
+                "init_args":{"video_card":"Mdc12","monitor":"RGB12"}}"#,
+        );
+        let card = DeviceConfig {
+            bus: bus_id::NUBUS.into(),
+            slot: "9".into(),
+            model: Some(DeviceModel::DisplayCard824),
+            rom: Some(dir.0.join("card.rom")),
+            function: FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: None,
+            }),
+        };
+        assert_eq!(workspace.devices(), std::slice::from_ref(&card));
+        assert!(workspace.take_unread().is_empty());
+
+        // The fields win over a device config of the same slot, and are not written again
+        let mut workspace = dir.load(
+            r#"{"model":"MacII","display_card_rom_path":"card.rom",
+                "init_args":{"video_card":"Mdc12","monitor":"RGB12"},
+                "devices":[{"bus":"NuBus","slot":"9","model":"DisplayCard824",
+                            "function":{"Display":{}}},
+                           {"bus":"SCSI","slot":"3","model":"ScsiCdrom","function":{"Cdrom":{}}}]}"#,
+        );
+        assert_eq!(workspace.devices(), [cdrom("3", None), card.clone()]);
+        let path = dir.0.join("saved.snoww");
+        workspace.write_file(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        for field in ["display_card_rom_path", "video_card", "\"monitor\": null"] {
+            assert!(!saved.contains(field), "{field} in {saved}");
+        }
+        let workspace = Workspace::from_file(&path).unwrap();
+        assert_eq!(workspace.devices(), [cdrom("3", None), card]);
+
+        // An LC: what was chosen for its video, and the card of its slot
+        let workspace = dir.load(
+            r#"{"model":"LC","init_args":{"monitor":"RGB12","vram_size":262144,
+                "pds_card":"AppleIIe"}}"#,
+        );
+        let devices = workspace.devices();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].bus, bus_id::BUILT_IN);
+        assert_eq!(devices[0].slot, built_in::VIDEO);
+        assert_eq!(
+            devices[0].function,
+            FunctionConfig::Display(DisplayConfig {
+                monitor: Some(MacMonitor::RGB12),
+                vram_size: Some(262144),
+            })
+        );
+        assert_eq!(devices[1].model, Some(DeviceModel::AppleIIePdsCard));
+    }
+
+    #[test]
+    fn scsi_targets_of_an_older_workspace_become_device_configs() {
+        let dir = TestDir::new("old");
+        let mut workspace = dir.load(
+            r#"{"scsi_targets":[{"Disk":"hd.img"},"None","Cdrom",{"CdromFolder":"cds"},
+                "Ethernet","Printer","None"],
+                "ethernet_link_type":"Down"}"#,
+        );
+        let devices = workspace.devices();
+        assert_eq!(
+            devices[..3],
+            [
+                disk("0", dir.0.join("hd.img")),
+                cdrom("2", None),
+                cdrom("3", Some(dir.0.join("cds"))),
+            ]
+        );
+        #[cfg(feature = "ethernet")]
+        {
+            let FunctionConfig::Ethernet(ethernet) = &devices[3].function else {
+                panic!("An Ethernet adapter has an Ethernet config");
+            };
+            assert_eq!(devices[3].model, Some(DeviceModel::DaynaPortScsiLink));
+            assert_eq!(devices[3].slot, "4");
+            assert_eq!(ethernet.link, EthernetLinkType::Down);
+        }
+        #[cfg(feature = "printer")]
+        assert_eq!(
+            devices.last().unwrap().model,
+            Some(DeviceModel::LaserWriterIISC)
+        );
+        // What this build has no device for is said
+        let missing = [cfg!(feature = "ethernet"), cfg!(feature = "printer")];
+        assert_eq!(
+            workspace.take_unread().len(),
+            missing.iter().filter(|&&has| !has).count()
+        );
+    }
+
+    #[test]
+    fn disks_of_an_older_workspace_become_hard_disks() {
+        let dir = TestDir::new("disks");
+        let workspace = dir.load(r#"{"disks":[null,"a.img",null,null,null,null,null]}"#);
+        assert_eq!(workspace.devices(), [disk("1", dir.0.join("a.img"))]);
+    }
+
+    #[test]
+    fn devices_are_saved_with_relative_paths() {
+        let dir = TestDir::new("save");
+        let devices = vec![
+            disk("0", dir.0.join("hd.img")),
+            cdrom("3", Some(dir.0.join("sub").join("cds"))),
+        ];
+        let path = dir.0.join("saved.snoww");
+        let mut workspace = Workspace::default();
+        workspace.set_devices(devices.clone());
+        workspace.write_file(&path).unwrap();
+        // The workspace keeps its absolute paths
+        assert_eq!(workspace.devices(), devices);
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["devices"],
+            serde_json::json!([
+                { "bus": "SCSI", "slot": "0", "model": "ScsiHardDisk",
+                  "function": { "HardDisk": { "media": "hd.img" } } },
+                { "bus": "SCSI", "slot": "3", "model": "ScsiCdrom",
+                  "function": { "Cdrom": { "folder": "sub/cds" } } },
+            ])
+        );
+        // The older fields are no longer written
+        for old in ["disks", "scsi_targets", "ethernet_link_type"] {
+            assert!(saved.get(old).is_none(), "{old} is written");
+        }
+
+        assert_eq!(Workspace::from_file(&path).unwrap().devices(), devices);
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_read_does_not_cost_the_others() {
+        let dir = TestDir::new("unread");
+        let mut workspace = dir.load(
+            r#"{"devices":[
+                {"bus":"SCSI","slot":"0","model":"NoSuchDevice","function":{"Cdrom":{}}},
+                {"bus":"SCSI","slot":"3","model":"ScsiCdrom","function":{"Cdrom":{}}}]}"#,
+        );
+        assert_eq!(workspace.devices(), [cdrom("3", None)]);
+        assert_eq!(workspace.take_unread().len(), 1);
     }
 }
